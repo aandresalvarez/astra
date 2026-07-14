@@ -27,8 +27,8 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!viewModel.contains("loadedHistoryEvents.values.min"))
     }
 
-    @Test("Transcript messages remain direct lazy stack children")
-    func transcriptMessagesRemainDirectLazyStackChildren() throws {
+    @Test("Transcript rows stay grouped below the outer lazy stack")
+    func transcriptRowsStayGroupedBelowOuterLazyStack() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -36,17 +36,15 @@ struct TaskThreadArchitectureFitnessTests {
         let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
         let summaryStart = try #require(taskMainView.range(of: "private func summaryContent(decisionDockVisible: Bool)"))
         let summaryEnd = try #require(
-            taskMainView[summaryStart.upperBound...].range(of: "private func chatTopPositionReader()")
+            taskMainView[summaryStart.upperBound...].range(of: "private func recordTranscriptReadinessIfAvailable()")
         )
         let summarySource = String(taskMainView[summaryStart.lowerBound..<summaryEnd.lowerBound])
 
         #expect(summarySource.contains("LazyVStack(alignment: .leading, spacing: 10) {"))
-        #expect(summarySource.contains("ForEach(currentThreadSnapshot.conversationItems) { item in"))
-        #expect(summarySource.contains("measuredConversationItemView(item, decisionDockVisible: decisionDockVisible)"))
-        #expect(
-            !taskMainView.contains("private var chatThreadContent"),
-            "Wrapping the entire transcript makes LazyVStack retain and reflow every message as one child"
-        )
+        #expect(summarySource.contains("chatThreadContent(decisionDockVisible: decisionDockVisible)"))
+        #expect(!summarySource.contains("ForEach(currentThreadSnapshot.conversationItems)"))
+        #expect(taskMainView.contains("private func chatThreadContentBody(decisionDockVisible: Bool)"))
+        #expect(taskMainView.contains("ForEach(currentThreadSnapshot.conversationItems) { item in"))
     }
 
     @Test("Task-wide decision policy is resolved once outside transcript rows")

@@ -1663,11 +1663,7 @@ struct TaskMainView: View {
                             .frame(height: 1)
                             .id("chatTop")
                             .background(chatTopPositionReader())
-                        chatThreadPreambleContent
-                        ForEach(currentThreadSnapshot.conversationItems) { item in
-                            measuredConversationItemView(item, decisionDockVisible: decisionDockVisible)
-                                .id(item.id)
-                        }
+                        chatThreadContent(decisionDockVisible: decisionDockVisible)
                         Color.clear
                             .frame(height: 1)
                             .id("chatBottom")
@@ -1747,7 +1743,14 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private var chatThreadPreambleContent: some View {
+    private func chatThreadContent(decisionDockVisible: Bool) -> some View {
+        PerformanceSignposts.renderTaskThread {
+            chatThreadContentBody(decisionDockVisible: decisionDockVisible)
+        }
+    }
+
+    @ViewBuilder
+    private func chatThreadContentBody(decisionDockVisible: Bool) -> some View {
         if task.isForked {
             forkContextBanner
                 .padding(.horizontal, 14)
@@ -1766,12 +1769,10 @@ struct TaskMainView: View {
             )
                 .padding(.horizontal, 14)
         }
-    }
 
-    @ViewBuilder
-    private func measuredConversationItemView(_ item: TaskConversationItem, decisionDockVisible: Bool) -> some View {
-        PerformanceSignposts.renderTaskThread {
+        ForEach(currentThreadSnapshot.conversationItems) { item in
             conversationItemView(item, decisionDockVisible: decisionDockVisible)
+                .id(item.id)
         }
     }
 

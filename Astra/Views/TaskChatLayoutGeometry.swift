@@ -4,8 +4,8 @@ import SwiftUI
 /// Responsive sizing for the task transcript column.
 ///
 /// The task keeps the product's adaptive wide-window measure. Performance
-/// comes from row-level lazy layout and resolving task-wide policy outside
-/// retained rows, not from permanently narrowing the chat.
+/// comes from a stable parent proposal, grouped transcript layout, and
+/// resolving task-wide policy once, not from permanently narrowing the chat.
 enum TaskChatLayoutGeometry {
     static func horizontalPadding(for viewportWidth: CGFloat) -> CGFloat {
         if viewportWidth < 520 { return 12 }
