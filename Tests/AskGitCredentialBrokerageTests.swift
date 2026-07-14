@@ -180,6 +180,35 @@ struct AskGitCredentialBrokerageTests {
         #expect(plan.hostPathGrants.contains { $0.source == .gitCredential })
     }
 
+    @Test("Ask host network Git keeps credentials for its approved command")
+    func askHostPullRetainsNativeGitCredentials() {
+        let workspace = Workspace(name: "Ask host pull", primaryPath: "/tmp/ask-host-pull")
+        let task = AgentTask(
+            title: "Update the checkout",
+            goal: "Fetch and pull the latest changes from a private origin",
+            workspace: workspace
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: .run,
+            prompt: "git fetch origin && git pull origin main",
+            contextText: task.goal,
+            workspacePath: workspace.primaryPath,
+            permissionPolicy: .restricted,
+            gitCredentialContextProvider: { _, _, _, _ in
+                externalHTTPSCredentialContext
+            },
+            precomputedRuntimeRequirements: emptyRequirements
+        )
+
+        #expect(plan.gitCredential?.transports == ["https"])
+        #expect(plan.credentialGrants.contains { $0.source == .gitCredential })
+        #expect(plan.hostPathGrants.contains { $0.source == .gitCredential })
+    }
+
     @Test("Ask local Git inspection keeps non-network Git context")
     func askLocalGitInspectionKeepsNonNetworkGitContext() {
         let workspace = Workspace(name: "Ask inspect", primaryPath: "/tmp/ask-inspect")
@@ -241,6 +270,7 @@ struct AskGitCredentialBrokerageTests {
         #expect(askPrompt.contains("Do not run `git push`"))
         #expect(askPrompt.contains("ASTRA will deterministically construct"))
         #expect(autoPrompt == prompt)
+        #expect(AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git status"))
         #expect(AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git rev-parse *"))
         #expect(!AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git push *"))
     }

@@ -7,6 +7,7 @@ import ASTRAGitContracts
 struct GitPullRequestPublishServiceTests {
     private static let baseSHA = String(repeating: "a", count: 40)
     private static let commitSHA = String(repeating: "b", count: 40)
+    private static let reviewedTreeSHA = String(repeating: "c", count: 40)
     private static let repositoryPath = "/Users/test/astra-publish-repo"
 
     private actor FailingCheckpointStore: GitPullRequestPublishCheckpointStoring {
@@ -45,10 +46,13 @@ struct GitPullRequestPublishServiceTests {
         var indexAvailable = true
         var calls: [String] = []
         var commitFailureCount = 0
+        var indexTreeSHA: String? = GitPullRequestPublishServiceTests.reviewedTreeSHA
+        var committedTreeSHA: String? = GitPullRequestPublishServiceTests.reviewedTreeSHA
         var createPullRequestFailureCount = 0
         var createPullRequestURL = "https://github.com/example/repo/pull/42"
         var createPullRequestDraftValues: [Bool] = []
         var lookupRemoteURLs: [String] = []
+        var lookupBases: [String] = []
         var createRemoteURLs: [String] = []
 
         func acquireIndexGuard() -> Bool {
@@ -64,6 +68,9 @@ struct GitPullRequestPublishServiceTests {
             if ref == "HEAD" { return headSHA }
             return refSHAs[ref]
         }
+
+        func getIndexTreeSHA(at repoPath: String) async -> String? { indexTreeSHA }
+        func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String? { committedTreeSHA }
 
         func lookupRemoteCommitSHA(
             remote: String,
@@ -156,10 +163,12 @@ struct GitPullRequestPublishServiceTests {
         func lookupOpenPullRequest(
             repoPath: String,
             remoteURL: String,
+            base: String,
             head: String,
             ghPathOverride: String?
         ) async -> GitHubPullRequestLookupResult {
             lookupRemoteURLs.append(remoteURL)
+            lookupBases.append(base)
             return await lookupOpenPullRequest(
                 repoPath: repoPath,
                 head: head,
@@ -394,6 +403,7 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
         #expect(git.createPullRequestDraftValues == [true])
         #expect(git.lookupRemoteURLs.allSatisfy { $0 == "https://github.com/example/repo" })
+        #expect(git.lookupBases.allSatisfy { $0 == "main" })
         #expect(git.createRemoteURLs == ["https://github.com/example/repo"])
         #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
     }
@@ -646,6 +656,34 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
         #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
+    }
+
+    @Test("commit hook content mutation stops before push and restores the reviewed branch")
+    func commitHookContentMutationFailsClosed() async throws {
+        let git = FakeGit()
+        git.committedTreeSHA = String(repeating: "d", count: 40)
+        let store = InMemoryGitPullRequestPublishCheckpointStore()
+        let publisher = service(git: git, store: store)
+        let proposal = try await publisher.prepare(request())
+
+        do {
+            _ = try await publisher.publish(
+                proposal,
+                approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+            )
+            Issue.record("Hook-mutated committed content unexpectedly reached publication")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .operationFailed(
+                phase: .commit,
+                message: "A Git commit hook changed the reviewed content; publication stopped before push."
+            ))
+        }
+
+        #expect(git.calls.contains("reset-preserving:\(Self.baseSHA)"))
+        #expect(git.headSHA == Self.baseSHA)
+        #expect(!git.calls.contains { $0.hasPrefix("push:") })
+        #expect(!git.calls.contains { $0.hasPrefix("pr:") })
+        #expect(await store.checkpoint(for: proposal.proposalID)?.state == .prepared)
     }
 
     @Test("retry after PR failure resumes from pushed checkpoint without duplicate Git mutations")

@@ -8,6 +8,8 @@ struct GitPullRequestPublicationIntentTests {
         "explicit PR authoring verbs request publication",
         arguments: [
             "Create a pull request for the fix",
+            "Draft a PR for this change",
+            "Drafting the pull request now",
             "Open a draft PR after the tests pass",
             "Publish the GitHub PR",
             "Raise a new pull request",
@@ -40,6 +42,7 @@ struct GitPullRequestPublicationIntentTests {
             "Do not create a pull request",
             "Implement the fix without opening a PR",
             "Never publish the pull request",
+            "Do not draft a PR",
             "No PR should be submitted"
         ]
     )

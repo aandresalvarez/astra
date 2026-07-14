@@ -16,6 +16,11 @@ protocol GitRepositoryOperating: AnyObject {
     func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo]
     func getCurrentBranch(at repoPath: String) async -> String
     func getCommitSHA(_ ref: String, at repoPath: String) async -> String?
+    /// Resolves the exact tree currently represented by the index. Publication
+    /// uses this immutable identity to ensure commit hooks did not change the
+    /// reviewed content before a push.
+    func getIndexTreeSHA(at repoPath: String) async -> String?
+    func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String?
     func lookupRemoteCommitSHA(remote: String, branch: String, at repoPath: String) async -> GitRemoteCommitLookupResult
     func getLocalBranches(at repoPath: String) async -> [String]
     func checkoutBranch(_ branch: String, at repoPath: String) async throws
@@ -39,6 +44,7 @@ protocol GitRepositoryOperating: AnyObject {
     func lookupOpenPullRequest(
         repoPath: String,
         remoteURL: String,
+        base: String,
         head: String,
         ghPathOverride: String?
     ) async -> GitHubPullRequestLookupResult
@@ -110,6 +116,11 @@ extension GitRepositoryOperating {
     /// `git rev-parse --verify`.
     func getCommitSHA(_ ref: String, at repoPath: String) async -> String? { nil }
 
+    /// Publication operators fail closed unless they can prove that the commit
+    /// tree is identical to the reviewed staged tree.
+    func getIndexTreeSHA(at repoPath: String) async -> String? { nil }
+    func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String? { nil }
+
     /// Alternate operators fail closed until they provide an authoritative
     /// network-backed remote lookup.
     func lookupRemoteCommitSHA(
@@ -159,6 +170,7 @@ extension GitRepositoryOperating {
     func lookupOpenPullRequest(
         repoPath: String,
         remoteURL: String,
+        base: String,
         head: String,
         ghPathOverride: String?
     ) async -> GitHubPullRequestLookupResult {

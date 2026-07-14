@@ -247,6 +247,36 @@ struct TaskCompletionPolicyTests {
         #expect(run.typedStopReason == .noUsableResult)
     }
 
+    @Test("publication receipt completes the run and clears the pending external outcome")
+    func publicationReceiptClearsExternalOutcomeStopReason() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Publish the code change",
+            goal: "Create a pull request for the completed code change",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        run.recordExternalOutcomePending()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+            task: task,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(completed)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.typedStopReason == .completed)
+        #expect(run.completedAt != nil)
+    }
+
     @Test("manual completion policy names missing explicit deliverables")
     func manualCompletionPolicyNamesMissingExplicitDeliverables() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)

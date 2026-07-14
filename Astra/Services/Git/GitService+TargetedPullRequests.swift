@@ -7,6 +7,7 @@ extension GitService {
     func lookupOpenPullRequest(
         repoPath: String,
         remoteURL: String,
+        base: String,
         head: String,
         ghPathOverride: String?
     ) async -> GitHubPullRequestLookupResult {
@@ -17,6 +18,10 @@ extension GitService {
         guard !trimmedHead.isEmpty else {
             return .unavailable("Current branch is empty.")
         }
+        let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else {
+            return .unavailable("Reviewed base branch is empty.")
+        }
 
         do {
             let output = try await runGitHubCLI(
@@ -24,6 +29,7 @@ extension GitService {
                 arguments: [
                     "pr", "list",
                     "--repo", repository,
+                    "--base", trimmedBase,
                     "--head", trimmedHead,
                     "--state", "open",
                     "--json", "number,url,title,isDraft,state",
@@ -35,6 +41,7 @@ extension GitService {
             guard let decoded = Self.decodeOpenPullRequestsResult(from: output).value else {
                 AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
                     "head": trimmedHead,
+                    "base": trimmedBase,
                     "repository": repository,
                     "result": "unavailable",
                     "reason": "invalid_json"
@@ -44,6 +51,7 @@ extension GitService {
             if let pullRequest = decoded.first(where: { $0.state.uppercased() == "OPEN" }) ?? decoded.first {
                 AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
                     "head": trimmedHead,
+                    "base": trimmedBase,
                     "repository": repository,
                     "result": "found",
                     "number": "\(pullRequest.number)"
@@ -52,6 +60,7 @@ extension GitService {
             }
             AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
                 "head": trimmedHead,
+                "base": trimmedBase,
                 "repository": repository,
                 "result": "none"
             ], level: .debug)
@@ -59,6 +68,7 @@ extension GitService {
         } catch {
             AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
                 "head": trimmedHead,
+                "base": trimmedBase,
                 "repository": repository,
                 "result": "unavailable",
                 "reason": error.localizedDescription

@@ -359,6 +359,7 @@ struct GitPullRequestTests {
         let result = await GitService.shared.lookupOpenPullRequest(
             repoPath: repo,
             remoteURL: "https://github.example.edu/coral/astra",
+            base: "reviewed-main",
             head: "feature/reviewed-target",
             ghPathOverride: fakeGH.path
         )
@@ -370,6 +371,8 @@ struct GitPullRequestTests {
         #expect(arguments.contains("github.example.edu/coral/astra"))
         #expect(arguments.contains("--head"))
         #expect(arguments.contains("feature/reviewed-target"))
+        #expect(arguments.contains("--base"))
+        #expect(arguments.contains("reviewed-main"))
     }
 
     @Test("targeted creation uses reviewed repo and a noninteractive plain head")

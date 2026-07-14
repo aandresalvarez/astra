@@ -105,6 +105,12 @@ public final class TaskRun {
         status = .completed
         typedStopReason = .externalOutcomePending
     }
+
+    public func recordExternalOutcomeCompleted(at date: Date = Date()) {
+        status = .completed
+        completedAt = completedAt ?? date
+        typedStopReason = .completed
+    }
 }
 
 public extension TaskRun {

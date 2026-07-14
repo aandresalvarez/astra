@@ -6,6 +6,7 @@ import ASTRAModels
 /// operation that is bound to an exact proposal and explicit user approval.
 enum AskGitPullRequestWorkflowPolicy {
     static let allowedLocalInspectionShellPatterns = [
+        "git status",
         "git status *",
         "git rev-parse *",
         "git remote -v",

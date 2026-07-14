@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import ASTRAModels
 
@@ -60,7 +61,13 @@ enum TaskSuccessfulCompletionService {
             return false
         }
 
-        TaskStateMachine.completeFromUserApproval(task, modelContext: modelContext)
+        let completedAt = Date()
+        run.recordExternalOutcomeCompleted(at: completedAt)
+        TaskStateMachine.completeFromUserApproval(
+            task,
+            modelContext: modelContext,
+            at: completedAt
+        )
         return true
     }
 }

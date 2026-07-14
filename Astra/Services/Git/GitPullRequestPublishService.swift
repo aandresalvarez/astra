@@ -70,6 +70,7 @@ final class GitPullRequestPublishService {
             switch await git.lookupOpenPullRequest(
                 repoPath: scope.repositoryPath,
                 remoteURL: remoteURL,
+                base: scope.baseBranch,
                 head: scope.headBranch,
                 ghPathOverride: nil
             ) {
@@ -211,6 +212,7 @@ final class GitPullRequestPublishService {
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
             remoteURL: proposal.remoteURL,
+            base: proposal.baseBranch,
             head: proposal.headBranch,
             ghPathOverride: nil
         ) {
@@ -271,16 +273,7 @@ final class GitPullRequestPublishService {
             }
 
             phase = .commit
-            try await git.commit(message: proposal.commitMessage, at: proposal.repositoryPath)
-            guard let commitSHA = await git.getCommitSHA("HEAD", at: proposal.repositoryPath) else {
-                throw GitPullRequestPublishError.unableToResolveCommit("HEAD after commit")
-            }
-            guard commitSHA.caseInsensitiveCompare(proposal.expectedHeadSHA) != .orderedSame else {
-                throw GitPullRequestPublishError.operationFailed(
-                    phase: .commit,
-                    message: "Git reported success but HEAD did not advance."
-                )
-            }
+            let commitSHA = try await commitReviewedIndex(proposal: proposal)
             phase = .checkpoint
             do {
                 try await checkpointStore.save(GitPullRequestPublishCheckpoint(
@@ -577,14 +570,7 @@ final class GitPullRequestPublishService {
             try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
         }
         do {
-            try await git.commit(message: proposal.commitMessage, at: proposal.repositoryPath)
-            guard let commitSHA = await git.getCommitSHA("HEAD", at: proposal.repositoryPath),
-                  commitSHA.caseInsensitiveCompare(proposal.expectedHeadSHA) != .orderedSame else {
-                throw GitPullRequestPublishError.operationFailed(
-                    phase: .commit,
-                    message: "Git reported success but HEAD did not advance."
-                )
-            }
+            let commitSHA = try await commitReviewedIndex(proposal: proposal)
             let committed = GitPullRequestPublishCheckpoint(
                 proposalID: checkpoint.proposalID,
                 repositoryPath: checkpoint.repositoryPath,
@@ -609,6 +595,48 @@ final class GitPullRequestPublishService {
                 message: String(error.localizedDescription.prefix(500))
             )
         }
+    }
+
+    /// Commits the staged, reviewed index and proves the resulting immutable
+    /// tree is identical before any checkpoint can advance to a push. Hooks may
+    /// validate a commit, but they may not silently publish different content.
+    private func commitReviewedIndex(
+        proposal: GitPullRequestPublishProposal
+    ) async throws -> String {
+        guard let reviewedTreeSHA = await git.getIndexTreeSHA(at: proposal.repositoryPath) else {
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .commit,
+                message: "ASTRA could not resolve the reviewed Git index tree."
+            )
+        }
+
+        try await git.commit(message: proposal.commitMessage, at: proposal.repositoryPath)
+        guard let commitSHA = await git.getCommitSHA("HEAD", at: proposal.repositoryPath),
+              commitSHA.caseInsensitiveCompare(proposal.expectedHeadSHA) != .orderedSame else {
+            await rollbackUncheckpointedCommit(proposal: proposal)
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .commit,
+                message: "Git reported success but HEAD did not advance."
+            )
+        }
+        guard let committedTreeSHA = await git.getCommitTreeSHA(
+            commitSHA,
+            at: proposal.repositoryPath
+        ) else {
+            await rollbackUncheckpointedCommit(proposal: proposal)
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .commit,
+                message: "ASTRA could not verify the committed Git tree."
+            )
+        }
+        guard committedTreeSHA.caseInsensitiveCompare(reviewedTreeSHA) == .orderedSame else {
+            await rollbackUncheckpointedCommit(proposal: proposal)
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .commit,
+                message: "A Git commit hook changed the reviewed content; publication stopped before push."
+            )
+        }
+        return commitSHA
     }
 
     private func authoritativeRemoteCommitSHA(
@@ -659,6 +687,7 @@ final class GitPullRequestPublishService {
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
             remoteURL: proposal.remoteURL,
+            base: proposal.baseBranch,
             head: proposal.headBranch,
             ghPathOverride: nil
         ) {
@@ -694,6 +723,7 @@ final class GitPullRequestPublishService {
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
             remoteURL: proposal.remoteURL,
+            base: proposal.baseBranch,
             head: proposal.headBranch,
             ghPathOverride: nil
         ) {

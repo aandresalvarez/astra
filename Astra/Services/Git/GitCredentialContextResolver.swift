@@ -106,6 +106,7 @@ enum GitOperationIntentDetector {
 
         let publicationActions: Set<String> = [
             "create", "created", "creating",
+            "draft", "drafted", "drafting",
             "make", "made", "making",
             "open", "opened", "opening",
             "publish", "published", "publishing",
