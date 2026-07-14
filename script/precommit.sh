@@ -27,12 +27,22 @@ run_focused_targets_for_changed_paths() {
   done <<< "$targets"
 }
 
-run swift test --filter ArchitectureFitnessTests.ArchitectureFitnessTests
-run script/focused_test_targets_tests.sh
 changed_files=()
 while IFS= read -r path; do
   changed_files+=("$path")
 done < <(changed_paths)
+
+run script/test_architecture.sh
+if ((${#changed_files[@]} > 0)); then
+  validation_plan="$(script/focused_validation_plan.sh "${changed_files[@]}")"
+  while IFS= read -r lane; do
+    if [[ "$lane" == "git-contracts" ]]; then
+      run script/test_git_contracts.sh
+    fi
+  done <<< "$validation_plan"
+fi
+run script/focused_validation_plan_tests.sh
+run script/focused_test_targets_tests.sh
 if ((${#changed_files[@]} > 0)); then
   run_focused_targets_for_changed_paths "${changed_files[@]}"
 fi

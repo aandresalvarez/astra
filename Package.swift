@@ -15,6 +15,7 @@ let package = Package(
         .executable(name: "stanford-graph-mail", targets: ["StanfordGraphMailTool"])
     ],
     dependencies: [
+        .package(path: "ASTRAGitContracts"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.1"),
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")
     ],
@@ -33,10 +34,6 @@ let package = Package(
         .target(
             name: "ASTRALogging",
             path: "ASTRALogging"
-        ),
-        .target(
-            name: "ASTRAGitContracts",
-            path: "ASTRAGitContracts"
         ),
         .target(
             name: "MailToolSupport",
@@ -112,10 +109,10 @@ let package = Package(
             dependencies: [
                 "AstraObjCSupport",
                 "ASTRACore",
-                "ASTRAGitContracts",
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
@@ -143,7 +140,15 @@ let package = Package(
         .testTarget(
             name: "ArchitectureFitnessTests",
             dependencies: [],
-            path: "Tests/ArchitectureFitnessTests"
+            path: "Tests/ArchitectureFitnessTests",
+            exclude: ["Package.swift"]
+        ),
+        .testTarget(
+            name: "ASTRAGitContractsTests",
+            dependencies: [
+                .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
+            ],
+            path: "ASTRAGitContracts/Tests/ASTRAGitContractsTests"
         ),
         // Test-only C shim: the module-load hook Swift itself lacks. Its
         // __attribute__((constructor)) runs when dyld loads the ASTRATests
@@ -159,7 +164,18 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "AstraTestSeamBootstrap", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
+            dependencies: [
+                "ASTRA",
+                "ASTRACore",
+                "ASTRAModels",
+                "ASTRAPersistence",
+                "AstraTestSeamBootstrap",
+                "HostControlToolSupport",
+                "MCPGatewaySupport",
+                "MCPServerKit",
+                "WorkspaceToolSupport",
+                .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
+            ],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]

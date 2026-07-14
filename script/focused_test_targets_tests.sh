@@ -34,11 +34,14 @@ assert_targets "HostControlToolSupportTests" \
   "Tools/AstraHostControlTool/main.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
-assert_targets $'ArchitectureFitnessTests.ArchitectureFitnessTests\nMCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
+assert_targets $'MCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 
-assert_targets "ArchitectureFitnessTests.ArchitectureFitnessTests" \
+assert_targets "" \
   "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift"
+
+assert_targets "" \
+  "ASTRAGitContracts/Sources/ASTRAGitContracts/GitStatusContracts.swift"
 
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
