@@ -503,4 +503,28 @@ struct AgentEventRecordingPresentationEchoWindowTests {
         let appended = AgentEventRecordingPresentation.responseTextToAppend(envelope, after: output)
         #expect(appended.isEmpty, "whitespace-shifted whole-output echoes must never re-append")
     }
+
+    @Test("a non-ASCII whole-output echo dedupes even past the window size")
+    func nonAsciiWholeOutputEchoSwallowedBeyondWindowSize() {
+        // Non-ASCII text can't use the ASCII byte walk, and an echo that also
+        // collapses large whitespace runs can be shorter than the recorded
+        // output by more than the containment window — the scalar walk must
+        // still classify it as a whole-output echo, or the run's answer
+        // records twice for non-English output.
+        var output = ""
+        for index in 0..<2_000 {
+            output += "ストリーム文 \(index) は現実的な散文を運ぶ。" + String(repeating: " ", count: 40) + "\n"
+        }
+        let envelope = output
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        #expect(
+            envelope.count + AgentEventRecordingPresentation.echoSearchWindowSlack < output.count,
+            "fixture must shrink past the containment window to be discriminating"
+        )
+
+        let appended = AgentEventRecordingPresentation.responseTextToAppend(envelope, after: output)
+        #expect(appended.isEmpty, "whitespace-normalized whole-output echoes must dedupe for non-ASCII output")
+    }
 }

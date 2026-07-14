@@ -107,13 +107,22 @@ enum AgentEventRecordingPresentation {
         // Whole-output envelope echoes are the common shape; one lockstep byte
         // walk decides collapsed-form equality without materializing the
         // collapsed run output, which is quadratic across a streamed run.
-        // Pure-ASCII text resolves here; anything else defers to the
-        // containment scan below.
+        // Pure-ASCII text resolves here.
         switch asciiWhitespaceCollapsedComparison(normalizedIncoming, normalizedExisting) {
         case .equal(let collapsedLength):
             return collapsedLength >= echoLengthFloor ? "" : incomingText
-        case .notEqual, .indeterminate:
+        case .notEqual:
             break
+        case .indeterminate:
+            // Non-ASCII (or non-contiguous) text: the same lockstep walk one
+            // level up, over unicode scalars, so whole-output echoes of
+            // non-English runs stay size-independent too. Deltas diverge from
+            // the output within a few scalars, so this stays cheap per tick;
+            // the collapse below runs only on an actual whole-output match.
+            if haveEqualWhitespaceCollapsedScalars(normalizedIncoming, normalizedExisting) {
+                return whitespaceCollapsed(normalizedIncoming).count >= echoLengthFloor
+                    ? "" : incomingText
+            }
         }
         // Interior echoes trail the live output by the handful of chunks
         // recorded after the message they re-send, so containment needs only a
@@ -210,6 +219,60 @@ enum AgentEventRecordingPresentation {
             collapsedLength += 1
             lhsIndex += 1
             rhsIndex += 1
+        }
+    }
+
+    /// The `.indeterminate` fallback: the byte walk's lockstep comparison at
+    /// unicode-scalar granularity, classifying whitespace with the same
+    /// CharacterSet `whitespaceCollapsed` splits on. Exact-scalar equality is
+    /// stricter than `String ==` canonical equivalence, so `true` is exact and
+    /// `false` merely defers to the containment scan.
+    private static func haveEqualWhitespaceCollapsedScalars(_ lhs: String, _ rhs: String) -> Bool {
+        var lhsStream = WhitespaceCollapsedScalars(lhs)
+        var rhsStream = WhitespaceCollapsedScalars(rhs)
+        while true {
+            let lhsScalar = lhsStream.next()
+            let rhsScalar = rhsStream.next()
+            if lhsScalar != rhsScalar { return false }
+            if lhsScalar == nil { return true }
+        }
+    }
+
+    /// Lazily yields the scalars `whitespaceCollapsed` would produce: token
+    /// scalars verbatim, one U+0020 between consecutive tokens.
+    private struct WhitespaceCollapsedScalars {
+        private static let whitespace = CharacterSet.whitespacesAndNewlines
+        private let scalars: String.UnicodeScalarView
+        private var index: String.UnicodeScalarView.Index
+        private var held: Unicode.Scalar?
+        private var emittedTokenScalar = false
+
+        init(_ text: String) {
+            scalars = text.unicodeScalars
+            index = scalars.startIndex
+        }
+
+        mutating func next() -> Unicode.Scalar? {
+            if let scalar = held {
+                held = nil
+                return scalar
+            }
+            var crossedWhitespace = false
+            while index < scalars.endIndex {
+                let scalar = scalars[index]
+                index = scalars.index(after: index)
+                if Self.whitespace.contains(scalar) {
+                    crossedWhitespace = true
+                    continue
+                }
+                if emittedTokenScalar, crossedWhitespace {
+                    held = scalar
+                    return " "
+                }
+                emittedTokenScalar = true
+                return scalar
+            }
+            return nil
         }
     }
 
