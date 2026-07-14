@@ -202,8 +202,10 @@ public enum MarkdownRenderPreparation {
     private static func headingSplit(_ line: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: #"(?<=\s)#{2,6}\s+(?=[A-Z0-9])"#) else { return [line] }
         let nsLine = line as NSString
-        let matches = regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
-            .filter { !isInsideInlineCode(nsLine, location: $0.range.location) }
+        let candidates = regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
+        guard !candidates.isEmpty else { return [line] }
+        let codeSpans = InlineCodeSpanIndex(nsLine)
+        let matches = candidates.filter { !codeSpans.contains($0.range.location) }
         guard !matches.isEmpty else { return [line] }
 
         var chunks: [String] = []
@@ -239,7 +241,9 @@ public enum MarkdownRenderPreparation {
         }
         let nsChunk = chunk as NSString
         let matches = regex.matches(in: chunk, range: NSRange(location: 0, length: nsChunk.length))
-        for match in matches where !isInsideInlineCode(nsChunk, location: match.range.location) {
+        guard !matches.isEmpty else { return [chunk] }
+        let codeSpans = InlineCodeSpanIndex(nsChunk)
+        for match in matches where !codeSpans.contains(match.range.location) {
             let heading = nsChunk.substring(to: match.range.location).trimmingCharacters(in: .whitespaces)
             let remainder = nsChunk.substring(from: match.range.location).trimmingCharacters(in: .whitespaces)
             // The first marker can sit inside the heading's own numbering
@@ -262,10 +266,12 @@ public enum MarkdownRenderPreparation {
     /// found inside an inline code span is no trigger at all.
     private static func listRunSplit(_ chunk: String) -> [String] {
         let nsChunk = chunk as NSString
+        let codeSpans = InlineCodeSpanIndex(nsChunk)
         if let bulletTrigger = firstMatchRange(#":\s+-\s"#, in: chunk),
-           !isInsideInlineCode(nsChunk, location: bulletTrigger.location) {
+           !codeSpans.contains(bulletTrigger.location) {
             return splitMarkerRun(
                 chunk,
+                codeSpans: codeSpans,
                 markerPattern: #"\s-\s+"#,
                 searchStart: bulletTrigger.location + 1,
                 firstExpectedNumber: nil,
@@ -273,9 +279,10 @@ public enum MarkdownRenderPreparation {
             )
         }
         if let numberTrigger = firstMatchRange(#":\s+1[.)]\s"#, in: chunk),
-           !isInsideInlineCode(nsChunk, location: numberTrigger.location) {
+           !codeSpans.contains(numberTrigger.location) {
             return splitMarkerRun(
                 chunk,
+                codeSpans: codeSpans,
                 markerPattern: #"\s\d{1,2}[.)]\s+"#,
                 searchStart: numberTrigger.location + 1,
                 firstExpectedNumber: 1
@@ -284,6 +291,7 @@ public enum MarkdownRenderPreparation {
         if let leadingNumber = firstMatchRange(#"^\s*1[.)]\s"#, in: chunk) {
             return splitMarkerRun(
                 chunk,
+                codeSpans: codeSpans,
                 markerPattern: #"\s\d{1,2}[.)]\s+"#,
                 searchStart: leadingNumber.location + leadingNumber.length - 1,
                 firstExpectedNumber: 2
@@ -300,6 +308,7 @@ public enum MarkdownRenderPreparation {
 
     private static func splitMarkerRun(
         _ chunk: String,
+        codeSpans: InlineCodeSpanIndex,
         markerPattern: String,
         searchStart: Int,
         firstExpectedNumber: Int?,
@@ -315,7 +324,7 @@ public enum MarkdownRenderPreparation {
         var breakPoints: [Int] = []
         var expectedNumber = firstExpectedNumber
         for match in matches {
-            guard !isInsideInlineCode(nsChunk, location: match.range.location) else { continue }
+            guard !codeSpans.contains(match.range.location) else { continue }
             if let expected = expectedNumber {
                 let markerText = nsChunk.substring(with: match.range)
                     .trimmingCharacters(in: .whitespaces)
@@ -352,29 +361,61 @@ public enum MarkdownRenderPreparation {
     /// list/heading glue. Spans are delimited by matching backtick RUNS
     /// (`` `code` ``, ```` ``code`` ````), so simple odd/even parity fails for
     /// double-backtick spans; walk the runs and track the open span length.
-    private static func isInsideInlineCode(_ text: NSString, location: Int) -> Bool {
-        var index = 0
-        var openRunLength = 0
-        let limit = min(location, text.length)
-        while index < limit {
-            guard text.character(at: index) == 0x60 else {
-                index += 1
-                continue
+    /// The splitting helpers ask about one location per regex match —
+    /// thousands on a marker-dense line — so re-walking the runs per query
+    /// would be quadratic. One forward pass records the offset of every run
+    /// that opens or closes a span; a location is inside a span exactly when
+    /// an odd number of those flips precede it.
+    private struct InlineCodeSpanIndex {
+        /// Ascending UTF-16 offsets of runs that flipped the span state.
+        private let flipLocations: [Int]
+
+        init(_ text: NSString) {
+            var flips: [Int] = []
+            var index = 0
+            var openRunLength = 0
+            let length = text.length
+            while index < length {
+                guard text.character(at: index) == 0x60 else {
+                    index += 1
+                    continue
+                }
+                var runEnd = index
+                while runEnd < length, text.character(at: runEnd) == 0x60 {
+                    runEnd += 1
+                }
+                let runLength = runEnd - index
+                if openRunLength == 0 {
+                    openRunLength = runLength
+                    flips.append(index)
+                } else if runLength == openRunLength {
+                    // Only a run of the exact opening length closes the span.
+                    openRunLength = 0
+                    flips.append(index)
+                }
+                index = runEnd
             }
-            var runEnd = index
-            while runEnd < text.length, text.character(at: runEnd) == 0x60 {
-                runEnd += 1
-            }
-            let runLength = runEnd - index
-            if openRunLength == 0 {
-                openRunLength = runLength
-            } else if runLength == openRunLength {
-                // Only a run of the exact opening length closes the span.
-                openRunLength = 0
-            }
-            index = runEnd
+            flipLocations = flips
         }
-        return openRunLength != 0
+
+        /// Whether `location` falls inside an open span. Flips strictly
+        /// before `location` alternate open/close, so an odd count means
+        /// open. A run straddling `location` counts in full — its flip sits
+        /// at the run's start — matching a sequential scan that consumes
+        /// whole runs.
+        func contains(_ location: Int) -> Bool {
+            var low = 0
+            var high = flipLocations.count
+            while low < high {
+                let mid = (low + high) / 2
+                if flipLocations[mid] < location {
+                    low = mid + 1
+                } else {
+                    high = mid
+                }
+            }
+            return low % 2 == 1
+        }
     }
 
     private static func firstMatchRange(_ pattern: String, in text: String) -> NSRange? {

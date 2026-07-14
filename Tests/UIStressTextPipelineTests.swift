@@ -295,12 +295,12 @@ struct UIStressTextPipelineTests {
         let headingElapsed = clock.measure {
             _ = MarkdownRenderPreparation.prepareForDisplay(headingLine)
         }
-        // A linear pass over ~500KB is a few ms; today's per-match rescan
-        // measures ~3-5s on an idle machine. The budget leaves headroom for a
-        // loaded machine while still tripping if the rescan gets even worse —
-        // and a linear fix drops both to milliseconds.
-        #expect(bulletElapsed < .seconds(15), "bullet reflow took \(bulletElapsed) for \(bulletLine.utf8.count) bytes")
-        #expect(headingElapsed < .seconds(15), "heading reflow took \(headingElapsed) for \(headingLine.utf8.count) bytes")
+        // The span-index reflow is linear: both calls together measure well
+        // under 200ms locally. One second of headroom absorbs a loaded
+        // machine, while a return of the per-match inline-code rescan (~9s
+        // here before the index) trips it by a wide margin.
+        #expect(bulletElapsed < .seconds(1), "bullet reflow took \(bulletElapsed) for \(bulletLine.utf8.count) bytes")
+        #expect(headingElapsed < .seconds(1), "heading reflow took \(headingElapsed) for \(headingLine.utf8.count) bytes")
     }
 
     // MARK: - Answer presentation: code preservation
