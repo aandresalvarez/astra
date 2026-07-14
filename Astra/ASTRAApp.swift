@@ -452,6 +452,7 @@ enum AstraStoreStartupCoordinator {
             return .continueOpening(storeURL)
         }
 
+        let migrationShape: PersistentStoreKnownShape
         switch OrphanedV12StoreMigrator.migrationProbe(storeURL: storeURL) {
         case .notRequired:
             return .continueOpening(storeURL)
@@ -462,8 +463,8 @@ enum AstraStoreStartupCoordinator {
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ], level: .warning)
             return .continueOpening(storeURL)
-        case .required:
-            break
+        case .required(let shape):
+            migrationShape = shape
         }
 
         do {
@@ -480,6 +481,7 @@ enum AstraStoreStartupCoordinator {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "result": "orphaned_v12_migrated",
                 "source_schema": "12",
+                "source_shape": report.sourceShapeRaw,
                 "destination_schema": String(ASTRASchema.currentVersion),
                 "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
@@ -488,6 +490,7 @@ enum AstraStoreStartupCoordinator {
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "result": "orphaned_v12_migration_blocked",
+                "source_shape": String(describing: migrationShape),
                 "error_type": String(describing: type(of: error)),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ], level: .error)

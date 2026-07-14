@@ -167,6 +167,15 @@ struct SchemaVersionTests {
         #expect(!ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
     }
 
+    @Test("Feedback-only V12 freezes the historical V11 task shape plus feedback")
+    func feedbackOnlyV12IsFrozen() {
+        #expect(ASTRASchemaV12FeedbackOnly.models.count == 17)
+        #expect(ASTRASchemaV12FeedbackOnly.models.contains { $0 == ASTRASchemaV11.AgentTask.self })
+        #expect(ASTRASchemaV12FeedbackOnly.models.contains { $0 == ASTRASchemaV12Models.FeedbackReport.self })
+        #expect(!ASTRASchemaV12FeedbackOnly.models.contains { $0 == ASTRASchemaV12RuntimeOnly.AgentTask.self })
+        #expect(!ASTRASchemaV12FeedbackOnly.models.contains { $0 == AgentTask.self })
+    }
+
     @MainActor
     @Test("SchemaV13 declares current model types and explicit-runtime-selection field")
     func v13ModelCountAndExplicitRuntimeSelectionField() throws {
@@ -224,11 +233,14 @@ struct SchemaVersionTests {
     func orphanRecoveryPlanIsIsolated() {
         #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 2)
         #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 1)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 2)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 1)
     }
 
-    @Test("Frozen V12 schemas match both observed on-disk fingerprints")
+    @Test("Frozen V12 schemas match all observed on-disk fingerprints")
     func frozenV12FingerprintsMatchObservedStores() throws {
         #expect(try modelDigest(for: ASTRASchemaV12RuntimeOnly.self) == "gOyhETqn0JsdoYEzwTW4HL0JczNjjAZAP1RnTqyP2OVdSMByOnWSLe1yi6MGcwuSHctPUYlM7dhh3FoKv2Xrug==")
+        #expect(try modelDigest(for: ASTRASchemaV12FeedbackOnly.self) == "MMAHCJmoTDsXR0SV6RF+goUZ2DBiNuwEtnq3KS3v0jcU8kGeSbQeZrrAeIFkfK4/xgALX2J2CrYJYdsoc9P0sg==")
         #expect(try modelDigest(for: ASTRASchemaV12.self) == "8A20+TTf27Ld2ivltxATZ9CEzlihL4bWotqJTiVHIMS+OB7pT8DKDKjw48YapWPv4ZpglJnfTLrpPJ8XZD4bkw==")
         #expect(try modelDigest(for: ASTRASchemaV13.self) == "F8EAtnO6XEb1sTTzkmpQUCUI4Rhv0yDneoWeElmC/fO2XA9uaRoyDqz1e68zWR6m3tZQ/tFZp3p+95HDlzt+4g==")
     }

@@ -4079,3 +4079,17 @@ public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
         ]
     }
 }
+
+/// Dedicated plan for the feedback-only V12 collision. It cannot share the
+/// normal plan with another schema carrying the same 12.0.0 identifier.
+public enum ASTRAFeedbackOnlyV12MigrationPlan: SchemaMigrationPlan {
+    public static var schemas: [any VersionedSchema.Type] {
+        [ASTRASchemaV12FeedbackOnly.self, ASTRASchemaV13.self]
+    }
+
+    public static var stages: [MigrationStage] {
+        [
+            .lightweight(fromVersion: ASTRASchemaV12FeedbackOnly.self, toVersion: ASTRASchemaV13.self)
+        ]
+    }
+}
