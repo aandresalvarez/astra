@@ -9,6 +9,12 @@ fi
 needs_git_contracts=0
 needs_root=0
 
+if [[ "${ASTRA_RELEASE_GATE:-0}" == "1" ]]; then
+  # Release signing must always run the root release-number, update, and app
+  # packaging gates regardless of which paths changed since main.
+  needs_root=1
+fi
+
 for path in "$@"; do
   case "$path" in
     ASTRAGitContracts/Tests/*)

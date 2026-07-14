@@ -64,8 +64,9 @@ Architecture fitness tests are independently runnable through
 - Architecture-test-only changes: the standalone architecture package.
 - Any root application, package-manifest, script, or mixed change: the
   standalone checks plus the existing root focused suites.
-- A diff-less release/tag checkout: the root focused suites, preserving the
-  unconditional release-number and packaging gates.
+- A release/tag checkout with `ASTRA_RELEASE_GATE=1`: the root focused suites
+  regardless of its diff, preserving the unconditional release-number,
+  update, and packaging gates before signing.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production

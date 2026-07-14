@@ -81,16 +81,12 @@ run_validation_plan() {
 }
 
 # ReleaseBuildNumberDerivationTests/ReleaseUpdateScriptTests/AppBundlePackagingTests
-# are listed here unconditionally, not left to the path-diff-based mapping
-# in focused_test_targets.sh below (PR #253 review comment on
-# script/focused_test_targets.sh:62): the release workflow's "Run release
-# test gate" step runs THIS script against a detached tag checkout, where
-# diff_range() falls back to origin/main...HEAD -- and when the tag points
-# at current origin/main, that diff is empty, so changed_paths() never
-# surfaces .github/workflows/release.yml or script/build_and_run.sh and the
-# path-based mapping is never consulted. Running these here guarantees the
-# release-number regression suite always executes before a tag is signed,
-# regardless of diff state.
+# stay in this root filter instead of the path mapping below (PR #253 review
+# comment on script/focused_test_targets.sh:62). The release workflow sets
+# ASTRA_RELEASE_GATE=1, which makes focused_validation_plan.sh require this
+# root lane regardless of the tag checkout's diff. That guarantees these
+# release suites execute before signing while preserving the isolated lane
+# for ordinary contract-test-only developer pushes.
 FOCUSED_SWIFT_TEST_FILTER="RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests|ReleaseBuildNumberDerivationTests|ReleaseUpdateScriptTests|AppBundlePackagingTests"
 
 changed_files=()

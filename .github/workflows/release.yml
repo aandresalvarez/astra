@@ -452,6 +452,10 @@ jobs:
         # sign, notarize, and publish a release from a commit that never
         # passed tests. script/prepush.sh is the same minimum gate used
         # locally before every push (focused Swift tests + whitespace).
+        env:
+          # Release validation is not path-pruned: version, update, and app
+          # packaging suites must run before any signing or publication.
+          ASTRA_RELEASE_GATE: "1"
         run: script/prepush.sh
 
       - name: Import Developer ID certificate into a temporary keychain

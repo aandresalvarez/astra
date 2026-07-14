@@ -16,6 +16,18 @@ assert_plan() {
   fi
 }
 
+assert_release_plan() {
+  local expected="$1"
+  shift
+
+  local actual
+  actual="$(ASTRA_RELEASE_GATE=1 script/focused_validation_plan.sh "$@")"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'Expected release validation plan:\n%s\nActual release validation plan:\n%s\n' "$expected" "$actual" >&2
+    return 1
+  fi
+}
+
 assert_plan "root"
 
 assert_plan "git-contracts" \
@@ -40,3 +52,9 @@ assert_plan $'git-contracts\nroot' \
 
 assert_plan $'git-contracts\nroot' \
   "Package.swift"
+
+assert_release_plan "root" \
+  "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift"
+
+assert_release_plan $'git-contracts\nroot' \
+  "ASTRAGitContracts/Tests/ASTRAGitContractsTests/GitStatusParserContractTests.swift"

@@ -56,6 +56,21 @@ struct SwiftPMValidationArchitectureTests {
         #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
     }
 
+    @Test("Release validation always includes the root release gates")
+    func releaseValidationAlwaysIncludesRootGates() throws {
+        let root = try repositoryRoot()
+        let releaseWorkflow = try fileText(".github/workflows/release.yml", root: root)
+        let validationPlan = try fileText("script/focused_validation_plan.sh", root: root)
+        let prePush = try fileText("script/prepush.sh", root: root)
+
+        #expect(releaseWorkflow.contains(#"ASTRA_RELEASE_GATE: "1""#))
+        #expect(releaseWorkflow.contains("run: script/prepush.sh"))
+        #expect(validationPlan.contains(#"${ASTRA_RELEASE_GATE:-0}" == "1""#))
+        #expect(prePush.contains("ReleaseBuildNumberDerivationTests"))
+        #expect(prePush.contains("ReleaseUpdateScriptTests"))
+        #expect(prePush.contains("AppBundlePackagingTests"))
+    }
+
     private func repositoryRoot() throws -> URL {
         var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         while true {
