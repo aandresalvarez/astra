@@ -46,6 +46,8 @@ struct GitRepositoryPanelIntegrationTests {
             return currentBranch
         }
 
+        func getCommitSHA(_ ref: String, at repoPath: String) async -> String? { "abc123" }
+
         func getLocalBranches(at repoPath: String) async -> [String] { localBranches }
         func checkoutBranch(_ branch: String, at repoPath: String) async throws {}
         func createBranch(_ branch: String, from base: String?, at repoPath: String) async throws {}
@@ -147,6 +149,18 @@ struct GitRepositoryPanelIntegrationTests {
             head: String,
             title: String,
             body: String,
+            ghPathOverride: String?
+        ) async throws -> String {
+            "https://github.com/example/repo/pull/1"
+        }
+
+        func createPullRequest(
+            repoPath: String,
+            base: String,
+            head: String,
+            title: String,
+            body: String,
+            isDraft: Bool,
             ghPathOverride: String?
         ) async throws -> String {
             "https://github.com/example/repo/pull/1"

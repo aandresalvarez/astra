@@ -335,133 +335,6 @@ private struct GitHubPullRequestChecksViewResponse: Decodable {
     }
 }
 
-protocol GitRepositoryOperating: AnyObject {
-    func acquireIndexGuard() -> Bool
-    func releaseIndexGuard()
-    func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo]
-    func getCurrentBranch(at repoPath: String) async -> String
-    func getLocalBranches(at repoPath: String) async -> [String]
-    func checkoutBranch(_ branch: String, at repoPath: String) async throws
-    func createBranch(_ branch: String, from base: String?, at repoPath: String) async throws
-    func getStatusFiles(at repoPath: String) async -> [GitStatusFile]
-    func stageFile(_ file: GitStatusFile, at repoPath: String) async throws
-    func stageAll(at repoPath: String) async throws
-    func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws
-    func unstageAll(at repoPath: String) async throws
-    func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool) async throws
-    func commit(message: String, at repoPath: String) async throws
-    func pullRebase(at repoPath: String) async throws
-    func push(at repoPath: String) async throws
-    func pushSetUpstream(branch: String, remote: String, at repoPath: String) async throws
-    func hasRemote(at repoPath: String) async -> Bool
-    func lookupOpenPullRequest(repoPath: String, head: String, ghPathOverride: String?) async -> GitHubPullRequestLookupResult
-    func lookupPullRequestComments(repoPath: String, pullRequest: GitHubPullRequestRef, ghPathOverride: String?) async -> GitHubPullRequestCommentLookupResult
-    func lookupPullRequestChecks(repoPath: String, pullRequest: GitHubPullRequestRef, ghPathOverride: String?) async -> GitHubPullRequestCheckLookupResult
-    func getUnpushedCommitCount(at repoPath: String) async -> Int
-    func getAheadBehind(at repoPath: String) async -> (ahead: Int, behind: Int)?
-    func hasUpstream(at repoPath: String) async -> Bool
-    func getDefaultRemote(at repoPath: String) async -> String?
-    func getStagedDiff(at repoPath: String, limit: Int) async -> String
-    func getFileDiff(at repoPath: String, file: GitStatusFile, limit: Int) async -> GitFileDiff
-    func getRecentCommitSubjects(at repoPath: String, count: Int) async -> [String]
-    func getDefaultBaseBranch(at repoPath: String, remote: String?) async -> String
-    func getBranchLog(at repoPath: String, base: String, branch: String, limit: Int, maxBytes: Int) async -> String
-    func getBranchDiffStat(at repoPath: String, base: String, branch: String, maxBytes: Int) async -> String
-    func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int)
-    func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo]
-    func localBranchExists(_ branch: String, at repoPath: String) async -> Bool
-    func addWorktree(
-        repoPath: String,
-        branch: String,
-        createBranch: Bool,
-        base: String?,
-        worktreesRoot: String
-    ) async throws -> String
-    func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws
-    func getRemoteURL(at repoPath: String, remote: String?) async -> String?
-    func createPullRequest(
-        repoPath: String,
-        base: String,
-        head: String,
-        title: String,
-        body: String,
-        ghPathOverride: String?
-    ) async throws -> String
-    func normalizeBaseBranch(_ raw: String) -> String
-}
-
-extension GitRepositoryOperating {
-    func lookupOpenPullRequest(repoPath: String, head: String) async -> GitHubPullRequestLookupResult {
-        await lookupOpenPullRequest(repoPath: repoPath, head: head, ghPathOverride: nil)
-    }
-
-    func lookupPullRequestComments(
-        repoPath: String,
-        pullRequest: GitHubPullRequestRef
-    ) async -> GitHubPullRequestCommentLookupResult {
-        await lookupPullRequestComments(repoPath: repoPath, pullRequest: pullRequest, ghPathOverride: nil)
-    }
-
-    func lookupPullRequestChecks(
-        repoPath: String,
-        pullRequest: GitHubPullRequestRef
-    ) async -> GitHubPullRequestCheckLookupResult {
-        await lookupPullRequestChecks(repoPath: repoPath, pullRequest: pullRequest, ghPathOverride: nil)
-    }
-
-    func getStagedDiff(at repoPath: String) async -> String {
-        await getStagedDiff(at: repoPath, limit: 8 * 1024)
-    }
-
-    func getFileDiff(at repoPath: String, file: GitStatusFile) async -> GitFileDiff {
-        await getFileDiff(at: repoPath, file: file, limit: 48 * 1024)
-    }
-
-    func getRecentCommitSubjects(at repoPath: String) async -> [String] {
-        await getRecentCommitSubjects(at: repoPath, count: 5)
-    }
-
-    func getBranchLog(at repoPath: String, base: String, branch: String) async -> String {
-        await getBranchLog(at: repoPath, base: base, branch: branch, limit: 20, maxBytes: 12 * 1024)
-    }
-
-    func getBranchDiffStat(at repoPath: String, base: String, branch: String) async -> String {
-        await getBranchDiffStat(at: repoPath, base: base, branch: branch, maxBytes: 12 * 1024)
-    }
-
-    func addWorktree(
-        repoPath: String,
-        branch: String,
-        createBranch: Bool,
-        base: String?
-    ) async throws -> String {
-        try await addWorktree(
-            repoPath: repoPath,
-            branch: branch,
-            createBranch: createBranch,
-            base: base,
-            worktreesRoot: AppChannel.current.defaultWorktreesRoot
-        )
-    }
-
-    func createPullRequest(
-        repoPath: String,
-        base: String,
-        head: String,
-        title: String,
-        body: String
-    ) async throws -> String {
-        try await createPullRequest(
-            repoPath: repoPath,
-            base: base,
-            head: head,
-            title: title,
-            body: body,
-            ghPathOverride: nil
-        )
-    }
-}
-
 /// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
 ///
 /// Encapsulates the concurrency-sensitive state shared between the stdout/stderr
@@ -677,7 +550,7 @@ class GitService: GitRepositoryOperating {
     /// Default wall-clock budget for local index/read git operations.
     private static let defaultGitTimeout: TimeInterval = 30
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
-    private static let networkGitTimeout: TimeInterval = 300
+    static let networkGitTimeout: TimeInterval = 300
     private static let pullRequestCommentsGraphQLQuery = """
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
@@ -734,7 +607,7 @@ class GitService: GitRepositoryOperating {
     }
 
     /// Spawns a git subprocess and returns standard output or throws standard error.
-    private func runGit(
+    func runGit(
         at repoPath: String,
         arguments: [String],
         timeout: TimeInterval? = nil
@@ -746,6 +619,27 @@ class GitService: GitRepositoryOperating {
             environment: Self.gitEnvironment(),
             timeout: timeout ?? Self.defaultGitTimeout,
             label: (["git"] + arguments).joined(separator: " ")
+        )
+    }
+
+    /// Executes a non-interactive GitHub CLI command for focused extensions.
+    func runGitHubCLI(
+        at repoPath: String,
+        arguments: [String],
+        label: String,
+        ghPathOverride: String?
+    ) async throws -> String {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            throw GitHubCLIError.notInstalled
+        }
+        return try await runProcess(
+            executableURL: URL(fileURLWithPath: ghPath),
+            arguments: arguments,
+            environment: RuntimeProcessEnvironment.enriched(),
+            timeout: Self.networkGitTimeout,
+            label: label,
+            currentDirectory: repoPath
         )
     }
 
@@ -882,6 +776,21 @@ class GitService: GitRepositoryOperating {
         }
     }
 
+    /// Resolves a ref to an immutable commit SHA. Publication workflows use
+    /// this to bind approval to an exact repository state before mutating git.
+    func getCommitSHA(_ ref: String, at repoPath: String) async -> String? {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["rev-parse", "--verify", "\(ref)^{commit}"]
+            )
+            let sha = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return sha.isEmpty ? nil : sha
+        } catch {
+            return nil
+        }
+    }
+
     func getLocalBranches(at repoPath: String) async -> [String] {
         do {
             let output = try await runGit(at: repoPath, arguments: ["branch", "--format=%(refname:short)"])
@@ -939,6 +848,10 @@ class GitService: GitRepositoryOperating {
 
     func unstageAll(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD"])
+    }
+
+    func resetBranchPreservingChanges(to commit: String, at repoPath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["reset", "--mixed", commit])
     }
 
     func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool = false) async throws {
@@ -1010,6 +923,27 @@ class GitService: GitRepositoryOperating {
         body: String,
         ghPathOverride: String? = nil
     ) async throws -> String {
+        try await createPullRequest(
+            repoPath: repoPath,
+            base: base,
+            head: head,
+            title: title,
+            body: body,
+            isDraft: false,
+            ghPathOverride: ghPathOverride
+        )
+    }
+
+    /// Creates a GitHub pull request with an explicit draft state.
+    func createPullRequest(
+        repoPath: String,
+        base: String,
+        head: String,
+        title: String,
+        body: String,
+        isDraft: Bool,
+        ghPathOverride: String? = nil
+    ) async throws -> String {
         let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
         guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
             AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
@@ -1020,18 +954,25 @@ class GitService: GitRepositoryOperating {
             throw GitHubCLIError.notInstalled
         }
 
-        let normalizedBase = GitService.normalizeBaseBranch(base)
-        let arguments = [
+        let normalizedBase = GitService.normalizeBaseBranch(
+            base,
+            remote: await getDefaultRemote(at: repoPath)
+        )
+        var arguments = [
             "pr", "create",
             "--base", normalizedBase,
             "--head", head,
             "--title", title,
             "--body", body
         ]
+        if isDraft {
+            arguments.append("--draft")
+        }
         do {
             AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
                 "base": normalizedBase,
                 "head": head,
+                "draft": isDraft ? "true" : "false",
                 "title_bytes": "\(title.utf8.count)",
                 "body_bytes": "\(body.utf8.count)",
                 "method": "gh"
@@ -1586,15 +1527,25 @@ class GitService: GitRepositoryOperating {
     /// Strips a leading `<remote>/` (e.g. `origin/`) from a base ref so it is a
     /// plain branch name suitable for `gh pr create --base`.
     static func normalizeBaseBranch(_ raw: String) -> String {
+        normalizeBaseBranch(raw, remote: "origin")
+    }
+
+    static func normalizeBaseBranch(_ raw: String, remote: String?) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("origin/") {
-            return String(trimmed.dropFirst("origin/".count))
+        let configuredRemote = remote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let effectiveRemote = configuredRemote.isEmpty ? "origin" : configuredRemote
+        if trimmed.hasPrefix("\(effectiveRemote)/") {
+            return String(trimmed.dropFirst(effectiveRemote.count + 1))
         }
         return trimmed
     }
 
     func normalizeBaseBranch(_ raw: String) -> String {
         Self.normalizeBaseBranch(raw)
+    }
+
+    func normalizeBaseBranch(_ raw: String, remote: String) -> String {
+        Self.normalizeBaseBranch(raw, remote: remote)
     }
 
     /// Returns the first http(s) URL found in arbitrary CLI output.
@@ -2025,34 +1976,4 @@ class GitService: GitRepositoryOperating {
         await getRemoteURL(at: repoPath, remote: "origin")
     }
 
-    static func webURLFromRemoteURL(_ rawURL: String) -> String? {
-        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        func dropGitSuffix(_ value: String) -> String {
-            value.hasSuffix(".git") ? String(value.dropLast(4)) : value
-        }
-
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return dropGitSuffix(trimmed)
-        }
-
-        if trimmed.hasPrefix("git@"), let colon = trimmed.firstIndex(of: ":") {
-            let hostStart = trimmed.index(trimmed.startIndex, offsetBy: "git@".count)
-            let host = trimmed[hostStart..<colon]
-            let path = trimmed[trimmed.index(after: colon)...]
-            guard !host.isEmpty, !path.isEmpty else { return nil }
-            return "https://\(host)/\(dropGitSuffix(String(path)))"
-        }
-
-        if let components = URLComponents(string: trimmed),
-           components.scheme == "ssh",
-           let host = components.host {
-            let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard !path.isEmpty else { return nil }
-            return "https://\(host)/\(dropGitSuffix(path))"
-        }
-
-        return nil
-    }
 }

@@ -651,22 +651,7 @@ enum PermissionBroker {
     }
 
     private static func normalizedToolName(_ tool: String) -> String {
-        let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if lower.hasPrefix("shell(") || lower.hasPrefix("bash(") {
-            return "bash"
-        }
-        switch lower {
-        case "shell":
-            return "bash"
-        case "view":
-            return "read"
-        case "create", "apply_patch":
-            return "write"
-        case "multi_edit":
-            return "multiedit"
-        default:
-            return lower
-        }
+        ProviderToolSemantics.normalizedName(tool)
     }
 
     private static func isShellTool(_ tool: String) -> Bool {
@@ -748,7 +733,8 @@ enum PermissionBroker {
     }
 
     private static func actionableShellSegments(_ command: String) -> [String] {
-        let rawSegments = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
+        let rawSegments = shellSegmentSeparatorsNormalized(semanticCommand)
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)
         var segments: [String] = []

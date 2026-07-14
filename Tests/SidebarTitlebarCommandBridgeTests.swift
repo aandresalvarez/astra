@@ -52,4 +52,51 @@ struct SidebarTitlebarCommandBridgeTests {
 
         #expect(handlerCount == 1)
     }
+
+    @Test("New workspace requests advance a stable command counter")
+    func newWorkspaceRequestsAdvanceCounter() {
+        let bridge = SidebarTitlebarCommandBridge()
+
+        #expect(bridge.newWorkspaceRequestID == 0)
+
+        bridge.requestNewWorkspace()
+        #expect(bridge.newWorkspaceRequestID == 1)
+
+        bridge.requestNewWorkspace()
+        #expect(bridge.newWorkspaceRequestID == 2)
+    }
+
+    @Test("New workspace requests post a titlebar command notification")
+    func newWorkspaceRequestsPostNotification() {
+        let notificationCenter = NotificationCenter()
+        let bridge = SidebarTitlebarCommandBridge(notificationCenter: notificationCenter)
+        var notificationCount = 0
+
+        let observer = notificationCenter.addObserver(
+            forName: SidebarTitlebarCommandBridge.newWorkspaceRequestedNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount += 1
+        }
+        defer { notificationCenter.removeObserver(observer) }
+
+        bridge.requestNewWorkspace()
+
+        #expect(notificationCount == 1)
+    }
+
+    @Test("New workspace requests synchronously invoke the installed handler")
+    func newWorkspaceRequestsInvokeInstalledHandler() {
+        let bridge = SidebarTitlebarCommandBridge(notificationCenter: NotificationCenter())
+        var handlerCount = 0
+
+        bridge.installNewWorkspaceHandler {
+            handlerCount += 1
+        }
+
+        bridge.requestNewWorkspace()
+
+        #expect(handlerCount == 1)
+    }
 }

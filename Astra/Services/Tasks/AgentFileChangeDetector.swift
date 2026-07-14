@@ -79,7 +79,12 @@ enum AgentFileChangeDetector {
 
         let userPaths = paths.filter { !isIgnoredRuntimePath($0, workspacePath: workspacePath) }
         let existing = Set(run.fileChanges.map(\.path))
-        for path in userPaths.subtracting(existing).sorted().prefix(50) {
+        // Publication ownership is derived from these durable run changes.
+        // Capping a Git-backed change set makes later code unable to
+        // distinguish task work from pre-existing user edits, so retain every
+        // detected path. The fallback filesystem scan remains independently
+        // bounded above when Git status is unavailable.
+        for path in userPaths.subtracting(existing).sorted() {
             let change = FileChange(
                 path: path,
                 changeType: .edit,

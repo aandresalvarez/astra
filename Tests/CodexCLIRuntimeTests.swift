@@ -111,8 +111,8 @@ struct CodexCLIRuntimeTests {
     func codexStreamParserTreatsKnownLifecycleAndItemShapesAsTypedEvents() {
         let lines = [
             #"{"type":"turn.started"}"#,
-            #"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"astra-browser read-page --format markdown","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
-            #"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"astra-browser read-page --format markdown","aggregated_output":"ok\n","exit_code":0,"status":"completed"}}"#,
+            #"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'git status --short --branch'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'git status --short --branch'","aggregated_output":"ok\n","exit_code":0,"status":"completed"}}"#,
             #"{"type":"item.completed","item":{"id":"item_2","type":"file_change","path":".astra/tasks/EBF58891/index.html","kind":"modified","summary":"Wrote the validation page"}}"#
         ]
         let capture = AgentRuntimeStreamDebugCapture()
@@ -132,10 +132,15 @@ struct CodexCLIRuntimeTests {
         if case .toolUse(let name, let id, let summary) = parsedEvents[1].first {
             #expect(name == "command_execution")
             #expect(id == "item_1")
-            #expect(summary?.contains("astra-browser read-page") == true)
+            #expect(summary == "/bin/zsh -lc 'git status --short --branch'")
         } else {
             Issue.record("Expected command execution item start to map to tool use")
         }
+
+        let observedCommand = CodexStreamEventParser.parse(line: lines[1])
+            .flatMap { PolicyObservedEvent(providerEvent: $0) }
+            .flatMap(\.command)
+        #expect(observedCommand == "/bin/zsh -lc 'git status --short --branch'")
 
         if case .toolResult(let id, let content, _) = parsedEvents[2].first {
             #expect(id == "item_1")

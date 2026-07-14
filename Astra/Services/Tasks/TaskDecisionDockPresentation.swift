@@ -16,6 +16,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case stop
     case allowOnce
     case allowSimilar
+    case reviewGitPublish
     case approveResult
     case dismissReview
     case approveCorrection
@@ -83,6 +84,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var runtimePermissionCommandPreview: String?
         var runtimePermissionAllowSimilarLabel: String?
         var canApproveSimilarRuntimePermission: Bool
+        var hasGitPublishRequest: Bool = false
         var hasExecutableApprovedPlan: Bool
         var planActionTitle: String?
         var planActionDetail: String?
@@ -151,6 +153,10 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if context.hasRuntimePermissionRequest {
             return runtimePermissionPresentation(context)
+        }
+
+        if context.hasGitPublishRequest {
+            return gitPublishPresentation(context)
         }
 
         if let correction = context.mission?.correction {
@@ -251,6 +257,29 @@ struct TaskDecisionDockPresentation: Equatable {
                     : nil
             ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: nil),
+            prefersExpandedDetails: true
+        )
+    }
+
+    private static func gitPublishPresentation(_ context: Context) -> TaskDecisionDockPresentation {
+        TaskDecisionDockPresentation(
+            id: "git-publish-approval",
+            icon: "arrow.triangle.branch",
+            tone: .attention,
+            title: "Publication approval needed",
+            summary: "Review the exact branch, files, commit, and draft pull request before ASTRA publishes it.",
+            metrics: metrics(context),
+            details: details(context),
+            primaryAction: action(
+                .reviewGitPublish,
+                title: "Review & publish",
+                systemImage: "arrow.up.doc.fill"
+            ),
+            secondaryActions: [
+                context.canRetry ? action(.retry, title: "Retry agent", systemImage: "arrow.clockwise") : nil,
+                firstArtifactAction(context)
+            ].compactMap { $0 },
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
     }
@@ -955,6 +984,7 @@ private extension TaskDecisionDockActionKind {
         case .stop,
              .allowOnce,
              .allowSimilar,
+             .reviewGitPublish,
              .approveResult,
              .dismissReview,
              .approveCorrection,

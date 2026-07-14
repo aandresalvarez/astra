@@ -834,40 +834,68 @@ enum TaskPolicyStore {
         fallbackPermissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> Resolution {
-        let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: fallbackPermissionPolicy)
-        if effectivePermissionPolicy == .autonomous {
+        // An explicit one-run escalation is launch authority and therefore wins.
+        // The fallback permission policy, however, is the legacy global
+        // `skipPermissions` projection. It must not erase a task or workspace
+        // selection made through the current policy UI.
+        if executionPolicy.permissionPolicyOverride == .autonomous {
             let policy = AgentPolicy.preset(.autonomous)
             return Resolution(
                 level: .autonomous,
-                scope: executionPolicy.permissionPolicyOverride == nil ? .globalDefault : .oneRunEscalation,
+                scope: .oneRunEscalation,
                 policy: policy
             )
         }
 
+        let baseResolution: Resolution
         if let selected = latestSelectedLevel(for: task) {
-            return Resolution(level: selected, scope: .taskOverride, policy: policy(for: selected, workspace: task.workspace))
-        }
-
-        if let workspaceDefault = AgentPolicyDefaults.workspaceLevel(for: task.workspace) {
+            baseResolution = Resolution(
+                level: selected,
+                scope: .taskOverride,
+                policy: policy(for: selected, workspace: task.workspace)
+            )
+        } else if let workspaceDefault = AgentPolicyDefaults.workspaceLevel(for: task.workspace) {
             let effectiveWorkspaceDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
                 forStored: workspaceDefault,
                 workspace: task.workspace
             )
-            return Resolution(
+            baseResolution = Resolution(
                 level: effectiveWorkspaceDefault,
                 scope: .workspaceDefault,
                 policy: policy(for: effectiveWorkspaceDefault, workspace: task.workspace)
             )
+        } else if fallbackPermissionPolicy == .autonomous {
+            let policy = AgentPolicy.preset(.autonomous)
+            baseResolution = Resolution(
+                level: .autonomous,
+                scope: .globalDefault,
+                policy: policy
+            )
+        } else {
+            let effectiveGlobalDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
+                forStored: globalDefaultLevel,
+                workspace: nil
+            )
+            baseResolution = Resolution(
+                level: effectiveGlobalDefault,
+                scope: .globalDefault,
+                policy: policy(for: effectiveGlobalDefault, workspace: nil)
+            )
         }
 
-        let effectiveGlobalDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
-            forStored: globalDefaultLevel,
-            workspace: nil
-        )
+        // A scoped approval may narrow Auto, but never broaden an already
+        // narrower task/workspace selection. Treat restricted/interactive
+        // one-run overrides as an execution cap so legacy global Auto cannot
+        // silently turn an exact approval into unrestricted provider authority.
+        guard executionPolicy.permissionPolicyOverride != nil,
+              executionPolicy.permissionPolicyOverride != .autonomous,
+              baseResolution.level == .autonomous else {
+            return baseResolution
+        }
         return Resolution(
-            level: effectiveGlobalDefault,
-            scope: .globalDefault,
-            policy: policy(for: effectiveGlobalDefault, workspace: nil)
+            level: .review,
+            scope: .oneRunEscalation,
+            policy: AgentPolicy.preset(.review)
         )
     }
 
@@ -1043,6 +1071,11 @@ enum AgentPolicyManifestService {
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+                + (AskGitPullRequestWorkflowPolicy.isActive(
+                    task: task,
+                    permissionPolicy: permissionPolicy,
+                    contextText: contextText
+                ) ? AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns : [])
         )
         render = refreshingCopilotLaunchArgumentEvidence(
             to: render,

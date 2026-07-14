@@ -132,6 +132,7 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         var plan = adapter.makeProcessLaunchPlan(context: context)
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
         // but any direct caller of runRuntimeProcess/sandboxedPlan (tests, or a
@@ -152,13 +153,13 @@ final class AgentRuntimeProcessRunner {
             workspacePath: context.workspacePath,
             capabilityResolutionSnapshot: context.capabilityResolutionSnapshot,
             runtimePermissionGrants: context.executionPolicy.permissionGrantsOverride ?? [],
+            permissionPolicy: effectivePermissionPolicy,
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             },
             precomputedRuntimeRequirements: context.runtimeRequirements
         )
         let gitCredentialContext = launchResourcePlan.gitCredentialSandboxContext
-        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         plan = plan.addingSandboxReadablePaths(
             launchResourcePlan.hostReadablePaths,
             plannedFields: launchResourcePlan.commandPlannedFields
