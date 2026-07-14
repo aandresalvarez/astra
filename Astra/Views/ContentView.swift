@@ -116,7 +116,7 @@ struct ContentView: View {
     /// `activeWorkspaceCanvasItem` `@State`; every writer now routes through
     /// this model instead of touching either property directly.
     @StateObject private var rightPanel = RightPanelPresentationModel()
-    private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
+    @StateObject private var sidebarTitlebarCommands = SidebarTitlebarCommandBridge()
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
     @State private var isSidebarToggleHovered = false
@@ -151,10 +151,9 @@ struct ContentView: View {
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
-    /// Tracks whether the wizard has ever been presented. The first
-    /// presentation remains modal; later manual replays can be dismissed.
-    @AppStorage(AppStorageKeys.hasPresentedOnboarding) private var hasPresentedOnboarding = false
-    @State private var isReplayingOnboarding = false
+    /// An explicit replay request owns dismissibility. Presentation history
+    /// must not silently turn an interrupted first run into a dismissible flow.
+    @AppStorage(AppStorageKeys.onboardingReplayRequested) private var onboardingReplayRequested = false
     /// Shared preflight cache — one instance for the whole app run so the
     /// wizard's provider probe warms the cache for the catalog badges
     /// (and vice versa).
@@ -453,13 +452,17 @@ struct ContentView: View {
     }
 
     private var onboardingSheetBinding: Binding<Bool> {
-        Binding(
-            get: { !hasCompletedOnboarding && !isUITestingSeededLaunch },
-            set: { isPresented in
-                if !isPresented, isReplayingOnboarding {
-                    hasCompletedOnboarding = true
-                }
-            }
+        OnboardingPresentationBindings.sheet(
+            hasCompletedOnboarding: $hasCompletedOnboarding,
+            replayRequested: $onboardingReplayRequested,
+            isUITestingSeededLaunch: isUITestingSeededLaunch
+        )
+    }
+
+    private var onboardingCompletionBinding: Binding<Bool> {
+        OnboardingPresentationBindings.completion(
+            hasCompletedOnboarding: $hasCompletedOnboarding,
+            replayRequested: $onboardingReplayRequested
         )
     }
 
@@ -507,7 +510,6 @@ struct ContentView: View {
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
             onDeleteTask: requestDeleteTask,
-            onNewWorkspace: createWorkspace,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
             onDeleteWorkspace: deleteWorkspace,
@@ -1126,19 +1128,13 @@ struct ContentView: View {
         .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
         .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
-                hasCompletedOnboarding: $hasCompletedOnboarding,
-                allowsDismiss: isReplayingOnboarding,
-                onDismiss: {
-                    hasCompletedOnboarding = true
-                },
+                hasCompletedOnboarding: onboardingCompletionBinding,
+                allowsDismiss: onboardingReplayRequested,
+                onDismiss: { onboardingCompletionBinding.wrappedValue = true },
                 onCreateWorkspace: finalizeOnboardingWorkspace
             )
             .environment(\.preflightCache, runtime.preflightCache)
-            .interactiveDismissDisabled(!isReplayingOnboarding)
-            .onAppear {
-                isReplayingOnboarding = hasPresentedOnboarding
-                hasPresentedOnboarding = true
-            }
+            .interactiveDismissDisabled(!onboardingReplayRequested)
         }
     }
 
@@ -2570,9 +2566,6 @@ struct ContentView: View {
 
     private func handleAppear() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
-        if hasCompletedOnboarding, !hasPresentedOnboarding {
-            hasPresentedOnboarding = true
-        }
         applySecurityGateDefaultIfNeeded()
         applySettings()
         seedTestDataIfNeeded()
@@ -3511,7 +3504,7 @@ private struct NewWorkspaceSheet: View {
                     .font(Stanford.heading(22))
                     .foregroundStyle(Stanford.black)
 
-                Text("Create a focused place for a project, team, or recurring workflow.")
+                Text(WorkspaceSetupFormMode.standard.presentation.headerSubtitle)
                     .font(Stanford.body(14))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3560,48 +3553,6 @@ private struct NewWorkspaceSheet: View {
         } else {
             isShowingValidationWarning = true
         }
-    }
-}
-
-enum WorkspaceSetupFormMode {
-    case onboarding
-    case standard
-
-    var isCapabilityForward: Bool {
-        self == .onboarding
-    }
-
-    var guidanceDescription: String {
-        switch self {
-        case .onboarding:
-            return "Add persistent context agents should know for this workspace: conventions, usernames, preferred tools, or boundaries."
-        case .standard:
-            return "Add persistent context agents should know for this workspace. You can edit this later from Workspace Context."
-        }
-    }
-
-    var guidancePlaceholder: String {
-        switch self {
-        case .onboarding:
-            return "Example: GitHub PR review. Username: alvaro. Prefer concise summaries. Ask before release changes."
-        case .standard:
-            return "Example: PR review workspace. Prefer concise summaries and ask before release changes."
-        }
-    }
-
-    var guidanceMinHeight: CGFloat {
-        isCapabilityForward ? 104 : 86
-    }
-
-    var capabilitiesTitle: String {
-        isCapabilityForward ? "Quick-start capabilities" : "Workspace capabilities"
-    }
-
-    var capabilitiesDescription: String {
-        if isCapabilityForward {
-            return "Connect the systems this workspace can use immediately."
-        }
-        return "None selected · can be added later from Workspace Context."
     }
 }
 
@@ -3678,21 +3629,29 @@ struct WorkspaceSetupForm: View {
         self._validationIssues = validationIssues
         self._validationWarnings = validationWarnings
         self.onSubmit = onSubmit
-        self._isCapabilitiesExpanded = State(initialValue: mode.isCapabilityForward)
+        self._isCapabilitiesExpanded = State(initialValue: mode.presentation.expandsCapabilitiesInitially)
     }
 
     private var displayedRootPath: String {
         (rootPath as NSString).abbreviatingWithTildeInPath
     }
 
+    private var presentation: WorkspaceCreationPresentation {
+        mode.presentation
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if presentation.showsWorkspacePrimer {
+                WorkspaceConceptPrimer()
+            }
+
             VStack(alignment: .leading, spacing: 7) {
                 Text("Workspace name")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(Stanford.black)
 
-                TextField("Example: GitHub PRs", text: $draft.name)
+                TextField(presentation.namePlaceholder, text: $draft.name)
                     .textFieldStyle(.plain)
                     .font(Stanford.body(15))
                     .padding(.horizontal, 12)
@@ -3704,6 +3663,7 @@ struct WorkspaceSetupForm: View {
                             .stroke(focusedField == .name ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
                     )
                     .focused($focusedField, equals: .name)
+                    .accessibilityLabel("Workspace name")
                     .onSubmit {
                         onSubmit?()
                     }
@@ -3722,7 +3682,7 @@ struct WorkspaceSetupForm: View {
                         .foregroundStyle(Stanford.coolGrey)
                 }
 
-                Text(mode.guidanceDescription)
+                Text(presentation.guidanceDescription)
                     .font(Stanford.body(13))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3732,7 +3692,7 @@ struct WorkspaceSetupForm: View {
                         .font(Stanford.body(14))
                         .scrollContentBackground(.hidden)
                         .padding(8)
-                        .frame(minHeight: mode.guidanceMinHeight)
+                        .frame(minHeight: 86)
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
@@ -3740,9 +3700,11 @@ struct WorkspaceSetupForm: View {
                                 .stroke(focusedField == .guidance ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
                         )
                         .focused($focusedField, equals: .guidance)
+                        .accessibilityLabel("Workspace guidance")
+                        .accessibilityHint(presentation.guidanceDescription)
 
                     if draft.instructions.isEmpty {
-                        Text(mode.guidancePlaceholder)
+                        Text(presentation.guidancePlaceholder)
                             .font(Stanford.body(14))
                             .foregroundStyle(Stanford.coolGrey.opacity(0.62))
                             .padding(.horizontal, 14)
@@ -3800,12 +3762,10 @@ struct WorkspaceSetupForm: View {
     private var capabilitiesSection: some View {
         DisclosureGroup(isExpanded: $isCapabilitiesExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                if mode.isCapabilityForward {
-                    Text("Pick one or more capabilities now so the first task can use them right away. You can change these later in Workspace Context.")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(presentation.capabilitiesExpandedDescription)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if hasAvailableCapabilityDefaults {
                     availableCapabilityShortcut
@@ -3827,7 +3787,7 @@ struct WorkspaceSetupForm: View {
                     .foregroundStyle(Stanford.lagunita)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(mode.capabilitiesTitle)
+                        Text(presentation.capabilitiesTitle)
                             .font(Stanford.caption(13).weight(.semibold))
                             .foregroundStyle(Stanford.black)
                         Text("Optional")
@@ -3843,11 +3803,11 @@ struct WorkspaceSetupForm: View {
             }
         }
         .padding(12)
-        .background(mode.isCapabilityForward ? Stanford.lagunita.opacity(0.06) : Stanford.cardBackground)
+        .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(mode.isCapabilityForward ? Stanford.lagunita.opacity(0.24) : Stanford.sandstone.opacity(0.22), lineWidth: 1)
+                .stroke(Stanford.sandstone.opacity(0.22), lineWidth: 1)
         )
     }
 
@@ -4121,7 +4081,7 @@ struct WorkspaceSetupForm: View {
     private var selectedCapabilitySummary: String {
         let names = OnboardingCapabilitySetup.selectedDisplayNames(from: draft.selectedCapabilityIDs)
         if names.isEmpty {
-            return mode.capabilitiesDescription
+            return presentation.capabilitiesSummary
         }
         let label = names.count == 1 ? "1 selected" : "\(names.count) selected"
         return "\(label): \(names.joined(separator: ", "))"
@@ -4534,7 +4494,7 @@ struct WorkspaceSetupForm: View {
         let traceID = AuditTrace.make("workspace-capability-validate")
         let result = await connector.testConnection(
             store: WorkspaceSetupValidationSecretStore(credentials: credentials),
-            source: mode.isCapabilityForward ? "onboarding_workspace_validation" : "new_workspace_validation",
+            source: mode.validationSource,
             packageID: packageID,
             traceID: traceID
         )

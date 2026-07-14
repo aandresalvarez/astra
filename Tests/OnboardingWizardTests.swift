@@ -12,10 +12,9 @@ private func makeCapabilitySetupCopyContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
-/// Lightweight contract tests for the onboarding wizard's step machine.
-/// The view itself is mostly SwiftUI glue that's easier to verify by
-/// running the app; what needs protection is the step ordering and the
-/// `rawValue` stability that the progress bar and tests depend on.
+/// Contract tests for the onboarding wizard's step and action presentation.
+/// The SwiftUI hover rendering is verified in the running app; these tests
+/// protect the semantics that rendering consumes.
 @Suite("OnboardingWizard")
 struct OnboardingWizardTests {
 
@@ -23,7 +22,6 @@ struct OnboardingWizardTests {
     func stepOrdering() {
         let ordered = OnboardingWizardView.Step.allCases
         #expect(ordered == [
-            .welcome,
             .requiredCLIs,
             .permissions,
             .workspaceRoot,
@@ -36,31 +34,135 @@ struct OnboardingWizardTests {
         // The progress bar fills steps where rawValue < currentStep's
         // rawValue. If the raw order ever changes, the bar silently
         // breaks — this test locks the assignment in.
-        #expect(OnboardingWizardView.Step.welcome.rawValue == 0)
-        #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 1)
-        #expect(OnboardingWizardView.Step.permissions.rawValue == 2)
-        #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 3)
-        #expect(OnboardingWizardView.Step.ready.rawValue == 4)
+        #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 0)
+        #expect(OnboardingWizardView.Step.permissions.rawValue == 1)
+        #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 2)
+        #expect(OnboardingWizardView.Step.ready.rawValue == 3)
     }
 
-    @Test("Progress labels are short enough for the bar")
-    func progressLabelsAreShort() {
-        // Keep labels ≤ 8 chars so the labels + connecting lines all fit
-        // in the 760pt-minimum progress strip without wrapping. We hit
-        // this once with "Workspace" wrapping to "Work-space" on-screen;
-        // the ceiling is deliberately tight to catch regressions early.
+    @Test("First-run setup starts with the runtime decision and uses four steps")
+    func firstRunStartsWithRuntimeDecision() {
+        #expect(OnboardingWizardView.Step.allCases.first == .requiredCLIs)
+        #expect(OnboardingWizardView.Step.allCases.count == 4)
+    }
+
+    @Test("UI-testing seeded launches suppress onboarding without changing first-run policy")
+    func uiTestingSeededLaunchSuppressesPresentation() {
+        let shouldPresent = OnboardingPresentationPolicy.shouldPresent(
+            hasCompletedOnboarding: false,
+            isUITestingSeededLaunch: false
+        )
+
+        #expect(shouldPresent)
+        #expect(!OnboardingPresentationPolicy.shouldPresent(
+            hasCompletedOnboarding: false,
+            isUITestingSeededLaunch: true
+        ))
+    }
+
+    @Test("Manual replay explicitly owns dismissibility and clears on completion")
+    func replayRequestLifecycleIsExplicit() {
+        var hasCompletedOnboarding = true
+        var replayRequested = false
+
+        let accepted = OnboardingPresentationPolicy.requestReplay(
+            hasCompletedOnboarding: &hasCompletedOnboarding,
+            replayRequested: &replayRequested
+        )
+
+        #expect(accepted)
+        #expect(!hasCompletedOnboarding)
+        #expect(replayRequested)
+
+        OnboardingPresentationPolicy.complete(
+            hasCompletedOnboarding: &hasCompletedOnboarding,
+            replayRequested: &replayRequested
+        )
+
+        #expect(hasCompletedOnboarding)
+        #expect(!replayRequested)
+    }
+
+    @Test("Incomplete first run cannot be converted into dismissible replay")
+    func incompleteFirstRunRejectsReplayRequest() {
+        var hasCompletedOnboarding = false
+        var replayRequested = false
+
+        let accepted = OnboardingPresentationPolicy.requestReplay(
+            hasCompletedOnboarding: &hasCompletedOnboarding,
+            replayRequested: &replayRequested
+        )
+
+        #expect(!accepted)
+        #expect(!hasCompletedOnboarding)
+        #expect(!replayRequested)
+    }
+
+    @Test("Replay request service updates both durable gates as one request")
+    func replayRequestServiceUpdatesDurableGates() throws {
+        let suiteName = "OnboardingWizardTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: AppStorageKeys.hasCompletedOnboarding)
+        defaults.set(false, forKey: AppStorageKeys.onboardingReplayRequested)
+
+        OnboardingReplayRequestService.request(in: defaults)
+
+        #expect(!defaults.bool(forKey: AppStorageKeys.hasCompletedOnboarding))
+        #expect(defaults.bool(forKey: AppStorageKeys.onboardingReplayRequested))
+    }
+
+    @Test("Replay request service fails closed during incomplete first run")
+    func replayRequestServiceRejectsIncompleteFirstRun() throws {
+        let suiteName = "OnboardingWizardTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: AppStorageKeys.hasCompletedOnboarding)
+        defaults.set(true, forKey: AppStorageKeys.onboardingReplayRequested)
+
+        OnboardingReplayRequestService.request(in: defaults)
+
+        #expect(!defaults.bool(forKey: AppStorageKeys.hasCompletedOnboarding))
+        #expect(!defaults.bool(forKey: AppStorageKeys.onboardingReplayRequested))
+    }
+
+    @Test("Each step has specific action and hover guidance")
+    func eachStepHasSpecificActionAndGuidance() {
         for step in OnboardingWizardView.Step.allCases {
-            #expect(step.progressLabel.count <= 8,
-                    "Step \(step) progressLabel '\(step.progressLabel)' is too long (max 8 chars)")
+            let presentation = step.presentation(workspaceName: "Research")
+            #expect(!presentation.heading.isEmpty)
+            #expect(!presentation.subtitle.isEmpty)
+            #expect(!presentation.primaryActionTitle.isEmpty)
+            #expect(!presentation.actionGuidance.title.isEmpty)
+            #expect(!presentation.actionGuidance.detail.isEmpty)
+            #expect(!presentation.actionGuidance.systemImage.isEmpty)
         }
     }
 
-    @Test("Each step has non-empty title and label")
-    func noEmptyStrings() {
-        for step in OnboardingWizardView.Step.allCases {
-            #expect(!step.title.isEmpty)
-            #expect(!step.progressLabel.isEmpty)
-        }
+    @Test("Runtime action explains the next operation before workspace creation")
+    func runtimeActionExplainsNextOperation() {
+        let presentation = OnboardingWizardView.Step.requiredCLIs.presentation()
+
+        #expect(presentation.heading == "Choose an AI runtime")
+        #expect(presentation.primaryActionTitle == "Review access")
+        #expect(presentation.actionGuidance.title == "Next: local access")
+        #expect(presentation.actionGuidance.detail == "Checks Keychain and workspace storage. No workspace is created yet.")
+    }
+
+    @Test("Workspace creation is named at the destructive boundary")
+    func workspaceCreationActionIsExplicit() {
+        let presentation = OnboardingWizardView.Step.workspaceRoot.presentation()
+
+        #expect(presentation.primaryActionTitle == "Create workspace")
+        #expect(presentation.actionGuidance.title == "Creates your workspace")
+        #expect(presentation.subtitle == WorkspaceSetupFormMode.onboarding.presentation.headerSubtitle)
+    }
+
+    @Test("Ready action names the workspace it opens")
+    func readyActionNamesWorkspace() {
+        #expect(OnboardingWizardView.Step.ready.presentation(workspaceName: "Research").primaryActionTitle == "Open Research")
+        #expect(OnboardingWizardView.Step.ready.presentation(workspaceName: "  ").primaryActionTitle == "Open workspace")
+        #expect(OnboardingWizardView.Step.ready.presentation().primaryActionTitle == "Open workspace")
     }
 
     @Test("Required CLI checks only require the selected AI runtime")
@@ -90,6 +192,7 @@ struct OnboardingWizardTests {
     func completionStorageKeyIsNamespaced() {
         #expect(AppStorageKeys.hasCompletedOnboarding == "astra.hasCompletedOnboarding")
         #expect(AppStorageKeys.hasPresentedOnboarding == "astra.hasPresentedOnboarding")
+        #expect(AppStorageKeys.onboardingReplayRequested == "astra.onboardingReplayRequested.v1")
         #expect(AppStorageKeys.onboardingEnabledCapabilityIDs == "astra.onboardingEnabledCapabilityIDs")
         #expect(AppStorageKeys.skipPermissions == "skipPermissions")
         #expect(AppStorageKeys.securityGateDefaultedToReview == "astra.securityGateDefaultedToReview.v1")

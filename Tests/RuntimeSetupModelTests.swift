@@ -300,6 +300,30 @@ struct RuntimeSetupModelTests {
         #expect(model.isCoreRuntimeReady, "the gate reopens once the new runtime's report lands")
     }
 
+    @Test("Switching runtimes does not expose blockers from the previous readiness report")
+    func staleBlockersAreHiddenAfterSwitch() async {
+        let model = await makeModel(
+            statuses: ["claude": .healthy(path: "/bin/claude", version: "2.0")],
+            report: RuntimeReadinessReport(checks: [
+                RuntimeReadinessCheck(
+                    id: "claude-vertex-project",
+                    title: "Vertex project",
+                    detail: "Project is missing",
+                    state: .blocked,
+                    remediation: "Set the project in Settings."
+                )
+            ])
+        )
+        await model.refreshAndWait(force: false)
+        #expect(model.runtimeBlockers.count == 1)
+
+        model.select(.codexCLI)
+
+        #expect(model.runtimeBlockers.isEmpty)
+        #expect(model.heroStatus == .checking)
+        await waitUntil { !model.isCheckingReadiness }
+    }
+
     @Test("In-flight work on another runtime does not hide the hero's remediation")
     func heroStatusIgnoresOtherRuntimesWork() async {
         let model = await makeModel(

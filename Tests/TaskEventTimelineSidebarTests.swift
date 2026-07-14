@@ -590,6 +590,16 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.sidebarTaskStatusesNeverAddSecondLine)
         #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
         #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
+        #expect(SidebarLeanPresentation.workspaceSectionHorizontalInset == 10)
+        #expect(SidebarLeanPresentation.workspaceRowContentLeadingPadding == 4)
+        #expect(SidebarLeanPresentation.workspaceRowContentTrailingPadding == 0)
+        #expect(
+            SidebarLeanPresentation.workspaceTrailingAccessoryInset
+                == SidebarLeanPresentation.workspaceSectionHorizontalInset
+        )
+        #expect(SidebarLeanPresentation.workspaceRowElementSpacing == 7)
+        #expect(SidebarLeanPresentation.workspaceFolderIconWidth == 17)
+        #expect(SidebarLeanPresentation.workspaceTitleLeadingOffset == 46)
         #expect(SidebarLeanPresentation.pinnedDropZoneAppearsOnlyDuringDrag)
         // One fold for every capped rail list: Pinned, Unreads, and
         // workspace drawers all preview the same number of rows.
@@ -598,9 +608,9 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.unreadPreviewLimit == SidebarLeanPresentation.sectionPreviewLimit)
         #expect(SidebarWorkspaceTaskList.collapsedLimit == SidebarLeanPresentation.sectionPreviewLimit)
         #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
-        // Child content steps in 12pt so containment reads without a
+        // Child content steps in 20pt so containment reads without a
         // guide rail; row surfaces still span the full rail width.
-        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 12)
+        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 20)
         // Workspace list overflow controls align with their task titles,
         // instead of the full-width task row surface.
         #expect(
@@ -627,11 +637,44 @@ struct SidebarGroupingTests {
         // The glyph gutter is always reserved: the title's x-position no
         // longer depends on status or unread state, so hover/selection
         // glyph reveals fade in place instead of shoving the title.
-        #expect(SidebarThreadRowLayout.titleLeadingOffset(
+        let childTaskTitleLeadingOffset = SidebarThreadRowLayout.titleLeadingOffset(
             childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
             contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
-        ) == 43)
+        )
+        #expect(childTaskTitleLeadingOffset == 51)
+        #expect(childTaskTitleLeadingOffset > SidebarLeanPresentation.workspaceTitleLeadingOffset)
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
+    }
+
+    @Test("Workspace stars share geometry while filter and status keep distinct chrome")
+    func workspaceStarPresentationContracts() {
+        #expect(SidebarWorkspaceStarPresentation.glyphSize == 13)
+        #expect(SidebarWorkspaceStarPresentation.frameSize == 22)
+        #expect(SidebarWorkspaceStarPresentation.cornerRadius == 6)
+        #expect(SidebarWorkspaceStarPresentation.activeBackgroundOpacity == 0.10)
+
+        let inactiveFilter = SidebarWorkspaceStarPresentation.style(for: .filter(isEnabled: false))
+        #expect(inactiveFilter.symbolName == "star")
+        #expect(!inactiveFilter.isActive)
+        #expect(!inactiveFilter.showsBackground)
+
+        let hoveredFilter = SidebarWorkspaceStarPresentation.style(
+            for: .filter(isEnabled: false),
+            isHovered: true
+        )
+        #expect(hoveredFilter.symbolName == "star")
+        #expect(!hoveredFilter.isActive)
+        #expect(hoveredFilter.showsBackground)
+
+        let activeFilter = SidebarWorkspaceStarPresentation.style(for: .filter(isEnabled: true))
+        #expect(activeFilter.symbolName == "star.fill")
+        #expect(activeFilter.isActive)
+        #expect(activeFilter.showsBackground)
+
+        let workspaceStatus = SidebarWorkspaceStarPresentation.style(for: .workspaceStatus)
+        #expect(workspaceStatus.symbolName == "star.fill")
+        #expect(workspaceStatus.isActive)
+        #expect(!workspaceStatus.showsBackground)
     }
 
     @Test("Pinned task workspace context moves from the row to hover help")
@@ -687,10 +730,10 @@ struct SidebarGroupingTests {
         let workspaceRowFixedChrome =
             SidebarLeanPresentation.workspaceRowTrailingSlotWidth
             + SidebarLeanPresentation.workspaceDisclosureChevronWidth
-            + 7 // chevron/folder spacing
-            + 17 // folder icon width
-            + 7 // workspace row icon/title spacing
-            + 8 // horizontal row padding
+            + SidebarLeanPresentation.workspaceRowElementSpacing
+            + SidebarLeanPresentation.workspaceFolderIconWidth
+            + SidebarLeanPresentation.workspaceRowElementSpacing
+            + SidebarLeanPresentation.workspaceRowContentLeadingPadding
 
         #expect(SidebarColumnLayout.expandedMinimumWidth == 310)
         #expect(SidebarColumnLayout.expandedIdealWidth >= SidebarColumnLayout.expandedMinimumWidth)

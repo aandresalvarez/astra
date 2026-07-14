@@ -980,7 +980,7 @@ public struct ASTRAApp: App {
                 ImportWorkspaceMenuItem()
                 Divider()
                 Button("Show Onboarding Wizard…") {
-                    UserDefaults.standard.set(false, forKey: AppStorageKeys.hasCompletedOnboarding)
+                    OnboardingReplayRequestService.request()
                 }
             }
 

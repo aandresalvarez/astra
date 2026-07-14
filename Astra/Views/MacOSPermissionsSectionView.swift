@@ -220,6 +220,7 @@ struct MacOSPermissionsSectionView: View {
     @State private var checkedWorkspaceRoot: String?
     private let context: Context
     private let workspaceRoot: String
+    private let showsHeader: Bool
 
     private var shouldProbeBrowserControl: Bool {
         context == .settings
@@ -228,16 +229,20 @@ struct MacOSPermissionsSectionView: View {
     init(
         context: Context,
         workspaceRoot: String,
-        model: MacOSPermissionsViewModel
+        model: MacOSPermissionsViewModel,
+        showsHeader: Bool = true
     ) {
         self.context = context
         self.workspaceRoot = workspaceRoot
+        self.showsHeader = showsHeader
         self._model = ObservedObject(wrappedValue: model)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
+            if showsHeader {
+                header
+            }
 
             VStack(spacing: 8) {
                 ForEach(model.checks) { check in
