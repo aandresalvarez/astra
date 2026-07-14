@@ -104,6 +104,15 @@ final class TaskGitPullRequestPublishCoordinator {
         guard !selectedPaths.isEmpty else {
             throw TaskGitPullRequestPublishCoordinatorError.noTaskOwnedChanges
         }
+        let preexistingDirtySelection = Self.preexistingDirtySelection(
+            task: task,
+            runID: run.id,
+            repositoryPath: repositoryPath,
+            selectedPaths: selectedPaths
+        )
+        guard preexistingDirtySelection.isEmpty else {
+            throw TaskGitPullRequestPublishCoordinatorError.unownedDirtyChanges(preexistingDirtySelection)
+        }
 
         let baseBranch = await git.getDefaultBaseBranch(at: repositoryPath, remote: remote)
         let headBranch = Self.headBranch(for: task)
@@ -371,6 +380,50 @@ final class TaskGitPullRequestPublishCoordinator {
             )
             return paths.contains(where: recorded.contains) ? nil : file.relativePath
         }.sorted()
+    }
+
+    /// A path that was already dirty before the provider started cannot be
+    /// published safely at path granularity: staging it would also include the
+    /// user's pre-existing hunks. The durable launch baseline therefore keeps
+    /// the entire path outside the typed publication authority.
+    static func preexistingDirtyPaths(
+        task: AgentTask,
+        runID: UUID,
+        repositoryPath: String
+    ) -> [String] {
+        let baseline = task.events
+            .filter {
+                $0.run?.id == runID
+                    && $0.type == TaskExternalOutcomeEventTypes.publicationWorkspaceBaseline
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            .last
+            .flatMap { event -> TaskGitPublicationWorkspaceBaseline? in
+                guard let data = event.payload.data(using: .utf8) else { return nil }
+                return try? TaskEventPayloadCodec.makeDecoder().decode(
+                    TaskGitPublicationWorkspaceBaseline.self,
+                    from: data
+                )
+            }
+        guard let baseline, baseline.runID == runID else { return [] }
+        return taskOwnedRelativePaths(baseline.dirtyPaths, repositoryPath: repositoryPath)
+    }
+
+    static func preexistingDirtySelection(
+        task: AgentTask,
+        runID: UUID,
+        repositoryPath: String,
+        selectedPaths: [String]
+    ) -> [String] {
+        let selected = Set(selectedPaths)
+        return preexistingDirtyPaths(
+            task: task,
+            runID: runID,
+            repositoryPath: repositoryPath
+        ).filter(selected.contains)
     }
 
     static func headBranch(for task: AgentTask) -> String {

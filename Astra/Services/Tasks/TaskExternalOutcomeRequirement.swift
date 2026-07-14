@@ -2,11 +2,24 @@ import Foundation
 import ASTRAModels
 
 enum TaskExternalOutcomeEventTypes {
+    static let publicationWorkspaceBaseline = "git.publish.workspace-baseline"
     static let publicationRequested = "git.publish.requested"
     static let publicationProposed = "git.publish.proposed"
     static let publicationApproved = "git.publish.approved"
     static let publicationReceipt = "git.publish.receipt"
     static let publicationFailed = "git.publish.failed"
+}
+
+struct TaskGitPublicationWorkspaceBaseline: Codable, Sendable, Equatable {
+    let version: Int
+    let runID: UUID
+    let dirtyPaths: [String]
+
+    init(runID: UUID, dirtyPaths: [String]) {
+        version = 1
+        self.runID = runID
+        self.dirtyPaths = dirtyPaths.sorted()
+    }
 }
 
 enum TaskRequiredExternalOutcomeKind: String, Codable, Sendable, Equatable {

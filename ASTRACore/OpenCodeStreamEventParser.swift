@@ -135,7 +135,7 @@ public enum OpenCodeStreamEventParser {
         if let output = state?["output"] as? String, !output.isEmpty {
             events.append(.toolResult(toolId: id, content: output))
         } else if let error = state?["error"] as? String, !error.isEmpty {
-            events.append(.toolResult(toolId: id, content: error))
+            events.append(.toolResult(toolId: id, content: error, isError: true))
         }
         return events
     }

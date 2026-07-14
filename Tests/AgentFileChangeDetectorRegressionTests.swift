@@ -7,6 +7,27 @@ import ASTRAModels
 @Suite("Agent file change ownership regressions")
 @MainActor
 struct AgentFileChangeDetectorRegressionTests {
+    @Test("Pre-run dirty paths become a durable publication exclusion baseline")
+    func preRunDirtyPathsBecomePublicationBaseline() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-file-baseline-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try runGit(["init"], at: root)
+        let file = root.appendingPathComponent("App.swift")
+        try "let value = 1\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let runID = UUID()
+        let baseline = try #require(AgentFileChangeDetector.publicationWorkspaceBaseline(
+            runID: runID,
+            workspacePath: root.path,
+            beforeGitStatus: AgentFileChangeDetector.gitStatusSnapshot(workspacePath: root.path)
+        ))
+
+        #expect(baseline.runID == runID)
+        #expect(baseline.dirtyPaths == [file.standardizedFileURL.path])
+    }
+
     @Test("Git-backed runs retain every changed path beyond the old summary cap")
     func gitChangeOwnershipIsNotCapped() throws {
         let root = FileManager.default.temporaryDirectory

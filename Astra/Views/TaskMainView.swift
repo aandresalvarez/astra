@@ -3969,7 +3969,7 @@ struct TaskMainView: View {
 
     private var shouldOfferGitPublishReview: Bool {
         TaskGitPullRequestPublishReviewPolicy.shouldOffer(
-            taskStatus: task.status,
+            taskStatus: task.status, latestRunStopReason: latestRun.flatMap { TaskRunStopReason(rawValue: $0.stopReason) },
             hasPendingPublication: TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
         )
     }

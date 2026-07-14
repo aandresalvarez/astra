@@ -176,7 +176,16 @@ public enum CopilotStreamEventParser {
 
         if isToolResult(normalized, object: object) {
             let id = toolID(in: object)
-            return [.toolResult(id: id, content: textValue(in: object) ?? raw)]
+            let explicitError = boolValueIncludingPayload(
+                in: object,
+                keys: ["is_error", "isError", "error"]
+            )
+            let success = boolValueIncludingPayload(in: object, keys: ["success", "succeeded", "ok"])
+            return [.toolResult(
+                id: id,
+                content: textValue(in: object) ?? raw,
+                isError: explicitError ?? success.map { !$0 } ?? false
+            )]
         }
 
         if normalized.contains("usage") || normalized.contains("stats") || normalized == "result" {
@@ -554,6 +563,19 @@ public enum CopilotStreamEventParser {
     private static func doubleValueIncludingPayload(in object: [String: Any], keys: [String]) -> Double? {
         doubleValue(in: object, keys: keys)
             ?? payloadObject(in: object).flatMap { doubleValue(in: $0, keys: keys) }
+    }
+
+    private static func boolValueIncludingPayload(in object: [String: Any], keys: [String]) -> Bool? {
+        boolValue(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { boolValue(in: $0, keys: keys) }
+    }
+
+    private static func boolValue(in object: [String: Any], keys: [String]) -> Bool? {
+        for key in keys {
+            if let value = object[key] as? Bool { return value }
+            if let value = object[key] as? NSNumber { return value.boolValue }
+        }
+        return nil
     }
 
     private static func argumentStringIncludingPayload(in object: [String: Any], keys: [String]) -> String? {

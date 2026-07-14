@@ -846,8 +846,17 @@ final class AgentRuntimeWorker {
         }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
+        guard let publicationBeforeGitStatus = TaskGitPublicationWorkspaceBaselineService.capture(
+            task: task,
+            run: run,
+            workspacePath: executionPath,
+            modelContext: modelContext
+        ) else {
+            isRunning = false
+            return
+        }
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
-            ? AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
+            ? publicationBeforeGitStatus
             : nil
         let beforeDirtyFingerprints = beforeGitStatus.map {
             AgentFileChangeDetector.fileFingerprints(

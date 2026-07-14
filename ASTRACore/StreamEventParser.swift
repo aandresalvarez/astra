@@ -289,8 +289,10 @@ public enum StreamEventParser {
                     let text = block.textContent
                     return text.isEmpty ? nil : (block.tool_use_id ?? "", text, block.is_error ?? false)
                 }
-                if let first = results.first {
-                    return [.toolResult(toolId: first.0, content: first.1, isError: first.2)]
+                if !results.isEmpty {
+                    return results.map {
+                        .toolResult(toolId: $0.0, content: $0.1, isError: $0.2)
+                    }
                 }
             }
             return [.toolResult(toolId: "", content: "", isError: false)]

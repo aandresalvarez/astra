@@ -7,8 +7,11 @@ import ASTRAModels
 enum TaskGitPullRequestPublishReviewPolicy {
     static func shouldOffer(
         taskStatus: TaskStatus,
+        latestRunStopReason: TaskRunStopReason?,
         hasPendingPublication: Bool
     ) -> Bool {
-        taskStatus == .pendingUser && hasPendingPublication
+        taskStatus == .pendingUser
+            && latestRunStopReason == .externalOutcomePending
+            && hasPendingPublication
     }
 }

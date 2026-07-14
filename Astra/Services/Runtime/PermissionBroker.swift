@@ -547,7 +547,7 @@ enum PermissionBroker {
               isSafeBoundedField(authorization.repository, limit: 4_096),
               isSafeGitRef(authorization.baseBranch),
               isSafeGitRef(authorization.headBranch),
-              isHexDigest(authorization.expectedHeadSHA, lengths: 7...64),
+              isHexDigest(authorization.expectedHeadSHA, lengths: 40...40),
               isHexDigest(authorization.requestDigest, lengths: 64...64) else {
             return false
         }

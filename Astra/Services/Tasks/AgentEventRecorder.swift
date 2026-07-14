@@ -14,6 +14,7 @@ final class AgentEventRecordingState {
     /// `.completed` replace an earlier one (last-completed-wins) while never
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
+    private var toolUseEvidenceByRunAndID: [String: String] = [:]
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -63,6 +64,16 @@ final class AgentEventRecordingState {
         lastConversationEventByKey = lastConversationEventByKey.filter { key, _ in
             !key.hasPrefix(prefix)
         }
+    }
+
+    func recordToolUse(id: String, evidence: String, run: TaskRun) {
+        guard !id.isEmpty else { return }
+        toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
+    }
+
+    func toolUseEvidence(id: String, run: TaskRun) -> String? {
+        guard !id.isEmpty else { return nil }
+        return toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"]
     }
 
     private func conversationKey(eventType: TaskEventType, run: TaskRun) -> String {
@@ -359,10 +370,12 @@ enum AgentEventRecorder {
                 recordingState: recordingState
             )
 
-        case .toolUse(let name, _, let inputSummary):
+        case .toolUse(let name, let id, let inputSummary):
             recordingState?.breakConversationCoalescing(for: run)
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
-            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Using tool: \(name)\(suffix)", run: run))
+            let payload = "Using tool: \(name)\(suffix)"
+            recordingState?.recordToolUse(id: id, evidence: payload, run: run)
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
@@ -371,7 +384,8 @@ enum AgentEventRecorder {
                 let payload = isError
                     ? TaskEvent.payloadString(ToolResultFailurePayload(
                         toolID: toolID,
-                        message: String(content.prefix(10_000))
+                        message: String(content.prefix(10_000)),
+                        toolUseEvidence: recordingState?.toolUseEvidence(id: toolID, run: run)
                     ))
                     : String(content.prefix(10_000))
                 modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))

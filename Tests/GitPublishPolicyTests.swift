@@ -41,6 +41,22 @@ struct GitPublishPolicyTests {
         #expect(decoded.displayMessage.contains(authorization.requestDigest))
     }
 
+    @Test("Git publication approval rejects abbreviated commit identities")
+    func gitPublicationApprovalRejectsAbbreviatedCommitIdentity() {
+        let authorization = GitPublishAuthorization(
+            repository: "aandresalvarez/astra",
+            baseBranch: "main",
+            headBranch: "alvaro/typed-publish",
+            expectedHeadSHA: "abcdef0",
+            requestDigest: String(repeating: "b", count: 64),
+            isDraft: true
+        )
+
+        #expect(PermissionBroker.approvalGrants(
+            for: .gitPublish(authorization: authorization)
+        ).isEmpty)
+    }
+
     @Test("GitHub host control denies native shell in Ask but preserves it in Auto")
     @MainActor
     func githubHostControlRespectsEffectivePolicyIndependentlyFromSandbox() throws {

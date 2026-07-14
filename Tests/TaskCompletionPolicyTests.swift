@@ -38,6 +38,87 @@ struct TaskCompletionPolicyTests {
         #expect(decision.auditFields["outcome_kind"] == "github_pull_request")
     }
 
+    @Test("Earlier PR failure remains a completion gate after an unrelated failure")
+    func earlierPullRequestFailureRemainsCompletionGate() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Implement the fix and create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.resultFailed,
+            payload: ToolResultFailurePayload(
+                toolID: "tool_pr",
+                message: "HTTP 500",
+                toolUseEvidence: "Using tool: Bash: gh pr create --draft"
+            ),
+            run: run
+        ))
+        context.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.resultFailed,
+            payload: ToolResultFailurePayload(
+                toolID: "tool_read",
+                message: "File not found",
+                toolUseEvidence: "Using tool: Read: /tmp/missing"
+            ),
+            run: run
+        ))
+        try context.save()
+
+        let failure = try #require(
+            TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(task: task, run: run)
+        )
+
+        #expect(failure.sourceEventID == task.events.first {
+            $0.type == TaskEventTypes.Tool.resultFailed.rawValue
+                && ToolResultFailurePayload.decode(from: $0.payload)?.toolID == "tool_pr"
+        }?.id)
+    }
+
+    @Test("Failed result is correlated to its own tool use")
+    func failedResultUsesMatchingToolEvidence() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Implement the fix and create a pull request")
+        let run = TaskRun(task: task)
+        let recordingState = AgentEventRecordingState()
+        context.insert(task)
+        context.insert(run)
+
+        AgentEventRecorder.recordCopilotEvent(
+            .toolUse(name: "bash", id: "tool_pr", inputSummary: "gh pr create --draft"),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        AgentEventRecorder.recordCopilotEvent(
+            .toolUse(name: "read", id: "tool_read", inputSummary: "/tmp/notes"),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        AgentEventRecorder.recordCopilotEvent(
+            .toolResult(id: "tool_pr", content: "HTTP 500", isError: true),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        try context.save()
+
+        let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
+            task: task,
+            run: run
+        )
+
+        #expect(failure != nil)
+    }
+
     @Test("Ask owns requested PR publication after successful local work")
     func askOwnsRequestedPullRequestPublication() throws {
         let container = try makeContainer()

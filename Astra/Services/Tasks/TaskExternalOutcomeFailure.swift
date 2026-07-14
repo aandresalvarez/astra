@@ -5,19 +5,22 @@ struct ToolResultFailurePayload: Codable, Sendable, Equatable {
     let version: Int
     let toolID: String
     let message: String
+    let toolUseEvidence: String?
 
-    init(toolID: String, message: String) {
-        version = 1
+    init(toolID: String, message: String, toolUseEvidence: String? = nil) {
+        version = 2
         self.toolID = toolID
         self.message = message
+        self.toolUseEvidence = toolUseEvidence
+    }
+
+    static func decode(from payload: String) -> Self? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? TaskEventPayloadCodec.makeDecoder().decode(Self.self, from: data)
     }
 
     static func decodeMessage(from payload: String) -> String {
-        guard let data = payload.data(using: .utf8),
-              let decoded = try? TaskEventPayloadCodec.makeDecoder().decode(Self.self, from: data) else {
-            return payload
-        }
-        return decoded.message
+        decode(from: payload)?.message ?? payload
     }
 }
 
@@ -70,29 +73,33 @@ enum TaskExternalOutcomeFailureClassifier {
             return durableFailure.0
         }
 
-        guard let failedEvent = runEvents.last(where: { $0.type == TaskEventTypes.Tool.resultFailed.rawValue }) else {
-            return nil
+        let failedEvents = runEvents
+            .filter { $0.type == TaskEventTypes.Tool.resultFailed.rawValue }
+            .reversed()
+        for failedEvent in failedEvents {
+            let hasLaterReceipt = task.events.contains {
+                $0.type == TaskExternalOutcomeEventTypes.publicationReceipt
+                    && $0.timestamp >= failedEvent.timestamp
+            }
+            guard !hasLaterReceipt else { continue }
+
+            let decoded = ToolResultFailurePayload.decode(from: failedEvent.payload)
+            let legacyPrecedingToolUse = runEvents.last {
+                $0.type == TaskEventTypes.Tool.use.rawValue && $0.timestamp <= failedEvent.timestamp
+            }?.payload ?? ""
+            let message = decoded?.message ?? failedEvent.payload
+            let evidence = "\(decoded?.toolUseEvidence ?? legacyPrecedingToolUse)\n\(message)".lowercased()
+            guard describesPullRequestPublication(evidence) else { continue }
+
+            return TaskRequiredExternalOutcomeFailure(
+                version: 1,
+                kind: .githubPullRequest,
+                runID: targetRun.id,
+                sourceEventID: failedEvent.id,
+                message: String(message.prefix(1_000))
+            )
         }
-
-        let hasLaterReceipt = task.events.contains {
-            $0.type == TaskExternalOutcomeEventTypes.publicationReceipt && $0.timestamp >= failedEvent.timestamp
-        }
-        guard !hasLaterReceipt else { return nil }
-
-        let precedingToolUse = runEvents.last {
-            $0.type == TaskEventTypes.Tool.use.rawValue && $0.timestamp <= failedEvent.timestamp
-        }?.payload ?? ""
-        let message = ToolResultFailurePayload.decodeMessage(from: failedEvent.payload)
-        let evidence = "\(precedingToolUse)\n\(message)".lowercased()
-        guard describesPullRequestPublication(evidence) else { return nil }
-
-        return TaskRequiredExternalOutcomeFailure(
-            version: 1,
-            kind: .githubPullRequest,
-            runID: targetRun.id,
-            sourceEventID: failedEvent.id,
-            message: String(message.prefix(1_000))
-        )
+        return nil
     }
 
     @MainActor

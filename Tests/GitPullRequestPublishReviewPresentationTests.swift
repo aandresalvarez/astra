@@ -9,15 +9,23 @@ struct GitPullRequestPublishReviewPresentationTests {
     func pendingPublicationStaysVisibleIndependentlyOfAutoAuthority() throws {
         #expect(TaskGitPullRequestPublishReviewPolicy.shouldOffer(
             taskStatus: .pendingUser,
+            latestRunStopReason: .externalOutcomePending,
             hasPendingPublication: true
         ))
         #expect(!TaskGitPullRequestPublishReviewPolicy.shouldOffer(
             taskStatus: .completed,
+            latestRunStopReason: .externalOutcomePending,
             hasPendingPublication: true
         ))
         #expect(!TaskGitPullRequestPublishReviewPolicy.shouldOffer(
             taskStatus: .pendingUser,
+            latestRunStopReason: .externalOutcomePending,
             hasPendingPublication: false
+        ))
+        #expect(!TaskGitPullRequestPublishReviewPolicy.shouldOffer(
+            taskStatus: .pendingUser,
+            latestRunStopReason: .noUsableResult,
+            hasPendingPublication: true
         ))
 
         // Integration guard: the task view delegates the outcome invariant to

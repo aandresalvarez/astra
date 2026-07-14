@@ -29,6 +29,18 @@ enum AgentFileChangeDetector {
         return Set(output.split(separator: "\n").map(String.init))
     }
 
+    static func publicationWorkspaceBaseline(
+        runID: UUID,
+        workspacePath: String,
+        beforeGitStatus: Set<String>
+    ) -> TaskGitPublicationWorkspaceBaseline? {
+        let paths = absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: workspacePath)
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .sorted()
+        guard !paths.isEmpty else { return nil }
+        return TaskGitPublicationWorkspaceBaseline(runID: runID, dirtyPaths: paths)
+    }
+
     @MainActor
     static func appendInferredFileChanges(
         to run: TaskRun,

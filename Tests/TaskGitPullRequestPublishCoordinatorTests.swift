@@ -60,6 +60,32 @@ struct TaskGitPullRequestPublishCoordinatorTests {
         ) == ["Sources/Unrecorded.swift", "Tests/UnrecordedTests.swift"])
     }
 
+    @Test("Pre-existing dirty paths are excluded even when the run later records them")
+    func preexistingDirtyPathsRemainUnowned() {
+        let repository = "/tmp/astra-publish/repo"
+        let task = AgentTask(title: "Publish", goal: "Create a pull request")
+        let run = TaskRun(task: task)
+        task.runs.append(run)
+        task.events.append(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationWorkspaceBaseline,
+            payload: TaskGitPublicationWorkspaceBaseline(
+                runID: run.id,
+                dirtyPaths: ["\(repository)/Sources/App.swift"]
+            ),
+            run: run
+        ))
+
+        let rejected = TaskGitPullRequestPublishCoordinator.preexistingDirtySelection(
+            task: task,
+            runID: run.id,
+            repositoryPath: repository,
+            selectedPaths: ["Sources/App.swift", "Tests/AppTests.swift"]
+        )
+
+        #expect(rejected == ["Sources/App.swift"])
+    }
+
     @Test("A task-owned rename is selected without treating its old path as unrelated work")
     func taskOwnedRenameKeepsStatusRecordTogether() {
         let repository = "/tmp/astra-publish/repo"
