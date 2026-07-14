@@ -148,6 +148,24 @@ struct RuntimeSettingsSnapshotTests {
     }
 
     @MainActor
+    @Test("App settings store owns appearance preference writes")
+    func appSettingsStoreOwnsAppearancePreferenceWrites() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppSettingsSnapshotStore(
+            defaults: defaults,
+            notificationCenter: NotificationCenter(),
+            observesDefaultsChanges: false
+        )
+
+        store.setAppearance(.dark)
+
+        #expect(defaults.string(forKey: AppearancePreference.storageKey) == AppearancePreference.dark.rawValue)
+        #expect(store.uiPreferences.appearance == .dark)
+    }
+
+    @MainActor
     @Test("App settings store normalizes default model after runtime cache changes")
     func appSettingsStoreNormalizesDefaultModelAfterRuntimeCacheChanges() {
         let (defaults, suiteName) = makeDefaults()

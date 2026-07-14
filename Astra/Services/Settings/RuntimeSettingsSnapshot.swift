@@ -266,4 +266,9 @@ final class AppSettingsSnapshotStore: ObservableObject {
         self.providerSettings = runtimeSettings.providerSnapshot
         self.uiPreferences = RuntimeSettingsSnapshotStore.appUIPreferences(defaults: defaults)
     }
+
+    func setAppearance(_ appearance: AppearancePreference) {
+        defaults.set(appearance.rawValue, forKey: AppearancePreference.storageKey)
+        refresh()
+    }
 }

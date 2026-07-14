@@ -132,4 +132,11 @@ enum AppearancePreference: String, CaseIterable, Identifiable, Sendable {
         case .dark:   .dark
         }
     }
+
+    /// The explicit preference that switches away from the appearance the app
+    /// is rendering right now. This keeps quick toggles predictable even when
+    /// the stored preference is `.system`.
+    static func toggled(from colorScheme: ColorScheme) -> AppearancePreference {
+        colorScheme == .dark ? .light : .dark
+    }
 }

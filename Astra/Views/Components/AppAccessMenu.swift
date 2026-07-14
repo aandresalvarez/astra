@@ -4,6 +4,8 @@ struct AppAccessMenu: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appSettings: AppSettingsSnapshotStore
     @State private var isPresented = false
     @State private var isHovered = false
 
@@ -50,9 +52,11 @@ struct AppAccessMenu: View {
         }
         .overlay(alignment: .top) {
             if isPresented {
-                AppAccessAttachedDrawer { destination in
-                    perform(destination)
-                }
+                AppAccessAttachedDrawer(
+                    appearanceToggle: AppearanceTogglePresentation.make(currentColorScheme: colorScheme),
+                    performDestination: perform,
+                    performAppearanceToggle: toggleAppearance
+                )
                 .frame(height: AppAccessMenuPresentation.drawerHeight(rowCount: drawerRowCount))
                 .offset(y: -AppAccessMenuPresentation.drawerVerticalOffset(rowCount: drawerRowCount))
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -80,7 +84,7 @@ struct AppAccessMenu: View {
     }
 
     private var drawerRowCount: Int {
-        AppAccessDestination.allCases.count
+        AppAccessMenuPresentation.drawerRowCount(destinationCount: AppAccessDestination.allCases.count)
     }
 
     private func perform(_ destination: AppAccessDestination) {
@@ -100,16 +104,28 @@ struct AppAccessMenu: View {
             isPresented = false
         }
     }
+
+    private func toggleAppearance() {
+        appSettings.setAppearance(AppearancePreference.toggled(from: colorScheme))
+        dismiss()
+    }
 }
 
 private struct AppAccessAttachedDrawer: View {
-    let perform: (AppAccessDestination) -> Void
+    let appearanceToggle: AppearanceTogglePresentation
+    let performDestination: (AppAccessDestination) -> Void
+    let performAppearanceToggle: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppAccessMenuPresentation.drawerRowSpacing) {
             ForEach(AppAccessDestination.allCases) { destination in
-                AppAccessMenuItemButton(destination: destination, perform: perform)
+                AppAccessMenuItemButton(destination: destination, perform: performDestination)
             }
+
+            AppAccessAppearanceToggleButton(
+                presentation: appearanceToggle,
+                perform: performAppearanceToggle
+            )
         }
         .padding(AppAccessMenuPresentation.drawerPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -122,6 +138,26 @@ private struct AppAccessAttachedDrawer: View {
                 .stroke(Color.primary.opacity(0.10), lineWidth: 1)
         }
         .accessibilityIdentifier("AppAccessMenuDrawer")
+    }
+}
+
+private struct AppAccessAppearanceToggleButton: View {
+    let presentation: AppearanceTogglePresentation
+    let perform: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: perform) {
+            AppAccessMenuActionRow(
+                title: presentation.title,
+                systemImageName: presentation.systemImageName,
+                isHovered: isHovered
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(presentation.helpText)
+        .accessibilityIdentifier("AppAccessMenuItem.appearanceToggle")
     }
 }
 
@@ -148,13 +184,27 @@ private struct AppAccessMenuRow: View {
     let isHovered: Bool
 
     var body: some View {
+        AppAccessMenuActionRow(
+            title: destination.title,
+            systemImageName: destination.systemImageName,
+            isHovered: isHovered
+        )
+    }
+}
+
+private struct AppAccessMenuActionRow: View {
+    let title: String
+    let systemImageName: String
+    let isHovered: Bool
+
+    var body: some View {
         HStack(spacing: 9) {
-            Image(systemName: destination.systemImageName)
+            Image(systemName: systemImageName)
                 .font(Stanford.ui(13, weight: .medium))
                 .foregroundStyle(Stanford.coolGrey)
                 .frame(width: 18)
 
-            Text(destination.title)
+            Text(title)
                 .font(Stanford.ui(13, weight: .medium))
                 .foregroundStyle(Stanford.black)
 
