@@ -217,9 +217,18 @@ struct ShelfMarkdownPanelLayoutTests {
 
     @Test("Automatic first-file loading never supersedes an explicit preview in flight")
     func automaticOpenWaitsForExplicitPreview() {
-        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: false, isLoadingDocument: true))
-        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: true, isLoadingDocument: false))
-        #expect(ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: false, isLoadingDocument: false))
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: false, isLoadingDocument: true, snapshotSource: .fresh
+        ))
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: true, isLoadingDocument: false, snapshotSource: .fresh
+        ))
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: false, isLoadingDocument: false, snapshotSource: .cache
+        ))
+        #expect(ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: false, isLoadingDocument: false, snapshotSource: .fresh
+        ))
     }
 
     @Test("Selecting an open workspace file aligns from task scope using every known root")

@@ -174,6 +174,57 @@ struct ShelfFileIndexControllerTests {
         #expect(controller.nodes(for: root).map(\.name) == ["beta.txt"])
     }
 
+    @MainActor
+    @Test("A filter over an old index cannot replace results from a newer scan")
+    func staleFilterCannotReplaceNewIndex() async throws {
+        let directory = try temporaryDirectory(name: "index-filter-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let alpha = directory.appendingPathComponent("alpha.txt")
+        try "alpha".write(to: alpha, atomically: true, encoding: .utf8)
+        let root = WorkspaceFileRoot(
+            id: "workspace",
+            kind: .primary,
+            title: "Workspace",
+            path: directory.path,
+            isDirectory: true
+        )
+        let filtering = BlockingShelfFileIndexFilter()
+        let controller = ShelfFileIndexController(
+            store: WorkspaceFileIndexStore(),
+            filtering: filtering
+        )
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: true,
+            reason: "initial", taskID: nil, workspaceID: nil, responsivenessScope: nil
+        )
+        for _ in 0..<100 where controller.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        await filtering.blockNext("alpha")
+        let staleFilter = Task { await controller.applySearchText("alpha") }
+        await filtering.waitUntilBlocked()
+        try FileManager.default.removeItem(at: alpha)
+        try "beta".write(
+            to: directory.appendingPathComponent("beta.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: true,
+            reason: "replacement", taskID: nil, workspaceID: nil, responsivenessScope: nil
+        )
+        for _ in 0..<100 where controller.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await filtering.release()
+        await staleFilter.value
+
+        #expect(controller.nodes.map(\.name) == ["beta.txt"])
+        #expect(controller.nodes(for: root).isEmpty)
+        #expect(controller.snapshotSource == .fresh)
+    }
+
     private func root(id: String, kind: WorkspaceFileRoot.Kind) -> WorkspaceFileRoot {
         WorkspaceFileRoot(
             id: id,

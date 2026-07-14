@@ -46,8 +46,12 @@ enum ShelfTabStripPolicy {
 }
 
 enum ShelfFileAutoOpenPolicy {
-    static func shouldAutoOpen(hasFile: Bool, isLoadingDocument: Bool) -> Bool {
-        !hasFile && !isLoadingDocument
+    static func shouldAutoOpen(
+        hasFile: Bool,
+        isLoadingDocument: Bool,
+        snapshotSource: ShelfFileIndexSnapshotSource
+    ) -> Bool {
+        !hasFile && !isLoadingDocument && snapshotSource == .fresh
     }
 }
 
@@ -1160,7 +1164,8 @@ struct ShelfMarkdownPanelView: View {
     private func autoOpenFirstFileIfNeeded(nodes: [WorkspaceFileNode]) {
         guard ShelfFileAutoOpenPolicy.shouldAutoOpen(
             hasFile: session.hasFile,
-            isLoadingDocument: session.isLoadingDocument
+            isLoadingDocument: session.isLoadingDocument,
+            snapshotSource: fileIndex.snapshotSource
         ),
               let node = nodes.first(where: { !$0.isDirectory }) else {
             return

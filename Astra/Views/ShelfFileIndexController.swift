@@ -22,6 +22,12 @@ struct DefaultShelfFileIndexFilter: ShelfFileIndexFiltering {
     }
 }
 
+enum ShelfFileIndexSnapshotSource: Equatable {
+    case none
+    case cache
+    case fresh
+}
+
 /// Presentation owner for Files shelf indexing. Filesystem snapshots remain
 /// derived from `WorkspaceFileIndexService`; this controller owns only their
 /// cancellable refresh, warm-cache presentation, and pre-filtered UI shape.
@@ -35,12 +41,14 @@ final class ShelfFileIndexController: ObservableObject {
     @Published private(set) var isTruncated = false
     @Published private(set) var isScanning = false
     @Published private(set) var revision = 0
+    @Published private(set) var snapshotSource = ShelfFileIndexSnapshotSource.none
 
     private let store: WorkspaceFileIndexStore
     private let filtering: any ShelfFileIndexFiltering
     private var scanTask: Task<Void, Never>?
     private var normalizedSearchText = ""
     private var searchRevision = 0
+    private var indexRevision = 0
 
     init(
         store: WorkspaceFileIndexStore = .shared,
@@ -76,7 +84,11 @@ final class ShelfFileIndexController: ObservableObject {
         }
 
         guard !selectedRoots.isEmpty else {
-            apply(.init(roots: [], nodes: [], errors: [], isTruncated: false), displayedNodesByRoot: [:])
+            apply(
+                .init(roots: [], nodes: [], errors: [], isTruncated: false),
+                displayedNodesByRoot: [:],
+                source: .fresh
+            )
             isScanning = false
             if let responsivenessScope {
                 FilesShelfResponsivenessTelemetry.firstResultsReady(
@@ -107,7 +119,7 @@ final class ShelfFileIndexController: ObservableObject {
                let cached = await store.cachedSnapshot(roots: selectedRoots, includeHidden: includeHidden),
                !Task.isCancelled {
                 guard let displayed = await displayedNodesForCurrentSearch(cached.nodesByRoot) else { return }
-                apply(cached, displayedNodesByRoot: displayed)
+                apply(cached, displayedNodesByRoot: displayed, source: .cache)
                 presentedCachedSnapshot = true
                 if let responsivenessScope {
                     FilesShelfResponsivenessTelemetry.firstResultsReady(
@@ -125,7 +137,7 @@ final class ShelfFileIndexController: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let displayed = await displayedNodesForCurrentSearch(fresh.nodesByRoot) else { return }
 
-            apply(fresh, displayedNodesByRoot: displayed)
+            apply(fresh, displayedNodesByRoot: displayed, source: .fresh)
             isScanning = false
             let cacheState = presentedCachedSnapshot ? "refresh" : "miss"
             FilesShelfResponsivenessTelemetry.logIndexScan(
@@ -177,10 +189,12 @@ final class ShelfFileIndexController: ObservableObject {
         normalizedSearchText = normalized
         searchRevision &+= 1
         let requestedRevision = searchRevision
+        let requestedIndexRevision = indexRevision
         let source = Dictionary(grouping: nodes, by: \.rootID)
         let displayed = await filtering.filter(source, searchText: normalized)
         guard !Task.isCancelled,
               searchRevision == requestedRevision,
+              indexRevision == requestedIndexRevision,
               normalizedSearchText == normalized else { return }
         displayedNodesByRoot = displayed
         revision &+= 1
@@ -233,13 +247,16 @@ final class ShelfFileIndexController: ObservableObject {
 
     private func apply(
         _ snapshot: WorkspaceFileIndexSnapshot,
-        displayedNodesByRoot: [String: [WorkspaceFileNode]]
+        displayedNodesByRoot: [String: [WorkspaceFileNode]],
+        source: ShelfFileIndexSnapshotSource
     ) {
         roots = snapshot.roots
         nodes = snapshot.nodes
         self.displayedNodesByRoot = displayedNodesByRoot
         errors = snapshot.errors
         isTruncated = snapshot.isTruncated
+        snapshotSource = source
+        indexRevision &+= 1
         revision &+= 1
     }
 }

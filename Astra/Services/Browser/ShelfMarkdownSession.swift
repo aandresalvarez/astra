@@ -245,7 +245,12 @@ final class ShelfMarkdownSession: ObservableObject {
         }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let document = await documentLoader.loadDocument(at: url)
-        guard !Task.isCancelled, generation == documentLoadGeneration else { return false }
+        guard !Task.isCancelled,
+              generation == documentLoadGeneration,
+              !dismissedDocumentPaths.contains(url.path) else { return false }
+        if let existing = documents.first(where: { $0.id == document.id }), existing.isDirty {
+            return false
+        }
 
         applyLoadedDocument(document)
         FilesShelfResponsivenessTelemetry.logPreviewLoad(
@@ -320,6 +325,9 @@ final class ShelfMarkdownSession: ObservableObject {
 
     func closeDocument(_ id: String) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        if loadingDocumentID == id {
+            cancelPendingDocumentLoad()
+        }
         dismissedDocumentPaths.insert(id)
         let wasSelected = selectedDocumentID == id
         documents.remove(at: index)

@@ -100,4 +100,45 @@ struct ShelfMarkdownAsyncLoadingTests {
         #expect(session.fileURL == openURL)
         #expect(!session.isLoadingDocument)
     }
+
+    @MainActor
+    @Test("Async reload never overwrites edits made while the read is pending")
+    func pendingReloadPreservesDirtyEdits() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-files-shelf-dirty-\(UUID().uuidString).md")
+        try "# Disk v1".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let session = ShelfMarkdownSession(documentLoader: DelayedShelfDocumentLoader(slowPath: file.path))
+        session.load(file)
+        try "# Disk v2".write(to: file, atomically: true, encoding: .utf8)
+
+        let pending = Task { await session.loadAsync(file) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        session.updateSelectedContent("# Local edit")
+
+        #expect(await !pending.value)
+        #expect(session.content == "# Local edit")
+        #expect(session.isSelectedDocumentDirty)
+        #expect(!session.isLoadingDocument)
+    }
+
+    @MainActor
+    @Test("Closing a document cancels its pending reload")
+    func closingDocumentCancelsPendingReload() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-files-shelf-close-\(UUID().uuidString).md")
+        try "# Document".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let session = ShelfMarkdownSession(documentLoader: DelayedShelfDocumentLoader(slowPath: file.path))
+        session.load(file)
+
+        let pending = Task { await session.loadAsync(file) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        session.closeDocument(file.path)
+
+        #expect(await !pending.value)
+        #expect(!session.hasFile)
+        #expect(!session.documents.contains(where: { $0.id == file.path }))
+        #expect(!session.isLoadingDocument)
+    }
 }
