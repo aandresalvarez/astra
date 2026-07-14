@@ -19,8 +19,13 @@ assert_plan() {
 assert_plan "root"
 
 assert_plan "git-contracts" \
-  "ASTRAGitContracts/Sources/ASTRAGitContracts/GitStatusContracts.swift" \
   "ASTRAGitContracts/Tests/ASTRAGitContractsTests/GitStatusParserContractTests.swift"
+
+assert_plan $'git-contracts\nroot' \
+  "ASTRAGitContracts/Sources/ASTRAGitContracts/GitStatusContracts.swift"
+
+assert_plan $'git-contracts\nroot' \
+  "ASTRAGitContracts/Package.swift"
 
 assert_plan "" \
   "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift" \
@@ -30,7 +35,7 @@ assert_plan "root" \
   "Astra/Services/Git/GitService.swift"
 
 assert_plan $'git-contracts\nroot' \
-  "ASTRAGitContracts/Package.swift" \
+  "ASTRAGitContracts/Tests/ASTRAGitContractsTests/GitStatusParserContractTests.swift" \
   "Astra/Services/Git/GitService.swift"
 
 assert_plan $'git-contracts\nroot' \

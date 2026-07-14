@@ -56,7 +56,11 @@ root package.
 Architecture fitness tests are independently runnable through
 `script/test_architecture.sh`. The validation planner uses these lanes:
 
-- Git-contract-only changes: architecture fitness plus the Git package tests.
+- Git contract test-only changes: architecture fitness plus the Git package
+  tests, without compiling the app.
+- Git contract production source or package-manifest changes: the isolated Git
+  package tests plus the root focused suites, which compile the ASTRA consumer
+  and catch public-API drift.
 - Architecture-test-only changes: the standalone architecture package.
 - Any root application, package-manifest, script, or mixed change: the
   standalone checks plus the existing root focused suites.
@@ -71,9 +75,10 @@ abstractions.
 
 The isolated Git-contract lane reduced cold focused validation from 167.92s to
 6.53s (about 26x faster) and remained cache-fast at 0.69s warm. The complete
-Git-only pre-push route (architecture fitness, contract tests, and routing-script
-tests) took 24.93s cold and 12.32s warm, compared with the former 189.78s and
-14.72s pre-push measurements. Running the same
+contract-test-only pre-push route (architecture fitness, contract tests, and
+routing-script tests) took 24.93s cold and 12.32s warm, compared with the former
+189.78s and 14.72s pre-push measurements. Production contract and manifest
+changes intentionally retain the root consumer compile gate. Running the same
 four tests through the root package after this change still required 1,282 build
 actions and 167.28s cold, confirming that package isolation, rather than test
 filter selection, is what removes the large compile graph.

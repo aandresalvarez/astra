@@ -11,8 +11,14 @@ needs_root=0
 
 for path in "$@"; do
   case "$path" in
-    ASTRAGitContracts/*)
+    ASTRAGitContracts/Tests/*)
       needs_git_contracts=1
+      ;;
+    ASTRAGitContracts/*)
+      # Production contract or package changes must also compile the ASTRA
+      # consumer so API drift cannot pass the isolated package lane alone.
+      needs_git_contracts=1
+      needs_root=1
       ;;
     Tests/ArchitectureFitnessTests/*)
       # Architecture fitness always runs through its independent package.

@@ -38,8 +38,8 @@ struct SwiftPMValidationArchitectureTests {
         let standalonePackage = try fileText("Tests/ArchitectureFitnessTests/Package.swift", root: root)
         let testScript = try fileText("script/test_architecture.sh", root: root)
         let testSources = try fileText("Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift", root: root)
-            + fileText("Tests/ArchitectureFitnessTests/TaskThreadArchitectureFitnessTests.swift", root: root)
-            + fileText("Tests/ArchitectureFitnessTests/SwiftPMValidationArchitectureTests.swift", root: root)
+            + (try fileText("Tests/ArchitectureFitnessTests/TaskThreadArchitectureFitnessTests.swift", root: root))
+            + (try fileText("Tests/ArchitectureFitnessTests/SwiftPMValidationArchitectureTests.swift", root: root))
         let codeowners = try fileText(".github/CODEOWNERS", root: root)
         let disallowedAppImport = "@testable import " + "ASTRA"
         let disallowedSwiftDataImport = "import " + "SwiftData"
@@ -48,6 +48,7 @@ struct SwiftPMValidationArchitectureTests {
         #expect(package.contains(#"exclude: ["ArchitectureFitnessTests""#))
         #expect(standalonePackage.contains(#"name: "ASTRAArchitectureFitness""#))
         #expect(standalonePackage.contains(#"name: "ArchitectureFitnessTests""#))
+        #expect(testScript.contains(#"cd "$ROOT_DIR""#))
         #expect(testScript.contains(#"--package-path "$ROOT_DIR/Tests/ArchitectureFitnessTests""#))
         #expect(!testSources.contains(disallowedAppImport))
         #expect(!testSources.contains(disallowedSwiftDataImport))
