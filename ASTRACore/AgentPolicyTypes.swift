@@ -803,7 +803,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
                 summary: command ?? patchText ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"]),
                 inputKeys: inputKeys
             )
-        case .toolResult(let toolId, let content):
+        case .toolResult(let toolId, let content, _):
             self.init(kind: .toolResult, toolName: toolId.isEmpty ? nil : toolId, summary: String(content.prefix(500)))
         case .permissionDenied(let tool, let reason):
             self.init(kind: .deniedAction, toolName: tool, summary: String(reason.prefix(500)))
@@ -871,7 +871,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     }
 
     private static func isShellTool(_ tool: String) -> Bool {
-        ["bash", "shell"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        ProviderToolSemantics.isShellTool(tool)
     }
 
     private static func isFileTool(_ tool: String) -> Bool {
@@ -937,6 +937,35 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// Exact, one-shot scope for publishing a reviewed draft pull request. The
+/// request digest binds the approval to the selected paths, commit message,
+/// pull-request title, and pull-request body without duplicating that content
+/// in the permission ledger.
+public struct GitPublishAuthorization: Codable, Equatable, Hashable, Sendable {
+    public var repository: String
+    public var baseBranch: String
+    public var headBranch: String
+    public var expectedHeadSHA: String
+    public var requestDigest: String
+    public var isDraft: Bool
+
+    public init(
+        repository: String,
+        baseBranch: String,
+        headBranch: String,
+        expectedHeadSHA: String,
+        requestDigest: String,
+        isDraft: Bool = true
+    ) {
+        self.repository = repository
+        self.baseBranch = baseBranch
+        self.headBranch = headBranch
+        self.expectedHeadSHA = expectedHeadSHA
+        self.requestDigest = requestDigest
+        self.isDraft = isDraft
+    }
+}
+
 public enum PermissionRequest: Codable, Equatable, Sendable {
     case tool(name: String, context: String?)
     case shell(command: String, toolName: String?)
@@ -946,6 +975,7 @@ public enum PermissionRequest: Codable, Equatable, Sendable {
     case connectorCredentials(connectorID: UUID, displayName: String, labels: [String])
     case sandboxPath(path: String, access: String, toolName: String?)
     case providerNativePrompt(toolName: String, context: String?)
+    case gitPublish(authorization: GitPublishAuthorization)
 }
 
 public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
@@ -956,6 +986,7 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
     case providerTool(name: String)
     case credential(label: String)
     case sandboxPath(path: String, access: String)
+    case gitPublish(authorization: GitPublishAuthorization)
 
     public var displayName: String {
         switch self {
@@ -973,6 +1004,8 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
             "credential(\(label))"
         case .sandboxPath(let path, let access):
             "sandbox(\(access):\(path))"
+        case .gitPublish(let authorization):
+            "git-publish(\(authorization.repository):\(authorization.baseBranch)<-\(authorization.headBranch)@\(authorization.expectedHeadSHA))"
         }
     }
 }

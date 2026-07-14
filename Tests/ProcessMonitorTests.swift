@@ -3362,7 +3362,7 @@ struct RuntimePolicyGuardTests {
     }
 }
 
-private func runtimePolicyManifest(
+func runtimePolicyManifest(
     allowedTools: [String],
     askFirstTools: [String] = [],
     deniedTools: [String] = [],

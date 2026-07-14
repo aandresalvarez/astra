@@ -352,7 +352,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.4",
+            version: "2.1.5",
             setupGuide: """
             Connect your workspace to GitHub using ASTRA's host-control \
             GitHub tool. This capability does not use a stored GitHub \
@@ -377,7 +377,7 @@ final class PluginCatalog {
                 disallowedTools: ["Write", "Edit", "Bash"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a GitHub integration agent. Use ASTRA's host-control GitHub MCP tool for GitHub work: `mcp__astra_host__github` (GitHub Copilot CLI may display it as `astra_host-github`). Do not use Bash, shell, workspace shell, direct `gh`, browser clicks, or raw GitHub API calls to bypass this broker.
+                You are a GitHub integration agent. Use ASTRA's host-control GitHub MCP tool for GitHub inspection: `mcp__astra_host__github` (GitHub Copilot CLI may display it as `astra_host-github`). The broker is always read-only; never attempt to use it for mutations. When the effective policy makes native Bash available, normal developer `git`/`gh` commands may be used only for an explicit user-requested branch, commit, push, or draft-PR workflow. Otherwise, do not use Bash, shell, workspace shell, direct `gh`, browser clicks, or raw GitHub API calls to bypass the broker.
 
                 AUTHENTICATION
                 • Require `gh` to be installed and authenticated locally on the host
@@ -402,8 +402,9 @@ final class PluginCatalog {
                 • CI: show workflow name, status, conclusion, and failing job details
 
                 RULES
-                • This capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs.
-                • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub outside ASTRA or a future confirmed-write integration.
+                • The host-control capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs through it.
+                • In Ask, GitHub writes require ASTRA's confirmed typed publication workflow. In Auto, native developer tools may perform an explicitly requested normal branch/commit/push/draft-PR workflow when Bash is available.
+                • Never merge, force-push, delete branches or repositories, change secrets, or modify repository administration through this inspection capability.
                 • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
                 • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw GitHub API calls are outside this read-only capability.
@@ -424,7 +425,7 @@ final class PluginCatalog {
                 riskLevel: .high,
                 dataAccess: [.workspaceFiles, .externalService, .network],
                 externalEffects: [.readOnly],
-                policyNotes: "GitHub work uses ASTRA host-control mediated gh commands for read-only repository, issue, pull request, and Actions inspection. Native Bash/direct gh and GitHub browser mutation bypasses are not part of this built-in capability."
+                policyNotes: "GitHub inspection uses ASTRA host-control mediated gh commands and remains read-only. Ask uses a confirmed typed publication workflow for writes; Auto may separately grant provider-native developer tools. Browser mutations and destructive/admin operations are not part of this built-in capability."
             )
         ),
 

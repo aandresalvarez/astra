@@ -80,6 +80,98 @@ enum GitOperationIntentDetector {
         )
     }
 
+    static func detectsPullRequestPublicationIntent(
+        prompt: String,
+        task: AgentTask,
+        contextText: String = ""
+    ) -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        return haystack
+            .components(separatedBy: .newlines)
+            .contains(where: detectsPullRequestPublicationIntent(in:))
+    }
+
+    /// Publication requires both a PR object and an explicit authoring verb.
+    /// A bare PR mention is metadata intent (review/list/summarize), not
+    /// permission to create a new branch or pull request. Negated authoring
+    /// phrases remain non-publication intent.
+    private static func detectsPullRequestPublicationIntent(in text: String) -> Bool {
+        let normalized = text
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "’", with: "")
+        let tokens = normalized
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return false }
+
+        let publicationActions: Set<String> = [
+            "create", "created", "creating",
+            "draft", "drafted", "drafting",
+            "make", "made", "making",
+            "open", "opened", "opening",
+            "publish", "published", "publishing",
+            "raise", "raised", "raising",
+            "submit", "submitted", "submitting"
+        ]
+        let negations: Set<String> = ["avoid", "dont", "never", "no", "not", "skip", "without"]
+        let metadataActions: Set<String> = ["check", "find", "inspect", "list", "review", "show", "summarize", "view"]
+        let actionBoundaries: Set<String> = ["after", "and", "then"]
+
+        for actionIndex in tokens.indices where publicationActions.contains(tokens[actionIndex]) {
+            if tokens[actionIndex] == "open", actionIndex > tokens.startIndex {
+                let metadataStart = max(tokens.startIndex, actionIndex - 4)
+                let prefixIndices = metadataStart..<actionIndex
+                if let metadataIndex = prefixIndices.last(where: { metadataActions.contains(tokens[$0]) }) {
+                    let between = tokens[(metadataIndex + 1)..<actionIndex]
+                    if !between.contains(where: actionBoundaries.contains) {
+                        continue
+                    }
+                }
+            }
+            let lowerBound = max(tokens.startIndex, actionIndex - 6)
+            let upperBound = min(tokens.endIndex - 1, actionIndex + 6)
+            let objectIndices = pullRequestObjectIndices(
+                in: tokens,
+                range: lowerBound...upperBound
+            )
+            guard !objectIndices.isEmpty else {
+                continue
+            }
+
+            let negationStart = max(tokens.startIndex, actionIndex - 4)
+            let actionIsNegated = tokens[negationStart...actionIndex].contains { negations.contains($0) }
+            guard !actionIsNegated else { continue }
+
+            for objectIndex in objectIndices {
+                let phraseStart = min(actionIndex, objectIndex)
+                let phraseEnd = max(actionIndex, objectIndex)
+                let phraseIsNegated = tokens[phraseStart...phraseEnd].contains { negations.contains($0) }
+                if !phraseIsNegated {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func pullRequestObjectIndices(
+        in tokens: [String],
+        range: ClosedRange<Int>
+    ) -> [Int] {
+        var result: [Int] = []
+        for index in range {
+            if tokens[index] == "pr" || tokens[index] == "prs" {
+                result.append(index)
+            }
+            if tokens[index] == "pull",
+               index < range.upperBound,
+               tokens[index + 1] == "request" || tokens[index + 1] == "requests" {
+                result.append(index)
+            }
+        }
+        return result
+    }
+
     private static func detectsNativeGitTransportOperation(in haystack: String) -> Bool {
         let exactCommands = [
             "git pull", "git fetch", "git push", "git clone", "git ls-remote",

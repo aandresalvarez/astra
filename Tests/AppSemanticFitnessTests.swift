@@ -125,6 +125,7 @@ struct AppSemanticFitnessTests {
             "team.deleted": .team,
             "team.message": .team,
             "tool.result": .tool,
+            "tool.result.failed": .tool,
             "tool.use": .tool,
             "user.message": .conversation,
             "agent.response": .conversation,

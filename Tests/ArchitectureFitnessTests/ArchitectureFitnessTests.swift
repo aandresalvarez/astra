@@ -1824,7 +1824,6 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
-            "Astra/Services/Git/GitService.swift": .init(2_100, .owner("Git integration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved

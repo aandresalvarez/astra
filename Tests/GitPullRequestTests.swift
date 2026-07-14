@@ -45,6 +45,8 @@ struct GitPullRequestTests {
         #expect(GitService.normalizeBaseBranch("origin/release/1.0") == "release/1.0")
         #expect(GitService.normalizeBaseBranch("main") == "main")
         #expect(GitService.normalizeBaseBranch("  origin/dev  ") == "dev")
+        #expect(GitService.normalizeBaseBranch("upstream/main", remote: "upstream") == "main")
+        #expect(GitService.normalizeBaseBranch("feature/topic", remote: "upstream") == "feature/topic")
     }
 
     @Test("firstURL extracts an http(s) URL from CLI output")
@@ -280,7 +282,30 @@ struct GitPullRequestTests {
         #expect(GitService.webURLFromRemoteURL("git@github.com:example/repo.git") == "https://github.com/example/repo")
         #expect(GitService.webURLFromRemoteURL("ssh://git@github.example.edu/example/repo.git") == "https://github.example.edu/example/repo")
         #expect(GitService.webURLFromRemoteURL("https://github.com/example/repo.git") == "https://github.com/example/repo")
+        #expect(GitService.webURLFromRemoteURL("https://user:token@github.com/example/repo.git") == "https://github.com/example/repo")
+        #expect(GitService.webURLFromRemoteURL("https://github.com/example/repo.git?access_token=secret#fragment") == "https://github.com/example/repo")
         #expect(GitService.webURLFromRemoteURL("") == nil)
+    }
+
+    @Test("reviewed remotes become explicit GitHub CLI repository targets")
+    func githubRepositoryArgumentUsesReviewedHostAndRepository() {
+        #expect(
+            GitService.githubRepositoryArgument(from: "https://github.com/example/repo")
+                == "github.com/example/repo"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "https://github.example.edu/coral/astra.git")
+                == "github.example.edu/coral/astra"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "git@github.com:example/repo.git")
+                == "github.com/example/repo"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "ssh://git@github.example.edu/coral/astra.git")
+                == "github.example.edu/coral/astra"
+        )
+        #expect(GitService.githubRepositoryArgument(from: "https://github.com/example") == nil)
     }
 
     // MARK: - gh pr list lookup (fake CLI)
@@ -315,6 +340,75 @@ struct GitPullRequestTests {
         #expect(recordedArgs.contains("feature/login"))
         #expect(recordedArgs.contains("--state"))
         #expect(recordedArgs.contains("open"))
+    }
+
+    @Test("targeted lookup passes the reviewed remote to gh repo selection")
+    func targetedLookupUsesReviewedRepository() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-targeted-lookup-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s' '[{"number":42,"url":"https://github.example.edu/coral/astra/pull/42","title":"Targeted","isDraft":true,"state":"OPEN"}]'
+        exit 0
+        """)
+
+        let result = await GitService.shared.lookupOpenPullRequest(
+            repoPath: repo,
+            remoteURL: "https://github.example.edu/coral/astra",
+            base: "reviewed-main",
+            head: "feature/reviewed-target",
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(result.pullRequest?.number == 42)
+        let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(arguments.contains("--repo"))
+        #expect(arguments.contains("github.example.edu/coral/astra"))
+        #expect(arguments.contains("--head"))
+        #expect(arguments.contains("feature/reviewed-target"))
+        #expect(arguments.contains("--base"))
+        #expect(arguments.contains("reviewed-main"))
+    }
+
+    @Test("targeted creation uses reviewed repo and a noninteractive plain head")
+    func targetedCreationUsesReviewedRepository() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-targeted-create-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s' 'https://github.example.edu/coral/astra/pull/43'
+        exit 0
+        """)
+
+        let url = try await GitService.shared.createPullRequest(
+            repoPath: repo,
+            remoteURL: "https://github.example.edu/coral/astra",
+            base: "main",
+            head: "feature/reviewed-target",
+            title: "Targeted publication",
+            body: "Body",
+            isDraft: true,
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(url == "https://github.example.edu/coral/astra/pull/43")
+        let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(arguments.contains("--repo"))
+        #expect(arguments.contains("github.example.edu/coral/astra"))
+        #expect(arguments.contains("--head"))
+        #expect(arguments.contains("feature/reviewed-target"))
+        #expect(!arguments.contains("coral:feature/reviewed-target"))
+        #expect(arguments.contains("--draft"))
     }
 
     @Test("findOpenPullRequest returns nil when no PR exists")
@@ -464,6 +558,44 @@ struct GitPullRequestTests {
         #expect(url == "https://github.example.edu/example/repo")
     }
 
+    @Test("authoritative remote lookup ignores a stale remote-tracking ref")
+    func authoritativeRemoteLookupIgnoresStaleTrackingRef() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repository = URL(fileURLWithPath: root).appendingPathComponent("work", isDirectory: true)
+        let remote = URL(fileURLWithPath: root).appendingPathComponent("remote.git", isDirectory: true)
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+
+        #expect(runShell("git init --bare '\(remote.path)'", in: root) == 0)
+        #expect(runShell("git init -b main", in: repository.path) == 0)
+        #expect(runShell("git config user.email astra@example.com", in: repository.path) == 0)
+        #expect(runShell("git config user.name ASTRA", in: repository.path) == 0)
+        #expect(runShell("git remote add upstream '\(remote.path)'", in: repository.path) == 0)
+
+        let file = repository.appendingPathComponent("value.txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(runShell("git add value.txt && git -c commit.gpgsign=false commit -m one && git push -u upstream main", in: repository.path) == 0)
+        let firstSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
+
+        try "two\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(runShell("git add value.txt && git -c commit.gpgsign=false commit -m two && git push upstream main", in: repository.path) == 0)
+        let secondSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
+        #expect(firstSHA != secondSHA)
+
+        // Deliberately rewind only the local tracking ref after the real remote
+        // advanced. rev-parse is stale; ls-remote must still return commit two.
+        #expect(runShell("git update-ref refs/remotes/upstream/main \(firstSHA)", in: repository.path) == 0)
+        #expect(await GitService.shared.getCommitSHA("upstream/main", at: repository.path) == firstSHA)
+
+        let result = await GitService.shared.lookupRemoteCommitSHA(
+            remote: "upstream",
+            branch: "main",
+            at: repository.path
+        )
+
+        #expect(result == .found(secondSHA))
+    }
+
     // MARK: - gh integration (fake CLI)
 
     @Test("createPullRequest invokes gh with the expected arguments and returns the URL")
@@ -500,6 +632,35 @@ struct GitPullRequestTests {
         #expect(recordedArgs.contains("--head"))
         #expect(recordedArgs.contains("feature/login"))
         #expect(recordedArgs.contains("Add login"))
+    }
+
+    @Test("draft pull request creation passes the explicit gh draft flag")
+    func createDraftPullRequestRunsGhWithDraftFlag() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-draft-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\n' "$@" > '\(argsFile.path)'
+        printf '%s\n' 'https://github.com/example/repo/pull/43'
+        exit 0
+        """)
+
+        let url = try await GitService.shared.createPullRequest(
+            repoPath: repo,
+            base: "main",
+            head: "feature/draft",
+            title: "Draft change",
+            body: "Still under review.",
+            isDraft: true,
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(url == "https://github.com/example/repo/pull/43")
+        let recordedArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(recordedArgs.split(separator: "\n").contains("--draft"))
     }
 
     @Test("createPullRequest surfaces an existing PR URL as success")

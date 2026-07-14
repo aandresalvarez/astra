@@ -373,6 +373,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         case .stop,
              .allowOnce,
              .allowSimilar,
+             .reviewGitPublish,
              .approveResult,
              .dismissReview,
              .approveCorrection,
@@ -412,6 +413,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "ApproveTaskButton"
         case .allowSimilar:
             "ApproveSimilarTaskButton"
+        case .reviewGitPublish:
+            "ReviewGitPublishButton"
         case .openPlan:
             "OpenPlanButton"
         case .runApprovedPlan:

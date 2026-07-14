@@ -344,7 +344,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         let matchesProviderAllowedTool = toolMatches(
             toolName,
             command: observed.command,
-            candidates: manifest.providerRender.allowedTools,
+            candidates: effectiveAllowedToolCandidates,
             shellMatchMode: .allActionableSegments
         )
         let matchesAllowedTool = (matchesProviderAllowedTool && !mutationNeedsScopedApproval)
@@ -934,7 +934,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func toolPatternAllowsShellCommand(_ command: String) -> Bool {
-        manifest.providerRender.allowedTools.contains { candidate in
+        effectiveAllowedToolCandidates.contains { candidate in
             let lower = candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard let openParen = lower.firstIndex(of: "("),
                   lower.hasSuffix(")") else {
@@ -948,6 +948,19 @@ struct AgentRuntimePolicyGuard: Sendable {
             let pattern = String(lower[patternStart..<lower.index(before: lower.endIndex)])
             return shellCommandAllowedByPattern(command, pattern: pattern)
         }
+    }
+
+    /// The durable typed grants in the run manifest are the authority for a
+    /// one-run approval. Some runtimes (including Codex CLI) cannot project
+    /// fine-grained tool grants into provider-native flags, so the ASTRA guard
+    /// must apply the adapter-normalized grant itself instead of relying on the
+    /// provider render to echo it back through `allowedTools`.
+    private var effectiveAllowedToolCandidates: [String] {
+        let approved = PermissionBroker.providerRuntimeGrantStrings(
+            for: manifest.approvalGrants,
+            runtime: manifest.providerID
+        )
+        return Array(Set(manifest.providerRender.allowedTools + approved)).sorted()
     }
 
     private func matchesShellPermission(_ command: String, permission: String, mode: ShellPatternMatchMode) -> Bool {
@@ -1130,22 +1143,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func normalizedToolName(_ tool: String) -> String {
-        let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if lower.hasPrefix("shell(") || lower.hasPrefix("bash(") {
-            return "bash"
-        }
-        switch lower {
-        case "shell":
-            return "bash"
-        case "view":
-            return "read"
-        case "create", "apply_patch":
-            return "write"
-        case "multi_edit":
-            return "multiedit"
-        default:
-            return lower
-        }
+        ProviderToolSemantics.normalizedName(tool)
     }
 
     private static func canonicalProviderToolName(_ tool: String) -> String {
@@ -1227,7 +1225,8 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func shellCommandSegmentVariants(_ command: String) -> [String] {
-        let separatorsNormalized = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
+        let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)
@@ -1243,7 +1242,8 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func actionableShellSegments(_ command: String) -> [String] {
-        let separatorsNormalized = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
+        let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)

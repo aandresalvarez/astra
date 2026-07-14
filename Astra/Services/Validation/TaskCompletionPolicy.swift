@@ -6,6 +6,7 @@ enum TaskCompletionPolicyGate: String, Sendable, Equatable {
     case deliverableVerification = "deliverable_verification"
     case inferredValidation = "inferred_validation"
     case manualArtifactRequirement = "manual_artifact_requirement"
+    case requiredExternalOutcome = "required_external_outcome"
 }
 
 struct TaskCompletionPolicyDecision: Sendable, Equatable {
@@ -123,7 +124,51 @@ enum TaskCompletionPolicy {
     }
 
     @MainActor
-    static func decideManualCompletion(task: AgentTask, run: TaskRun) -> TaskCompletionPolicyDecision {
+    static func decideSuccessfulCompletion(
+        task: AgentTask,
+        run: TaskRun,
+        permissionPolicy: PermissionPolicy = .autonomous
+    ) -> TaskCompletionPolicyDecision {
+        let remainingGateDecision = decideAfterRequiredExternalOutcome(
+            task: task,
+            run: run
+        )
+        guard remainingGateDecision.canComplete else {
+            return remainingGateDecision
+        }
+
+        let pendingPublication = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
+            task: task,
+            run: run
+        ) ?? (permissionPolicy == .autonomous
+            ? nil
+            : TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(task: task, run: run))
+        if let pendingPublication {
+            return .block(
+                gate: .requiredExternalOutcome,
+                stopReason: .externalOutcomePending,
+                userVisibleMessage: "The local work finished. Review the exact ASTRA draft pull request proposal to finish the task.",
+                auditFields: [
+                    "outcome_kind": pendingPublication.kind.rawValue,
+                    "run_id": pendingPublication.runID.uuidString,
+                    "source_event_id": pendingPublication.sourceEventID?.uuidString ?? "none",
+                    "publication_owner": "astra"
+                ]
+            )
+        }
+
+        return remainingGateDecision
+    }
+
+    /// Evaluates the completion gates that still apply after a required
+    /// external outcome has produced its durable receipt. Publication is not a
+    /// substitute for the task's deliverable, and a review sheet may remain
+    /// open long enough for the underlying artifact state to change.
+    @MainActor
+    static func decideAfterRequiredExternalOutcome(
+        task: AgentTask,
+        run: TaskRun
+    ) -> TaskCompletionPolicyDecision {
         let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [

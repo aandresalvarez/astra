@@ -31,6 +31,7 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let dockerLaunchFailed: TaskRunStopReason = "docker_launch_failed"
     public static let dockerMountFailed: TaskRunStopReason = "docker_mount_failed"
     public static let dockerProviderExecutableMissing: TaskRunStopReason = "docker_provider_executable_missing"
+    public static let externalOutcomePending: TaskRunStopReason = "external_outcome_pending"
     public static let failed: TaskRunStopReason = "failed"
     public static let inferredValidationFailed: TaskRunStopReason = "inferred_validation_failed"
     public static let isolationFailed: TaskRunStopReason = "isolation_failed"

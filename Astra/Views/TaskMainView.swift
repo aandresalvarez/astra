@@ -319,6 +319,9 @@ struct TaskMainView: View {
     @State var cachedForkSharedWorktreeRoot: String?
     @State var pendingForkRequest: PendingTaskForkRequest?
     @State var forkCreationError: String?
+    @State private var gitPublishProposal: GitPullRequestPublishProposal?
+    @State private var isPreparingGitPublishProposal = false
+    @State private var gitPublishPreparationError: String?
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -571,6 +574,20 @@ struct TaskMainView: View {
                 onConfirm: { mode in createFork(from: request.run, mode: mode, policy: request.policy) }
             )
         }
+        .sheet(item: $gitPublishProposal) { proposal in
+            GitPullRequestPublishReviewSheet(
+                proposal: proposal,
+                onPublish: {
+                    let receipt = try await TaskGitPullRequestPublishCoordinator(
+                        modelContext: modelContext
+                    ).publish(task: task, proposal: proposal)
+                    gitPublishProposal = nil
+                    threadViewModel.refreshSnapshot(for: task)
+                    return receipt
+                },
+                onCancel: { gitPublishProposal = nil }
+            )
+        }
         .alert("Couldn’t Fork Conversation", isPresented: Binding(
             get: { forkCreationError != nil },
             set: { if !$0 { forkCreationError = nil } }
@@ -578,6 +595,14 @@ struct TaskMainView: View {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
             Text(forkCreationError ?? "The conversation fork could not be created.")
+        }
+        .alert("Couldn’t Prepare Pull Request", isPresented: Binding(
+            get: { gitPublishPreparationError != nil },
+            set: { if !$0 { gitPublishPreparationError = nil } }
+        )) {
+            Button("OK", role: .cancel) { gitPublishPreparationError = nil }
+        } message: {
+            Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -3908,6 +3933,7 @@ struct TaskMainView: View {
             verification: currentVerificationPresentation,
             pendingReviewState: pendingTaskReviewState,
             runtimePermission: runtimePermissionState,
+            hasGitPublishRequest: shouldOfferGitPublishReview,
             executableApprovedPlan: executableApprovedPlan,
             skipPermissions: taskSkipPermissions,
             planExecutionMode: planCheckpointExecutionMode,
@@ -3941,6 +3967,12 @@ struct TaskMainView: View {
         )
     }
 
+    private var shouldOfferGitPublishReview: Bool {
+        TaskGitPullRequestPublishReviewPolicy.shouldOffer(
+            taskStatus: task.status, latestRunStopReason: latestRun.flatMap { TaskRunStopReason(rawValue: $0.stopReason) },
+            hasPendingPublication: TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
+        )
+    }
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
         TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
             status: task.status,
@@ -4317,6 +4349,8 @@ struct TaskMainView: View {
             onApproveTask?(task)
         case .allowSimilar:
             approveSimilarRuntimePermissionForTask()
+        case .reviewGitPublish:
+            prepareGitPublishProposal()
         case .approveCorrection:
             if let id = action.payload { approveMissionCorrection(id) }
         case .createCorrectionTask:
@@ -4345,6 +4379,23 @@ struct TaskMainView: View {
             guard let runtime = action.payload else { return }
             TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
             onRetryTask?(task)
+        }
+    }
+
+    private func prepareGitPublishProposal() {
+        guard !isPreparingGitPublishProposal else { return }
+        isPreparingGitPublishProposal = true
+        gitPublishPreparationError = nil
+        Task { @MainActor in
+            defer { isPreparingGitPublishProposal = false }
+            do {
+                gitPublishProposal = try await TaskGitPullRequestPublishCoordinator(
+                    modelContext: modelContext
+                ).prepare(task: task)
+                threadViewModel.refreshSnapshot(for: task)
+            } catch {
+                gitPublishPreparationError = error.localizedDescription
+            }
         }
     }
 

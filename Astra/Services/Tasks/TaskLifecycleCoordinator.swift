@@ -176,6 +176,30 @@ final class TaskLifecycleCoordinator {
             return nil
         }
 
+        if let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
+           TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
+            task: task,
+            run: latestRun
+           ) != nil {
+            let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
+                task: task,
+                run: latestRun
+            )
+            if decision.shouldBlockCompletion {
+                TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                    decision,
+                    task: task,
+                    run: latestRun,
+                    modelContext: modelContext
+                )
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: task.workspace,
+                    modelContext: modelContext
+                )
+                return nil
+            }
+        }
+
         let recordedValidationOverride = recordValidationOverrideIfNeeded(for: task)
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": recordedValidationOverride ? "validation_override" : "completion"
