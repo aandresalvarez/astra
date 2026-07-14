@@ -43,14 +43,9 @@ enum TaskExternalOutcomeRequirementResolver {
         task: AgentTask,
         run: TaskRun? = nil
     ) -> TaskRequiredExternalOutcomeRequest? {
-        guard requestsGitHubPullRequest(task) else { return nil }
         let targetRun = run ?? task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
         guard let targetRun else { return nil }
 
-        let receiptTimestamp = task.events
-            .filter { $0.type == TaskExternalOutcomeEventTypes.publicationReceipt }
-            .map(\.timestamp)
-            .max()
         let requestEvent = task.events
             .filter {
                 $0.run?.id == targetRun.id
@@ -62,12 +57,17 @@ enum TaskExternalOutcomeRequirementResolver {
             }
             .last
         if let requestEvent,
-           receiptTimestamp.map({ $0 < requestEvent.timestamp }) ?? true,
            let data = requestEvent.payload.data(using: .utf8),
            let request = try? TaskEventPayloadCodec.makeDecoder().decode(
             TaskRequiredExternalOutcomeRequest.self,
             from: data
            ) {
+            let hasMatchingReceipt = task.events.contains {
+                $0.run?.id == targetRun.id
+                    && $0.type == TaskExternalOutcomeEventTypes.publicationReceipt
+                    && $0.timestamp >= requestEvent.timestamp
+            }
+            guard !hasMatchingReceipt else { return nil }
             return TaskRequiredExternalOutcomeRequest(
                 kind: request.kind,
                 runID: request.runID,
@@ -76,6 +76,10 @@ enum TaskExternalOutcomeRequirementResolver {
             )
         }
 
+        // Mutable task wording is only a compatibility signal for historical
+        // provider failures. Once ASTRA records a typed request, the event is
+        // the authority even if the user later edits the title or goal.
+        guard requestsGitHubPullRequest(task) else { return nil }
         guard let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
             task: task,
             run: targetRun

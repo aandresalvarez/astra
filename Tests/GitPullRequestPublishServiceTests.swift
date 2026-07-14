@@ -44,6 +44,7 @@ struct GitPullRequestPublishServiceTests {
         var existingBranches: Set<String> = []
         var indexAvailable = true
         var calls: [String] = []
+        var commitFailureCount = 0
         var createPullRequestFailureCount = 0
         var createPullRequestURL = "https://github.com/example/repo/pull/42"
         var createPullRequestDraftValues: [Bool] = []
@@ -89,15 +90,46 @@ struct GitPullRequestPublishServiceTests {
 
         func stageFile(_ file: GitStatusFile, at repoPath: String) async throws {
             calls.append("stage:\(file.relativePath)")
+            statusFiles = statusFiles.map { current in
+                guard current.relativePath == file.relativePath else { return current }
+                return GitStatusFile(
+                    relativePath: current.relativePath,
+                    status: current.status,
+                    isStaged: true,
+                    originalPath: current.originalPath
+                )
+            }
         }
 
         func stageAll(at repoPath: String) async throws {}
-        func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws {}
+        func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws {
+            calls.append("unstage:\(file.relativePath)")
+            statusFiles = statusFiles.map { current in
+                guard current.relativePath == file.relativePath else { return current }
+                return GitStatusFile(
+                    relativePath: current.relativePath,
+                    status: current.status,
+                    isStaged: false,
+                    originalPath: current.originalPath
+                )
+            }
+        }
         func unstageAll(at repoPath: String) async throws {}
+        func resetBranchPreservingChanges(to commit: String, at repoPath: String) async throws {
+            calls.append("reset-preserving:\(commit)")
+            headSHA = commit
+            refSHAs[currentBranch] = commit
+        }
         func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool) async throws {}
 
         func commit(message: String, at repoPath: String) async throws {
             calls.append("commit:\(message)")
+            if commitFailureCount > 0 {
+                commitFailureCount -= 1
+                throw NSError(domain: "FakeGit", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "pre-commit hook rejected commit"
+                ])
+            }
             headSHA = GitPullRequestPublishServiceTests.commitSHA
             refSHAs[currentBranch] = headSHA
         }
@@ -363,7 +395,7 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.createPullRequestDraftValues == [true])
         #expect(git.lookupRemoteURLs.allSatisfy { $0 == "https://github.com/example/repo" })
         #expect(git.createRemoteURLs == ["https://github.com/example/repo"])
-        #expect(await store.checkpoint(for: proposal.proposalID) == nil)
+        #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
     }
 
     @Test("file drift after approval fails before branch creation")
@@ -429,6 +461,32 @@ struct GitPullRequestPublishServiceTests {
         #expect(receipt.verification == .existingPullRequestLookup)
         #expect(!git.calls.contains("acquire"))
         #expect(!git.calls.contains { $0.hasPrefix("pr:") })
+    }
+
+    @Test("existing draft publication is bound to the reviewed remote head")
+    func existingDraftRemoteHeadDriftFailsClosed() async throws {
+        let git = FakeGit()
+        git.lookupResult = .found(GitHubPullRequestRef(
+            number: 17,
+            url: "https://github.com/example/repo/pull/17",
+            title: "Existing",
+            isDraft: true,
+            state: "OPEN"
+        ))
+        git.remoteRefSHAs["origin/feature/typed-publish"] = Self.commitSHA
+        git.statusFiles = []
+        let publisher = service(git: git)
+        let proposal = try await publisher.prepare(request())
+        #expect(proposal.existingPullRequestHeadSHA == Self.commitSHA)
+
+        git.remoteRefSHAs["origin/feature/typed-publish"] = String(repeating: "c", count: 40)
+
+        do {
+            _ = try await publisher.publish(proposal)
+            Issue.record("A force-pushed existing draft unexpectedly satisfied the reviewed proposal")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .proposalChanged)
+        }
     }
 
     @Test("an existing draft cannot hide selected local work")
@@ -522,7 +580,19 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.lookupRemoteURLs == ["https://github.com/upstream/repository"])
     }
 
-    @Test("checkpoint save failure stops before push and pull request creation")
+    @Test("credentialed remote URLs are sanitized before durable proposal state")
+    func credentialedRemoteURLIsSanitized() async throws {
+        let git = FakeGit()
+        git.remoteURL = "https://user:secret-token@github.com/example/repo.git"
+
+        let proposal = try await service(git: git).prepare(request())
+
+        #expect(proposal.remoteURL == "https://github.com/example/repo")
+        #expect(!proposal.proposalID.contains("secret-token"))
+        #expect(git.lookupRemoteURLs == ["https://github.com/example/repo"])
+    }
+
+    @Test("checkpoint save failure stops before branch creation or external mutation")
     func checkpointSaveFailureStopsIrreversibleContinuation() async throws {
         let git = FakeGit()
         let publisher = service(git: git, store: FailingCheckpointStore())
@@ -541,9 +611,41 @@ struct GitPullRequestPublishServiceTests {
             ))
         }
 
-        #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
+        #expect(!git.calls.contains { $0.hasPrefix("branch:") })
+        #expect(!git.calls.contains { $0.hasPrefix("commit:") })
         #expect(!git.calls.contains { $0.hasPrefix("push:") })
         #expect(!git.calls.contains { $0.hasPrefix("pr:") })
+    }
+
+    @Test("commit hook failure resumes from the prepared checkpoint")
+    func commitFailureRetryIsResumable() async throws {
+        let git = FakeGit()
+        git.commitFailureCount = 1
+        let store = InMemoryGitPullRequestPublishCheckpointStore()
+        let publisher = service(git: git, store: store)
+        let proposal = try await publisher.prepare(request())
+        let approval = GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+
+        do {
+            _ = try await publisher.publish(proposal, approval: approval)
+            Issue.record("First commit unexpectedly succeeded")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .operationFailed(
+                phase: .commit,
+                message: "pre-commit hook rejected commit"
+            ))
+        }
+        #expect(await store.checkpoint(for: proposal.proposalID)?.state == .prepared)
+        #expect(git.existingBranches.contains(proposal.headBranch))
+
+        let receipt = try await publisher.publish(proposal, approval: approval)
+
+        #expect(receipt.commitSHA == Self.commitSHA)
+        #expect(git.calls.filter { $0.hasPrefix("branch:") }.count == 1)
+        #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 2)
+        #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
+        #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
+        #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
     }
 
     @Test("retry after PR failure resumes from pushed checkpoint without duplicate Git mutations")
@@ -582,6 +684,6 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 2)
         #expect(git.currentBranch == "main")
         #expect(git.calls.filter { $0 == "remote-lookup:origin:feature/typed-publish" }.count >= 2)
-        #expect(await store.checkpoint(for: proposal.proposalID) == nil)
+        #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
     }
 }

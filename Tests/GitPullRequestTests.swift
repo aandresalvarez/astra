@@ -282,6 +282,8 @@ struct GitPullRequestTests {
         #expect(GitService.webURLFromRemoteURL("git@github.com:example/repo.git") == "https://github.com/example/repo")
         #expect(GitService.webURLFromRemoteURL("ssh://git@github.example.edu/example/repo.git") == "https://github.example.edu/example/repo")
         #expect(GitService.webURLFromRemoteURL("https://github.com/example/repo.git") == "https://github.com/example/repo")
+        #expect(GitService.webURLFromRemoteURL("https://user:token@github.com/example/repo.git") == "https://github.com/example/repo")
+        #expect(GitService.webURLFromRemoteURL("https://github.com/example/repo.git?access_token=secret#fragment") == "https://github.com/example/repo")
         #expect(GitService.webURLFromRemoteURL("") == nil)
     }
 

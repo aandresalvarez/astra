@@ -78,6 +78,48 @@ struct GitPullRequestPublishProposal: Equatable, Codable, Sendable {
     let isDraft: Bool
     let authorizationRequirement: GitPullRequestPublishAuthorizationRequirement
     let existingPullRequest: GitHubPullRequestRef?
+    /// Exact remote head shown by GitHub when an existing draft PR is reused.
+    /// Publication rechecks this value so a force-push after review cannot
+    /// produce a receipt for content the user never approved.
+    let existingPullRequestHeadSHA: String?
+
+    init(
+        proposalID: String,
+        repositoryPath: String,
+        remote: String,
+        remoteURL: String,
+        baseBranch: String,
+        baseSHA: String,
+        headBranch: String,
+        expectedHeadSHA: String,
+        selectedPaths: [String],
+        selectedFileStates: [GitPullRequestPublishFileState],
+        commitMessage: String,
+        pullRequestTitle: String,
+        pullRequestBody: String,
+        isDraft: Bool,
+        authorizationRequirement: GitPullRequestPublishAuthorizationRequirement,
+        existingPullRequest: GitHubPullRequestRef?,
+        existingPullRequestHeadSHA: String? = nil
+    ) {
+        self.proposalID = proposalID
+        self.repositoryPath = repositoryPath
+        self.remote = remote
+        self.remoteURL = remoteURL
+        self.baseBranch = baseBranch
+        self.baseSHA = baseSHA
+        self.headBranch = headBranch
+        self.expectedHeadSHA = expectedHeadSHA
+        self.selectedPaths = selectedPaths
+        self.selectedFileStates = selectedFileStates
+        self.commitMessage = commitMessage
+        self.pullRequestTitle = pullRequestTitle
+        self.pullRequestBody = pullRequestBody
+        self.isDraft = isDraft
+        self.authorizationRequirement = authorizationRequirement
+        self.existingPullRequest = existingPullRequest
+        self.existingPullRequestHeadSHA = existingPullRequestHeadSHA
+    }
 
     var requiresExplicitApproval: Bool {
         authorizationRequirement == .explicitApproval && existingPullRequest == nil
@@ -95,13 +137,14 @@ struct GitPullRequestPublishApproval: Equatable, Codable, Sendable {
 }
 
 enum GitPullRequestPublishCheckpointState: String, Equatable, Codable, Sendable {
+    case prepared
     case committed
     case pushed
 }
 
-/// Exact local/remote state recorded after the irreversible commit boundary.
-/// A retry may resume only when the proposal and every ref still match this
-/// checkpoint, preventing duplicate commits or pushes after a PR API failure.
+/// Exact local/remote state recorded before and after the irreversible commit
+/// boundary. Recording preparation before branch creation makes every later
+/// local phase resumable without treating ASTRA's own branch as foreign state.
 struct GitPullRequestPublishCheckpoint: Equatable, Codable, Sendable {
     let proposalID: String
     let repositoryPath: String

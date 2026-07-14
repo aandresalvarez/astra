@@ -52,10 +52,10 @@ final class GitPullRequestPublishService {
                 )
             }
 
-            guard let remoteURL = await git.getRemoteURL(
+            guard let rawRemoteURL = await git.getRemoteURL(
                 at: scope.repositoryPath,
                 remote: scope.remote
-            ), !remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            ), let remoteURL = GitService.webURLFromRemoteURL(rawRemoteURL) else {
                 throw GitPullRequestPublishError.remoteUnavailable(scope.remote)
             }
 
@@ -66,6 +66,7 @@ final class GitPullRequestPublishService {
             )
 
             let existingPullRequest: GitHubPullRequestRef?
+            let existingPullRequestHeadSHA: String?
             switch await git.lookupOpenPullRequest(
                 repoPath: scope.repositoryPath,
                 remoteURL: remoteURL,
@@ -85,8 +86,14 @@ final class GitPullRequestPublishService {
                     pullRequest: reference
                 )
                 existingPullRequest = reference
+                existingPullRequestHeadSHA = try await authoritativeRemoteCommitSHA(
+                    remote: scope.remote,
+                    branch: scope.headBranch,
+                    repositoryPath: scope.repositoryPath
+                )
             case .none:
                 existingPullRequest = nil
+                existingPullRequestHeadSHA = nil
             case let .unavailable(reason):
                 throw GitPullRequestPublishError.pullRequestLookupUnavailable(reason)
             }
@@ -126,7 +133,8 @@ final class GitPullRequestPublishService {
                 pullRequestTitle: scope.pullRequestTitle,
                 pullRequestBody: scope.pullRequestBody,
                 authorizationRequirement: scope.authorizationRequirement,
-                existingPullRequest: existingPullRequest
+                existingPullRequest: existingPullRequest,
+                existingPullRequestHeadSHA: existingPullRequestHeadSHA
             )
             let proposal = GitPullRequestPublishProposal(
                 proposalID: proposalID,
@@ -144,7 +152,8 @@ final class GitPullRequestPublishService {
                 pullRequestBody: scope.pullRequestBody,
                 isDraft: true,
                 authorizationRequirement: scope.authorizationRequirement,
-                existingPullRequest: existingPullRequest
+                existingPullRequest: existingPullRequest,
+                existingPullRequestHeadSHA: existingPullRequestHeadSHA
             )
             AppLogger.audit(.gitAuthoringCompleted, category: "Git", fields: auditFields(
                 operation: "publish_prepare",
@@ -239,6 +248,16 @@ final class GitPullRequestPublishService {
 
             try await revalidate(proposal)
 
+            phase = .checkpoint
+            try await checkpointStore.save(GitPullRequestPublishCheckpoint(
+                proposalID: proposal.proposalID,
+                repositoryPath: proposal.repositoryPath,
+                remote: proposal.remote,
+                baseBranch: proposal.baseBranch,
+                headBranch: proposal.headBranch,
+                commitSHA: proposal.expectedHeadSHA,
+                state: .prepared
+            ))
             phase = .createBranch
             try await git.createBranch(
                 proposal.headBranch,
@@ -248,15 +267,7 @@ final class GitPullRequestPublishService {
 
             phase = .stageFiles
             for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) {
-                try await git.stageFile(
-                    GitStatusFile(
-                        relativePath: state.relativePath,
-                        status: state.status,
-                        isStaged: state.isStaged,
-                        originalPath: state.originalPath
-                    ),
-                    at: proposal.repositoryPath
-                )
+                try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
             }
 
             phase = .commit
@@ -271,15 +282,20 @@ final class GitPullRequestPublishService {
                 )
             }
             phase = .checkpoint
-            try await checkpointStore.save(GitPullRequestPublishCheckpoint(
-                proposalID: proposal.proposalID,
-                repositoryPath: proposal.repositoryPath,
-                remote: proposal.remote,
-                baseBranch: proposal.baseBranch,
-                headBranch: proposal.headBranch,
-                commitSHA: commitSHA,
-                state: .committed
-            ))
+            do {
+                try await checkpointStore.save(GitPullRequestPublishCheckpoint(
+                    proposalID: proposal.proposalID,
+                    repositoryPath: proposal.repositoryPath,
+                    remote: proposal.remote,
+                    baseBranch: proposal.baseBranch,
+                    headBranch: proposal.headBranch,
+                    commitSHA: commitSHA,
+                    state: .committed
+                ))
+            } catch {
+                await rollbackUncheckpointedCommit(proposal: proposal)
+                throw error
+            }
 
             phase = .push
             try await git.pushSetUpstream(
@@ -330,7 +346,6 @@ final class GitPullRequestPublishService {
                 source: .created,
                 verification: .createdPullRequestLookup
             )
-            await checkpointStore.removeCheckpoint(for: proposal.proposalID)
             logSuccess(result)
             return result
         } catch let error as GitPullRequestPublishError {
@@ -370,10 +385,10 @@ final class GitPullRequestPublishService {
                 actual: baseSHA
             )
         }
-        guard let remoteURL = await git.getRemoteURL(
+        guard let rawRemoteURL = await git.getRemoteURL(
             at: proposal.repositoryPath,
             remote: proposal.remote
-        ), remoteURL == proposal.remoteURL else {
+        ), GitService.webURLFromRemoteURL(rawRemoteURL) == proposal.remoteURL else {
             throw GitPullRequestPublishError.proposalChanged
         }
         guard !(await git.localBranchExists(proposal.headBranch, at: proposal.repositoryPath)) else {
@@ -404,12 +419,22 @@ final class GitPullRequestPublishService {
             throw GitPullRequestPublishError.proposalChanged
         }
 
+        let effectiveCheckpoint: GitPullRequestPublishCheckpoint
+        if checkpoint.state == .prepared {
+            effectiveCheckpoint = try await resumePreparedCheckpoint(
+                proposal: proposal,
+                checkpoint: checkpoint
+            )
+        } else {
+            effectiveCheckpoint = checkpoint
+        }
+
         // Resume is bound to the named branch, not the user's current checkout.
         // Another task may have switched HEAD after the checkpoint was written.
         guard let localBranchSHA = await git.getCommitSHA(
             proposal.headBranch,
             at: proposal.repositoryPath
-        ), localBranchSHA.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
+        ), localBranchSHA.caseInsensitiveCompare(effectiveCheckpoint.commitSHA) == .orderedSame else {
             throw GitPullRequestPublishError.proposalChanged
         }
 
@@ -421,19 +446,19 @@ final class GitPullRequestPublishService {
             at: proposal.repositoryPath
         ) {
         case let .found(sha):
-            guard sha.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
+            guard sha.caseInsensitiveCompare(effectiveCheckpoint.commitSHA) == .orderedSame else {
                 throw GitPullRequestPublishError.remoteCommitMismatch(
                     ref: remoteRef,
-                    expected: checkpoint.commitSHA,
+                    expected: effectiveCheckpoint.commitSHA,
                     actual: sha
                 )
             }
             remoteSHA = sha
         case .missing:
-            guard checkpoint.state == .committed else {
+            guard effectiveCheckpoint.state == .committed else {
                 throw GitPullRequestPublishError.remoteCommitMismatch(
                     ref: remoteRef,
-                    expected: checkpoint.commitSHA,
+                    expected: effectiveCheckpoint.commitSHA,
                     actual: "missing"
                 )
             }
@@ -445,7 +470,7 @@ final class GitPullRequestPublishService {
             )
         }
 
-        if checkpoint.state == .committed && remoteSHA == nil {
+        if effectiveCheckpoint.state == .committed && remoteSHA == nil {
             do {
                 try await git.pushSetUpstream(
                     branch: proposal.headBranch,
@@ -460,17 +485,17 @@ final class GitPullRequestPublishService {
             }
             try await verifyAuthoritativeRemoteCommit(
                 proposal: proposal,
-                expectedSHA: checkpoint.commitSHA
+                expectedSHA: effectiveCheckpoint.commitSHA
             )
         }
         do {
             try await checkpointStore.save(GitPullRequestPublishCheckpoint(
-                proposalID: checkpoint.proposalID,
-                repositoryPath: checkpoint.repositoryPath,
-                remote: checkpoint.remote,
-                baseBranch: checkpoint.baseBranch,
-                headBranch: checkpoint.headBranch,
-                commitSHA: checkpoint.commitSHA,
+                proposalID: effectiveCheckpoint.proposalID,
+                repositoryPath: effectiveCheckpoint.repositoryPath,
+                remote: effectiveCheckpoint.remote,
+                baseBranch: effectiveCheckpoint.baseBranch,
+                headBranch: effectiveCheckpoint.headBranch,
+                commitSHA: effectiveCheckpoint.commitSHA,
                 state: .pushed
             ))
         } catch {
@@ -508,12 +533,82 @@ final class GitPullRequestPublishService {
         let result = try receipt(
             proposal: proposal,
             pullRequest: verifiedReference,
-            commitSHA: checkpoint.commitSHA,
+            commitSHA: effectiveCheckpoint.commitSHA,
             source: .created,
             verification: .createdPullRequestLookup
         )
-        await checkpointStore.removeCheckpoint(for: proposal.proposalID)
         return result
+    }
+
+    /// Restores the reviewed index shape after a partial staging/commit failure,
+    /// then deterministically completes the local commit before any push.
+    private func resumePreparedCheckpoint(
+        proposal: GitPullRequestPublishProposal,
+        checkpoint: GitPullRequestPublishCheckpoint
+    ) async throws -> GitPullRequestPublishCheckpoint {
+        if !(await git.localBranchExists(proposal.headBranch, at: proposal.repositoryPath)) {
+            try await revalidate(proposal)
+            try await git.createBranch(
+                proposal.headBranch,
+                from: proposal.expectedHeadSHA,
+                at: proposal.repositoryPath
+            )
+        }
+        guard let branchSHA = await git.getCommitSHA(
+            proposal.headBranch,
+            at: proposal.repositoryPath
+        ), branchSHA.caseInsensitiveCompare(proposal.expectedHeadSHA) == .orderedSame else {
+            throw GitPullRequestPublishError.proposalChanged
+        }
+        if await git.getCurrentBranch(at: proposal.repositoryPath) != proposal.headBranch {
+            try await git.checkoutBranch(proposal.headBranch, at: proposal.repositoryPath)
+        }
+        for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where !state.isStaged {
+            try await git.unstageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+        }
+        let restoredStates = try await captureSelectedFileStates(
+            repositoryPath: proposal.repositoryPath,
+            selectedPaths: proposal.selectedPaths
+        )
+        guard restoredStates == proposal.selectedFileStates else {
+            throw GitPullRequestPublishError.proposalChanged
+        }
+        for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) {
+            try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+        }
+        do {
+            try await git.commit(message: proposal.commitMessage, at: proposal.repositoryPath)
+            guard let commitSHA = await git.getCommitSHA("HEAD", at: proposal.repositoryPath),
+                  commitSHA.caseInsensitiveCompare(proposal.expectedHeadSHA) != .orderedSame else {
+                throw GitPullRequestPublishError.operationFailed(
+                    phase: .commit,
+                    message: "Git reported success but HEAD did not advance."
+                )
+            }
+            let committed = GitPullRequestPublishCheckpoint(
+                proposalID: checkpoint.proposalID,
+                repositoryPath: checkpoint.repositoryPath,
+                remote: checkpoint.remote,
+                baseBranch: checkpoint.baseBranch,
+                headBranch: checkpoint.headBranch,
+                commitSHA: commitSHA,
+                state: .committed
+            )
+            do {
+                try await checkpointStore.save(committed)
+            } catch {
+                await rollbackUncheckpointedCommit(proposal: proposal)
+                throw error
+            }
+            return committed
+        } catch let error as GitPullRequestPublishError {
+            throw error
+        } catch {
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .commit,
+                message: String(error.localizedDescription.prefix(500))
+            )
+        }
     }
 
     private func authoritativeRemoteCommitSHA(
@@ -841,10 +936,10 @@ final class GitPullRequestPublishService {
                 url: pullRequest.url
             )
         }
-        guard let currentRemoteURL = await git.getRemoteURL(
+        guard let rawCurrentRemoteURL = await git.getRemoteURL(
             at: proposal.repositoryPath,
             remote: proposal.remote
-        ), currentRemoteURL == proposal.remoteURL else {
+        ), GitService.webURLFromRemoteURL(rawCurrentRemoteURL) == proposal.remoteURL else {
             throw GitPullRequestPublishError.proposalChanged
         }
         try await ensureSelectedPathsAreCleanForExistingPullRequest(
@@ -857,6 +952,10 @@ final class GitPullRequestPublishService {
             branch: proposal.headBranch,
             repositoryPath: proposal.repositoryPath
         )
+        guard let reviewedHeadSHA = proposal.existingPullRequestHeadSHA,
+              reviewedHeadSHA.caseInsensitiveCompare(remoteHeadSHA) == .orderedSame else {
+            throw GitPullRequestPublishError.proposalChanged
+        }
         if let checkpoint = await checkpointStore.checkpoint(for: proposal.proposalID) {
             guard checkpoint.commitSHA.caseInsensitiveCompare(remoteHeadSHA) == .orderedSame else {
                 throw GitPullRequestPublishError.proposalChanged
@@ -869,7 +968,6 @@ final class GitPullRequestPublishService {
             source: .existing,
             verification: .existingPullRequestLookup
         )
-        await checkpointStore.removeCheckpoint(for: proposal.proposalID)
         return result
     }
 
@@ -912,6 +1010,38 @@ final class GitPullRequestPublishService {
         return states.filter { seen.insert($0.relativePath).inserted }
     }
 
+    private static func statusFile(from state: GitPullRequestPublishFileState) -> GitStatusFile {
+        GitStatusFile(
+            relativePath: state.relativePath,
+            status: state.status,
+            isStaged: state.isStaged,
+            originalPath: state.originalPath
+        )
+    }
+
+    /// A commit is not allowed to outlive a failed durable checkpoint. Mixed
+    /// reset preserves file contents; originally staged paths are then restored
+    /// so the user's pre-publication index shape remains intact for retry.
+    private func rollbackUncheckpointedCommit(
+        proposal: GitPullRequestPublishProposal
+    ) async {
+        do {
+            try await git.resetBranchPreservingChanges(
+                to: proposal.expectedHeadSHA,
+                at: proposal.repositoryPath
+            )
+            for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where state.isStaged {
+                try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+            }
+        } catch {
+            logFailure(
+                operation: "publish_checkpoint_rollback",
+                proposalID: proposal.proposalID,
+                error: error
+            )
+        }
+    }
+
     private static func makeProposalID(for proposal: GitPullRequestPublishProposal) -> String {
         makeProposalID(
             repositoryPath: proposal.repositoryPath,
@@ -927,7 +1057,8 @@ final class GitPullRequestPublishService {
             pullRequestTitle: proposal.pullRequestTitle,
             pullRequestBody: proposal.pullRequestBody,
             authorizationRequirement: proposal.authorizationRequirement,
-            existingPullRequest: proposal.existingPullRequest
+            existingPullRequest: proposal.existingPullRequest,
+            existingPullRequestHeadSHA: proposal.existingPullRequestHeadSHA
         )
     }
 
@@ -945,7 +1076,8 @@ final class GitPullRequestPublishService {
         pullRequestTitle: String,
         pullRequestBody: String,
         authorizationRequirement: GitPullRequestPublishAuthorizationRequirement,
-        existingPullRequest: GitHubPullRequestRef?
+        existingPullRequest: GitHubPullRequestRef?,
+        existingPullRequestHeadSHA: String?
     ) -> String {
         var components = [
             "git-publish-proposal-v1",
@@ -979,6 +1111,7 @@ final class GitPullRequestPublishService {
                 "existing_draft:\(existingPullRequest.isDraft)",
                 "existing_state:\(existingPullRequest.state)"
             ])
+            components.append("existing_head:\(existingPullRequestHeadSHA?.lowercased() ?? "missing")")
         }
         let canonical = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
         return sha256Hex(canonical)

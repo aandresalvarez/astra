@@ -850,6 +850,10 @@ class GitService: GitRepositoryOperating {
         _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD"])
     }
 
+    func resetBranchPreservingChanges(to commit: String, at repoPath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["reset", "--mixed", commit])
+    }
+
     func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool = false) async throws {
         let trimmed = patch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

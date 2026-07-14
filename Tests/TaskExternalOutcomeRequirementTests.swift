@@ -49,6 +49,75 @@ struct TaskExternalOutcomeRequirementTests {
         #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
     }
 
+    @Test("Publication receipts are scoped to their matching run")
+    func receiptFromOlderRunDoesNotClearNewRequest() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Create a pull request")
+        let oldRun = TaskRun(task: task)
+        let newRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(oldRun)
+        context.insert(newRun)
+
+        let request = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationRequested,
+            payload: TaskRequiredExternalOutcomeRequest(
+                kind: .githubPullRequest,
+                runID: newRun.id,
+                message: "Review the new run."
+            ),
+            run: newRun
+        )
+        request.timestamp = Date(timeIntervalSince1970: 2_000)
+        context.insert(request)
+        let unrelatedReceipt = TaskEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationReceipt,
+            payload: "{}",
+            run: oldRun
+        )
+        unrelatedReceipt.timestamp = Date(timeIntervalSince1970: 2_001)
+        context.insert(unrelatedReceipt)
+        try context.save()
+
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
+            task: task,
+            run: newRun
+        )?.runID == newRun.id)
+    }
+
+    @Test("Durable publication request survives later task text edits")
+    func durableRequestOutlivesMutableIntentText() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationRequested,
+            payload: TaskRequiredExternalOutcomeRequest(
+                kind: .githubPullRequest,
+                runID: run.id,
+                message: "Review the exact proposal."
+            ),
+            run: run
+        ))
+        try context.save()
+
+        task.goal = "Summarize the local changes only"
+        task.title = "Summary"
+        try context.save()
+
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
+            task: task,
+            run: run
+        )?.runID == run.id)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         return try ModelContainer(

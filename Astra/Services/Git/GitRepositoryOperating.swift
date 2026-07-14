@@ -25,6 +25,10 @@ protocol GitRepositoryOperating: AnyObject {
     func stageAll(at repoPath: String) async throws
     func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws
     func unstageAll(at repoPath: String) async throws
+    /// Moves the current branch ref while preserving file contents in the
+    /// working tree. Used only to recover an ASTRA-created commit whose durable
+    /// checkpoint could not be written.
+    func resetBranchPreservingChanges(to commit: String, at repoPath: String) async throws
     func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool) async throws
     func commit(message: String, at repoPath: String) async throws
     func pullRebase(at repoPath: String) async throws
@@ -94,6 +98,13 @@ protocol GitRepositoryOperating: AnyObject {
 }
 
 extension GitRepositoryOperating {
+    func resetBranchPreservingChanges(to commit: String, at repoPath: String) async throws {
+        throw GitPullRequestPublishError.operationFailed(
+            phase: .checkpoint,
+            message: "This Git operator cannot restore an uncheckpointed publication commit."
+        )
+    }
+
     /// Older/test repository operators fail closed until they expose immutable
     /// ref resolution. The real GitService implementation resolves via
     /// `git rev-parse --verify`.

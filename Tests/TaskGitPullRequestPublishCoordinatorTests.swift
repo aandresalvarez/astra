@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAGitContracts
 import ASTRAModels
 @testable import ASTRA
 
@@ -24,8 +25,8 @@ struct TaskGitPullRequestPublishCoordinatorTests {
         #expect(paths == ["Sources/App.swift", "Tests/AppTests.swift"])
     }
 
-    @Test("Live Git status expands a capped run summary without reviving clean paths")
-    func selectedPathsReconcileAuthoritativeStatus() {
+    @Test("Live Git status keeps only dirty paths owned by the run")
+    func selectedPathsKeepRunOwnershipBoundary() {
         let repository = "/tmp/astra-publish/repo"
 
         let paths = TaskGitPullRequestPublishCoordinator.reconciledSelectedPaths(
@@ -33,19 +34,51 @@ struct TaskGitPullRequestPublishCoordinatorTests {
                 "/tmp/astra-publish/repo/Sources/App.swift",
                 "/tmp/astra-publish/repo/Sources/AlreadyClean.swift"
             ],
-            statusPaths: [
-                "Sources/App.swift",
-                "Sources/Unrecorded.swift",
-                "Tests/UnrecordedTests.swift"
+            statusFiles: [
+                GitStatusFile(relativePath: "Sources/App.swift", status: " M", isStaged: false),
+                GitStatusFile(relativePath: "Sources/Unrecorded.swift", status: "??", isStaged: false),
+                GitStatusFile(relativePath: "Tests/UnrecordedTests.swift", status: "??", isStaged: false)
             ],
             repositoryPath: repository
         )
 
-        #expect(paths == [
-            "Sources/App.swift",
-            "Sources/Unrecorded.swift",
-            "Tests/UnrecordedTests.swift"
-        ])
+        #expect(paths == ["Sources/App.swift"])
+        #expect(TaskGitPullRequestPublishCoordinator.unrecordedDirtyPaths(
+            recordedPaths: [
+                "/tmp/astra-publish/repo/Sources/App.swift",
+                "/tmp/astra-publish/repo/Sources/AlreadyClean.swift"
+            ],
+            statusFiles: [
+                GitStatusFile(relativePath: "Sources/App.swift", status: " M", isStaged: false),
+                GitStatusFile(relativePath: "Sources/Unrecorded.swift", status: "??", isStaged: false),
+                GitStatusFile(relativePath: "Tests/UnrecordedTests.swift", status: "??", isStaged: false)
+            ],
+            repositoryPath: repository
+        ) == ["Sources/Unrecorded.swift", "Tests/UnrecordedTests.swift"])
+    }
+
+    @Test("A task-owned rename is selected without treating its old path as unrelated work")
+    func taskOwnedRenameKeepsStatusRecordTogether() {
+        let repository = "/tmp/astra-publish/repo"
+        let statusFiles = [
+            GitStatusFile(
+                relativePath: "Sources/NewName.swift",
+                status: "R ",
+                isStaged: true,
+                originalPath: "Sources/OldName.swift"
+            )
+        ]
+
+        #expect(TaskGitPullRequestPublishCoordinator.reconciledSelectedPaths(
+            recordedPaths: ["/tmp/astra-publish/repo/Sources/NewName.swift"],
+            statusFiles: statusFiles,
+            repositoryPath: repository
+        ) == ["Sources/NewName.swift"])
+        #expect(TaskGitPullRequestPublishCoordinator.unrecordedDirtyPaths(
+            recordedPaths: ["/tmp/astra-publish/repo/Sources/NewName.swift"],
+            statusFiles: statusFiles,
+            repositoryPath: repository
+        ).isEmpty)
     }
 
     @Test("Publication branch is deterministic and task-scoped")

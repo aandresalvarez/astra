@@ -203,7 +203,17 @@ extension GitService {
             value.hasSuffix(".git") ? String(value.dropLast(4)) : value
         }
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return dropGitSuffix(trimmed)
+            guard var components = URLComponents(string: trimmed),
+                  components.host != nil else { return nil }
+            // Remote userinfo is transport configuration, never repository
+            // identity. Strip it before the URL can enter proposals, receipts,
+            // review UI, task events, logs, or proposal fingerprints.
+            components.user = nil
+            components.password = nil
+            components.query = nil
+            components.fragment = nil
+            guard let sanitized = components.string else { return nil }
+            return dropGitSuffix(sanitized)
         }
         if trimmed.hasPrefix("git@"), let colon = trimmed.firstIndex(of: ":") {
             let hostStart = trimmed.index(trimmed.startIndex, offsetBy: "git@".count)

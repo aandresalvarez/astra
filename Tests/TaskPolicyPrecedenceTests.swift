@@ -93,6 +93,28 @@ struct TaskPolicyPrecedenceTests {
         #expect(launchPolicy == .autonomous)
     }
 
+    @Test("Restricted one-run authority caps legacy global Auto")
+    func restrictedOneRunOverrideCapsGlobalAuto() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy", goal: "Inspect repository state")
+        context.insert(task)
+
+        let resolution = TaskPolicyStore.resolve(
+            for: task,
+            globalDefaultLevel: .autonomous,
+            fallbackPermissionPolicy: .autonomous,
+            executionPolicy: .approvedRuntimePermission(
+                runtime: .codexCLI,
+                allowedTools: ["Bash(git status --short *)"]
+            )
+        )
+
+        #expect(resolution.level == .review)
+        #expect(resolution.scope == .oneRunEscalation)
+        #expect(resolution.policy.level == .review)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
             for: ASTRASchema.current,

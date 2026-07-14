@@ -847,39 +847,55 @@ enum TaskPolicyStore {
             )
         }
 
+        let baseResolution: Resolution
         if let selected = latestSelectedLevel(for: task) {
-            return Resolution(level: selected, scope: .taskOverride, policy: policy(for: selected, workspace: task.workspace))
-        }
-
-        if let workspaceDefault = AgentPolicyDefaults.workspaceLevel(for: task.workspace) {
+            baseResolution = Resolution(
+                level: selected,
+                scope: .taskOverride,
+                policy: policy(for: selected, workspace: task.workspace)
+            )
+        } else if let workspaceDefault = AgentPolicyDefaults.workspaceLevel(for: task.workspace) {
             let effectiveWorkspaceDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
                 forStored: workspaceDefault,
                 workspace: task.workspace
             )
-            return Resolution(
+            baseResolution = Resolution(
                 level: effectiveWorkspaceDefault,
                 scope: .workspaceDefault,
                 policy: policy(for: effectiveWorkspaceDefault, workspace: task.workspace)
             )
-        }
-
-        if fallbackPermissionPolicy == .autonomous {
+        } else if fallbackPermissionPolicy == .autonomous {
             let policy = AgentPolicy.preset(.autonomous)
-            return Resolution(
+            baseResolution = Resolution(
                 level: .autonomous,
                 scope: .globalDefault,
                 policy: policy
             )
+        } else {
+            let effectiveGlobalDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
+                forStored: globalDefaultLevel,
+                workspace: nil
+            )
+            baseResolution = Resolution(
+                level: effectiveGlobalDefault,
+                scope: .globalDefault,
+                policy: policy(for: effectiveGlobalDefault, workspace: nil)
+            )
         }
 
-        let effectiveGlobalDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
-            forStored: globalDefaultLevel,
-            workspace: nil
-        )
+        // A scoped approval may narrow Auto, but never broaden an already
+        // narrower task/workspace selection. Treat restricted/interactive
+        // one-run overrides as an execution cap so legacy global Auto cannot
+        // silently turn an exact approval into unrestricted provider authority.
+        guard executionPolicy.permissionPolicyOverride != nil,
+              executionPolicy.permissionPolicyOverride != .autonomous,
+              baseResolution.level == .autonomous else {
+            return baseResolution
+        }
         return Resolution(
-            level: effectiveGlobalDefault,
-            scope: .globalDefault,
-            policy: policy(for: effectiveGlobalDefault, workspace: nil)
+            level: .review,
+            scope: .oneRunEscalation,
+            policy: AgentPolicy.preset(.review)
         )
     }
 

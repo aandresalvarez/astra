@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAGitContracts
 import ASTRAModels
 import ASTRAPersistence
 
@@ -9,6 +10,7 @@ enum TaskGitPullRequestPublishCoordinatorError: LocalizedError, Equatable {
     case repositoryUnavailable
     case commitUnavailable
     case noTaskOwnedChanges
+    case unownedDirtyChanges([String])
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +22,8 @@ enum TaskGitPullRequestPublishCoordinatorError: LocalizedError, Equatable {
             "ASTRA could not resolve the exact starting commit."
         case .noTaskOwnedChanges:
             "The latest run has no changed files inside the task repository to publish."
+        case let .unownedDirtyChanges(paths):
+            "The repository contains dirty files ASTRA cannot attribute to this task: \(paths.joined(separator: ", ")). Commit, stash, or revert them before publishing."
         }
     }
 }
@@ -65,9 +69,19 @@ final class TaskGitPullRequestPublishCoordinator {
         // The run summary is presentation data and may be capped. Git status is
         // the authoritative publication scope so every currently dirty path is
         // disclosed in the review instead of being silently omitted.
+        let recordedPaths = run.fileChanges.map(\.path)
+        let statusFiles = await git.getStatusFiles(at: repositoryPath)
+        let unownedDirtyPaths = Self.unrecordedDirtyPaths(
+            recordedPaths: recordedPaths,
+            statusFiles: statusFiles,
+            repositoryPath: repositoryPath
+        )
+        guard unownedDirtyPaths.isEmpty else {
+            throw TaskGitPullRequestPublishCoordinatorError.unownedDirtyChanges(unownedDirtyPaths)
+        }
         let selectedPaths = Self.reconciledSelectedPaths(
-            recordedPaths: run.fileChanges.map(\.path),
-            statusPaths: await git.getStatusFiles(at: repositoryPath).map(\.relativePath),
+            recordedPaths: recordedPaths,
+            statusFiles: statusFiles,
             repositoryPath: repositoryPath
         )
         guard !selectedPaths.isEmpty else {
@@ -140,7 +154,8 @@ final class TaskGitPullRequestPublishCoordinator {
         )
 
         do {
-            let receipt = try await service(for: task).publish(
+            let checkpointStore = checkpointStore(for: task)
+            let receipt = try await service(checkpointStore: checkpointStore).publish(
                 proposal,
                 approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
             )
@@ -161,10 +176,15 @@ final class TaskGitPullRequestPublishCoordinator {
                 run: run,
                 modelContext: modelContext
             )
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
                 workspace: task.workspace,
-                modelContext: modelContext
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "git_publish_receipt"]
             )
+            // The checkpoint remains recovery authority until the receipt and
+            // resulting task transition are durably committed together.
+            await checkpointStore.removeCheckpoint(for: proposal.proposalID)
             return receipt
         } catch {
             let payload = TaskEvent.payloadString([
@@ -183,10 +203,6 @@ final class TaskGitPullRequestPublishCoordinator {
             )
             throw error
         }
-    }
-
-    private func service(for task: AgentTask) -> GitPullRequestPublishService {
-        service(checkpointStore: checkpointStore(for: task))
     }
 
     private func service(
@@ -273,19 +289,39 @@ final class TaskGitPullRequestPublishCoordinator {
         }.sorted()
     }
 
-    /// Reconciles the potentially capped run summary with the complete live
-    /// repository status. Only paths still reported dirty are publishable; the
-    /// recorded list is used to keep deterministic ordering, not as authority.
+    /// Keeps the durable run change set as the ownership boundary while
+    /// filtering out paths that are no longer dirty.
     static func reconciledSelectedPaths(
         recordedPaths: [String],
-        statusPaths: [String],
+        statusFiles: [GitStatusFile],
         repositoryPath: String
     ) -> [String] {
         let recorded = Set(taskOwnedRelativePaths(recordedPaths, repositoryPath: repositoryPath))
-        let dirty = taskOwnedRelativePaths(statusPaths, repositoryPath: repositoryPath)
-        let recordedAndDirty = dirty.filter(recorded.contains)
-        let unrecordedAndDirty = dirty.filter { !recorded.contains($0) }
-        return (recordedAndDirty + unrecordedAndDirty).sorted()
+        return statusFiles.compactMap { file in
+            let paths = taskOwnedRelativePaths(
+                [file.relativePath, file.originalPath].compactMap { $0 },
+                repositoryPath: repositoryPath
+            )
+            return paths.contains(where: recorded.contains) ? file.relativePath : nil
+        }.sorted()
+    }
+
+    /// Dirty files without durable run ownership are never silently swept into
+    /// a publication. They may be pre-existing user work, so ambiguity is a
+    /// blocking condition rather than implicit consent.
+    static func unrecordedDirtyPaths(
+        recordedPaths: [String],
+        statusFiles: [GitStatusFile],
+        repositoryPath: String
+    ) -> [String] {
+        let recorded = Set(taskOwnedRelativePaths(recordedPaths, repositoryPath: repositoryPath))
+        return statusFiles.compactMap { file in
+            let paths = taskOwnedRelativePaths(
+                [file.relativePath, file.originalPath].compactMap { $0 },
+                repositoryPath: repositoryPath
+            )
+            return paths.contains(where: recorded.contains) ? nil : file.relativePath
+        }.sorted()
     }
 
     static func headBranch(for task: AgentTask) -> String {
