@@ -302,19 +302,6 @@ struct StorageBackedTaskThreadViewModelTests {
         return (container, context, task)
     }
 
-    private func awaitSnapshot(
-        _ viewModel: TaskThreadViewModel,
-        timeout: TimeInterval = 5,
-        where predicate: (TaskThreadSnapshot) -> Bool
-    ) async -> TaskThreadSnapshot? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let snapshot = viewModel.snapshot, predicate(snapshot) { return snapshot }
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-        return viewModel.snapshot
-    }
-
     @Test("Event-only omission stays visible and loads to completion")
     func eventOnlyHistoryLoadsThroughViewModel() async throws {
         let (container, context, task) = try fixture()
@@ -332,14 +319,16 @@ struct StorageBackedTaskThreadViewModelTests {
 
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
-        let initial = await awaitSnapshot(viewModel) { $0.omittedEventCount == 5 }
+        await viewModel.waitForPendingWorkForTesting()
+        let initial = viewModel.snapshot
 
         #expect(initial?.omittedRunCount == 0)
         #expect(initial?.omittedEventCount == 5)
         #expect(viewModel.hasEarlierHistory)
 
         viewModel.loadEarlierHistory(for: task)
-        let complete = await awaitSnapshot(viewModel) { $0.omittedEventCount == 0 }
+        await viewModel.waitForPendingWorkForTesting()
+        let complete = viewModel.snapshot
 
         #expect(complete?.sortedEvents.count == 1_205)
         #expect(complete?.omittedRunCount == 0)
@@ -392,20 +381,44 @@ struct StorageBackedTaskThreadViewModelTests {
         defer { _ = container }
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
-        _ = await awaitSnapshot(viewModel) { _ in
-            viewModel.historyReadCountForTesting == 1 && viewModel.appliedSnapshotRevision > 0
-        }
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.historyReadCountForTesting == 1)
+        #expect(viewModel.appliedSnapshotRevision > 0)
 
         task.updatedAt = task.updatedAt.addingTimeInterval(1)
         for _ in 0..<20 {
             viewModel.requestSnapshotRefresh(for: task)
         }
-        let deadline = Date().addingTimeInterval(2)
-        while viewModel.historyReadCountForTesting < 2, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(25))
-        }
+        await viewModel.waitForPendingWorkForTesting()
 
         #expect(viewModel.historyReadCountForTesting == 2)
+    }
+
+    @Test("Pending storage refresh retains its SwiftData container")
+    func pendingRefreshRetainsContainer() async throws {
+        var container: ModelContainer? = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        weak let retainedContainer = container
+        let context = try #require(container?.mainContext)
+        let task = AgentTask(title: "Retained history", goal: "Finish the queued read")
+        context.insert(task)
+        context.insert(TaskEvent(task: task, type: "user.message", payload: "still valid"))
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        task.updatedAt = task.updatedAt.addingTimeInterval(1)
+        viewModel.requestSnapshotRefresh(for: task)
+
+        container = nil
+        #expect(retainedContainer != nil)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(viewModel.historyReadCountForTesting == 2)
+        #expect(viewModel.snapshot?.sortedEvents.map(\.payload) == ["still valid"])
     }
 
     @Test("Task switch cancels an earlier history load before it can mutate the new transcript")
@@ -427,14 +440,12 @@ struct StorageBackedTaskThreadViewModelTests {
 
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: firstTask, modelContext: context)
-        _ = await awaitSnapshot(viewModel) { $0.omittedEventCount == 5 }
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.omittedEventCount == 5)
 
         viewModel.loadEarlierHistory(for: firstTask)
         viewModel.reset(for: secondTask, modelContext: context)
-        _ = await awaitSnapshot(viewModel) { _ in
-            viewModel.appliedSnapshotTaskID == secondTask.id
-        }
-        try? await Task.sleep(for: .milliseconds(50))
+        await viewModel.waitForPendingWorkForTesting()
 
         #expect(viewModel.appliedSnapshotTaskID == secondTask.id)
         #expect(viewModel.snapshot?.sortedEvents.isEmpty == true)
@@ -456,9 +467,8 @@ struct StorageBackedTaskThreadViewModelTests {
 
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
-        let snapshot = await awaitSnapshot(viewModel) {
-            $0.sortedEvents.filter { $0.type == "tool.result" }.count == 12
-        }
+        await viewModel.waitForPendingWorkForTesting()
+        let snapshot = viewModel.snapshot
 
         // loadedHistoryEvents is a [UUID: TaskEventSnapshot] dictionary, so the
         // cap must sort chronologically before trimming or it keeps whatever

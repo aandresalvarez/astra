@@ -105,6 +105,19 @@ final class TaskThreadViewModel {
         let shouldLogLiveCadence: Bool
     }
 
+    /// Managed models are only valid while their owning SwiftData container is
+    /// alive. Storage-backed work can outlive the caller that supplied a
+    /// context, so keep that persistence lifetime explicit.
+    private struct HistoryPersistence {
+        let container: ModelContainer
+        let context: ModelContext
+
+        init(context: ModelContext) {
+            container = context.container
+            self.context = context
+        }
+    }
+
     private(set) var snapshot: TaskThreadSnapshot?
     private(set) var generatedFilePaths: [String] = []
     /// Advances only when a non-placeholder snapshot has been applied. Views use
@@ -147,7 +160,7 @@ final class TaskThreadViewModel {
     private var historyTaskID: UUID?
     private var historyTask: AgentTask?
     private var expansionRunCount: Int = 50
-    private var historyModelContext: ModelContext?
+    private var historyPersistence: HistoryPersistence?
     private var historyCursor: TaskThreadHistoryCursor?
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
     private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
@@ -189,7 +202,7 @@ final class TaskThreadViewModel {
             fields: Self.taskFields(task)
         ) {
             expansionRunCount = 50
-            historyModelContext = modelContext
+            historyPersistence = modelContext.map(HistoryPersistence.init)
             historyTaskID = task.id
             historyTask = task
             historyCursor = nil
@@ -300,11 +313,11 @@ final class TaskThreadViewModel {
         let input: TaskThreadSnapshotInput
         if let preparedInput {
             input = preparedInput
-        } else if let historyModelContext {
+        } else if let historyPersistence {
             do {
                 let page = try TaskThreadHistoryReader.initialPage(
                     taskID: task.id,
-                    modelContext: historyModelContext
+                    modelContext: historyPersistence.context
                 )
                 historyReadCountForTesting += 1
                 mergeLatestHistoryPage(page)
@@ -329,7 +342,7 @@ final class TaskThreadViewModel {
         }
 
         let trigger = TaskThreadSnapshotTrigger(task: task, input: input)
-        let resolvedTrigger = historyModelContext == nil
+        let resolvedTrigger = historyPersistence == nil
             ? TaskThreadSnapshotTrigger(task: task)
             : trigger
         guard snapshotTrigger != resolvedTrigger else { return }
@@ -567,6 +580,27 @@ final class TaskThreadViewModel {
         terminalSnapshotCache.stats
     }
 
+    /// Awaits coordinator work by task identity rather than elapsed wall time.
+    /// Parallel suites can temporarily saturate the main actor without turning
+    /// functional assertions into timeout failures.
+    func waitForPendingWorkForTesting() async {
+        while true {
+            if let requestedRefreshTask {
+                await requestedRefreshTask.value
+                continue
+            }
+            if let historyLoadTask {
+                await historyLoadTask.value
+                continue
+            }
+            if let snapshotTask {
+                await snapshotTask.value
+                continue
+            }
+            return
+        }
+    }
+
     private static func taskFields(_ task: AgentTask) -> [String: String] {
         [
             "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
@@ -606,7 +640,7 @@ final class TaskThreadViewModel {
     }
 
     func expandWindow(for task: AgentTask) {
-        if historyModelContext != nil {
+        if historyPersistence != nil {
             loadEarlierHistory(for: task)
             return
         }
@@ -618,7 +652,7 @@ final class TaskThreadViewModel {
 
     func loadEarlierHistory(for task: AgentTask) {
         guard historyLoadState != .loading else { return }
-        guard let modelContext = historyModelContext else {
+        guard let modelContext = historyPersistence?.context else {
             expandWindow(for: task)
             return
         }
