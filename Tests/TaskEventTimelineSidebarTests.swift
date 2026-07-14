@@ -646,6 +646,62 @@ struct SidebarGroupingTests {
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
     }
 
+    @Test("Task age moves from the row into the options menu")
+    func taskAgeUsesReadableOptionsMenuMetadata() {
+        let now = Date(timeIntervalSince1970: 10_000_000)
+
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(-59),
+                now: now
+            ) == "Updated just now"
+        )
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(-60),
+                now: now
+            ) == "Updated 1 minute ago"
+        )
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(-7_200),
+                now: now
+            ) == "Updated 2 hours ago"
+        )
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(-604_800),
+                now: now
+            ) == "Updated 1 week ago"
+        )
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(-5_184_000),
+                now: now
+            ) == "Updated 2 months ago"
+        )
+        #expect(
+            SidebarTaskAgePresentation.menuLabel(
+                updatedAt: now.addingTimeInterval(60),
+                now: now
+            ) == "Updated just now"
+        )
+    }
+
+    @Test("Task option overlay separates long titles from an opaque menu surface")
+    func taskOptionOverlayHasSeparationFromLongTitles() {
+        #expect(SidebarTaskAccessoryPresentation.controlSize == 24)
+        #expect(SidebarTaskAccessoryPresentation.trailingPadding == 8)
+        #expect(SidebarTaskAccessoryPresentation.footprintWidth == 32)
+        #expect(SidebarTaskAccessoryPresentation.backgroundCornerRadius == 6)
+        #expect(SidebarTaskAccessoryPresentation.backgroundOpacity == 1)
+        #expect(SidebarTaskAccessoryPresentation.trailingFadeWidth == 64)
+        #expect(
+            SidebarTaskAccessoryPresentation.trailingFadeWidth
+                >= SidebarTaskAccessoryPresentation.footprintWidth * 2
+        )
+    }
+
     @Test("Workspace stars share geometry while filter and status keep distinct chrome")
     func workspaceStarPresentationContracts() {
         #expect(SidebarWorkspaceStarPresentation.glyphSize == 13)

@@ -148,6 +148,42 @@ enum SidebarPinnedTaskPresentation {
     }
 }
 
+/// Keeps task recency available without spending permanent horizontal space in
+/// the navigation rail. The options menu has room for a readable description,
+/// so it uses full words instead of the row's former compact "1mo" label.
+enum SidebarTaskAgePresentation {
+    static func menuLabel(updatedAt: Date, now: Date) -> String {
+        let elapsed = max(0, now.timeIntervalSince(updatedAt))
+
+        func label(_ value: Int, unit: String) -> String {
+            "Updated \(value) \(unit)\(value == 1 ? "" : "s") ago"
+        }
+
+        if elapsed < 60 { return "Updated just now" }
+        if elapsed < 3_600 { return label(Int(elapsed / 60), unit: "minute") }
+        if elapsed < 86_400 { return label(Int(elapsed / 3_600), unit: "hour") }
+        if elapsed < 604_800 { return label(Int(elapsed / 86_400), unit: "day") }
+        if elapsed < 2_592_000 { return label(Int(elapsed / 604_800), unit: "week") }
+        return label(Int(elapsed / 2_592_000), unit: "month")
+    }
+}
+
+enum SidebarTaskAccessoryPresentation {
+    static let controlSize: CGFloat = 24
+    static let trailingPadding: CGFloat = 8
+    static let backgroundCornerRadius: CGFloat = 6
+    /// Keep the menu glyph readable even when a long task title extends below
+    /// its overlaid frame. The surface is intentionally opaque and borderless.
+    static let backgroundOpacity = 1.0
+    /// Wider than the accessory footprint so the title disappears gradually
+    /// before it reaches the overlaid control instead of ending at a hard edge.
+    static let trailingFadeWidth: CGFloat = 64
+
+    static var footprintWidth: CGFloat {
+        controlSize + trailingPadding
+    }
+}
+
 enum SidebarThreadRowLayout {
     static let rowHorizontalPadding: CGFloat = 8
     static let statusIconWidth: CGFloat = 14
@@ -711,8 +747,7 @@ struct TaskSidebarView: View {
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     titleHelp: workspaceHoverHelp,
-                    showsPinIndicator: false,
-                    showsTimestamp: false
+                    showsPinIndicator: false
                 )
             }
             .buttonStyle(.plain)
@@ -730,7 +765,7 @@ struct TaskSidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Unpin")
-            .padding(.trailing, 8)
+            .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
             .opacity(showsHoverChrome ? 1 : 0)
             .allowsHitTesting(showsHoverChrome)
             .animation(hoverAnimation, value: showsHoverChrome)
@@ -839,7 +874,7 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
             taskOptionsMenu(for: task, isVisible: showsHoverChrome)
-                .padding(.trailing, 8)
+                .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
@@ -1554,7 +1589,7 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
             taskOptionsMenu(for: task, includePinToggle: true, isVisible: showsHoverChrome)
-                .padding(.trailing, 8)
+                .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
@@ -1602,38 +1637,67 @@ struct TaskSidebarView: View {
         includePinToggle: Bool = false,
         isVisible: Bool
     ) -> some View {
-        Menu {
-            if includePinToggle {
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        togglePinned(for: task)
-                    }
-                } label: {
-                    Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            Menu {
+                Section {
+                    Label(
+                        SidebarTaskAgePresentation.menuLabel(
+                            updatedAt: task.updatedAt,
+                            now: context.date
+                        ),
+                        systemImage: "clock"
+                    )
                 }
 
-                Divider()
-            }
+                Section {
+                    if includePinToggle {
+                        Button {
+                            withAnimation(disclosureAnimation) {
+                                togglePinned(for: task)
+                            }
+                        } label: {
+                            Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
+                        }
 
-            taskContextMenu(for: task)
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(Stanford.ui(12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-                .contentShape(Rectangle())
+                        Divider()
+                    }
+
+                    taskContextMenu(for: task)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .frame(
+                width: SidebarTaskAccessoryPresentation.controlSize,
+                height: SidebarTaskAccessoryPresentation.controlSize,
+                alignment: .center
+            )
+            .background(
+                RoundedRectangle(
+                    cornerRadius: SidebarTaskAccessoryPresentation.backgroundCornerRadius,
+                    style: .continuous
+                )
+                .fill(
+                    Stanford.cardBackground.opacity(
+                        SidebarTaskAccessoryPresentation.backgroundOpacity
+                    )
+                )
+            )
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            // Pointer hover and keyboard focus both reveal the control. It stays
+            // in the accessibility tree at rest because VoiceOver has neither.
+            .accessibilityLabel("Task options")
+            .animation(hoverAnimation, value: isVisible)
+            .help("Task options")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .frame(width: 24, height: 24, alignment: .center)
-        .opacity(isVisible ? 1 : 0)
-        .allowsHitTesting(isVisible)
-        // Pointer hover and keyboard focus both reveal the control. It stays
-        // in the accessibility tree at rest because VoiceOver has neither.
-        .accessibilityLabel("Task options")
-        .animation(hoverAnimation, value: isVisible)
-        .help("Task options")
     }
 
     private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {

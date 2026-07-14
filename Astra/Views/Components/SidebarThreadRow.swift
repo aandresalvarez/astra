@@ -84,13 +84,6 @@ struct SidebarThreadRow: View {
     /// this glyph now only fires in the Unreads row, for a task that is
     /// both pinned and unread.
     var showsPinIndicator: Bool = true
-    /// Hidden inside the Pinned section: the same task already shows
-    /// its timestamp in the Unreads row when it's also unread, and
-    /// dropping it here keeps the right gutter clear for the unpin
-    /// overlay (which previously had to fight the timestamp for the same
-    /// x-position) and gives pinned titles more room before they truncate.
-    var showsTimestamp: Bool = true
-
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selectionAnimation: Animation? {
@@ -108,10 +101,6 @@ struct SidebarThreadRow: View {
     private var titleWeight: Font.Weight {
         if task.shouldShowUnread { return .semibold }
         return isSelected ? .medium : .regular
-    }
-
-    private var metadataWeight: Font.Weight {
-        task.shouldShowUnread ? .semibold : .regular
     }
 
     private var showIcon: Bool {
@@ -219,46 +208,35 @@ struct SidebarThreadRow: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 6)
-
-            // Right-side metadata is hidden on
-            // hover so the three-dots context-menu overlay (added by
-            // `compactTaskRow`) can render without overlapping text.
-            // Keep the layout in place (no width shift) by using opacity,
-            // not conditional removal.
-            if showsTimestamp {
-                HStack(spacing: 5) {
-                    if task.isPinned && showsPinIndicator {
-                        // Tells the user "this row also appears in the
-                        // Pinned section" — reachable only from the
-                        // Unreads row (pinned tasks are excluded from
-                        // their workspace's own list, so they no longer
-                        // render there too).
-                        Image(systemName: "pin.fill")
-                            .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(.secondary.opacity(0.58))
-                            .help("Pinned")
-                            .accessibilityLabel("Pinned")
-                    }
-                    // TimelineView keeps "now"/"5m" honest: the label used to
-                    // refresh only when task data changed, so a quiet row
-                    // could claim "now" for an hour.
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        Text(relativeTime(task.updatedAt, now: context.date))
-                            .font(Stanford.caption(11).weight(metadataWeight))
-                            .foregroundStyle(task.shouldShowUnread ? Color.primary : Stanford.textSecondary)
-                            .lineLimit(1)
-                            .fixedSize()
-                            .frame(minWidth: 24, alignment: .trailing)
-                            .accessibilityLabel(relativeTimeSpoken(task.updatedAt, now: context.date))
-                    }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .mask {
+                HStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(
+                        colors: [
+                            .black,
+                            showsHoverChrome ? .clear : .black
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: SidebarTaskAccessoryPresentation.trailingFadeWidth)
                 }
-                .opacity(showsHoverChrome ? 0 : 1)
-                // Fades the timestamp out at the same rate as the
-                // hover-only overlay buttons (`unpin`, `taskOptionsMenu`)
-                // fade in, so the right gutter swaps smoothly instead of
-                // one element snapping while the other animates.
                 .animation(metadataAnimation, value: showsHoverChrome)
+            }
+
+            if task.isPinned && showsPinIndicator {
+                // Preserve the Unreads row's cross-section signal without
+                // reserving a trailing slot on every task. Workspace rows
+                // never reach this branch because pinned tasks live in the
+                // Pinned section, where the caller suppresses the glyph.
+                Image(systemName: "pin.fill")
+                    .font(Stanford.ui(9, weight: .medium))
+                    .foregroundStyle(.secondary.opacity(0.58))
+                    .help("Pinned")
+                    .accessibilityLabel("Pinned")
+                    .opacity(showsHoverChrome ? 0 : 1)
+                    .animation(metadataAnimation, value: showsHoverChrome)
             }
         }
         .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
@@ -357,31 +335,6 @@ struct SidebarThreadRow: View {
                 .font(Stanford.ui(11))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func relativeTime(_ date: Date, now: Date) -> String {
-        let interval = now.timeIntervalSince(date)
-        if interval < 60 { return "now" }
-        if interval < 3600 { return "\(Int(interval / 60))m" }
-        if interval < 86400 { return "\(Int(interval / 3600))h" }
-        if interval < 604800 { return "\(Int(interval / 86400))d" }
-        if interval < 2592000 { return "\(Int(interval / 604800))w" }
-        return "\(Int(interval / 2592000))mo"
-    }
-
-    /// VoiceOver counterpart of `relativeTime` — "4d" reads as noise, so the
-    /// label speaks "Updated 4 days ago".
-    private func relativeTimeSpoken(_ date: Date, now: Date) -> String {
-        let interval = now.timeIntervalSince(date)
-        func spoken(_ value: Int, _ unit: String) -> String {
-            "Updated \(value) \(unit)\(value == 1 ? "" : "s") ago"
-        }
-        if interval < 60 { return "Updated just now" }
-        if interval < 3600 { return spoken(Int(interval / 60), "minute") }
-        if interval < 86400 { return spoken(Int(interval / 3600), "hour") }
-        if interval < 604800 { return spoken(Int(interval / 86400), "day") }
-        if interval < 2592000 { return spoken(Int(interval / 604800), "week") }
-        return spoken(Int(interval / 2592000), "month")
     }
 
     private func formatCost(_ cost: Double) -> String {
