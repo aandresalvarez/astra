@@ -421,15 +421,16 @@ struct UIStressTextPipelineTests {
                 output += AgentEventRecordingPresentation.responseTextToAppend(delta, after: output)
                 // The provider re-sends the whole envelope with INTERIOR
                 // whitespace shifted, which defeats the cheap trimmed-equality
-                // branch and forces the collapse-the-whole-output fallback.
+                // branch and forces the whitespace-insensitive fallback.
                 let envelope = output.replacingOccurrences(of: "\n", with: " \n")
                 let echoAppend = AgentEventRecordingPresentation.responseTextToAppend(envelope, after: output)
                 if !echoAppend.isEmpty { appended += 1 }
             }
         }
         #expect(appended == 0, "whitespace-shifted envelope echoes must never re-append")
-        // Locally ~120ms; the fallback collapses the whole output per delta,
-        // so a regression here compounds fast.
+        // Locally ~60ms with the bounded fallback (lockstep equality walk +
+        // windowed containment); collapsing the whole output per delta
+        // measured ~130ms here and compounds fast at heavy-tier sizes.
         #expect(elapsed < .seconds(4), "echo dedupe took \(elapsed) for \(output.utf8.count) bytes of output")
     }
 
@@ -448,18 +449,23 @@ struct UIStressTextPipelineTests {
             }
         }
         #expect(output.utf8.count > 60_000)
-        // ~4s idle today (quadratic across the run); headroom for a loaded
-        // machine, still trips if the fallback gets worse.
-        #expect(elapsed < .seconds(15), "echo dedupe took \(elapsed) for \(output.utf8.count) bytes")
+        // Locally ~1.3s with the bounded fallback, dominated by work that is
+        // linear in the bytes this loop feeds in (the envelope itself grows
+        // per tick). Collapsing the whole output per delta measured ~4s idle
+        // here and scales ~4x per 2x ticks, so this budget trips a quadratic
+        // reintroduction while keeping ~4.5x headroom for a loaded machine.
+        #expect(elapsed < .seconds(6), "echo dedupe took \(elapsed) for \(output.utf8.count) bytes")
     }
 
     @Test("a genuine long repeat that matches earlier output is treated as an echo")
     func genuineLongRepeatIsSwallowedByEchoHeuristic() {
         // Documents the deliberate trade-off in responseTextToAppend: any
-        // ≥80-char chunk whose collapsed text already appears in the output is
-        // dropped, even if the agent legitimately repeats itself. If this
-        // starts failing, the heuristic changed and the findings report entry
-        // should be revisited.
+        // ≥80-char chunk whose collapsed text appears in the last
+        // incoming.count + echoSearchWindowSlack characters of the output is
+        // dropped, even if the agent legitimately repeats itself. Repeats
+        // older than that window append again — that boundary is pinned in
+        // AgentEventRecorderTests. If this starts failing, the heuristic
+        // changed and the findings report entry should be revisited.
         let sentence = "The deployment completed successfully and all twelve health checks passed on the first attempt."
         let existing = "Earlier: \(sentence)\nMore detail followed."
         let appended = AgentEventRecordingPresentation.responseTextToAppend(sentence, after: existing)
