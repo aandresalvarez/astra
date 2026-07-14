@@ -486,21 +486,6 @@ struct TaskMainView: View {
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
-    private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        if width < 520 { return 12 }
-        if width < 760 { return 16 }
-        return 32
-    }
-
-    private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
-        let horizontalPadding = chatHorizontalPadding(for: width) * 2
-        let usableWidth = max(240, width - horizontalPadding)
-        guard usableWidth >= 860 else { return usableWidth }
-
-        let proportionalWidth = max(900, usableWidth * 0.78)
-        return min(usableWidth, proportionalWidth, 1280)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             mainContent
@@ -1676,8 +1661,14 @@ struct TaskMainView: View {
                             .id("chatBottom")
                             .background(chatBottomPositionReader())
                     }
-                    .frame(maxWidth: Self.chatColumnMaxWidth(for: viewport.size.width), alignment: .leading)
-                    .padding(.horizontal, Self.chatHorizontalPadding(for: viewport.size.width))
+                    .frame(
+                        maxWidth: TaskChatLayoutGeometry.columnMaxWidth(for: viewport.size.width),
+                        alignment: .leading
+                    )
+                    .padding(
+                        .horizontal,
+                        TaskChatLayoutGeometry.horizontalPadding(for: viewport.size.width)
+                    )
                     .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 }

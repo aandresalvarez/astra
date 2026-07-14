@@ -28,6 +28,27 @@ struct PanelLayoutGeometryTests {
         #expect(mode.disablesLayoutAnimation)
     }
 
+    @Test("Wide transcript keeps one readable text width across shelf toggles")
+    func wideTranscriptWidthIsStableAcrossShelfToggle() {
+        let shelfClosedViewport: CGFloat = 1_688
+        let shelfOpenViewport: CGFloat = 988
+
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) == 900)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == 900)
+        #expect(
+            TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport)
+                == TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport)
+        )
+    }
+
+    @Test("Compact transcript still consumes only its available width")
+    func compactTranscriptWidthRemainsResponsive() {
+        #expect(TaskChatLayoutGeometry.horizontalPadding(for: 500) == 12)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 500) == 476)
+        #expect(TaskChatLayoutGeometry.horizontalPadding(for: 700) == 16)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 700) == 668)
+    }
+
     @Test("A true inspector overlay may animate because detail width stays stable")
     func inspectorOverlayMayAnimate() {
         let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: true)

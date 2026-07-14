@@ -26,6 +26,18 @@ struct UIStressFilesShelfTests {
         }
     }
 
+    @Test("Repeated wide shelf toggles preserve the transcript text constraint")
+    func largeTranscriptShelfToggleWidthStability() {
+        let shelfClosedViewport: CGFloat = 1_688
+        let shelfOpenViewport: CGFloat = 988
+        let expectedWidth = TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport)
+
+        for _ in 0..<10_000 {
+            #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == expectedWidth)
+            #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) == expectedWidth)
+        }
+    }
+
     @Test("Five-thousand-node scan and repeated search stay within guardrail budgets")
     func largeTreeIndexAndSearchBudgets() throws {
         let directory = FileManager.default.temporaryDirectory
