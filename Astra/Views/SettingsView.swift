@@ -24,7 +24,6 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.logRetentionDays) private var logRetentionDays = LoggingPreferences.defaultLogRetentionDays
     @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
     @AppStorage(AppStorageKeys.objectiveDriftDetectionEnabled) private var objectiveDriftDetectionEnabled = false
-    @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
@@ -343,15 +342,13 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("First-run wizard")
                             .font(Stanford.body(14))
-                        Text("Re-run the environment check and catalog overview.")
+                        Text("Review runtime, local access, and workspace setup.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Show Onboarding Again") {
-                        // Flip the gate; ContentView's sheet is bound to
-                        // `!hasCompletedOnboarding` and will re-present.
-                        hasCompletedOnboarding = false
+                        OnboardingReplayRequestService.request()
                     }
                 }
             }

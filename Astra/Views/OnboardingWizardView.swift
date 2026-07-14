@@ -282,17 +282,16 @@ enum OnboardingCapabilitySetup {
 /// them through global access and first workspace setup.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
-/// the wizard matches the rest of the app — cardinal red for primary
-/// actions, lagunita teal for accents, paloAltoGreen / poppy for
-/// success/warn states. All font sizes come from the approved Stanford
-/// scale; no ad hoc `.title2` / `.callout` shortcuts.
+/// the wizard matches the rest of the app — cardinal red for the brand tile,
+/// interactive teal for controls, and semantic success/warning tokens for
+/// readiness. All font sizes come from the approved Stanford scale; no ad hoc
+/// `.title2` / `.callout` shortcuts.
 ///
 /// Steps:
-///   0. Welcome — what ASTRA is + what it needs
-///   1. AI runtime — pick and ready one coding-agent CLI
-///   2. Permissions — macOS access needed for browser control
-///   3. Workspace — create the first workspace and quick-start capabilities
-///   4. Ready — open the configured workspace
+///   0. AI runtime — pick and ready one coding-agent CLI
+///   1. Permissions — review local Keychain and workspace storage access
+///   2. Workspace — create the first workspace and quick-start capabilities
+///   3. Ready — open the configured workspace
 enum WorkspaceCreationOutcome: Equatable {
     case notCreated
     case created
@@ -325,7 +324,7 @@ struct OnboardingWizardView: View {
     /// Optional hook for testing — force a step on init.
     init(
         hasCompletedOnboarding: Binding<Bool>,
-        initialStep: Step = .welcome,
+        initialStep: Step = .requiredCLIs,
         allowsDismiss: Bool = false,
         onDismiss: @escaping () -> Void = {},
         capabilityConfiguration: Binding<OnboardingCapabilityConfiguration> = .constant(OnboardingCapabilityConfiguration()),
@@ -340,35 +339,11 @@ struct OnboardingWizardView: View {
     }
 
     enum Step: Int, CaseIterable, Identifiable {
-        case welcome = 0
-        case requiredCLIs
+        case requiredCLIs = 0
         case permissions
         case workspaceRoot
         case ready
         var id: Int { rawValue }
-
-        var title: String {
-            switch self {
-            case .welcome:        "Welcome to ASTRA"
-            case .requiredCLIs:   "AI Runtime"
-            case .permissions:    "macOS Access"
-            case .workspaceRoot:  "First Workspace"
-            case .ready:          "You're Ready"
-            }
-        }
-
-        /// Short label shown under each dot in the progress bar. Keep
-        /// under ~8 characters so the labels fit without wrapping at
-        /// the wizard's 720pt minimum width.
-        var progressLabel: String {
-            switch self {
-            case .welcome:        "Welcome"
-            case .requiredCLIs:   "Runtime"
-            case .permissions:    "Access"
-            case .workspaceRoot:  "Folder"
-            case .ready:          "Done"
-            }
-        }
     }
 
     @Environment(\.preflightCache) private var preflightCache
@@ -386,30 +361,26 @@ struct OnboardingWizardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                progressBar
-                    .frame(maxWidth: .infinity)
-                if allowsDismiss {
-                    Button("Close") { onDismiss() }
-                        .font(Stanford.body(13))
-                        .keyboardShortcut(.cancelAction)
-                        .accessibilityLabel("Close onboarding")
-                }
-            }
-            .padding(.trailing, allowsDismiss ? 20 : 0)
+            OnboardingProgressHeader(
+                currentStepIndex: currentStep.rawValue,
+                stepCount: Step.allCases.count,
+                allowsDismiss: allowsDismiss,
+                onDismiss: onDismiss
+            )
             Divider()
 
             ScrollView {
                 stepContent
-                    .padding(28)
-                    .frame(maxWidth: 620)
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 38)
+                    .frame(maxWidth: 940)
                     .frame(maxWidth: .infinity)
             }
 
             Divider()
             footerBar
         }
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 920, minHeight: 640)
         .background(Stanford.panelBackground)
         .alert("Continue with unvalidated capabilities?", isPresented: $isShowingWorkspaceValidationWarning) {
             Button("Continue Anyway") {
@@ -426,68 +397,11 @@ struct OnboardingWizardView: View {
         }
     }
 
-    // MARK: - Progress Bar
-
-    private var progressBar: some View {
-        HStack(spacing: 0) {
-            ForEach(Step.allCases) { step in
-                stepIndicator(step)
-                if step != Step.allCases.last {
-                    Rectangle()
-                        .fill(step.rawValue < currentStep.rawValue
-                              ? Stanford.lagunita
-                              : Stanford.sandstone.opacity(0.35))
-                        .frame(height: 2)
-                }
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-    }
-
-    private func stepIndicator(_ step: Step) -> some View {
-        let active = step == currentStep
-        let done = step.rawValue < currentStep.rawValue
-        let dotColor: Color = {
-            if done { return Stanford.lagunita }
-            if active { return Stanford.lagunita.opacity(0.18) }
-            return Stanford.sandstone.opacity(0.25)
-        }()
-        let textColor: Color = {
-            if active { return Stanford.lagunita }
-            if done { return Stanford.lagunita.opacity(0.85) }
-            return Stanford.coolGrey
-        }()
-
-        return HStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 22, height: 22)
-                if done {
-                    Image(systemName: "checkmark")
-                        .font(Stanford.ui(11, weight: .bold))
-                        .foregroundStyle(.white)
-                } else {
-                    Text("\(step.rawValue + 1)")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(active ? Stanford.lagunita : Stanford.coolGrey)
-                }
-            }
-            Text(step.progressLabel)
-                .font(Stanford.caption(12).weight(active ? .semibold : .regular))
-                .foregroundStyle(textColor)
-                .fixedSize(horizontal: true, vertical: false)
-                .lineLimit(1)
-        }
-    }
-
     // MARK: - Step Content Router
 
     @ViewBuilder
     private var stepContent: some View {
         switch currentStep {
-        case .welcome:        welcomeStep
         case .requiredCLIs:   cliStep
         case .permissions:    permissionsStep
         case .workspaceRoot:  workspaceStep
@@ -497,40 +411,31 @@ struct OnboardingWizardView: View {
 
     // MARK: - Steps
 
-    private var welcomeStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            stepHeader(
-                icon: "hand.wave.fill",
-                title: "Welcome to ASTRA",
-                subtitle: "Workspaces, tasks, capabilities, and automation",
-                tint: Stanford.cardinalRed
-            )
-
-            bulletList([
-                ("square.stack.3d.up.fill", "Organize agent work into separate workspaces"),
-                ("puzzlepiece.extension.fill", "Enable capability packages per workspace"),
-                ("sidebar.right", "Use task shelves for plans, text, query, and browser work when relevant")
-            ])
-
-            calloutBox(
-                icon: "info.circle.fill",
-                title: "What ASTRA checks first",
-                body: "ASTRA needs one AI runtime, such as Claude Code or GitHub Copilot. GitHub CLI is only needed when you enable GitHub repository capabilities.",
-                tint: Stanford.sky
-            )
-        }
-    }
-
     private var cliStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            stepHeader(
-                icon: "terminal.fill",
-                title: "Choose an AI Runtime",
-                subtitle: "ASTRA drives a coding-agent CLI on your Mac. Pick one to start — you can add or switch later in Settings.",
-                tint: Stanford.lagunita
-            )
+        let presentation = Step.requiredCLIs.presentation()
 
-            RuntimeSetupSection(model: runtimeSetup)
+        return VStack(alignment: .leading, spacing: 28) {
+            HStack(alignment: .top, spacing: 22) {
+                AstraAppIconTile(size: 64, showsChannelBadge: false)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(presentation.heading)
+                        .font(Stanford.heading(28))
+                        .foregroundStyle(Stanford.readingText)
+                    Text(presentation.subtitle)
+                        .font(Stanford.body(15))
+                        .foregroundStyle(Stanford.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let supportingText = presentation.supportingText {
+                        Text(supportingText)
+                            .font(Stanford.body(13))
+                            .foregroundStyle(Stanford.textSecondary)
+                            .padding(.top, 4)
+                    }
+                }
+            }
+
+            OnboardingRuntimeChooserView(model: runtimeSetup)
         }
         .task {
             runtimeSetup.attach(preflightCache: preflightCache)
@@ -539,35 +444,33 @@ struct OnboardingWizardView: View {
     }
 
     private var permissionsStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let presentation = Step.permissions.presentation()
+
+        return VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "checkmark.shield.fill",
-                title: "macOS Access",
-                subtitle: "Check the local permissions ASTRA needs now. Browser control is verified later, when you use it.",
+                title: presentation.heading,
+                subtitle: presentation.subtitle,
                 tint: Stanford.lagunita
             )
 
             MacOSPermissionsSectionView(
                 context: .onboarding,
                 workspaceRoot: resolvedWorkspaceRoot,
-                model: macOSPermissions
-            )
-
-            calloutBox(
-                icon: "info.circle.fill",
-                title: "Why this matters",
-                body: "ASTRA checks credentials and workspace storage here. Browser control and capability-specific access are checked when you choose to use those features.",
-                tint: Stanford.sky
+                model: macOSPermissions,
+                showsHeader: false
             )
         }
     }
 
     private var workspaceStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let presentation = Step.workspaceRoot.presentation()
+
+        return VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "folder.badge.plus",
-                title: "Create Your First Workspace",
-                subtitle: "Name the workspace, add guidance, and connect the systems this work can use immediately.",
+                title: presentation.heading,
+                subtitle: presentation.subtitle,
                 tint: Stanford.lagunita
             )
 
@@ -579,14 +482,18 @@ struct OnboardingWizardView: View {
                 validationWarnings: $workspaceValidationWarnings
             )
         }
+        .frame(maxWidth: 720, alignment: .leading)
+        .frame(maxWidth: .infinity)
     }
 
     private var readyStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let presentation = Step.ready.presentation(workspaceName: createdWorkspaceName)
+
+        return VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "checkmark.seal.fill",
-                title: "You're Ready",
-                subtitle: "Your workspace is ready. Open it and start asking tasks that use its enabled capabilities.",
+                title: presentation.heading,
+                subtitle: presentation.subtitle,
                 tint: Stanford.paloAltoGreen
             )
 
@@ -654,50 +561,6 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private func bulletList(_ items: [(String, String)]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(items, id: \.1) { icon, text in
-                HStack(spacing: 10) {
-                    Image(systemName: icon)
-                        .font(Stanford.ui(14))
-                        .foregroundStyle(Stanford.lagunita)
-                        .frame(width: 22)
-                    Text(text)
-                        .font(Stanford.body(14))
-                        .foregroundStyle(Stanford.black)
-                }
-            }
-        }
-    }
-
-    private func calloutBox(icon: String, title: String, body: String, tint: Color) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(Stanford.ui(13))
-                .foregroundStyle(tint)
-                .frame(width: 20)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(Stanford.body(13).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(body)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(Stanford.black)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .lineSpacing(2)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(tint.opacity(0.22), lineWidth: 1)
-        )
-    }
-
     private func readinessRow(title: String, status: String, ready: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -746,53 +609,27 @@ struct OnboardingWizardView: View {
     // MARK: - Footer
 
     private var footerBar: some View {
-        HStack(spacing: 10) {
-            if currentStep != .welcome && !(currentStep == .ready && createdWorkspaceName != nil) {
-                Button("Back") { goBack() }
-                    .font(Stanford.body(13))
-            }
+        let presentation = currentStep.presentation(workspaceName: createdWorkspaceName)
+        return OnboardingActionFooter(
+            showsBack: currentStep != Step.allCases.first && !(currentStep == .ready && createdWorkspaceName != nil),
+            blocker: continueBlocker,
+            warning: continueWarning,
+            requirement: continueRequirement,
+            primaryActionTitle: presentation.primaryActionTitle,
+            guidance: presentation.actionGuidance,
+            isPrimaryActionEnabled: canContinueFromCurrentStep,
+            reduceMotion: reduceMotion,
+            onBack: goBack,
+            onPrimaryAction: performPrimaryAction
+        )
+    }
 
-            if let continueBlocker {
-                Label(continueBlocker, systemImage: "exclamationmark.triangle.fill")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.poppy)
-                    .lineLimit(2)
-            } else if let continueWarning {
-                Label(continueWarning, systemImage: "exclamationmark.triangle.fill")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.poppy)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            if currentStep == .ready {
-                Button {
-                    hasCompletedOnboarding = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Open Workspace")
-                        Image(systemName: "arrow.right")
-                    }
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .keyboardShortcut(.defaultAction)
-            } else {
-                Button {
-                    goNext()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Next")
-                        Image(systemName: "arrow.right")
-                    }
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canContinueFromCurrentStep)
-            }
+    private func performPrimaryAction() {
+        if currentStep == .ready {
+            hasCompletedOnboarding = true
+        } else {
+            goNext()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
     }
 
     // MARK: - Actions
@@ -852,9 +689,6 @@ struct OnboardingWizardView: View {
         case .requiredCLIs:
             return runtimeSetup.continueBlockerText
         case .workspaceRoot:
-            if workspaceDraft.trimmedName.isEmpty {
-                return "Name your first workspace before continuing."
-            }
             return workspaceValidationIssues.first
         default:
             return nil
@@ -868,5 +702,13 @@ struct OnboardingWizardView: View {
         default:
             return nil
         }
+    }
+
+    private var continueRequirement: String? {
+        guard currentStep == .workspaceRoot,
+              workspaceDraft.trimmedName.isEmpty else {
+            return nil
+        }
+        return WorkspaceCreationPresentation.emptyNameRequirement
     }
 }

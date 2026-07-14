@@ -216,6 +216,40 @@ struct RuntimeProviderListPresentationTests {
         #expect(installing.primaryAction == .cancelInstall)
     }
 
+    @Test("Onboarding keeps the selected and recommended runtimes above the disclosure")
+    func onboardingKeepsPrimaryRuntimesVisible() {
+        let registryOrder: [AgentRuntimeID] = [
+            .cursorCLI,
+            .openCodeCLI,
+            .codexCLI,
+            .claudeCode,
+            .copilotCLI
+        ]
+        let rows = registryOrder.map { runtime in
+            RuntimeProviderListPresentation.row(
+                runtime: runtime,
+                descriptor: descriptor(for: runtime),
+                selectedRuntime: .cursorCLI,
+                status: .healthy(path: "/usr/bin/\(runtime.rawValue)", version: "1"),
+                isProbing: false,
+                installingRuntime: nil,
+                installCommand: nil
+            )
+        }
+
+        let ordered = OnboardingRuntimeListPresentation.orderedRows(rows, registryOrder: registryOrder)
+
+        #expect(OnboardingRuntimeListPresentation.primaryRows(from: ordered).map(\.id) == [
+            .cursorCLI,
+            .claudeCode,
+            .copilotCLI
+        ])
+        #expect(OnboardingRuntimeListPresentation.additionalRows(from: ordered).map(\.id) == [
+            .openCodeCLI,
+            .codexCLI
+        ])
+    }
+
     private func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
         AgentRuntimeDescriptor(
             id: runtime,
