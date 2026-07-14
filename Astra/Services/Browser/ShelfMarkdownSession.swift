@@ -87,6 +87,23 @@ struct ShelfMarkdownDocument: Identifiable, Equatable {
     }
 }
 
+protocol ShelfDocumentLoading: Sendable {
+    func loadDocument(at url: URL) async -> ShelfMarkdownDocument
+}
+
+struct DefaultShelfDocumentLoader: ShelfDocumentLoading {
+    func loadDocument(at url: URL) async -> ShelfMarkdownDocument {
+        let loadTask = Task.detached(priority: .userInitiated) {
+            ShelfMarkdownSession.makeDocument(for: url)
+        }
+        return await withTaskCancellationHandler {
+            await loadTask.value
+        } onCancel: {
+            loadTask.cancel()
+        }
+    }
+}
+
 private struct ShelfFileMetadata {
     let fileByteSize: Int64
     let modifiedAt: Date?
@@ -114,18 +131,25 @@ private enum ShelfMarkdownSelectionIntent: Equatable {
 
 @MainActor
 final class ShelfMarkdownSession: ObservableObject {
-    static let largeTextPreviewBytes: Int64 = 300_000
-    private static let maxTextDocumentBytes: Int64 = 2_000_000
+    nonisolated static let largeTextPreviewBytes: Int64 = 300_000
+    nonisolated private static let maxTextDocumentBytes: Int64 = 2_000_000
 
     @Published private(set) var documents: [ShelfMarkdownDocument] = []
     @Published private(set) var selectedDocumentID: String?
     @Published private(set) var boundTaskID: UUID?
+    @Published private(set) var loadingDocumentID: String?
     /// Paths the user explicitly closed. A dismissed document never comes back
     /// through `loadAutomaticallyIfAllowed` — under any task binding — until a
     /// manual `load(_:)` re-legitimizes it: closing a tab is a statement about
     /// the document, not about whichever task happened to be bound.
     private var dismissedDocumentPaths: Set<String> = []
     private var selectionIntentsByTask: [ShelfMarkdownTaskBinding: ShelfMarkdownSelectionIntent] = [:]
+    private let documentLoader: any ShelfDocumentLoading
+    private var documentLoadGeneration = 0
+
+    init(documentLoader: any ShelfDocumentLoading = DefaultShelfDocumentLoader()) {
+        self.documentLoader = documentLoader
+    }
 
     var selectedDocument: ShelfMarkdownDocument? {
         guard let selectedDocumentID else { return nil }
@@ -176,8 +200,13 @@ final class ShelfMarkdownSession: ObservableObject {
         selectedDocument != nil
     }
 
+    var isLoadingDocument: Bool {
+        loadingDocumentID != nil
+    }
+
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
+        cancelPendingDocumentLoad()
         boundTaskID = taskID
         if case .document(let restoredID)? = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: taskID)],
            documents.contains(where: { $0.id == restoredID }) {
@@ -188,6 +217,7 @@ final class ShelfMarkdownSession: ObservableObject {
     }
 
     func load(_ url: URL) {
+        cancelPendingDocumentLoad()
         dismissedDocumentPaths.remove(url.path)
         let documentID = url.path
         if let index = documents.firstIndex(where: { $0.id == documentID }),
@@ -199,6 +229,52 @@ final class ShelfMarkdownSession: ObservableObject {
         }
 
         let document = Self.makeDocument(for: url)
+        applyLoadedDocument(document)
+    }
+
+    @discardableResult
+    func loadAsync(_ url: URL) async -> Bool {
+        dismissedDocumentPaths.remove(url.path)
+        documentLoadGeneration &+= 1
+        let generation = documentLoadGeneration
+        loadingDocumentID = url.path
+        defer {
+            if generation == documentLoadGeneration {
+                loadingDocumentID = nil
+            }
+        }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let document = await documentLoader.loadDocument(at: url)
+        guard !Task.isCancelled,
+              generation == documentLoadGeneration,
+              !dismissedDocumentPaths.contains(url.path) else { return false }
+        if let existing = documents.first(where: { $0.id == document.id }), existing.isDirty {
+            return false
+        }
+
+        applyLoadedDocument(document)
+        FilesShelfResponsivenessTelemetry.logPreviewLoad(
+            durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt),
+            kind: document.kind,
+            byteCount: document.fileByteSize,
+            outcome: document.errorMessage == nil ? "ready" : "error",
+            taskID: boundTaskID
+        )
+        if document.errorMessage != nil {
+            PerformanceTelemetry.log(
+                "files_shelf_preview_error",
+                level: .warning,
+                fields: [
+                    "kind": document.kind.rawValue,
+                    "byte_bucket": PerformanceTelemetryFields.byteBucket(Int(clamping: document.fileByteSize))
+                ],
+                taskID: boundTaskID
+            )
+        }
+        return true
+    }
+
+    private func applyLoadedDocument(_ document: ShelfMarkdownDocument) {
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if documents[index] != document {
                 documents[index] = document
@@ -228,13 +304,30 @@ final class ShelfMarkdownSession: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func loadAutomaticallyIfAllowedAsync(_ url: URL) async -> Bool {
+        guard !dismissedDocumentPaths.contains(url.path) else { return false }
+        let intent = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: boundTaskID)]
+        guard intent != .cleared, fileURL?.path != url.path else { return false }
+        if case .document(let chosenID)? = intent,
+           documents.contains(where: { $0.id == chosenID }),
+           documents.contains(where: { $0.id == url.path }) {
+            return false
+        }
+        return await loadAsync(url)
+    }
+
     func selectDocument(_ id: String) {
         guard documents.contains(where: { $0.id == id }) else { return }
+        cancelPendingDocumentLoad()
         selectDocumentID(id)
     }
 
     func closeDocument(_ id: String) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        if loadingDocumentID == id {
+            cancelPendingDocumentLoad()
+        }
         dismissedDocumentPaths.insert(id)
         let wasSelected = selectedDocumentID == id
         documents.remove(at: index)
@@ -261,6 +354,13 @@ final class ShelfMarkdownSession: ObservableObject {
     func closeSelectedDocument() {
         guard let selectedDocumentID else { return }
         closeDocument(selectedDocumentID)
+    }
+
+    func cancelPendingDocumentLoad() {
+        documentLoadGeneration &+= 1
+        if loadingDocumentID != nil {
+            loadingDocumentID = nil
+        }
     }
 
     func reload() {
@@ -352,7 +452,7 @@ final class ShelfMarkdownSession: ObservableObject {
         return preview.signature == contentSignature(for: url, metadata: metadata, content: "")
     }
 
-    private static func makeDocument(for url: URL) -> ShelfMarkdownDocument {
+    nonisolated static func makeDocument(for url: URL) -> ShelfMarkdownDocument {
         let kind = ShelfTextDocumentKind.infer(from: url)
         let content: String
         let errorMessage: String?
@@ -477,7 +577,7 @@ final class ShelfMarkdownSession: ObservableObject {
         )
     }
 
-    private static func makeJSONPreview(
+    nonisolated private static func makeJSONPreview(
         content: String,
         kind: ShelfTextDocumentKind
     ) -> (content: String?, errorMessage: String?) {
@@ -497,7 +597,7 @@ final class ShelfMarkdownSession: ObservableObject {
         }
     }
 
-    private static func imagePreview(
+    nonisolated private static func imagePreview(
         for url: URL,
         metadata: ShelfFileMetadata
     ) -> ShelfImagePreview? {
@@ -510,7 +610,7 @@ final class ShelfMarkdownSession: ObservableObject {
         )
     }
 
-    private static func imagePixelSize(for image: NSImage) -> CGSize? {
+    nonisolated private static func imagePixelSize(for image: NSImage) -> CGSize? {
         let representation = image.representations.max { lhs, rhs in
             lhs.pixelsWide * lhs.pixelsHigh < rhs.pixelsWide * rhs.pixelsHigh
         }
@@ -522,7 +622,7 @@ final class ShelfMarkdownSession: ObservableObject {
         return CGSize(width: representation.pixelsWide, height: representation.pixelsHigh)
     }
 
-    private static func fileMetadata(for url: URL) throws -> ShelfFileMetadata {
+    nonisolated private static func fileMetadata(for url: URL) throws -> ShelfFileMetadata {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let byteSize: Int64
         if let size = attributes[.size] as? NSNumber {
@@ -536,7 +636,7 @@ final class ShelfMarkdownSession: ObservableObject {
         )
     }
 
-    private static func contentSignature(
+    nonisolated private static func contentSignature(
         for url: URL,
         metadata: ShelfFileMetadata,
         content: String
@@ -549,7 +649,7 @@ final class ShelfMarkdownSession: ObservableObject {
         )
     }
 
-    private static func contentSignature(
+    nonisolated private static func contentSignature(
         for url: URL,
         fileByteSize: Int64,
         modifiedAt: Date?,
@@ -559,7 +659,7 @@ final class ShelfMarkdownSession: ObservableObject {
         return "\(url.path)|\(fileByteSize)|\(modified)|\(contentHash(content))"
     }
 
-    private static func contentHash(_ content: String) -> String {
+    nonisolated private static func contentHash(_ content: String) -> String {
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in content.utf8 {
             hash ^= UInt64(byte)

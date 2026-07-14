@@ -152,6 +152,7 @@ enum UIResponsivenessDiagnostics {
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
             || event.hasPrefix("run_finalize_")
+            || event.hasPrefix("files_shelf_")
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
     }

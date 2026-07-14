@@ -46,6 +46,67 @@ enum WorkspaceRightPanel: Equatable {
     }
 }
 
+/// A docked panel changes the task transcript's available width. Animating that
+/// width asks every visible Markdown block to reflow on every animation frame,
+/// which turns a short decorative transition into multi-second main-actor work
+/// on long conversations. Docked panels therefore commit their final geometry
+/// once; only a true overlay may animate because it leaves detail width stable.
+enum WorkspaceRightPanelTransitionMode: Equatable {
+    case immediateDocked
+    case animatedOverlay
+
+    static func resolve(usesInspectorOverlay: Bool) -> Self {
+        usesInspectorOverlay ? .animatedOverlay : .immediateDocked
+    }
+
+    var animatesPanel: Bool {
+        self == .animatedOverlay
+    }
+
+    var disablesLayoutAnimation: Bool {
+        self == .immediateDocked
+    }
+}
+
+/// Determines whether a right panel participates in the task detail's layout
+/// proposal. Canvas shelves are composited over a stable, full-width detail
+/// surface. Only the chat's readable inner surface receives the unobscured
+/// width, avoiding a new proposal for the complete retained task hierarchy.
+/// The workspace context panel keeps its existing docked/compact behavior.
+enum WorkspaceRightPanelLayoutMode: Equatable {
+    case detailOnly
+    case dockedContext
+    case compositedCanvas
+    case overlayContext
+
+    static func resolve(
+        panel: WorkspaceRightPanel?,
+        usesInspectorOverlay: Bool
+    ) -> Self {
+        guard let panel else { return .detailOnly }
+        switch panel {
+        case .canvas:
+            return .compositedCanvas
+        case .context:
+            return usesInspectorOverlay ? .overlayContext : .dockedContext
+        }
+    }
+
+    var preservesDetailProposalWidth: Bool {
+        self != .dockedContext
+    }
+
+    func detailProposalWidth(availableWidth: CGFloat, panelWidth: CGFloat) -> CGFloat {
+        preservesDetailProposalWidth ? availableWidth : max(0, availableWidth - panelWidth)
+    }
+
+    func detailUnobscuredWidth(availableWidth: CGFloat, panelWidth: CGFloat) -> CGFloat {
+        self == .compositedCanvas
+            ? max(0, availableWidth - panelWidth)
+            : detailProposalWidth(availableWidth: availableWidth, panelWidth: panelWidth)
+    }
+}
+
 struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false

@@ -19,6 +19,90 @@ import ASTRAModels
 @Suite("PanelLayoutGeometry")
 struct PanelLayoutGeometryTests {
 
+    @Test("Docked shelves commit final geometry without animating transcript width")
+    func dockedShelvesDoNotAnimateLayout() {
+        let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: false)
+
+        #expect(mode == .immediateDocked)
+        #expect(!mode.animatesPanel)
+        #expect(mode.disablesLayoutAnimation)
+    }
+
+    @Test("Wide transcript uses the available width across shelf toggles")
+    func wideTranscriptUsesAvailableSpaceAcrossShelfToggle() {
+        let shelfClosedViewport: CGFloat = 1_350
+        let shelfOpenViewport: CGFloat = 650
+
+        #expect(abs(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) - 1_003.08) < 0.01)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == 618)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) > 900)
+    }
+
+    @Test("Compact transcript still consumes only its available width")
+    func compactTranscriptWidthRemainsResponsive() {
+        #expect(TaskChatLayoutGeometry.horizontalPadding(for: 500) == 12)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 500) == 476)
+        #expect(TaskChatLayoutGeometry.horizontalPadding(for: 700) == 16)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 700) == 668)
+    }
+
+    @Test("Chat viewport uses only the detail width not obscured by the Files shelf")
+    func chatViewportFitsBesideCanvasShelf() {
+        #expect(
+            TaskChatLayoutGeometry.visibleViewportWidth(
+                proposedWidth: 1_350,
+                unobscuredWidth: 650
+            ) == 650
+        )
+        #expect(
+            TaskChatLayoutGeometry.visibleViewportWidth(
+                proposedWidth: 1_350,
+                unobscuredWidth: 1_700
+            ) == 1_350
+        )
+    }
+
+    @Test("Canvas shelf preserves the task proposal and exposes its unobscured width")
+    func canvasShelfUsesCompositedLayout() {
+        let mode = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .canvas(.markdown),
+            usesInspectorOverlay: false
+        )
+
+        #expect(mode == .compositedCanvas)
+        #expect(mode.detailProposalWidth(availableWidth: 1_350, panelWidth: 700) == 1_350)
+        #expect(mode.detailUnobscuredWidth(availableWidth: 1_350, panelWidth: 700) == 650)
+    }
+
+    @Test("Workspace context retains docked and compact overlay proposals")
+    func workspaceContextRetainsExistingPlacement() {
+        let workspaceID = UUID()
+        let docked = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .context(workspaceID),
+            usesInspectorOverlay: false
+        )
+        let overlay = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .context(workspaceID),
+            usesInspectorOverlay: true
+        )
+
+        #expect(docked == .dockedContext)
+        #expect(docked.detailProposalWidth(availableWidth: 1_200, panelWidth: 392) == 808)
+        #expect(docked.detailUnobscuredWidth(availableWidth: 1_200, panelWidth: 392) == 808)
+        #expect(overlay == .overlayContext)
+        #expect(overlay.detailProposalWidth(availableWidth: 700, panelWidth: 392) == 700)
+        #expect(overlay.detailUnobscuredWidth(availableWidth: 700, panelWidth: 392) == 700)
+    }
+
+    @Test("A true inspector overlay may animate because detail width stays stable")
+    func inspectorOverlayMayAnimate() {
+        let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: true)
+
+        #expect(mode == .animatedOverlay)
+        #expect(mode.animatesPanel)
+        #expect(!mode.disablesLayoutAnimation)
+    }
+
     // MARK: - Constants
 
     @Test("Compact threshold matches the production constant")

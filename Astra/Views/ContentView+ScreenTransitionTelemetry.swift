@@ -25,6 +25,20 @@ extension ContentView {
         taskID: UUID? = nil,
         usesSelectedTask: Bool = true
     ) {
+        if destination == "shelf_markdown" {
+            let workspace = selectedTask?.workspace ?? effectiveWorkspace
+            FilesShelfResponsivenessTelemetry.begin(
+                source: source,
+                taskID: usesSelectedTask ? selectedTask?.id : taskID,
+                workspaceID: workspace?.id,
+                scope: taskOpenResponsivenessScope
+            )
+        } else {
+            FilesShelfResponsivenessTelemetry.cancel(
+                scope: taskOpenResponsivenessScope,
+                reason: "destination_changed"
+            )
+        }
         screenTransitionCoordinator.begin(
             destination: destination,
             source: source,

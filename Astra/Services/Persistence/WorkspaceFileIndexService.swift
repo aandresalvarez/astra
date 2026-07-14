@@ -2,8 +2,8 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-public struct WorkspaceFileRoot: Identifiable, Hashable {
-    public enum Kind: String, Hashable {
+public struct WorkspaceFileRoot: Identifiable, Hashable, Sendable {
+    public enum Kind: String, Hashable, Sendable {
         case primary
         case additional
         case taskFolder
@@ -40,7 +40,7 @@ public struct WorkspaceFileRoot: Identifiable, Hashable {
     }
 }
 
-public struct WorkspaceFileNode: Identifiable, Hashable {
+public struct WorkspaceFileNode: Identifiable, Hashable, Sendable {
     public let id: String
     public let rootID: String
     public let path: String
@@ -51,6 +51,9 @@ public struct WorkspaceFileNode: Identifiable, Hashable {
     public let size: Int64
     public let modifiedAt: Date?
     public let destination: TaskGeneratedFileShelfDestination?
+    /// Pre-normalized once during indexing so a broad shelf search does not
+    /// allocate three lowercase copies per node on the main actor.
+    public let normalizedSearchText: String
 
     public init(
         id: String,
@@ -62,7 +65,8 @@ public struct WorkspaceFileNode: Identifiable, Hashable {
         depth: Int,
         size: Int64,
         modifiedAt: Date?,
-        destination: TaskGeneratedFileShelfDestination?
+        destination: TaskGeneratedFileShelfDestination?,
+        normalizedSearchText: String? = nil
     ) {
         self.id = id
         self.rootID = rootID
@@ -74,6 +78,8 @@ public struct WorkspaceFileNode: Identifiable, Hashable {
         self.size = size
         self.modifiedAt = modifiedAt
         self.destination = destination
+        self.normalizedSearchText = normalizedSearchText
+            ?? [name, relativePath, path].joined(separator: "\n").lowercased()
     }
 
     public var parentRelativePath: String {
@@ -82,17 +88,31 @@ public struct WorkspaceFileNode: Identifiable, Hashable {
     }
 }
 
-public struct WorkspaceFileIndexError: Hashable {
+public struct WorkspaceFileIndexError: Hashable, Sendable {
     public let rootID: String
     public let path: String
     public let message: String
 }
 
-public struct WorkspaceFileIndexSnapshot {
+public struct WorkspaceFileIndexSnapshot: Sendable {
     public let roots: [WorkspaceFileRoot]
     public let nodes: [WorkspaceFileNode]
+    public let nodesByRoot: [String: [WorkspaceFileNode]]
     public let errors: [WorkspaceFileIndexError]
     public let isTruncated: Bool
+
+    public init(
+        roots: [WorkspaceFileRoot],
+        nodes: [WorkspaceFileNode],
+        errors: [WorkspaceFileIndexError],
+        isTruncated: Bool
+    ) {
+        self.roots = roots
+        self.nodes = nodes
+        self.nodesByRoot = Dictionary(grouping: nodes, by: \.rootID)
+        self.errors = errors
+        self.isTruncated = isTruncated
+    }
 }
 
 public enum WorkspaceFileIndexService {

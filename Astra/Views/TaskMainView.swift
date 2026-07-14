@@ -270,6 +270,7 @@ struct TaskMainView: View {
 
     @Environment(\.modelContext) var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.taskChatUnobscuredWidth) private var taskChatUnobscuredWidth
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
@@ -486,33 +487,21 @@ struct TaskMainView: View {
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
-    private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        if width < 520 { return 12 }
-        if width < 760 { return 16 }
-        return 32
-    }
-
-    private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
-        let horizontalPadding = chatHorizontalPadding(for: width) * 2
-        let usableWidth = max(240, width - horizontalPadding)
-        guard usableWidth >= 860 else { return usableWidth }
-
-        let proportionalWidth = max(900, usableWidth * 0.78)
-        return min(usableWidth, proportionalWidth, 1280)
-    }
-
     var body: some View {
+        let dockPresentation = taskDecisionDockPresentation
+        let decisionDockVisible = dockPresentation != nil
+
         VStack(spacing: 0) {
-            mainContent
+            mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 
-            composerView
+            composerView(decisionDockPresentation: dockPresentation)
         }
         .navigationTitle("")
         .navigationSubtitle("")
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                taskTitleToolbar
+                taskTitleToolbar(decisionDockVisible: decisionDockVisible)
             }
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -849,10 +838,10 @@ struct TaskMainView: View {
 
     // MARK: - Header Actions
 
-    private var taskTitleToolbar: some View {
+    private func taskTitleToolbar(decisionDockVisible: Bool) -> some View {
         HStack(alignment: .center, spacing: 10) {
             taskTitleGroup
-            taskControlBar
+            taskControlBar(decisionDockVisible: decisionDockVisible)
         }
         .padding(.leading, 12)
         .padding(.trailing, 8)
@@ -871,13 +860,13 @@ struct TaskMainView: View {
             .frame(maxWidth: 420, alignment: .leading)
     }
 
-    private var taskControlBar: some View {
+    private func taskControlBar(decisionDockVisible: Bool) -> some View {
         HStack(spacing: 6) {
             filesButton
             // While the dock is visible its Details inspector owns the
             // diagnostics entry ("Open Diagnostics"); showing the header chip
             // too reads as a second diagnostics button.
-            if diagnosticFileCount > 0, !shouldShowTaskDecisionDock {
+            if diagnosticFileCount > 0, !decisionDockVisible {
                 diagnosticsButton
             }
             if task.status != .draft {
@@ -1366,8 +1355,8 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private var mainContent: some View {
-        summaryContent
+    private func mainContent(decisionDockVisible: Bool) -> some View {
+        summaryContent(decisionDockVisible: decisionDockVisible)
     }
 
     private var contextPreviewRequest: PromptContextPreviewRequest {
@@ -1661,25 +1650,36 @@ struct TaskMainView: View {
         .help("More actions")
     }
 
-    private var summaryContent: some View {
+    private func summaryContent(decisionDockVisible: Bool) -> some View {
         ScrollViewReader { proxy in
             GeometryReader { viewport in
+                let chatViewportWidth = TaskChatLayoutGeometry.visibleViewportWidth(
+                    proposedWidth: viewport.size.width,
+                    unobscuredWidth: taskChatUnobscuredWidth
+                )
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         Color.clear
                             .frame(height: 1)
                             .id("chatTop")
                             .background(chatTopPositionReader())
-                        chatThreadContent
+                        chatThreadContent(decisionDockVisible: decisionDockVisible)
                         Color.clear
                             .frame(height: 1)
                             .id("chatBottom")
                             .background(chatBottomPositionReader())
                     }
-                    .frame(maxWidth: Self.chatColumnMaxWidth(for: viewport.size.width), alignment: .leading)
-                    .padding(.horizontal, Self.chatHorizontalPadding(for: viewport.size.width))
+                    .frame(
+                        maxWidth: TaskChatLayoutGeometry.columnMaxWidth(for: chatViewportWidth),
+                        alignment: .leading
+                    )
+                    .padding(
+                        .horizontal,
+                        TaskChatLayoutGeometry.horizontalPadding(for: chatViewportWidth)
+                    )
                     .padding(.vertical, 16)
-                    .frame(maxWidth: .infinity)
+                    .frame(width: chatViewportWidth)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .coordinateSpace(name: "task-chat-scroll")
                 .overlay(alignment: .bottom) {
@@ -1743,14 +1743,14 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private var chatThreadContent: some View {
+    private func chatThreadContent(decisionDockVisible: Bool) -> some View {
         PerformanceSignposts.renderTaskThread {
-            chatThreadContentBody
+            chatThreadContentBody(decisionDockVisible: decisionDockVisible)
         }
     }
 
     @ViewBuilder
-    private var chatThreadContentBody: some View {
+    private func chatThreadContentBody(decisionDockVisible: Bool) -> some View {
         if task.isForked {
             forkContextBanner
                 .padding(.horizontal, 14)
@@ -1771,10 +1771,9 @@ struct TaskMainView: View {
         }
 
         ForEach(currentThreadSnapshot.conversationItems) { item in
-            conversationItemView(item)
+            conversationItemView(item, decisionDockVisible: decisionDockVisible)
                 .id(item.id)
         }
-
     }
 
     @ViewBuilder
@@ -2129,7 +2128,7 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private func conversationItemView(_ item: TaskConversationItem) -> some View {
+    private func conversationItemView(_ item: TaskConversationItem, decisionDockVisible: Bool) -> some View {
         switch item {
         case .userMessage(let text, let timestamp):
             chatUserBubble(text: text, timestamp: timestamp)
@@ -2138,7 +2137,7 @@ struct TaskMainView: View {
         case .planAssistantMessage(let text, let timestamp):
             planAssistantBubble(text: text, timestamp: timestamp)
         case .agentResponse(let run):
-            chatAgentBubble(run: run)
+            chatAgentBubble(run: run, decisionDockVisible: decisionDockVisible)
         case .scheduleResult(let text, let timestamp):
             scheduleResultBubble(text: text, timestamp: timestamp)
         case .systemInfo(let text, let timestamp, let count):
@@ -2463,7 +2462,10 @@ struct TaskMainView: View {
         .accessibilityLabel("Planning response")
     }
 
-    private func chatAgentBubble(run: TaskRunSnapshot) -> some View {
+    private func chatAgentBubble(
+        run: TaskRunSnapshot,
+        decisionDockVisible: Bool
+    ) -> some View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
         let outputPresentation = currentThreadSnapshot.outputPresentation(for: run)
@@ -2566,7 +2568,8 @@ struct TaskMainView: View {
                 .padding(.top, 2)
             }
 
-            if shouldShowRunActivityDisclosure(runActivityPresentation), !runDetailsLiveInDock(run) {
+            if shouldShowRunActivityDisclosure(runActivityPresentation),
+               !runDetailsLiveInDock(run, decisionDockVisible: decisionDockVisible) {
                 runActivityDisclosure(
                     run: run,
                     presentation: runActivityPresentation,
@@ -4217,10 +4220,6 @@ struct TaskMainView: View {
         runtimePermissionState.canApproveSimilarForTask
     }
 
-    private var shouldShowTaskDecisionDock: Bool {
-        taskDecisionDockPresentation != nil
-    }
-
     private var latestRunHasNoUsableResult: Bool {
         pendingTaskDismissalReason == .noUsableResult ||
             pendingTaskDismissalReason == .missingRequiredArtifact
@@ -4255,24 +4254,22 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private var taskDecisionDock: some View {
-        if let presentation = taskDecisionDockPresentation {
-            TaskDecisionDockView(
-                presentation: presentation,
-                isExpanded: $isTaskDecisionDetailsExpanded,
-                onAction: handleTaskDecisionDockAction,
-                onOpenDiagnostics: diagnosticFileCount > 0 ? { openDiagnosticsInOwnView() } : nil,
-                extendedDetails: { dockExtendedRunDetails }
-            )
-            .onAppear {
-                deferTaskViewMutation {
-                    isTaskDecisionDetailsExpanded = false
-                }
+    private func taskDecisionDock(_ presentation: TaskDecisionDockPresentation) -> some View {
+        TaskDecisionDockView(
+            presentation: presentation,
+            isExpanded: $isTaskDecisionDetailsExpanded,
+            onAction: handleTaskDecisionDockAction,
+            onOpenDiagnostics: diagnosticFileCount > 0 ? { openDiagnosticsInOwnView() } : nil,
+            extendedDetails: { dockExtendedRunDetails }
+        )
+        .onAppear {
+            deferTaskViewMutation {
+                isTaskDecisionDetailsExpanded = false
             }
-            .onChange(of: presentation.id) { _, _ in
-                deferTaskViewMutation {
-                    isTaskDecisionDetailsExpanded = false
-                }
+        }
+        .onChange(of: presentation.id) { _, _ in
+            deferTaskViewMutation {
+                isTaskDecisionDetailsExpanded = false
             }
         }
     }
@@ -4305,10 +4302,10 @@ struct TaskMainView: View {
         }
     }
 
-    private func runDetailsLiveInDock(_ run: TaskRunSnapshot) -> Bool {
+    private func runDetailsLiveInDock(_ run: TaskRunSnapshot, decisionDockVisible: Bool) -> Bool {
         TaskRunNoticePresentationRules.detailsLiveInDock(
             runStatus: run.status,
-            dockVisible: shouldShowTaskDecisionDock
+            dockVisible: decisionDockVisible
         )
     }
 
@@ -4925,13 +4922,15 @@ struct TaskMainView: View {
         }
     }
 
-    private var composerView: some View {
+    private func composerView(
+        decisionDockPresentation: TaskDecisionDockPresentation?
+    ) -> some View {
         let composerShape = RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
 
         return VStack(spacing: 0) {
             VStack(spacing: 0) {
-                if shouldShowTaskDecisionDock {
-                    taskDecisionDock
+                if let decisionDockPresentation {
+                    taskDecisionDock(decisionDockPresentation)
                         .padding(.horizontal, TaskComposerPresentation.decisionDockHorizontalPadding)
                         .padding(.top, TaskComposerPresentation.decisionDockTopPadding)
                         .padding(.bottom, TaskComposerPresentation.decisionDockBottomPadding)
@@ -5002,13 +5001,13 @@ struct TaskMainView: View {
                     runtimeReadinessStates: runtimeReadinessStates,
                     taskStatus: task.status,
                     taskStatusOverride: composerTaskStatusOverride,
-                    showsTaskStatusPill: !shouldShowTaskDecisionDock,
+                    showsTaskStatusPill: decisionDockPresentation == nil,
                     isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
                     onSend: { sendMessage() },
-                    onStop: (shouldShowTaskDecisionDock || onCancelTask == nil) ? nil : { onCancelTask?(task) },
+                    onStop: (decisionDockPresentation != nil || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
                         TaskComposerCoordinator.applyRuntimeSwitch(
@@ -5119,6 +5118,7 @@ struct TaskMainView: View {
                 return true
             }
         }
+        .taskChatContainerFrame(unobscuredWidth: taskChatUnobscuredWidth)
     }
 
     /// Smart paste: inspect clipboard and route to the right action.

@@ -47,7 +47,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
-    @State private var taskOpenResponsivenessScope = UUID()
+    @State var taskOpenResponsivenessScope = UUID()
     @State var screenTransitionCoordinator = ScreenTransitionCoordinator()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
@@ -198,7 +198,7 @@ struct ContentView: View {
         sceneSelection.isComposingWorkspaceApp
     }
 
-    private var effectiveWorkspace: Workspace? {
+    var effectiveWorkspace: Workspace? {
         sceneCoordinator.effectiveWorkspace
     }
 
@@ -589,6 +589,7 @@ struct ContentView: View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
+            filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: runtime.taskQueue,
@@ -1263,9 +1264,10 @@ struct ContentView: View {
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
         beginScreenTransitionIfNeeded(to: item, source: "shelf_action")
-        animatePanelChange {
+        commitWorkspaceCanvasItemChange {
             rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
@@ -1284,7 +1286,24 @@ struct ContentView: View {
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
         beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
-        rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
+        commitWorkspaceCanvasItemChange {
+            rightPanel.setActiveCanvasItem(
+                item,
+                remember: remember,
+                conversationID: selectedWorkspaceCanvasConversationID
+            )
+        }
+        screenTransitionCoordinator.stateCommitted()
+    }
+
+    /// Canvas shelves are docked beside the transcript. Committing the final
+    /// geometry in one transaction prevents an enclosing `withAnimation` from
+    /// interpolating transcript width and re-laying out long Markdown chats on
+    /// every frame.
+    private func commitWorkspaceCanvasItemChange(_ changes: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, changes)
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
@@ -1334,10 +1353,11 @@ struct ContentView: View {
         case .plan:
             return
         case .markdown:
-            currentMarkdownSession.bindToTask(selectedTask?.id)
+            let session = currentMarkdownSession
+            session.bindToTask(selectedTask?.id)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
+            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1416,10 +1436,11 @@ struct ContentView: View {
             }
             return
         }
-        currentMarkdownSession.bindToTask(selectedTask?.id)
+        let session = currentMarkdownSession
+        session.bindToTask(selectedTask?.id)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
+            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
@@ -1849,8 +1870,8 @@ struct ContentView: View {
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
             let session = currentMarkdownSession
-            session.load(url)
             presentCanvas(.markdown)
+            Task { await session.loadAsync(url) }
             return
 
         case .query?:
@@ -1892,12 +1913,12 @@ struct ContentView: View {
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
         let session = currentMarkdownSession
-        session.load(url)
         AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
             "path": url.path,
             "result": FileManager.default.fileExists(atPath: url.path) ? "opened" : "missing"
         ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
         presentCanvas(.markdown)
+        Task { await session.loadAsync(url) }
     }
 
     private func syncBrowserPresentation() {
@@ -2787,6 +2808,7 @@ private struct ContentToolbar: ToolbarContent {
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
     let taskOpenResponsivenessScope: UUID
+    let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -2814,6 +2836,7 @@ private struct ContentDetailAreaView: View {
     @State private var rightRailDragStartWidth: CGFloat?
     @State private var rightRailTransientWidth: CGFloat?
     @State private var isResizingRightRail = false
+    @StateObject private var markdownFileIndex = ShelfFileIndexController()
 
     let onQuickRun: (AgentTask) -> Void
     let onTaskCreated: (AgentTask) -> Void
@@ -2873,25 +2896,29 @@ private struct ContentDetailAreaView: View {
             let dockedPanelWidth = activePanel.flatMap { panel in
                 usesInspectorOverlay ? nil : rightPanelWidth(for: panel, availableWidth: availableWidth, isOverlay: false)
             } ?? 0
-            let detailWidth = max(0, proxy.size.width - dockedPanelWidth)
-
+            let layoutMode = WorkspaceRightPanelLayoutMode.resolve(
+                panel: activePanel, usesInspectorOverlay: usesInspectorOverlay
+            )
+            let detailProposalWidth = layoutMode.detailProposalWidth(
+                availableWidth: availableWidth, panelWidth: dockedPanelWidth
+            )
+            let detailUnobscuredWidth = layoutMode.detailUnobscuredWidth(availableWidth: availableWidth, panelWidth: dockedPanelWidth)
+            let transitionMode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: usesInspectorOverlay)
             ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    detailContent
-                        .frame(width: usesInspectorOverlay ? proxy.size.width : detailWidth, height: proxy.size.height)
-                        .clipped()
-
-                    if let activePanel, !usesInspectorOverlay {
-                        rightPanel(
-                            activePanel,
-                            width: dockedPanelWidth,
-                            availableWidth: availableWidth,
-                            isOverlay: false
-                        )
-                        .transition(panelSlideTransition)
-                    }
+                detailContent
+                    .environment(\.taskChatUnobscuredWidth, detailUnobscuredWidth)
+                    .frame(width: detailProposalWidth, height: proxy.size.height)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
+                    .clipped()
+                if let activePanel, !usesInspectorOverlay {
+                    rightPanel(
+                        activePanel,
+                        width: dockedPanelWidth,
+                        availableWidth: availableWidth,
+                        isOverlay: false
+                    )
+                    .zIndex(1)
                 }
-                .frame(width: proxy.size.width, height: proxy.size.height)
 
                 if let activePanel, usesInspectorOverlay {
                     let overlayWidth = rightPanelWidth(for: activePanel, availableWidth: availableWidth, isOverlay: true)
@@ -2908,10 +2935,21 @@ private struct ContentDetailAreaView: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .animation(
+                transitionMode.animatesPanel ? panelAnimation : nil,
+                value: activeRightPanel
+            )
         }
         .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(panelAnimation, value: activeRightPanel)
+        .onChange(of: activeCanvasItem) { oldValue, newValue in
+            guard oldValue == .markdown, newValue != .markdown else { return }
+            markdownFileIndex.cancel(
+                responsivenessScope: filesShelfResponsivenessScope,
+                reason: "shelf_closed"
+            )
+            markdownSession.cancelPendingDocumentLoad()
+        }
     }
 
     private var activeRightPanel: WorkspaceRightPanel? {
@@ -3250,10 +3288,12 @@ private struct ContentDetailAreaView: View {
         case .markdown:
             ShelfMarkdownPanelView(
                 session: markdownSession,
+                fileIndex: markdownFileIndex,
                 isPinnedToTask: $isMarkdownPinnedToTask,
                 workspace: effectiveWorkspace,
                 task: selectedTask,
-                onOpenGeneratedFile: onOpenGeneratedFile
+                onOpenGeneratedFile: onOpenGeneratedFile,
+                responsivenessScope: filesShelfResponsivenessScope
             )
         case .browser:
             ShelfBrowserPanelView(
