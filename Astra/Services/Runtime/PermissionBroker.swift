@@ -733,7 +733,8 @@ enum PermissionBroker {
     }
 
     private static func actionableShellSegments(_ command: String) -> [String] {
-        let rawSegments = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
+        let rawSegments = shellSegmentSeparatorsNormalized(semanticCommand)
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)
         var segments: [String] = []

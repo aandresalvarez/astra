@@ -344,7 +344,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         let matchesProviderAllowedTool = toolMatches(
             toolName,
             command: observed.command,
-            candidates: manifest.providerRender.allowedTools,
+            candidates: effectiveAllowedToolCandidates,
             shellMatchMode: .allActionableSegments
         )
         let matchesAllowedTool = (matchesProviderAllowedTool && !mutationNeedsScopedApproval)
@@ -934,7 +934,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func toolPatternAllowsShellCommand(_ command: String) -> Bool {
-        manifest.providerRender.allowedTools.contains { candidate in
+        effectiveAllowedToolCandidates.contains { candidate in
             let lower = candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard let openParen = lower.firstIndex(of: "("),
                   lower.hasSuffix(")") else {
@@ -948,6 +948,19 @@ struct AgentRuntimePolicyGuard: Sendable {
             let pattern = String(lower[patternStart..<lower.index(before: lower.endIndex)])
             return shellCommandAllowedByPattern(command, pattern: pattern)
         }
+    }
+
+    /// The durable typed grants in the run manifest are the authority for a
+    /// one-run approval. Some runtimes (including Codex CLI) cannot project
+    /// fine-grained tool grants into provider-native flags, so the ASTRA guard
+    /// must apply the adapter-normalized grant itself instead of relying on the
+    /// provider render to echo it back through `allowedTools`.
+    private var effectiveAllowedToolCandidates: [String] {
+        let approved = PermissionBroker.providerRuntimeGrantStrings(
+            for: manifest.approvalGrants,
+            runtime: manifest.providerID
+        )
+        return Array(Set(manifest.providerRender.allowedTools + approved)).sorted()
     }
 
     private func matchesShellPermission(_ command: String, permission: String, mode: ShellPatternMatchMode) -> Bool {
@@ -1212,7 +1225,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func shellCommandSegmentVariants(_ command: String) -> [String] {
-        let semanticCommand = shellLoginCommandPayload(from: command) ?? command
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
         let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
@@ -1229,7 +1242,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func actionableShellSegments(_ command: String) -> [String] {
-        let semanticCommand = shellLoginCommandPayload(from: command) ?? command
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
         let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
@@ -1241,32 +1254,6 @@ struct AgentRuntimePolicyGuard: Sendable {
             appendUnique(normalized, to: &segments)
         }
         return segments
-    }
-
-    /// Codex reports command executions through its concrete shell launcher,
-    /// for example `/bin/zsh -lc 'git rev-parse HEAD'`. Policy matching must
-    /// evaluate the launched payload, not mistake the shell wrapper for the
-    /// requested command. Only the exact single-quoted `-lc` form is unwrapped;
-    /// ambiguous quoting stays fail-closed.
-    private static func shellLoginCommandPayload(from command: String) -> String? {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let markerRange = trimmed.range(of: " -lc ") else { return nil }
-
-        let executable = String(trimmed[..<markerRange.lowerBound])
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        guard ["sh", "bash", "zsh"].contains(URL(fileURLWithPath: executable).lastPathComponent.lowercased()) else {
-            return nil
-        }
-
-        let quotedPayload = String(trimmed[markerRange.upperBound...])
-        guard quotedPayload.count >= 2,
-              quotedPayload.first == "'",
-              quotedPayload.last == "'" else {
-            return nil
-        }
-        let payload = String(quotedPayload.dropFirst().dropLast())
-        guard !payload.contains("'") else { return nil }
-        return payload
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {
