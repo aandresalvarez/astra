@@ -28,17 +28,14 @@ struct PanelLayoutGeometryTests {
         #expect(mode.disablesLayoutAnimation)
     }
 
-    @Test("Wide transcript keeps one readable text width across shelf toggles")
-    func wideTranscriptWidthIsStableAcrossShelfToggle() {
-        let shelfClosedViewport: CGFloat = 1_688
-        let shelfOpenViewport: CGFloat = 988
+    @Test("Wide transcript uses the available width across shelf toggles")
+    func wideTranscriptUsesAvailableSpaceAcrossShelfToggle() {
+        let shelfClosedViewport: CGFloat = 1_350
+        let shelfOpenViewport: CGFloat = 650
 
-        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) == 900)
-        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == 900)
-        #expect(
-            TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport)
-                == TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport)
-        )
+        #expect(abs(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) - 1_003.08) < 0.01)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == 618)
+        #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) > 900)
     }
 
     @Test("Compact transcript still consumes only its available width")
@@ -49,7 +46,23 @@ struct PanelLayoutGeometryTests {
         #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 700) == 668)
     }
 
-    @Test("Canvas shelf preserves the detail proposal and recenters visually")
+    @Test("Chat viewport uses only the detail width not obscured by the Files shelf")
+    func chatViewportFitsBesideCanvasShelf() {
+        #expect(
+            TaskChatLayoutGeometry.visibleViewportWidth(
+                proposedWidth: 1_350,
+                unobscuredWidth: 650
+            ) == 650
+        )
+        #expect(
+            TaskChatLayoutGeometry.visibleViewportWidth(
+                proposedWidth: 1_350,
+                unobscuredWidth: 1_700
+            ) == 1_350
+        )
+    }
+
+    @Test("Canvas shelf preserves the task proposal and exposes its unobscured width")
     func canvasShelfUsesCompositedLayout() {
         let mode = WorkspaceRightPanelLayoutMode.resolve(
             panel: .canvas(.markdown),
@@ -57,8 +70,8 @@ struct PanelLayoutGeometryTests {
         )
 
         #expect(mode == .compositedCanvas)
-        #expect(mode.detailProposalWidth(availableWidth: 1_688, panelWidth: 700) == 1_688)
-        #expect(mode.detailVisualOffset(panelWidth: 700) == -350)
+        #expect(mode.detailProposalWidth(availableWidth: 1_350, panelWidth: 700) == 1_350)
+        #expect(mode.detailUnobscuredWidth(availableWidth: 1_350, panelWidth: 700) == 650)
     }
 
     @Test("Workspace context retains docked and compact overlay proposals")
@@ -75,10 +88,10 @@ struct PanelLayoutGeometryTests {
 
         #expect(docked == .dockedContext)
         #expect(docked.detailProposalWidth(availableWidth: 1_200, panelWidth: 392) == 808)
-        #expect(docked.detailVisualOffset(panelWidth: 392) == 0)
+        #expect(docked.detailUnobscuredWidth(availableWidth: 1_200, panelWidth: 392) == 808)
         #expect(overlay == .overlayContext)
         #expect(overlay.detailProposalWidth(availableWidth: 700, panelWidth: 392) == 700)
-        #expect(overlay.detailVisualOffset(panelWidth: 392) == 0)
+        #expect(overlay.detailUnobscuredWidth(availableWidth: 700, panelWidth: 392) == 700)
     }
 
     @Test("A true inspector overlay may animate because detail width stays stable")

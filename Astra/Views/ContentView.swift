@@ -2902,12 +2902,12 @@ private struct ContentDetailAreaView: View {
             let detailProposalWidth = layoutMode.detailProposalWidth(
                 availableWidth: availableWidth, panelWidth: dockedPanelWidth
             )
-            let detailVisualOffset = layoutMode.detailVisualOffset(panelWidth: dockedPanelWidth)
+            let detailUnobscuredWidth = layoutMode.detailUnobscuredWidth(availableWidth: availableWidth, panelWidth: dockedPanelWidth)
             let transitionMode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: usesInspectorOverlay)
             ZStack(alignment: .trailing) {
                 detailContent
+                    .environment(\.taskChatUnobscuredWidth, detailUnobscuredWidth)
                     .frame(width: detailProposalWidth, height: proxy.size.height)
-                    .offset(x: detailVisualOffset)
                     .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
                     .clipped()
                 if let activePanel, !usesInspectorOverlay {

@@ -26,11 +26,10 @@ struct UIStressFilesShelfTests {
         }
     }
 
-    @Test("Repeated wide shelf toggles preserve the transcript text constraint")
-    func largeTranscriptShelfToggleWidthStability() {
-        let shelfClosedViewport: CGFloat = 1_688
-        let shelfOpenViewport: CGFloat = 988
-        let expectedWidth = TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport)
+    @Test("Repeated wide shelf toggles keep the task proposal stable and chat responsive")
+    func largeTranscriptShelfToggleWidthResponsiveness() {
+        let shelfClosedViewport: CGFloat = 1_350
+        let shelfOpenViewport: CGFloat = 650
         let closedMode = WorkspaceRightPanelLayoutMode.resolve(
             panel: nil,
             usesInspectorOverlay: false
@@ -41,10 +40,17 @@ struct UIStressFilesShelfTests {
         )
 
         for _ in 0..<10_000 {
-            #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == expectedWidth)
-            #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) == expectedWidth)
-            #expect(closedMode.detailProposalWidth(availableWidth: 1_688, panelWidth: 0) == 1_688)
-            #expect(openMode.detailProposalWidth(availableWidth: 1_688, panelWidth: 700) == 1_688)
+            #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == 618)
+            #expect(abs(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) - 1_003.08) < 0.01)
+            #expect(closedMode.detailProposalWidth(availableWidth: 1_350, panelWidth: 0) == 1_350)
+            #expect(openMode.detailProposalWidth(availableWidth: 1_350, panelWidth: 700) == 1_350)
+            #expect(openMode.detailUnobscuredWidth(availableWidth: 1_350, panelWidth: 700) == 650)
+            #expect(
+                TaskChatLayoutGeometry.visibleViewportWidth(
+                    proposedWidth: 1_350,
+                    unobscuredWidth: 650
+                ) == 650
+            )
         }
     }
 

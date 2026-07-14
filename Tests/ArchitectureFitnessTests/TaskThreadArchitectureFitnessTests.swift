@@ -27,6 +27,48 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!viewModel.contains("loadedHistoryEvents.values.min"))
     }
 
+    @Test("Transcript messages remain direct lazy stack children")
+    func transcriptMessagesRemainDirectLazyStackChildren() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let summaryStart = try #require(taskMainView.range(of: "private func summaryContent(decisionDockVisible: Bool)"))
+        let summaryEnd = try #require(
+            taskMainView[summaryStart.upperBound...].range(of: "private func chatTopPositionReader()")
+        )
+        let summarySource = String(taskMainView[summaryStart.lowerBound..<summaryEnd.lowerBound])
+
+        #expect(summarySource.contains("LazyVStack(alignment: .leading, spacing: 10) {"))
+        #expect(summarySource.contains("ForEach(currentThreadSnapshot.conversationItems) { item in"))
+        #expect(summarySource.contains("measuredConversationItemView(item, decisionDockVisible: decisionDockVisible)"))
+        #expect(
+            !taskMainView.contains("private var chatThreadContent"),
+            "Wrapping the entire transcript makes LazyVStack retain and reflow every message as one child"
+        )
+    }
+
+    @Test("Task-wide decision policy is resolved once outside transcript rows")
+    func taskWideDecisionPolicyIsResolvedOnceOutsideTranscriptRows() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let agentBubbleStart = try #require(taskMainView.range(of: "private func chatAgentBubble("))
+        let agentBubbleEnd = try #require(
+            taskMainView[agentBubbleStart.upperBound...].range(of: "private func completedEmptyRunNotice()")
+        )
+        let agentBubbleSource = String(taskMainView[agentBubbleStart.lowerBound..<agentBubbleEnd.lowerBound])
+
+        #expect(taskMainView.contains("let dockPresentation = taskDecisionDockPresentation"))
+        #expect(taskMainView.components(separatedBy: "taskDecisionDockPresentation").count - 1 == 2)
+        #expect(agentBubbleSource.contains("decisionDockVisible: Bool"))
+        #expect(!agentBubbleSource.contains("taskDecisionDockPresentation"))
+        #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
+    }
+
     private func source(_ relativePath: String, root: URL) throws -> String {
         try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }

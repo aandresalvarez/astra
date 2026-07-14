@@ -70,8 +70,8 @@ enum WorkspaceRightPanelTransitionMode: Equatable {
 
 /// Determines whether a right panel participates in the task detail's layout
 /// proposal. Canvas shelves are composited over a stable, full-width detail
-/// surface and visually recenter that surface with a transform. This prevents
-/// a shelf toggle from proposing a new width to every retained transcript row.
+/// surface. Only the chat's readable inner surface receives the unobscured
+/// width, avoiding a new proposal for the complete retained task hierarchy.
 /// The workspace context panel keeps its existing docked/compact behavior.
 enum WorkspaceRightPanelLayoutMode: Equatable {
     case detailOnly
@@ -100,8 +100,10 @@ enum WorkspaceRightPanelLayoutMode: Equatable {
         preservesDetailProposalWidth ? availableWidth : max(0, availableWidth - panelWidth)
     }
 
-    func detailVisualOffset(panelWidth: CGFloat) -> CGFloat {
-        self == .compositedCanvas ? -(panelWidth / 2) : 0
+    func detailUnobscuredWidth(availableWidth: CGFloat, panelWidth: CGFloat) -> CGFloat {
+        self == .compositedCanvas
+            ? max(0, availableWidth - panelWidth)
+            : detailProposalWidth(availableWidth: availableWidth, panelWidth: panelWidth)
     }
 }
 
