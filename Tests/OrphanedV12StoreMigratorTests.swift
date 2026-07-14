@@ -85,7 +85,10 @@ struct OrphanedV12StoreMigratorTests {
     #expect(
       try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .runtimeSelectionOnlyV12)
     #expect(try OrphanedV12StoreMigrator.requiresMigration(storeURL: sourceURL))
-    #expect(OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL) == .required)
+    #expect(
+      OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL)
+        == .required(shape: .runtimeSelectionOnlyV12)
+    )
 
     let report = try OrphanedV12StoreMigrator.migrateCopy(
       from: sourceURL,
@@ -93,6 +96,7 @@ struct OrphanedV12StoreMigratorTests {
     )
 
     #expect(report.destinationStoreURL == destinationURL)
+    #expect(report.sourceShapeRaw == "runtime_selection_only_v12")
     #expect(try Data(contentsOf: sourceURL) == sourceBytes)
     #expect(
       try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .runtimeSelectionOnlyV12)
@@ -127,6 +131,66 @@ struct OrphanedV12StoreMigratorTests {
     #expect(migrationRecord.sourceSchemaVersion == 12)
     #expect(migrationRecord.sourceShapeRaw == "runtime_selection_only_v12")
     #expect(migrationRecord.destinationSchemaVersion == 13)
+  }
+
+  @MainActor
+  @Test("historical feedback-only V12 fixture migrates through a copy")
+  func historicalFeedbackOnlyV12MigratesWithoutTouchingSource() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sourceURL = root.appendingPathComponent("source.store")
+    let destinationURL = root.appendingPathComponent("recovery.store")
+    let fixtureURL = try #require(
+      Bundle.module.url(
+        forResource: "feedback-only-v12-htf3-empty",
+        withExtension: "store"
+      )
+    )
+    try FileManager.default.copyItem(at: fixtureURL, to: sourceURL)
+    let sourceBytes = try Data(contentsOf: sourceURL)
+
+    #expect(
+      try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .feedbackOnlyV12
+    )
+    #expect(
+      OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL)
+        == .required(shape: .feedbackOnlyV12)
+    )
+
+    let report = try OrphanedV12StoreMigrator.migrateCopy(
+      from: sourceURL,
+      to: destinationURL
+    )
+
+    #expect(report.sourceShapeRaw == "feedback_only_v12")
+    #expect(try Data(contentsOf: sourceURL) == sourceBytes)
+    #expect(WorkspaceRecoveryService.sqliteIntegrityIsValid(at: destinationURL))
+
+    let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+      type: .sqlite,
+      at: destinationURL
+    )
+    #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == 13)
+
+    let migratedContainer = try ModelContainer(
+      for: ASTRASchema.current,
+      migrationPlan: ASTRAMigrationPlan.self,
+      configurations: [ModelConfiguration(url: destinationURL)]
+    )
+    let context = migratedContainer.mainContext
+    #expect(try context.fetchCount(FetchDescriptor<FeedbackReport>()) == 0)
+    let migrationRecord = try #require(
+      try context.fetch(FetchDescriptor<PersistentStoreMigrationRecord>()).first
+    )
+    #expect(migrationRecord.sourceShapeRaw == "feedback_only_v12")
+  }
+
+  @Test("known store shapes expose stable audit values")
+  func knownStoreShapesExposeStableAuditValues() {
+    #expect(PersistentStoreKnownShape.runtimeSelectionOnlyV12.auditValue == "runtime_selection_only_v12")
+    #expect(PersistentStoreKnownShape.feedbackOnlyV12.auditValue == "feedback_only_v12")
+    #expect(PersistentStoreKnownShape.productionV12.auditValue == "production_v12")
+    #expect(PersistentStoreKnownShape.other.auditValue == "other")
   }
 
   @Test("production V12 is recognized and never routed through orphan recovery")

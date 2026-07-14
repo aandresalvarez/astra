@@ -43,15 +43,35 @@ public enum PersistentStoreCompatibilityAssessment: Equatable, Sendable {
 
 public enum PersistentStoreKnownShape: Equatable, Sendable {
     case runtimeSelectionOnlyV12
+    case feedbackOnlyV12
     case productionV12
     case other
+
+    /// Stable value for persisted migration records and structured audit logs.
+    public var auditValue: String {
+        switch self {
+        case .runtimeSelectionOnlyV12:
+            return "runtime_selection_only_v12"
+        case .feedbackOnlyV12:
+            return "feedback_only_v12"
+        case .productionV12:
+            return "production_v12"
+        case .other:
+            return "other"
+        }
+    }
 }
 
-/// Identifies the two V12 shapes that reached disk under the same Core Data
+/// Identifies the three V12 shapes that reached disk under the same Core Data
 /// version identifier. Entity names are only a routing hint: the dedicated
 /// migration plan still verifies every model hash before it can open a copy.
 public enum PersistentStoreModelShapeService {
     private static let v12Identifier = "12.0.0"
+    // These checksums were captured from sanitized stores produced by the
+    // actual historical builds. Entity names alone cannot distinguish the two
+    // incompatible 17-entity V12 models.
+    private static let feedbackOnlyV12Checksum = "hTf3SZACvFlI82r2SNAsEWesdpFXcA6hSkiPUnH0Erk="
+    private static let productionV12Checksum = "aRvGJIZNZ/lwoob9yJ52572ipBYvz/ipXn6a6nJO6oU="
     private static let runtimeSelectionOnlyV12Entities: Set<String> = [
         "Workspace",
         "AgentTask",
@@ -91,7 +111,14 @@ public enum PersistentStoreModelShapeService {
             return .runtimeSelectionOnlyV12
         }
         if entities == runtimeSelectionOnlyV12Entities.union(["FeedbackReport"]) {
-            return .productionV12
+            switch modelChecksum(from: metadata) {
+            case feedbackOnlyV12Checksum:
+                return .feedbackOnlyV12
+            case productionV12Checksum:
+                return .productionV12
+            default:
+                return .other
+            }
         }
         return .other
     }
@@ -113,6 +140,10 @@ public enum PersistentStoreModelShapeService {
             return Set(hashes.allKeys.compactMap { $0 as? String })
         }
         return nil
+    }
+
+    private static func modelChecksum(from metadata: [String: Any]) -> String? {
+        metadata["NSStoreModelVersionChecksumKey"] as? String
     }
 }
 
