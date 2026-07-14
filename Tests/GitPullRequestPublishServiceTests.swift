@@ -47,6 +47,8 @@ struct GitPullRequestPublishServiceTests {
         var createPullRequestFailureCount = 0
         var createPullRequestURL = "https://github.com/example/repo/pull/42"
         var createPullRequestDraftValues: [Bool] = []
+        var lookupRemoteURLs: [String] = []
+        var createRemoteURLs: [String] = []
 
         func acquireIndexGuard() -> Bool {
             calls.append("acquire")
@@ -117,6 +119,20 @@ struct GitPullRequestPublishServiceTests {
         ) async -> GitHubPullRequestLookupResult {
             calls.append("lookup:\(head)")
             return lookupResult
+        }
+
+        func lookupOpenPullRequest(
+            repoPath: String,
+            remoteURL: String,
+            head: String,
+            ghPathOverride: String?
+        ) async -> GitHubPullRequestLookupResult {
+            lookupRemoteURLs.append(remoteURL)
+            return await lookupOpenPullRequest(
+                repoPath: repoPath,
+                head: head,
+                ghPathOverride: ghPathOverride
+            )
         }
 
         func lookupPullRequestComments(
@@ -224,6 +240,28 @@ struct GitPullRequestPublishServiceTests {
             return createPullRequestURL
         }
 
+        func createPullRequest(
+            repoPath: String,
+            remoteURL: String,
+            base: String,
+            head: String,
+            title: String,
+            body: String,
+            isDraft: Bool,
+            ghPathOverride: String?
+        ) async throws -> String {
+            createRemoteURLs.append(remoteURL)
+            return try await createPullRequest(
+                repoPath: repoPath,
+                base: base,
+                head: head,
+                title: title,
+                body: body,
+                isDraft: isDraft,
+                ghPathOverride: ghPathOverride
+            )
+        }
+
         func normalizeBaseBranch(_ raw: String) -> String { GitService.normalizeBaseBranch(raw) }
     }
 
@@ -323,6 +361,8 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
         #expect(git.createPullRequestDraftValues == [true])
+        #expect(git.lookupRemoteURLs.allSatisfy { $0 == "https://github.com/example/repo" })
+        #expect(git.createRemoteURLs == ["https://github.com/example/repo"])
         #expect(await store.checkpoint(for: proposal.proposalID) == nil)
     }
 
@@ -376,6 +416,7 @@ struct GitPullRequestPublishServiceTests {
             state: "OPEN"
         ))
         git.remoteRefSHAs["origin/feature/typed-publish"] = Self.commitSHA
+        git.statusFiles = []
         let publisher = service(git: git)
         let proposal = try await publisher.prepare(request())
 
@@ -388,6 +429,58 @@ struct GitPullRequestPublishServiceTests {
         #expect(receipt.verification == .existingPullRequestLookup)
         #expect(!git.calls.contains("acquire"))
         #expect(!git.calls.contains { $0.hasPrefix("pr:") })
+    }
+
+    @Test("an existing draft cannot hide selected local work")
+    func existingDraftWithSelectedDirtyChangesFailsClosed() async throws {
+        let git = FakeGit()
+        git.lookupResult = .found(GitHubPullRequestRef(
+            number: 17,
+            url: "https://github.com/example/repo/pull/17",
+            title: "Existing",
+            isDraft: true,
+            state: "OPEN"
+        ))
+        git.remoteRefSHAs["origin/feature/typed-publish"] = Self.commitSHA
+
+        do {
+            _ = try await service(git: git).prepare(request())
+            Issue.record("Dirty selected work was incorrectly treated as already published")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .existingPullRequestHasUnpublishedChanges(
+                number: 17,
+                paths: ["Sources/Feature.swift", "Tests/FeatureTests.swift"]
+            ))
+        }
+    }
+
+    @Test("an existing draft is rechecked for dirty selected work at publication time")
+    func existingDraftRaceFailsClosed() async throws {
+        let git = FakeGit()
+        git.lookupResult = .found(GitHubPullRequestRef(
+            number: 17,
+            url: "https://github.com/example/repo/pull/17",
+            title: "Existing",
+            isDraft: true,
+            state: "OPEN"
+        ))
+        git.remoteRefSHAs["origin/feature/typed-publish"] = Self.commitSHA
+        git.statusFiles = []
+        let publisher = service(git: git)
+        let proposal = try await publisher.prepare(request())
+        git.statusFiles = [
+            GitStatusFile(relativePath: "Sources/Feature.swift", status: "M", isStaged: false)
+        ]
+
+        do {
+            _ = try await publisher.publish(proposal)
+            Issue.record("Dirty work added after review was incorrectly skipped")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .existingPullRequestHasUnpublishedChanges(
+                number: 17,
+                paths: ["Sources/Feature.swift"]
+            ))
+        }
     }
 
     @Test("a non-draft existing PR cannot satisfy a draft publication")
@@ -416,6 +509,7 @@ struct GitPullRequestPublishServiceTests {
     func nonOriginBaseNormalizationUsesSelectedRemote() async throws {
         let git = FakeGit()
         git.remoteRefSHAs["upstream/main"] = Self.baseSHA
+        git.remoteURL = "https://github.com/upstream/repository"
 
         let proposal = try await service(git: git).prepare(request(
             remote: "upstream",
@@ -425,6 +519,7 @@ struct GitPullRequestPublishServiceTests {
         #expect(proposal.remote == "upstream")
         #expect(proposal.baseBranch == "main")
         #expect(git.calls.contains("remote-lookup:upstream:main"))
+        #expect(git.lookupRemoteURLs == ["https://github.com/upstream/repository"])
     }
 
     @Test("checkpoint save failure stops before push and pull request creation")

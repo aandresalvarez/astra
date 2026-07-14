@@ -36,4 +36,31 @@ enum TaskSuccessfulCompletionService {
         ))
         return true
     }
+
+    /// Re-runs non-publication completion gates after a durable external
+    /// outcome receipt. User approval authorizes the reviewed publication; it
+    /// does not authorize bypassing missing deliverables.
+    @MainActor
+    static func applyAfterRequiredExternalOutcome(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) -> Bool {
+        let decision = TaskCompletionPolicy.decideAfterRequiredExternalOutcome(
+            task: task,
+            run: run
+        )
+        if decision.shouldBlockCompletion {
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                decision,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return false
+        }
+
+        TaskStateMachine.completeFromUserApproval(task, modelContext: modelContext)
+        return true
+    }
 }

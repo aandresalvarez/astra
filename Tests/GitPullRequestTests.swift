@@ -285,6 +285,27 @@ struct GitPullRequestTests {
         #expect(GitService.webURLFromRemoteURL("") == nil)
     }
 
+    @Test("reviewed remotes become explicit GitHub CLI repository targets")
+    func githubRepositoryArgumentUsesReviewedHostAndRepository() {
+        #expect(
+            GitService.githubRepositoryArgument(from: "https://github.com/example/repo")
+                == "github.com/example/repo"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "https://github.example.edu/coral/astra.git")
+                == "github.example.edu/coral/astra"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "git@github.com:example/repo.git")
+                == "github.com/example/repo"
+        )
+        #expect(
+            GitService.githubRepositoryArgument(from: "ssh://git@github.example.edu/coral/astra.git")
+                == "github.example.edu/coral/astra"
+        )
+        #expect(GitService.githubRepositoryArgument(from: "https://github.com/example") == nil)
+    }
+
     // MARK: - gh pr list lookup (fake CLI)
 
     @Test("findOpenPullRequest returns the branch's open PR via gh")
@@ -317,6 +338,72 @@ struct GitPullRequestTests {
         #expect(recordedArgs.contains("feature/login"))
         #expect(recordedArgs.contains("--state"))
         #expect(recordedArgs.contains("open"))
+    }
+
+    @Test("targeted lookup passes the reviewed remote to gh repo selection")
+    func targetedLookupUsesReviewedRepository() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-targeted-lookup-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s' '[{"number":42,"url":"https://github.example.edu/coral/astra/pull/42","title":"Targeted","isDraft":true,"state":"OPEN"}]'
+        exit 0
+        """)
+
+        let result = await GitService.shared.lookupOpenPullRequest(
+            repoPath: repo,
+            remoteURL: "https://github.example.edu/coral/astra",
+            head: "feature/reviewed-target",
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(result.pullRequest?.number == 42)
+        let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(arguments.contains("--repo"))
+        #expect(arguments.contains("github.example.edu/coral/astra"))
+        #expect(arguments.contains("--head"))
+        #expect(arguments.contains("feature/reviewed-target"))
+    }
+
+    @Test("targeted creation uses reviewed repo and a noninteractive plain head")
+    func targetedCreationUsesReviewedRepository() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-targeted-create-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s' 'https://github.example.edu/coral/astra/pull/43'
+        exit 0
+        """)
+
+        let url = try await GitService.shared.createPullRequest(
+            repoPath: repo,
+            remoteURL: "https://github.example.edu/coral/astra",
+            base: "main",
+            head: "feature/reviewed-target",
+            title: "Targeted publication",
+            body: "Body",
+            isDraft: true,
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(url == "https://github.example.edu/coral/astra/pull/43")
+        let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(arguments.contains("--repo"))
+        #expect(arguments.contains("github.example.edu/coral/astra"))
+        #expect(arguments.contains("--head"))
+        #expect(arguments.contains("feature/reviewed-target"))
+        #expect(!arguments.contains("coral:feature/reviewed-target"))
+        #expect(arguments.contains("--draft"))
     }
 
     @Test("findOpenPullRequest returns nil when no PR exists")

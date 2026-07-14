@@ -129,6 +129,14 @@ enum TaskCompletionPolicy {
         run: TaskRun,
         permissionPolicy: PermissionPolicy = .autonomous
     ) -> TaskCompletionPolicyDecision {
+        let remainingGateDecision = decideAfterRequiredExternalOutcome(
+            task: task,
+            run: run
+        )
+        guard remainingGateDecision.canComplete else {
+            return remainingGateDecision
+        }
+
         let pendingPublication = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
             task: task,
             run: run
@@ -149,6 +157,18 @@ enum TaskCompletionPolicy {
             )
         }
 
+        return remainingGateDecision
+    }
+
+    /// Evaluates the completion gates that still apply after a required
+    /// external outcome has produced its durable receipt. Publication is not a
+    /// substitute for the task's deliverable, and a review sheet may remain
+    /// open long enough for the underlying artifact state to change.
+    @MainActor
+    static func decideAfterRequiredExternalOutcome(
+        task: AgentTask,
+        run: TaskRun
+    ) -> TaskCompletionPolicyDecision {
         let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [

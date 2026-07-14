@@ -32,6 +32,12 @@ protocol GitRepositoryOperating: AnyObject {
     func pushSetUpstream(branch: String, remote: String, at repoPath: String) async throws
     func hasRemote(at repoPath: String) async -> Bool
     func lookupOpenPullRequest(repoPath: String, head: String, ghPathOverride: String?) async -> GitHubPullRequestLookupResult
+    func lookupOpenPullRequest(
+        repoPath: String,
+        remoteURL: String,
+        head: String,
+        ghPathOverride: String?
+    ) async -> GitHubPullRequestLookupResult
     func lookupPullRequestComments(repoPath: String, pullRequest: GitHubPullRequestRef, ghPathOverride: String?) async -> GitHubPullRequestCommentLookupResult
     func lookupPullRequestChecks(repoPath: String, pullRequest: GitHubPullRequestRef, ghPathOverride: String?) async -> GitHubPullRequestCheckLookupResult
     func getUnpushedCommitCount(at repoPath: String) async -> Int
@@ -66,6 +72,16 @@ protocol GitRepositoryOperating: AnyObject {
     ) async throws -> String
     func createPullRequest(
         repoPath: String,
+        base: String,
+        head: String,
+        title: String,
+        body: String,
+        isDraft: Bool,
+        ghPathOverride: String?
+    ) async throws -> String
+    func createPullRequest(
+        repoPath: String,
+        remoteURL: String,
         base: String,
         head: String,
         title: String,
@@ -127,6 +143,17 @@ extension GitRepositoryOperating {
         await lookupOpenPullRequest(repoPath: repoPath, head: head, ghPathOverride: nil)
     }
 
+    /// Alternate operators fail closed until they can bind `gh --repo` to the
+    /// reviewed remote URL.
+    func lookupOpenPullRequest(
+        repoPath: String,
+        remoteURL: String,
+        head: String,
+        ghPathOverride: String?
+    ) async -> GitHubPullRequestLookupResult {
+        .unavailable("Targeted pull request lookup is not supported by this Git operator.")
+    }
+
     func lookupPullRequestComments(
         repoPath: String,
         pullRequest: GitHubPullRequestRef
@@ -161,6 +188,23 @@ extension GitRepositoryOperating {
             body: body,
             isDraft: isDraft,
             ghPathOverride: nil
+        )
+    }
+
+    /// Alternate operators fail closed until they can bind `gh --repo` to the
+    /// reviewed remote URL.
+    func createPullRequest(
+        repoPath: String,
+        remoteURL: String,
+        base: String,
+        head: String,
+        title: String,
+        body: String,
+        isDraft: Bool,
+        ghPathOverride: String?
+    ) async throws -> String {
+        throw GitHubCLIError.commandFailed(
+            "Targeted pull request creation is not supported by this Git operator."
         )
     }
 

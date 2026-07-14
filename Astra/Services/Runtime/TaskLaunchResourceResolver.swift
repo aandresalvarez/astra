@@ -73,22 +73,34 @@ enum TaskLaunchResourceResolver {
             capabilityScope: capabilityScope,
             precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
-        // Ask keeps GitHub publication behind ASTRA's typed review workflow.
-        // Native Git credentials therefore must not be projected into the
-        // provider merely because the task mentions push or pull requests.
-        // Auto retains the normal developer credential path.
+        // Ask publication stays behind ASTRA's typed review workflow even when
+        // workspace commands are Docker-routed: the provider still runs on the
+        // host, so Docker is not a credential boundary for that process.
+        // Preserve the established Docker credential path for other explicit
+        // Git operations (for example, an approved `git pull`) that ASTRA's
+        // typed publication service does not own.
+        let astraOwnsAskPublication = AskGitPullRequestWorkflowPolicy.isActive(
+            task: task,
+            permissionPolicy: permissionPolicy,
+            contextText: [prompt, contextText].joined(separator: "\n")
+        )
         let brokersNetworkGitThroughAstra = permissionPolicy != .autonomous
-            && !environment.workspaceCommandsRunInsideContainer
             && (
-                GitOperationIntentDetector.detectsNetworkGitOperation(
-                    prompt: prompt,
-                    task: task,
-                    contextText: contextText
-                )
-                || GitOperationIntentDetector.detectsGitHubMetadataOrAPIIntent(
-                    prompt: prompt,
-                    task: task,
-                    contextText: contextText
+                astraOwnsAskPublication
+                || (
+                    !environment.workspaceCommandsRunInsideContainer
+                    && (
+                        GitOperationIntentDetector.detectsNetworkGitOperation(
+                            prompt: prompt,
+                            task: task,
+                            contextText: contextText
+                        )
+                        || GitOperationIntentDetector.detectsGitHubMetadataOrAPIIntent(
+                            prompt: prompt,
+                            task: task,
+                            contextText: contextText
+                        )
+                    )
                 )
             )
         let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra

@@ -622,6 +622,27 @@ class GitService: GitRepositoryOperating {
         )
     }
 
+    /// Executes a non-interactive GitHub CLI command for focused extensions.
+    func runGitHubCLI(
+        at repoPath: String,
+        arguments: [String],
+        label: String,
+        ghPathOverride: String?
+    ) async throws -> String {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            throw GitHubCLIError.notInstalled
+        }
+        return try await runProcess(
+            executableURL: URL(fileURLWithPath: ghPath),
+            arguments: arguments,
+            environment: RuntimeProcessEnvironment.enriched(),
+            timeout: Self.networkGitTimeout,
+            label: label,
+            currentDirectory: repoPath
+        )
+    }
+
     /// Runs an external process and returns standard output, or throws on a
     /// non-zero exit, a launch failure, or a timeout.
     ///
@@ -1951,34 +1972,4 @@ class GitService: GitRepositoryOperating {
         await getRemoteURL(at: repoPath, remote: "origin")
     }
 
-    static func webURLFromRemoteURL(_ rawURL: String) -> String? {
-        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        func dropGitSuffix(_ value: String) -> String {
-            value.hasSuffix(".git") ? String(value.dropLast(4)) : value
-        }
-
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return dropGitSuffix(trimmed)
-        }
-
-        if trimmed.hasPrefix("git@"), let colon = trimmed.firstIndex(of: ":") {
-            let hostStart = trimmed.index(trimmed.startIndex, offsetBy: "git@".count)
-            let host = trimmed[hostStart..<colon]
-            let path = trimmed[trimmed.index(after: colon)...]
-            guard !host.isEmpty, !path.isEmpty else { return nil }
-            return "https://\(host)/\(dropGitSuffix(String(path)))"
-        }
-
-        if let components = URLComponents(string: trimmed),
-           components.scheme == "ssh",
-           let host = components.host {
-            let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard !path.isEmpty else { return nil }
-            return "https://\(host)/\(dropGitSuffix(path))"
-        }
-
-        return nil
-    }
 }

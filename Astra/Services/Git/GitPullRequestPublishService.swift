@@ -68,6 +68,7 @@ final class GitPullRequestPublishService {
             let existingPullRequest: GitHubPullRequestRef?
             switch await git.lookupOpenPullRequest(
                 repoPath: scope.repositoryPath,
+                remoteURL: remoteURL,
                 head: scope.headBranch,
                 ghPathOverride: nil
             ) {
@@ -78,6 +79,11 @@ final class GitPullRequestPublishService {
                         url: reference.url
                     )
                 }
+                try await ensureSelectedPathsAreCleanForExistingPullRequest(
+                    repositoryPath: scope.repositoryPath,
+                    selectedPaths: scope.selectedPaths,
+                    pullRequest: reference
+                )
                 existingPullRequest = reference
             case .none:
                 existingPullRequest = nil
@@ -173,7 +179,11 @@ final class GitPullRequestPublishService {
         }
 
         if let existing = proposal.existingPullRequest {
-            let result = try await receiptForExistingPullRequest(proposal: proposal, pullRequest: existing)
+            let verified = try await verifiedExistingPullRequest(
+                proposal: proposal,
+                expected: existing
+            )
+            let result = try await receiptForExistingPullRequest(proposal: proposal, pullRequest: verified)
             logSuccess(result)
             return result
         }
@@ -191,10 +201,16 @@ final class GitPullRequestPublishService {
         // after preparation is success, not a reason to create a duplicate.
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
+            remoteURL: proposal.remoteURL,
             head: proposal.headBranch,
             ghPathOverride: nil
         ) {
         case let .found(reference):
+            try await ensureSelectedPathsAreCleanForExistingPullRequest(
+                repositoryPath: proposal.repositoryPath,
+                selectedPaths: proposal.selectedPaths,
+                pullRequest: reference
+            )
             let result = try await receiptForExistingPullRequest(proposal: proposal, pullRequest: reference)
             logSuccess(result)
             return result
@@ -290,6 +306,7 @@ final class GitPullRequestPublishService {
             phase = .createPullRequest
             let url = try await git.createPullRequest(
                 repoPath: proposal.repositoryPath,
+                remoteURL: proposal.remoteURL,
                 base: proposal.baseBranch,
                 head: proposal.headBranch,
                 title: proposal.pullRequestTitle,
@@ -467,6 +484,7 @@ final class GitPullRequestPublishService {
         do {
             url = try await git.createPullRequest(
                 repoPath: proposal.repositoryPath,
+                remoteURL: proposal.remoteURL,
                 base: proposal.baseBranch,
                 head: proposal.headBranch,
                 title: proposal.pullRequestTitle,
@@ -545,6 +563,7 @@ final class GitPullRequestPublishService {
     ) async throws -> GitHubPullRequestRef {
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
+            remoteURL: proposal.remoteURL,
             head: proposal.headBranch,
             ghPathOverride: nil
         ) {
@@ -565,6 +584,58 @@ final class GitPullRequestPublishService {
             )
         case let .unavailable(reason):
             throw GitPullRequestPublishError.pullRequestLookupUnavailable(reason)
+        }
+    }
+
+    private func verifiedExistingPullRequest(
+        proposal: GitPullRequestPublishProposal,
+        expected: GitHubPullRequestRef
+    ) async throws -> GitHubPullRequestRef {
+        try await ensureSelectedPathsAreCleanForExistingPullRequest(
+            repositoryPath: proposal.repositoryPath,
+            selectedPaths: proposal.selectedPaths,
+            pullRequest: expected
+        )
+        switch await git.lookupOpenPullRequest(
+            repoPath: proposal.repositoryPath,
+            remoteURL: proposal.remoteURL,
+            head: proposal.headBranch,
+            ghPathOverride: nil
+        ) {
+        case let .found(reference):
+            guard reference.number == expected.number else {
+                throw GitPullRequestPublishError.proposalChanged
+            }
+            guard reference.isDraft else {
+                throw GitPullRequestPublishError.existingPullRequestIsNotDraft(
+                    number: reference.number,
+                    url: reference.url
+                )
+            }
+            return reference
+        case .none:
+            throw GitPullRequestPublishError.pullRequestLookupUnavailable(
+                "GitHub no longer reports the reviewed pull request as open."
+            )
+        case let .unavailable(reason):
+            throw GitPullRequestPublishError.pullRequestLookupUnavailable(reason)
+        }
+    }
+
+    private func ensureSelectedPathsAreCleanForExistingPullRequest(
+        repositoryPath: String,
+        selectedPaths: [String],
+        pullRequest: GitHubPullRequestRef
+    ) async throws {
+        let selected = Set(selectedPaths)
+        let dirtyPaths = Set(await git.getStatusFiles(at: repositoryPath).flatMap { file in
+            [file.relativePath, file.originalPath].compactMap { $0 }
+        }).intersection(selected).sorted()
+        guard dirtyPaths.isEmpty else {
+            throw GitPullRequestPublishError.existingPullRequestHasUnpublishedChanges(
+                number: pullRequest.number,
+                paths: dirtyPaths
+            )
         }
     }
 
@@ -770,6 +841,17 @@ final class GitPullRequestPublishService {
                 url: pullRequest.url
             )
         }
+        guard let currentRemoteURL = await git.getRemoteURL(
+            at: proposal.repositoryPath,
+            remote: proposal.remote
+        ), currentRemoteURL == proposal.remoteURL else {
+            throw GitPullRequestPublishError.proposalChanged
+        }
+        try await ensureSelectedPathsAreCleanForExistingPullRequest(
+            repositoryPath: proposal.repositoryPath,
+            selectedPaths: proposal.selectedPaths,
+            pullRequest: pullRequest
+        )
         let remoteHeadSHA = try await authoritativeRemoteCommitSHA(
             remote: proposal.remote,
             branch: proposal.headBranch,

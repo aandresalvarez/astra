@@ -24,6 +24,30 @@ struct TaskGitPullRequestPublishCoordinatorTests {
         #expect(paths == ["Sources/App.swift", "Tests/AppTests.swift"])
     }
 
+    @Test("Live Git status expands a capped run summary without reviving clean paths")
+    func selectedPathsReconcileAuthoritativeStatus() {
+        let repository = "/tmp/astra-publish/repo"
+
+        let paths = TaskGitPullRequestPublishCoordinator.reconciledSelectedPaths(
+            recordedPaths: [
+                "/tmp/astra-publish/repo/Sources/App.swift",
+                "/tmp/astra-publish/repo/Sources/AlreadyClean.swift"
+            ],
+            statusPaths: [
+                "Sources/App.swift",
+                "Sources/Unrecorded.swift",
+                "Tests/UnrecordedTests.swift"
+            ],
+            repositoryPath: repository
+        )
+
+        #expect(paths == [
+            "Sources/App.swift",
+            "Sources/Unrecorded.swift",
+            "Tests/UnrecordedTests.swift"
+        ])
+    }
+
     @Test("Publication branch is deterministic and task-scoped")
     func branchIsDeterministic() {
         let task = AgentTask(title: "Fix PR Publication!", goal: "Create a pull request")

@@ -194,6 +194,7 @@ enum GitPullRequestPublishError: LocalizedError, Equatable {
     case remoteCommitMismatch(ref: String, expected: String, actual: String)
     case pullRequestLookupUnavailable(String)
     case existingPullRequestIsNotDraft(number: Int, url: String)
+    case existingPullRequestHasUnpublishedChanges(number: Int, paths: [String])
     case headBranchAlreadyExists(String)
     case selectedChangesMissing([String])
     case selectedChangesConflicted([String])
@@ -226,6 +227,8 @@ enum GitPullRequestPublishError: LocalizedError, Equatable {
             return "ASTRA could not safely check for an existing pull request: \(reason)"
         case let .existingPullRequestIsNotDraft(number, url):
             return "Pull request #\(number) is already open but is not a draft: \(url)"
+        case let .existingPullRequestHasUnpublishedChanges(number, paths):
+            return "Pull request #\(number) is already open, but selected local changes remain unpublished: \(paths.joined(separator: ", "))."
         case let .headBranchAlreadyExists(branch):
             return "Branch \(branch) already exists without an open pull request."
         case let .selectedChangesMissing(paths):

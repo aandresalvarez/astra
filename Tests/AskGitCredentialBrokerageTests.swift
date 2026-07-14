@@ -31,6 +31,7 @@ struct AskGitCredentialBrokerageTests {
         )
 
         #expect(plan.gitCredential == nil)
+        #expect(plan.providerNativeCredentialReadablePaths.isEmpty)
         #expect(plan.credentialGrants.allSatisfy { $0.source != .gitCredential })
         #expect(plan.hostPathGrants.allSatisfy { $0.source != .gitCredential })
     }
@@ -53,6 +54,121 @@ struct AskGitCredentialBrokerageTests {
             contextText: task.goal,
             workspacePath: workspace.primaryPath,
             permissionPolicy: .autonomous,
+            gitCredentialContextProvider: { _, _, _, _ in
+                externalHTTPSCredentialContext
+            },
+            precomputedRuntimeRequirements: emptyRequirements
+        )
+
+        #expect(plan.gitCredential?.transports == ["https"])
+        #expect(!plan.providerNativeCredentialReadablePaths.isEmpty)
+        #expect(plan.credentialGrants.contains { $0.source == .gitCredential })
+        #expect(plan.hostPathGrants.contains { $0.source == .gitCredential })
+    }
+
+    @Test("Ask Docker publication keeps native Git credentials out of the host provider")
+    func askDockerPublicationDoesNotProjectNativeGitCredentials() {
+        let workspace = Workspace(name: "Ask Docker publish", primaryPath: "/tmp/ask-docker-publish")
+        let task = AgentTask(
+            title: "Create a draft pull request",
+            goal: "Commit the changes, push the branch, and create a draft pull request",
+            workspace: workspace
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:ask-publish",
+            kind: .dockerImage,
+            displayName: "Ask Publish Image",
+            image: "astra/ask-publish:latest"
+        )
+        #expect(environment.workspaceCommandsRunInsideContainer)
+        #expect(environment.effectiveProviderPlacement == .host)
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: .run,
+            prompt: task.goal,
+            contextText: task.goal,
+            workspacePath: workspace.primaryPath,
+            executionEnvironment: environment,
+            permissionPolicy: .restricted,
+            gitCredentialContextProvider: { _, _, _, _ in
+                externalHTTPSCredentialContext
+            },
+            precomputedRuntimeRequirements: emptyRequirements
+        )
+
+        #expect(plan.gitCredential == nil)
+        #expect(plan.providerNativeCredentialReadablePaths.isEmpty)
+        #expect(plan.credentialGrants.allSatisfy { $0.source != .gitCredential })
+        #expect(plan.hostPathGrants.allSatisfy { $0.source != .gitCredential })
+    }
+
+    @Test("Auto Docker publication retains native Git credentials")
+    func autoDockerPublicationRetainsNativeGitCredentials() {
+        let workspace = Workspace(name: "Auto Docker publish", primaryPath: "/tmp/auto-docker-publish")
+        let task = AgentTask(
+            title: "Create a draft pull request",
+            goal: "Commit the changes, push the branch, and create a draft pull request",
+            workspace: workspace
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:auto-publish",
+            kind: .dockerImage,
+            displayName: "Auto Publish Image",
+            image: "astra/auto-publish:latest"
+        )
+        #expect(environment.workspaceCommandsRunInsideContainer)
+        #expect(environment.effectiveProviderPlacement == .host)
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: .run,
+            prompt: task.goal,
+            contextText: task.goal,
+            workspacePath: workspace.primaryPath,
+            executionEnvironment: environment,
+            permissionPolicy: .autonomous,
+            gitCredentialContextProvider: { _, _, _, _ in
+                externalHTTPSCredentialContext
+            },
+            precomputedRuntimeRequirements: emptyRequirements
+        )
+
+        #expect(plan.gitCredential?.transports == ["https"])
+        #expect(!plan.providerNativeCredentialReadablePaths.isEmpty)
+        #expect(plan.credentialGrants.contains { $0.source == .gitCredential })
+        #expect(plan.hostPathGrants.contains { $0.source == .gitCredential })
+    }
+
+    @Test("Ask Docker non-publication Git keeps its approved credential path")
+    func askDockerPullRetainsNativeGitCredentials() {
+        let workspace = Workspace(name: "Ask Docker pull", primaryPath: "/tmp/ask-docker-pull")
+        let task = AgentTask(
+            title: "Update the checkout",
+            goal: "Pull the latest changes from origin",
+            workspace: workspace
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:ask-pull",
+            kind: .dockerImage,
+            displayName: "Ask Pull Image",
+            image: "astra/ask-pull:latest"
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: .run,
+            prompt: "git pull origin main",
+            contextText: task.goal,
+            workspacePath: workspace.primaryPath,
+            executionEnvironment: environment,
+            permissionPolicy: .restricted,
             gitCredentialContextProvider: { _, _, _, _ in
                 externalHTTPSCredentialContext
             },

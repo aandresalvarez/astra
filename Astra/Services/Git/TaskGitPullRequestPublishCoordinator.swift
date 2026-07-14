@@ -62,8 +62,12 @@ final class TaskGitPullRequestPublishCoordinator {
             throw TaskGitPullRequestPublishCoordinatorError.commitUnavailable
         }
 
-        let selectedPaths = Self.taskOwnedRelativePaths(
-            run.fileChanges.map(\.path),
+        // The run summary is presentation data and may be capped. Git status is
+        // the authoritative publication scope so every currently dirty path is
+        // disclosed in the review instead of being silently omitted.
+        let selectedPaths = Self.reconciledSelectedPaths(
+            recordedPaths: run.fileChanges.map(\.path),
+            statusPaths: await git.getStatusFiles(at: repositoryPath).map(\.relativePath),
             repositoryPath: repositoryPath
         )
         guard !selectedPaths.isEmpty else {
@@ -112,10 +116,10 @@ final class TaskGitPullRequestPublishCoordinator {
         task: AgentTask,
         proposal: GitPullRequestPublishProposal
     ) async throws -> GitPullRequestPublishReceipt {
-        guard TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task) else {
+        guard let requirement = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task),
+              let run = task.runs.first(where: { $0.id == requirement.runID }) else {
             throw TaskGitPullRequestPublishCoordinatorError.noPendingPublication
         }
-        let run = task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
         let authorization = GitPublishAuthorization(
             repository: proposal.repositoryPath,
             baseBranch: proposal.baseBranch,
@@ -152,7 +156,11 @@ final class TaskGitPullRequestPublishCoordinator {
                 payload: "Published draft pull request #\(receipt.pullRequestNumber): \(receipt.pullRequestURL)",
                 run: run
             ))
-            TaskStateMachine.completeFromUserApproval(task, modelContext: modelContext)
+            _ = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
             WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: task.workspace,
                 modelContext: modelContext
@@ -263,6 +271,21 @@ final class TaskGitPullRequestPublishCoordinator {
                   seen.insert(relativePath).inserted else { return nil }
             return relativePath
         }.sorted()
+    }
+
+    /// Reconciles the potentially capped run summary with the complete live
+    /// repository status. Only paths still reported dirty are publishable; the
+    /// recorded list is used to keep deterministic ordering, not as authority.
+    static func reconciledSelectedPaths(
+        recordedPaths: [String],
+        statusPaths: [String],
+        repositoryPath: String
+    ) -> [String] {
+        let recorded = Set(taskOwnedRelativePaths(recordedPaths, repositoryPath: repositoryPath))
+        let dirty = taskOwnedRelativePaths(statusPaths, repositoryPath: repositoryPath)
+        let recordedAndDirty = dirty.filter(recorded.contains)
+        let unrecordedAndDirty = dirty.filter { !recorded.contains($0) }
+        return (recordedAndDirty + unrecordedAndDirty).sorted()
     }
 
     static func headBranch(for task: AgentTask) -> String {

@@ -193,6 +193,60 @@ struct TaskCompletionPolicyTests {
         #expect(decision.userVisibleMessage?.contains("standalone file artifact") == true)
     }
 
+    @Test("missing deliverable blocks before Ask pull request publication")
+    func missingDeliverablePrecedesPullRequestPublication() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Publish web page",
+            goal: "Write a web page with HTML and JavaScript, then create a pull request",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
+            task: task,
+            run: run,
+            permissionPolicy: .restricted
+        )
+
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.gate == .manualArtifactRequirement)
+        #expect(decision.typedStopReason == .noUsableResult)
+    }
+
+    @Test("publication receipt cannot complete a task whose deliverable is missing")
+    func publicationReceiptDoesNotBypassMissingDeliverable() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Publish web page",
+            goal: "Write a web page with HTML and JavaScript, then create a pull request",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+            task: task,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(!completed)
+        #expect(task.status == .pendingUser)
+        #expect(run.typedStopReason == .noUsableResult)
+    }
+
     @Test("manual completion policy names missing explicit deliverables")
     func manualCompletionPolicyNamesMissingExplicitDeliverables() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
