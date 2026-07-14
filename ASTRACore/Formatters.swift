@@ -11,6 +11,17 @@ public enum Formatters {
             guard let prefix, !prefix.isEmpty else { return primary }
             return "\(prefix) · \(primary)"
         }
+
+        /// Navigation rows can prioritize the task object while preserving the
+        /// complete original title for hover help and accessibility. Surfaces
+        /// with more room may continue to render `displayTitle`.
+        public var primaryOnly: SidebarTaskTitlePresentation {
+            SidebarTaskTitlePresentation(
+                prefix: nil,
+                primary: primary,
+                fullTitle: fullTitle
+            )
+        }
     }
 
     /// Format a token count for display (e.g., 1500 -> "1.5k", 1500000 -> "1.5M").
