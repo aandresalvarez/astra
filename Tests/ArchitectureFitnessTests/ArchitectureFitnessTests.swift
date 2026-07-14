@@ -1015,21 +1015,6 @@ struct ArchitectureFitnessTests {
         #expect(!app.contains("struct StoreStartupBlockedView"))
     }
 
-    @Test("Git status parsing lives behind its SwiftPM contract target")
-    func gitStatusParsingLivesBehindContractTarget() throws {
-        let root = try repositoryRoot()
-        let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
-
-        #expect(package.contains(#"name: "ASTRAGitContracts""#))
-        #expect(package.contains(#""ASTRAGitContracts","#))
-        #expect(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("ASTRAGitContracts/GitStatusContracts.swift").path
-        ))
-        #expect(!FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("Astra/Services/Git/GitStatusParser.swift").path
-        ))
-    }
-
     @Test("Plugin catalog view delegates capability side effects to action service")
     func pluginCatalogViewDelegatesCapabilitySideEffects() throws {
         let root = try repositoryRoot()
@@ -1575,8 +1560,12 @@ struct ArchitectureFitnessTests {
             ".githooks/pre-push",
             "script/focused_test_targets.sh",
             "script/focused_test_targets_tests.sh",
+            "script/focused_validation_plan.sh",
+            "script/focused_validation_plan_tests.sh",
             "script/precommit.sh",
             "script/prepush.sh",
+            "script/test_architecture.sh",
+            "script/test_git_contracts.sh",
             "script/configure_branch_protection.sh"
         ]
 
@@ -1597,6 +1586,7 @@ struct ArchitectureFitnessTests {
         let preCommitHook = try fileText(".githooks/pre-commit", root: root)
         let prePushHook = try fileText(".githooks/pre-push", root: root)
         let focusedTargetScript = try fileText("script/focused_test_targets.sh", root: root)
+        let focusedValidationPlan = try fileText("script/focused_validation_plan.sh", root: root)
         let preCommitScript = try fileText("script/precommit.sh", root: root)
         let prePushScript = try fileText("script/prepush.sh", root: root)
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
@@ -1613,7 +1603,10 @@ struct ArchitectureFitnessTests {
 
         #expect(preCommitHook.contains("script/precommit.sh"))
         #expect(prePushHook.contains("script/prepush.sh"))
-        #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests.ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("script/test_architecture.sh"))
+        #expect(preCommitScript.contains("script/test_git_contracts.sh"))
+        #expect(preCommitScript.contains("script/focused_validation_plan.sh"))
+        #expect(preCommitScript.contains("script/focused_validation_plan_tests.sh"))
         #expect(preCommitScript.contains("script/focused_test_targets.sh"))
         #expect(preCommitScript.contains("script/focused_test_targets_tests.sh"))
         #expect(preCommitScript.contains(#"swift test --filter "$target""#))
@@ -1631,15 +1624,20 @@ struct ArchitectureFitnessTests {
         #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
         #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
         #expect(focusedTargetScript.contains("MailToolSupportTests"))
-        #expect(focusedTargetScript.contains("Tests/ArchitectureFitnessTests/*"))
+        #expect(focusedValidationPlan.contains("ASTRAGitContracts/*"))
+        #expect(focusedValidationPlan.contains("Tests/ArchitectureFitnessTests/*"))
+        #expect(focusedValidationPlan.contains("git-contracts"))
         #expect(focusedTargetScript.contains("AppSemanticFitnessTests"))
+        #expect(prePushScript.contains("script/test_architecture.sh"))
+        #expect(prePushScript.contains("script/test_git_contracts.sh"))
+        #expect(prePushScript.contains("script/focused_validation_plan.sh"))
+        #expect(prePushScript.contains("script/focused_validation_plan_tests.sh"))
         #expect(prePushScript.contains("script/focused_test_targets.sh"))
         #expect(prePushScript.contains("script/focused_test_targets_tests.sh"))
         #expect(prePushScript.contains("FOCUSED_SWIFT_TEST_FILTER="))
         #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 3)
         #expect(prePushScript.contains(#"swift test --filter "$target""#))
         #expect(prePushScript.contains(#"${#changed_files[@]} > 0"#))
-        #expect(prePushScript.contains("ArchitectureFitnessTests"))
         #expect(prePushScript.contains("RuntimeReadinessServiceTests"))
         #expect(prePushScript.contains("WorkspacePersistenceTests"))
         #expect(prePushScript.contains("AgentRuntimeAdapterTests"))
@@ -1662,23 +1660,6 @@ struct ArchitectureFitnessTests {
         #expect(!codeowners.contains("* @aandresalvarez"))
         #expect(codeowners.contains("Astra/Services/Runtime/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))
-        #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
-        #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
-    }
-
-    @Test("Architecture fitness checks run in a standalone test target")
-    func architectureFitnessChecksRunInStandaloneTestTarget() throws {
-        let root = try repositoryRoot()
-        let package = try fileText("Package.swift", root: root)
-        let testFile = try fileText("Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift", root: root)
-        let codeowners = try fileText(".github/CODEOWNERS", root: root)
-        let disallowedAppImport = "@testable import " + "ASTRA"
-        let disallowedSwiftDataImport = "import " + "SwiftData"
-
-        #expect(package.contains(#"name: "ArchitectureFitnessTests""#))
-        #expect(package.contains(#"exclude: ["ArchitectureFitnessTests""#))
-        #expect(!testFile.contains(disallowedAppImport))
-        #expect(!testFile.contains(disallowedSwiftDataImport))
         #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
         #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
     }

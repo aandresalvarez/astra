@@ -57,6 +57,29 @@ run_focused_targets_for_changed_paths() {
   done <<< "$targets"
 }
 
+run_validation_plan() {
+  local plan="$1"
+  local lane
+
+  ROOT_VALIDATION_REQUIRED=0
+  while IFS= read -r lane; do
+    case "$lane" in
+      git-contracts)
+        run script/test_git_contracts.sh
+        ;;
+      root)
+        ROOT_VALIDATION_REQUIRED=1
+        ;;
+      "")
+        ;;
+      *)
+        echo "Unknown focused validation lane: $lane" >&2
+        return 2
+        ;;
+    esac
+  done <<< "$plan"
+}
+
 # ReleaseBuildNumberDerivationTests/ReleaseUpdateScriptTests/AppBundlePackagingTests
 # are listed here unconditionally, not left to the path-diff-based mapping
 # in focused_test_targets.sh below (PR #253 review comment on
@@ -68,15 +91,26 @@ run_focused_targets_for_changed_paths() {
 # path-based mapping is never consulted. Running these here guarantees the
 # release-number regression suite always executes before a tag is signed,
 # regardless of diff state.
-FOCUSED_SWIFT_TEST_FILTER="ArchitectureFitnessTests.ArchitectureFitnessTests|RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests|ReleaseBuildNumberDerivationTests|ReleaseUpdateScriptTests|AppBundlePackagingTests"
+FOCUSED_SWIFT_TEST_FILTER="RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests|ReleaseBuildNumberDerivationTests|ReleaseUpdateScriptTests|AppBundlePackagingTests"
 
-run swift test --filter "$FOCUSED_SWIFT_TEST_FILTER"
-run script/focused_test_targets_tests.sh
 changed_files=()
 while IFS= read -r path; do
   changed_files+=("$path")
 done < <(changed_paths)
+
+run script/test_architecture.sh
 if ((${#changed_files[@]} > 0)); then
+  run_validation_plan "$(script/focused_validation_plan.sh "${changed_files[@]}")"
+else
+  run_validation_plan "$(script/focused_validation_plan.sh)"
+fi
+
+if [[ "$ROOT_VALIDATION_REQUIRED" == "1" ]]; then
+  run swift test --filter "$FOCUSED_SWIFT_TEST_FILTER"
+fi
+run script/focused_validation_plan_tests.sh
+run script/focused_test_targets_tests.sh
+if [[ "$ROOT_VALIDATION_REQUIRED" == "1" ]] && ((${#changed_files[@]} > 0)); then
   run_focused_targets_for_changed_paths "${changed_files[@]}"
 fi
 check_whitespace
