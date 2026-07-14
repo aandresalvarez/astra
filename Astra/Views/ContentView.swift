@@ -1264,9 +1264,10 @@ struct ContentView: View {
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
         beginScreenTransitionIfNeeded(to: item, source: "shelf_action")
-        animatePanelChange {
+        commitWorkspaceCanvasItemChange {
             rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
@@ -1285,7 +1286,24 @@ struct ContentView: View {
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
         beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
-        rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
+        commitWorkspaceCanvasItemChange {
+            rightPanel.setActiveCanvasItem(
+                item,
+                remember: remember,
+                conversationID: selectedWorkspaceCanvasConversationID
+            )
+        }
+        screenTransitionCoordinator.stateCommitted()
+    }
+
+    /// Canvas shelves are docked beside the transcript. Committing the final
+    /// geometry in one transaction prevents an enclosing `withAnimation` from
+    /// interpolating transcript width and re-laying out long Markdown chats on
+    /// every frame.
+    private func commitWorkspaceCanvasItemChange(_ changes: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, changes)
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
@@ -2818,6 +2836,7 @@ private struct ContentDetailAreaView: View {
     @State private var rightRailDragStartWidth: CGFloat?
     @State private var rightRailTransientWidth: CGFloat?
     @State private var isResizingRightRail = false
+    @StateObject private var markdownFileIndex = ShelfFileIndexController()
 
     let onQuickRun: (AgentTask) -> Void
     let onTaskCreated: (AgentTask) -> Void
@@ -2878,6 +2897,9 @@ private struct ContentDetailAreaView: View {
                 usesInspectorOverlay ? nil : rightPanelWidth(for: panel, availableWidth: availableWidth, isOverlay: false)
             } ?? 0
             let detailWidth = max(0, proxy.size.width - dockedPanelWidth)
+            let transitionMode = WorkspaceRightPanelTransitionMode.resolve(
+                usesInspectorOverlay: usesInspectorOverlay
+            )
 
             ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
@@ -2892,7 +2914,6 @@ private struct ContentDetailAreaView: View {
                             availableWidth: availableWidth,
                             isOverlay: false
                         )
-                        .transition(panelSlideTransition)
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -2912,10 +2933,21 @@ private struct ContentDetailAreaView: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .animation(
+                transitionMode.animatesPanel ? panelAnimation : nil,
+                value: activeRightPanel
+            )
         }
         .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(panelAnimation, value: activeRightPanel)
+        .onChange(of: activeCanvasItem) { oldValue, newValue in
+            guard oldValue == .markdown, newValue != .markdown else { return }
+            markdownFileIndex.cancel(
+                responsivenessScope: filesShelfResponsivenessScope,
+                reason: "shelf_closed"
+            )
+            markdownSession.cancelPendingDocumentLoad()
+        }
     }
 
     private var activeRightPanel: WorkspaceRightPanel? {
@@ -3254,6 +3286,7 @@ private struct ContentDetailAreaView: View {
         case .markdown:
             ShelfMarkdownPanelView(
                 session: markdownSession,
+                fileIndex: markdownFileIndex,
                 isPinnedToTask: $isMarkdownPinnedToTask,
                 workspace: effectiveWorkspace,
                 task: selectedTask,

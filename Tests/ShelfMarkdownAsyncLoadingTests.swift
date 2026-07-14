@@ -59,4 +59,45 @@ struct ShelfMarkdownAsyncLoadingTests {
         #expect(session.selectedDocumentKind == .json)
         #expect(session.selectedDocument?.formattedJSONContent?.contains("\"answer\" : 42") == true)
     }
+
+    @MainActor
+    @Test("Cancelling an async preview always clears its loading state")
+    func cancellationClearsLoadingState() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-files-shelf-cancel-\(UUID().uuidString).md")
+        try "# Slow".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let session = ShelfMarkdownSession(documentLoader: DelayedShelfDocumentLoader(slowPath: file.path))
+
+        let load = Task { await session.loadAsync(file) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        session.cancelPendingDocumentLoad()
+
+        #expect(await !load.value)
+        #expect(!session.isLoadingDocument)
+        #expect(!session.hasFile)
+    }
+
+    @MainActor
+    @Test("Selecting an open tab supersedes a pending preview")
+    func openTabSelectionSupersedesPendingPreview() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-files-shelf-tab-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let openURL = directory.appendingPathComponent("open.md")
+        let slowURL = directory.appendingPathComponent("slow.md")
+        try "# Open".write(to: openURL, atomically: true, encoding: .utf8)
+        try "# Slow".write(to: slowURL, atomically: true, encoding: .utf8)
+        let session = ShelfMarkdownSession(documentLoader: DelayedShelfDocumentLoader(slowPath: slowURL.path))
+        session.load(openURL)
+
+        let pending = Task { await session.loadAsync(slowURL) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        session.selectDocument(openURL.path)
+
+        #expect(await !pending.value)
+        #expect(session.fileURL == openURL)
+        #expect(!session.isLoadingDocument)
+    }
 }

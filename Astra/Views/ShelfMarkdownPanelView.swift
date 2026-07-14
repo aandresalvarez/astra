@@ -45,6 +45,31 @@ enum ShelfTabStripPolicy {
     }
 }
 
+enum ShelfFileAutoOpenPolicy {
+    static func shouldAutoOpen(hasFile: Bool, isLoadingDocument: Bool) -> Bool {
+        !hasFile && !isLoadingDocument
+    }
+}
+
+enum ShelfFileSelectionAlignment {
+    static func scope(
+        for path: String,
+        roots: [WorkspaceFileRoot],
+        currentScope: ShelfFileNavigatorScope,
+        hasTask: Bool
+    ) -> ShelfFileNavigatorScope? {
+        guard let root = roots.first(where: { WorkspaceFileIndexService.isPath(path, inside: $0) }) else {
+            return nil
+        }
+        switch root.kind {
+        case .primary, .additional:
+            return currentScope == .task ? .workspace : currentScope
+        case .taskFolder, .input:
+            return currentScope == .workspace && hasTask ? .task : currentScope
+        }
+    }
+}
+
 struct ShelfMarkdownPanelView: View {
     private static let fileSizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -55,6 +80,7 @@ struct ShelfMarkdownPanelView: View {
     private static let visibleNodeBatchLimit = 180
 
     @ObservedObject var session: ShelfMarkdownSession
+    @ObservedObject var fileIndex: ShelfFileIndexController
     @Binding var isPinnedToTask: Bool
     var workspace: Workspace?
     var task: AgentTask?
@@ -66,7 +92,6 @@ struct ShelfMarkdownPanelView: View {
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
     @State private var wrapLines = true
-    @StateObject private var fileIndex = ShelfFileIndexController()
     @State private var fileNavigatorScope: ShelfFileNavigatorScope = .task
     @State private var fileSearchText = ""
     /// Debounced mirror of `fileSearchText` that actually drives filtering, so a
@@ -108,6 +133,13 @@ struct ShelfMarkdownPanelView: View {
             session.cancelPendingDocumentLoad()
         }
         .task(id: responsivenessScope) {
+            if let responsivenessScope {
+                FilesShelfResponsivenessTelemetry.ensureStarted(
+                    taskID: task?.id,
+                    workspaceID: (task?.workspace ?? workspace)?.id,
+                    scope: responsivenessScope
+                )
+            }
             await Task.yield()
             if let responsivenessScope {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
@@ -1050,19 +1082,13 @@ struct ShelfMarkdownPanelView: View {
     private func alignFileNavigatorWithSelectedDocument() {
         guard let fileURL = session.fileURL else { return }
         let path = fileURL.standardizedFileURL.path
-        guard let root = fileIndex.roots.first(where: { WorkspaceFileIndexService.isPath(path, inside: $0) }) else {
-            return
-        }
-
-        switch root.kind {
-        case .primary, .additional:
-            if fileNavigatorScope == .task {
-                fileNavigatorScope = .workspace
-            }
-        case .taskFolder, .input:
-            if fileNavigatorScope == .workspace, task != nil {
-                fileNavigatorScope = .task
-            }
+        if let alignedScope = ShelfFileSelectionAlignment.scope(
+            for: path,
+            roots: fileIndex.allRoots,
+            currentScope: fileNavigatorScope,
+            hasTask: task != nil
+        ), alignedScope != fileNavigatorScope {
+            fileNavigatorScope = alignedScope
         }
         expandFileNavigator(to: path, isFile: true)
     }
@@ -1132,7 +1158,10 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private func autoOpenFirstFileIfNeeded(nodes: [WorkspaceFileNode]) {
-        guard !session.hasFile,
+        guard ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: session.hasFile,
+            isLoadingDocument: session.isLoadingDocument
+        ),
               let node = nodes.first(where: { !$0.isDirectory }) else {
             return
         }

@@ -19,6 +19,24 @@ import ASTRAModels
 @Suite("PanelLayoutGeometry")
 struct PanelLayoutGeometryTests {
 
+    @Test("Docked shelves commit final geometry without animating transcript width")
+    func dockedShelvesDoNotAnimateLayout() {
+        let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: false)
+
+        #expect(mode == .immediateDocked)
+        #expect(!mode.animatesPanel)
+        #expect(mode.disablesLayoutAnimation)
+    }
+
+    @Test("A true inspector overlay may animate because detail width stays stable")
+    func inspectorOverlayMayAnimate() {
+        let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: true)
+
+        #expect(mode == .animatedOverlay)
+        #expect(mode.animatesPanel)
+        #expect(!mode.disablesLayoutAnimation)
+    }
+
     // MARK: - Constants
 
     @Test("Compact threshold matches the production constant")

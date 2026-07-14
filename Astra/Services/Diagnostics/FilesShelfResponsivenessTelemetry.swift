@@ -54,6 +54,7 @@ enum FilesShelfResponsivenessTelemetry {
         let interval: OSSignpostIntervalState
         var chromeReady = false
         var firstResultsReady = false
+        var indexReady = false
     }
 
     private static var activeTraces: [UUID: ActiveTrace] = [:]
@@ -87,7 +88,11 @@ enum FilesShelfResponsivenessTelemetry {
         guard var active = activeTraces[scope], !active.chromeReady else { return }
         active.chromeReady = true
         log(active.trace.result(event: "files_shelf_to_chrome_ready", at: DispatchTime.now().uptimeNanoseconds))
-        activeTraces[scope] = active
+        if active.indexReady {
+            activeTraces.removeValue(forKey: scope)
+        } else {
+            activeTraces[scope] = active
+        }
     }
 
     static func firstResultsReady(
@@ -121,7 +126,8 @@ enum FilesShelfResponsivenessTelemetry {
         errorCount: Int,
         isTruncated: Bool
     ) {
-        guard let active = activeTraces.removeValue(forKey: scope) else { return }
+        guard var active = activeTraces[scope], !active.indexReady else { return }
+        active.indexReady = true
         signposter.endInterval("files_shelf_to_index_ready", active.interval)
         var fields = scaleFields(
             fileScope: fileScope,
@@ -136,6 +142,11 @@ enum FilesShelfResponsivenessTelemetry {
             at: DispatchTime.now().uptimeNanoseconds,
             fields: fields
         ))
+        if active.chromeReady {
+            activeTraces.removeValue(forKey: scope)
+        } else {
+            activeTraces[scope] = active
+        }
     }
 
     static func logIndexScan(
@@ -188,7 +199,9 @@ enum FilesShelfResponsivenessTelemetry {
 
     static func cancel(scope: UUID, reason: String) {
         guard let active = activeTraces.removeValue(forKey: scope) else { return }
-        signposter.endInterval("files_shelf_to_index_ready", active.interval)
+        if !active.indexReady {
+            signposter.endInterval("files_shelf_to_index_ready", active.interval)
+        }
         PerformanceTelemetry.log(
             "files_shelf_cancelled",
             durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(

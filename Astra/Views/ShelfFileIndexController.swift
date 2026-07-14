@@ -1,11 +1,33 @@
 import Foundation
 import ASTRAPersistence
 
+protocol ShelfFileIndexFiltering: Sendable {
+    func filter(
+        _ nodesByRoot: [String: [WorkspaceFileNode]],
+        searchText: String
+    ) async -> [String: [WorkspaceFileNode]]
+}
+
+struct DefaultShelfFileIndexFilter: ShelfFileIndexFiltering {
+    func filter(
+        _ nodesByRoot: [String: [WorkspaceFileNode]],
+        searchText: String
+    ) async -> [String: [WorkspaceFileNode]] {
+        guard !searchText.isEmpty else { return nodesByRoot }
+        return await Task.detached(priority: .userInitiated) {
+            nodesByRoot.mapValues { nodes in
+                nodes.filter { $0.normalizedSearchText.contains(searchText) }
+            }
+        }.value
+    }
+}
+
 /// Presentation owner for Files shelf indexing. Filesystem snapshots remain
 /// derived from `WorkspaceFileIndexService`; this controller owns only their
 /// cancellable refresh, warm-cache presentation, and pre-filtered UI shape.
 @MainActor
 final class ShelfFileIndexController: ObservableObject {
+    @Published private(set) var allRoots: [WorkspaceFileRoot] = []
     @Published private(set) var roots: [WorkspaceFileRoot] = []
     @Published private(set) var nodes: [WorkspaceFileNode] = []
     @Published private(set) var displayedNodesByRoot: [String: [WorkspaceFileNode]] = [:]
@@ -15,11 +37,17 @@ final class ShelfFileIndexController: ObservableObject {
     @Published private(set) var revision = 0
 
     private let store: WorkspaceFileIndexStore
+    private let filtering: any ShelfFileIndexFiltering
     private var scanTask: Task<Void, Never>?
     private var normalizedSearchText = ""
+    private var searchRevision = 0
 
-    init(store: WorkspaceFileIndexStore = .shared) {
+    init(
+        store: WorkspaceFileIndexStore = .shared,
+        filtering: any ShelfFileIndexFiltering = DefaultShelfFileIndexFilter()
+    ) {
         self.store = store
+        self.filtering = filtering
     }
 
     func refresh(
@@ -33,6 +61,7 @@ final class ShelfFileIndexController: ObservableObject {
         responsivenessScope: UUID?
     ) {
         scanTask?.cancel()
+        self.allRoots = allRoots
         let selectedRoots = Self.roots(allRoots, for: scope)
         roots = selectedRoots
         isScanning = true
@@ -70,7 +99,6 @@ final class ShelfFileIndexController: ObservableObject {
             return
         }
 
-        let searchText = normalizedSearchText
         scanTask = Task { [weak self] in
             guard let self else { return }
             var presentedCachedSnapshot = false
@@ -78,8 +106,7 @@ final class ShelfFileIndexController: ObservableObject {
             if !force,
                let cached = await store.cachedSnapshot(roots: selectedRoots, includeHidden: includeHidden),
                !Task.isCancelled {
-                let displayed = await Self.filteredNodes(cached.nodesByRoot, searchText: searchText)
-                guard !Task.isCancelled else { return }
+                guard let displayed = await displayedNodesForCurrentSearch(cached.nodesByRoot) else { return }
                 apply(cached, displayedNodesByRoot: displayed)
                 presentedCachedSnapshot = true
                 if let responsivenessScope {
@@ -96,8 +123,7 @@ final class ShelfFileIndexController: ObservableObject {
             let scanStart = DispatchTime.now().uptimeNanoseconds
             let fresh = await store.refreshedSnapshot(roots: selectedRoots, includeHidden: includeHidden)
             guard !Task.isCancelled else { return }
-            let displayed = await Self.filteredNodes(fresh.nodesByRoot, searchText: normalizedSearchText)
-            guard !Task.isCancelled else { return }
+            guard let displayed = await displayedNodesForCurrentSearch(fresh.nodesByRoot) else { return }
 
             apply(fresh, displayedNodesByRoot: displayed)
             isScanning = false
@@ -149,9 +175,13 @@ final class ShelfFileIndexController: ObservableObject {
     func applySearchText(_ text: String) async {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         normalizedSearchText = normalized
+        searchRevision &+= 1
+        let requestedRevision = searchRevision
         let source = Dictionary(grouping: nodes, by: \.rootID)
-        let displayed = await Self.filteredNodes(source, searchText: normalized)
-        guard !Task.isCancelled, normalizedSearchText == normalized else { return }
+        let displayed = await filtering.filter(source, searchText: normalized)
+        guard !Task.isCancelled,
+              searchRevision == requestedRevision,
+              normalizedSearchText == normalized else { return }
         displayedNodesByRoot = displayed
         revision &+= 1
     }
@@ -160,12 +190,12 @@ final class ShelfFileIndexController: ObservableObject {
         displayedNodesByRoot[root.id] ?? []
     }
 
-    func cancel(responsivenessScope: UUID?) {
+    func cancel(responsivenessScope: UUID?, reason: String = "view_disappeared") {
         scanTask?.cancel()
         scanTask = nil
         isScanning = false
         if let responsivenessScope {
-            FilesShelfResponsivenessTelemetry.cancel(scope: responsivenessScope, reason: "view_disappeared")
+            FilesShelfResponsivenessTelemetry.cancel(scope: responsivenessScope, reason: reason)
         }
     }
 
@@ -185,16 +215,20 @@ final class ShelfFileIndexController: ObservableObject {
         }
     }
 
-    nonisolated private static func filteredNodes(
-        _ nodesByRoot: [String: [WorkspaceFileNode]],
-        searchText: String
-    ) async -> [String: [WorkspaceFileNode]] {
-        guard !searchText.isEmpty else { return nodesByRoot }
-        return await Task.detached(priority: .userInitiated) {
-            nodesByRoot.mapValues { nodes in
-                nodes.filter { $0.normalizedSearchText.contains(searchText) }
+    private func displayedNodesForCurrentSearch(
+        _ nodesByRoot: [String: [WorkspaceFileNode]]
+    ) async -> [String: [WorkspaceFileNode]]? {
+        while !Task.isCancelled {
+            let requestedRevision = searchRevision
+            let requestedSearchText = normalizedSearchText
+            let displayed = await filtering.filter(nodesByRoot, searchText: requestedSearchText)
+            guard !Task.isCancelled else { return nil }
+            if requestedRevision == searchRevision,
+               requestedSearchText == normalizedSearchText {
+                return displayed
             }
-        }.value
+        }
+        return nil
     }
 
     private func apply(

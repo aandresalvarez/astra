@@ -87,15 +87,20 @@ struct ShelfMarkdownDocument: Identifiable, Equatable {
     }
 }
 
-protocol ShelfDocumentLoading {
+protocol ShelfDocumentLoading: Sendable {
     func loadDocument(at url: URL) async -> ShelfMarkdownDocument
 }
 
 struct DefaultShelfDocumentLoader: ShelfDocumentLoading {
     func loadDocument(at url: URL) async -> ShelfMarkdownDocument {
-        await Task.detached(priority: .userInitiated) {
+        let loadTask = Task.detached(priority: .userInitiated) {
             ShelfMarkdownSession.makeDocument(for: url)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await loadTask.value
+        } onCancel: {
+            loadTask.cancel()
+        }
     }
 }
 
@@ -233,11 +238,15 @@ final class ShelfMarkdownSession: ObservableObject {
         documentLoadGeneration &+= 1
         let generation = documentLoadGeneration
         loadingDocumentID = url.path
+        defer {
+            if generation == documentLoadGeneration {
+                loadingDocumentID = nil
+            }
+        }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let document = await documentLoader.loadDocument(at: url)
         guard !Task.isCancelled, generation == documentLoadGeneration else { return false }
 
-        loadingDocumentID = nil
         applyLoadedDocument(document)
         FilesShelfResponsivenessTelemetry.logPreviewLoad(
             durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt),
@@ -305,6 +314,7 @@ final class ShelfMarkdownSession: ObservableObject {
 
     func selectDocument(_ id: String) {
         guard documents.contains(where: { $0.id == id }) else { return }
+        cancelPendingDocumentLoad()
         selectDocumentID(id)
     }
 

@@ -23,4 +23,25 @@ struct ScreenTransitionTelemetryTests {
         #expect(result.fields["task_id"] == "01234567")
         #expect(result.fields["title"] == nil)
     }
+
+    @Test("Transition phases distinguish state commit from main-actor stalls")
+    func traceRecordsCommitAndProbePhases() {
+        var trace = ScreenTransitionTrace(
+            traceID: "screen-transition-phases",
+            destination: "shelf_markdown",
+            source: "shelf_action",
+            taskID: nil,
+            startedAtUptimeNanoseconds: 10_000_000
+        )
+        trace.markStateCommitted(at: 15_000_000)
+        trace.recordMainActorProbe(at: 30_000_000)
+        trace.recordMainActorProbe(at: 95_000_000)
+
+        let result = trace.result(at: 110_000_000)
+
+        #expect(result.fields["state_commit_ms"] == "5.00")
+        #expect(result.fields["state_to_view_ready_ms"] == "95.00")
+        #expect(result.fields["max_main_actor_probe_gap_ms"] == "65.00")
+        #expect(result.fields["main_actor_hitch_count"] == "1")
+    }
 }

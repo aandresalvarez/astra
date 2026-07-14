@@ -11,6 +11,21 @@ import ASTRAPersistence
     .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
 )
 struct UIStressFilesShelfTests {
+    @Test("Repeated docked shelf toggles never select a transcript-width animation")
+    func largeTranscriptShelfTogglePolicy() {
+        // The exact production repro had 270 conversation items. Exercise far
+        // more toggle decisions here so a future animation-policy regression
+        // is caught without relying on machine-specific render timing.
+        for _ in 0..<10_000 {
+            let opening = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: false)
+            let closing = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: false)
+            #expect(opening == .immediateDocked)
+            #expect(closing == .immediateDocked)
+            #expect(!opening.animatesPanel)
+            #expect(!closing.animatesPanel)
+        }
+    }
+
     @Test("Five-thousand-node scan and repeated search stay within guardrail budgets")
     func largeTreeIndexAndSearchBudgets() throws {
         let directory = FileManager.default.temporaryDirectory

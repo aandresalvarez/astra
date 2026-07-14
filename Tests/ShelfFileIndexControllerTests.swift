@@ -3,6 +3,45 @@ import Testing
 import ASTRAPersistence
 @testable import ASTRA
 
+private actor BlockingShelfFileIndexFilter: ShelfFileIndexFiltering {
+    private var queryToBlock: String?
+    private var blocked = false
+    private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func blockNext(_ query: String) {
+        queryToBlock = query
+        blocked = false
+    }
+
+    func waitUntilBlocked() async {
+        guard !blocked else { return }
+        await withCheckedContinuation { blockedWaiters.append($0) }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func filter(
+        _ nodesByRoot: [String: [WorkspaceFileNode]],
+        searchText: String
+    ) async -> [String: [WorkspaceFileNode]] {
+        if queryToBlock == searchText {
+            queryToBlock = nil
+            blocked = true
+            blockedWaiters.forEach { $0.resume() }
+            blockedWaiters = []
+            await withCheckedContinuation { releaseContinuation = $0 }
+        }
+        guard !searchText.isEmpty else { return nodesByRoot }
+        return nodesByRoot.mapValues { nodes in
+            nodes.filter { $0.normalizedSearchText.contains(searchText) }
+        }
+    }
+}
+
 @Suite("Files shelf index controller")
 struct ShelfFileIndexControllerTests {
     @MainActor
@@ -81,6 +120,58 @@ struct ShelfFileIndexControllerTests {
         #expect(!controller.isScanning)
         #expect(controller.roots.map(\.id) == ["task"])
         #expect(controller.nodes.map(\.name) == ["task.txt"])
+    }
+
+    @MainActor
+    @Test("Cached and fresh scan results never publish a stale search query")
+    func scanResultsUseLatestSearchQuery() async throws {
+        let directory = try temporaryDirectory(name: "search-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "alpha".write(
+            to: directory.appendingPathComponent("alpha.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "beta".write(
+            to: directory.appendingPathComponent("beta.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let root = WorkspaceFileRoot(
+            id: "workspace",
+            kind: .primary,
+            title: "Workspace",
+            path: directory.path,
+            isDirectory: true
+        )
+        let filtering = BlockingShelfFileIndexFilter()
+        let controller = ShelfFileIndexController(
+            store: WorkspaceFileIndexStore(),
+            filtering: filtering
+        )
+
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: false,
+            reason: "warm", taskID: nil, workspaceID: nil, responsivenessScope: nil
+        )
+        for _ in 0..<100 where controller.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await controller.applySearchText("alpha")
+        await filtering.blockNext("alpha")
+
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: false,
+            reason: "race", taskID: nil, workspaceID: nil, responsivenessScope: nil
+        )
+        await filtering.waitUntilBlocked()
+        await controller.applySearchText("beta")
+        await filtering.release()
+        for _ in 0..<100 where controller.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        #expect(controller.nodes(for: root).map(\.name) == ["beta.txt"])
     }
 
     private func root(id: String, kind: WorkspaceFileRoot.Kind) -> WorkspaceFileRoot {

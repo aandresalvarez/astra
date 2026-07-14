@@ -46,6 +46,28 @@ enum WorkspaceRightPanel: Equatable {
     }
 }
 
+/// A docked panel changes the task transcript's available width. Animating that
+/// width asks every visible Markdown block to reflow on every animation frame,
+/// which turns a short decorative transition into multi-second main-actor work
+/// on long conversations. Docked panels therefore commit their final geometry
+/// once; only a true overlay may animate because it leaves detail width stable.
+enum WorkspaceRightPanelTransitionMode: Equatable {
+    case immediateDocked
+    case animatedOverlay
+
+    static func resolve(usesInspectorOverlay: Bool) -> Self {
+        usesInspectorOverlay ? .animatedOverlay : .immediateDocked
+    }
+
+    var animatesPanel: Bool {
+        self == .animatedOverlay
+    }
+
+    var disablesLayoutAnimation: Bool {
+        self == .immediateDocked
+    }
+}
+
 struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false

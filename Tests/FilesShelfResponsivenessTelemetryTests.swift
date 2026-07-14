@@ -83,6 +83,41 @@ struct FilesShelfResponsivenessTelemetryTests {
         FilesShelfResponsivenessTelemetry.resetForTesting()
     }
 
+    @MainActor
+    @Test("An empty fast index does not discard the later chrome milestone")
+    func indexReadyBeforeChromeKeepsTraceUntilChrome() {
+        let taskID = UUID()
+        let scope = UUID()
+        AppLogger.resetForTesting()
+        FilesShelfResponsivenessTelemetry.resetForTesting()
+        FilesShelfResponsivenessTelemetry.begin(
+            source: "shelf_action",
+            taskID: taskID,
+            workspaceID: UUID(),
+            scope: scope
+        )
+
+        FilesShelfResponsivenessTelemetry.indexReady(
+            scope: scope,
+            fileScope: "task",
+            cacheState: "not_applicable",
+            rootCount: 0,
+            nodeCount: 0,
+            errorCount: 0,
+            isTruncated: false
+        )
+        FilesShelfResponsivenessTelemetry.chromeReady(scope: scope)
+        AppLogger.flushForTesting()
+
+        let messages = AppLogger.entries
+            .filter { $0.category == "Performance" && $0.taskID == taskID }
+            .map(\.message)
+        #expect(messages.filter { $0.contains("event=files_shelf_to_index_ready") }.count == 1)
+        #expect(messages.filter { $0.contains("event=files_shelf_to_chrome_ready") }.count == 1)
+        #expect(!messages.contains { $0.contains("event=files_shelf_cancelled") })
+        FilesShelfResponsivenessTelemetry.resetForTesting()
+    }
+
     @Test("Files shelf samples participate in responsiveness diagnostics")
     func diagnosticsIncludeFilesShelfSamples() {
         let report = UIResponsivenessDiagnostics.makeReport(entries: [

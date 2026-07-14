@@ -26,6 +26,10 @@ final class ScreenTransitionCoordinator {
         ScreenTransitionTelemetry.viewBecameReady(destination: destination, scope: scope)
     }
 
+    func stateCommitted() {
+        ScreenTransitionTelemetry.stateCommitted(scope: scope)
+    }
+
     func cancelForViewDisappearance() {
         ScreenTransitionTelemetry.cancel(scope: scope, reason: "content_view_disappeared")
     }

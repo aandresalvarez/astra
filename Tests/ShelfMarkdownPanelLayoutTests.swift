@@ -1,6 +1,7 @@
 import Testing
 import CoreGraphics
 import Foundation
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Shelf Markdown Panel Layout")
@@ -212,6 +213,38 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("multiple open files keep the tab strip")
     func multipleOpenFilesKeepTabStrip() {
         #expect(ShelfTabStripPolicy.showsTabStrip(openDocumentCount: 2))
+    }
+
+    @Test("Automatic first-file loading never supersedes an explicit preview in flight")
+    func automaticOpenWaitsForExplicitPreview() {
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: false, isLoadingDocument: true))
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: true, isLoadingDocument: false))
+        #expect(ShelfFileAutoOpenPolicy.shouldAutoOpen(hasFile: false, isLoadingDocument: false))
+    }
+
+    @Test("Selecting an open workspace file aligns from task scope using every known root")
+    func workspaceSelectionAlignsUsingAllRoots() {
+        let taskRoot = WorkspaceFileRoot(
+            id: "task",
+            kind: .taskFolder,
+            title: "Task",
+            path: "/tmp/task",
+            isDirectory: true
+        )
+        let workspaceRoot = WorkspaceFileRoot(
+            id: "workspace",
+            kind: .primary,
+            title: "Workspace",
+            path: "/tmp/workspace",
+            isDirectory: true
+        )
+
+        #expect(ShelfFileSelectionAlignment.scope(
+            for: "/tmp/workspace/README.md",
+            roots: [taskRoot, workspaceRoot],
+            currentScope: .task,
+            hasTask: true
+        ) == .workspace)
     }
 
     @Test("top-right toolbar stays visible for shelf controls without a workspace")
