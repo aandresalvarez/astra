@@ -7,7 +7,9 @@ import ASTRACore
 struct OnboardingRuntimeChooserView: View {
     @ObservedObject var model: RuntimeSetupModel
     @Environment(\.openURL) private var openURL
+    @Environment(\.openSettings) private var openSettings
     @State private var showsAdditionalRuntimes = false
+    @State private var expandedInstallLogRuntime: AgentRuntimeID?
 
     private var orderedRows: [RuntimeProviderRowPresentation] {
         let mapped = AgentRuntimeAdapterRegistry.runtimeIDs.map(row(for:))
@@ -53,6 +55,9 @@ struct OnboardingRuntimeChooserView: View {
                 }
                 .accessibilityLabel("More runtimes, \(additionalRows.count)")
             }
+
+            Divider().opacity(0.52)
+            recheckFooter
         }
         .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
@@ -63,7 +68,21 @@ struct OnboardingRuntimeChooserView: View {
     }
 
     private func runtimeRow(_ presentation: RuntimeProviderRowPresentation) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let blocker = OnboardingRuntimeChooserPresentation.selectedBlocker(
+            for: presentation,
+            blockers: model.runtimeBlockers
+        )
+        let subtitle = OnboardingRuntimeChooserPresentation.subtitle(
+            for: presentation,
+            authSessionStatus: authSessionStatus(for: presentation.id),
+            selectedBlocker: blocker
+        )
+        let installFailure = OnboardingRuntimeChooserPresentation.installFailure(
+            for: presentation.id,
+            result: model.installResult
+        )
+
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 14) {
                 selectionIndicator(for: presentation)
 
@@ -71,23 +90,22 @@ struct OnboardingRuntimeChooserView: View {
                     Text(presentation.title)
                         .font(Stanford.body(14).weight(.semibold))
                         .foregroundStyle(Stanford.readingText)
-                    Text(subtitle(for: presentation))
+                    Text(subtitle)
                         .font(Stanford.caption(12))
                         .foregroundStyle(Stanford.textSecondary)
                         .lineLimit(2)
                 }
 
                 Spacer(minLength: 12)
-                trailingControl(for: presentation)
+                trailingControl(for: presentation, selectedBlocker: blocker)
             }
 
-            if let result = model.installResult,
-               result.runtime == presentation.id,
-               !result.succeeded {
-                Label(result.summary, systemImage: "exclamationmark.triangle.fill")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.statusError)
-                    .padding(.leading, 42)
+            if let blocker {
+                blockerDetail(blocker)
+            }
+
+            if let installFailure {
+                installFailureDetail(installFailure, runtime: presentation.id)
             }
         }
         .padding(.horizontal, 18)
@@ -96,7 +114,7 @@ struct OnboardingRuntimeChooserView: View {
         .background(presentation.isSelected ? Stanford.interactive.opacity(0.035) : Color.clear)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(presentation.title), \(subtitle(for: presentation))")
+        .accessibilityLabel("\(presentation.title), \(subtitle)")
     }
 
     @ViewBuilder
@@ -124,45 +142,61 @@ struct OnboardingRuntimeChooserView: View {
     }
 
     @ViewBuilder
-    private func trailingControl(for presentation: RuntimeProviderRowPresentation) -> some View {
-        switch presentation.primaryAction {
-        case .use:
-            rowButton("Use") { model.select(presentation.id) }
-                .accessibilityLabel("Use \(presentation.title)")
-        case .signIn:
-            rowButton("Sign in") { model.signIn(presentation.id) }
-                .disabled(model.authSession != nil)
-                .accessibilityLabel("Sign in to \(presentation.title)")
-        case .install(let displayCommand):
-            rowButton("Install") { model.install(presentation.id) }
-                .disabled(model.installState != nil)
-                .help(displayCommand)
-                .accessibilityLabel("Install \(presentation.title)")
-        case .openInstallPage(let url):
-            rowButton("Install") { openURL(url) }
-                .help("Open the \(presentation.title) install page")
-                .accessibilityLabel("Open the \(presentation.title) install page")
-        case .cancelInstall:
-            rowButton("Cancel") { model.cancelInstall() }
-                .accessibilityLabel("Cancel installing \(presentation.title)")
-        case .cancelSignIn:
-            rowButton("Cancel") { model.cancelSignIn() }
-                .accessibilityLabel("Cancel signing in to \(presentation.title)")
-        case .none:
-            if presentation.state == .selectedReady {
-                Label("Ready", systemImage: "checkmark.circle")
-                    .font(Stanford.body(12).weight(.medium))
-                    .foregroundStyle(Stanford.statusHealthy)
-            } else if presentation.state == .unverified, presentation.isSelected {
-                Text("Selected")
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.statusWarn)
-            } else if presentation.state == .unresponsive, presentation.isSelected {
-                rowButton("Re-check") { model.refresh(force: true) }
-            } else if presentation.state == .checking {
-                Text("Checking")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.textSecondary)
+    private func trailingControl(
+        for presentation: RuntimeProviderRowPresentation,
+        selectedBlocker: RuntimeReadinessCheck?
+    ) -> some View {
+        if let session = model.authSession, session.runtime == presentation.id {
+            HStack(spacing: 6) {
+                rowButton("Check now") { model.checkAuthNow() }
+                    .accessibilityLabel("Check \(presentation.title) sign-in now")
+                rowButton("Cancel") { model.cancelSignIn() }
+                    .accessibilityLabel("Cancel signing in to \(presentation.title)")
+            }
+        } else if selectedBlocker != nil {
+            Label("Needs setup", systemImage: "exclamationmark.triangle")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.statusWarn)
+        } else {
+            switch presentation.primaryAction {
+            case .use:
+                rowButton("Use") { model.select(presentation.id) }
+                    .accessibilityLabel("Use \(presentation.title)")
+            case .signIn:
+                rowButton("Sign in") { model.signIn(presentation.id) }
+                    .disabled(model.authSession != nil)
+                    .accessibilityLabel("Sign in to \(presentation.title)")
+            case .install(let displayCommand):
+                rowButton("Install") { model.install(presentation.id) }
+                    .disabled(model.installState != nil)
+                    .help(displayCommand)
+                    .accessibilityLabel("Install \(presentation.title)")
+            case .openInstallPage(let url):
+                rowButton("Install") { openURL(url) }
+                    .help("Open the \(presentation.title) install page")
+                    .accessibilityLabel("Open the \(presentation.title) install page")
+            case .cancelInstall:
+                rowButton("Cancel") { model.cancelInstall() }
+                    .accessibilityLabel("Cancel installing \(presentation.title)")
+            case .cancelSignIn:
+                rowButton("Cancel") { model.cancelSignIn() }
+                    .accessibilityLabel("Cancel signing in to \(presentation.title)")
+            case .none:
+                if presentation.state == .selectedReady {
+                    Label("Ready", systemImage: "checkmark.circle")
+                        .font(Stanford.body(12).weight(.medium))
+                        .foregroundStyle(Stanford.statusHealthy)
+                } else if presentation.state == .unverified, presentation.isSelected {
+                    Text("Selected")
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(Stanford.statusWarn)
+                } else if presentation.state == .unresponsive, presentation.isSelected {
+                    rowButton("Re-check") { model.refresh(force: true) }
+                } else if presentation.state == .checking {
+                    Text("Checking")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.textSecondary)
+                }
             }
         }
     }
@@ -174,19 +208,98 @@ struct OnboardingRuntimeChooserView: View {
             .controlSize(.small)
     }
 
-    private func subtitle(for presentation: RuntimeProviderRowPresentation) -> String {
-        switch presentation.state {
-        case .selectedReady: "Installed and signed in"
-        case .ready: "Installed"
-        case .missing: "Not installed"
-        case .checking: "Checking installation and sign-in"
-        case .installing: "Installing"
-        case .awaitingSignIn: "Waiting for sign-in"
-        case .unauthenticated: "Installed; sign-in required"
-        case .unresponsive: "Installed; not responding"
-        case .unknown: "Not checked yet"
-        case .unverified: presentation.subtitle
+    private var recheckFooter: some View {
+        HStack(spacing: 10) {
+            Text("Installed a runtime outside ASTRA?")
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.textSecondary)
+            Spacer(minLength: 12)
+            Button {
+                model.refresh(force: true)
+            } label: {
+                Label(OnboardingRuntimeChooserPresentation.recheckActionTitle, systemImage: "arrow.clockwise")
+                    .font(Stanford.caption(11).weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.interactive)
+            .disabled(model.isRefreshing)
+            .accessibilityLabel("Re-check installed runtimes")
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 11)
+    }
+
+    private func authSessionStatus(for runtime: AgentRuntimeID) -> String? {
+        guard let session = model.authSession, session.runtime == runtime else { return nil }
+        return session.statusText
+    }
+
+    private func blockerDetail(_ blocker: RuntimeReadinessCheck) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(blocker.detail)
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.readingText)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let remediation = blocker.remediation, !remediation.isEmpty {
+                Text(remediation)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(Stanford.statusWarn)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Button("Open Runtime Settings") { openSettings() }
+                .font(Stanford.caption(11).weight(.medium))
+                .buttonStyle(.borderless)
+                .accessibilityHint("Opens Settings where runtime provider configuration can be changed")
+        }
+        .padding(.leading, 38)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(blocker.title): \(blocker.detail)")
+    }
+
+    private func installFailureDetail(
+        _ failure: OnboardingRuntimeInstallFailurePresentation,
+        runtime: AgentRuntimeID
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(failure.summary, systemImage: "exclamationmark.triangle.fill")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.statusError)
+            if let detail = failure.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(Stanford.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let output = failure.output, !output.isEmpty {
+                DisclosureGroup(isExpanded: installLogBinding(for: runtime)) {
+                    ScrollView {
+                        Text(output)
+                            .font(Stanford.mono(10))
+                            .foregroundStyle(Stanford.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 120)
+                    .padding(.top, 4)
+                } label: {
+                    Text("Show install output")
+                        .font(Stanford.caption(10).weight(.semibold))
+                }
+            }
+        }
+        .padding(.leading, 38)
+    }
+
+    private func installLogBinding(for runtime: AgentRuntimeID) -> Binding<Bool> {
+        Binding(
+            get: { expandedInstallLogRuntime == runtime },
+            set: { isExpanded in
+                expandedInstallLogRuntime = isExpanded ? runtime : nil
+            }
+        )
     }
 
     private func row(for runtime: AgentRuntimeID) -> RuntimeProviderRowPresentation {

@@ -25,12 +25,18 @@ enum OnboardingPresentationPolicy {
         !hasCompletedOnboarding && !isUITestingSeededLaunch
     }
 
+    @discardableResult
     static func requestReplay(
         hasCompletedOnboarding: inout Bool,
         replayRequested: inout Bool
-    ) {
+    ) -> Bool {
+        guard hasCompletedOnboarding else {
+            replayRequested = false
+            return false
+        }
         replayRequested = true
         hasCompletedOnboarding = false
+        return true
     }
 
     static func complete(
@@ -103,10 +109,14 @@ enum OnboardingReplayRequestService {
     static func request(in defaults: UserDefaults = .standard) {
         var completed = defaults.bool(forKey: AppStorageKeys.hasCompletedOnboarding)
         var replay = defaults.bool(forKey: AppStorageKeys.onboardingReplayRequested)
-        OnboardingPresentationPolicy.requestReplay(
+        let accepted = OnboardingPresentationPolicy.requestReplay(
             hasCompletedOnboarding: &completed,
             replayRequested: &replay
         )
+        guard accepted else {
+            defaults.set(false, forKey: AppStorageKeys.onboardingReplayRequested)
+            return
+        }
         defaults.set(replay, forKey: AppStorageKeys.onboardingReplayRequested)
         defaults.set(completed, forKey: AppStorageKeys.hasCompletedOnboarding)
     }

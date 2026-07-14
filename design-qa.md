@@ -1,14 +1,16 @@
 # Workspace Creation Design QA
 
-## Evidence
+## Verification setup
 
-- Onboarding before: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-onboarding-before.png`
-- Onboarding implementation: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-onboarding-final.jpeg`
-- Standard sheet before: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-standard-before.png`
-- Standard sheet implementation: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-standard-final.jpeg`
-- Runtime: ASTRA Dev from `/Users/alvaro/.codex/worktrees/8eb4/astra/dist/ASTRA Dev.app`
+- Visual baseline: the onboarding and standard-sheet screenshots supplied with the workspace-creation review.
+- Verification build: the development-channel bundle produced by `./script/build_and_run.sh --verify` at `dist/ASTRA Dev.app`.
 - Onboarding viewport: 920 × 640 macOS setup sheet, step 3 of 4
 - Standard state: New Workspace sheet with name focused and capabilities collapsed
+- Durable review rationale: [`docs/design-reviews/2026-07-13-workspace-creation-unification.md`](docs/design-reviews/2026-07-13-workspace-creation-unification.md)
+
+The visual captures were inspected during the manual QA pass. This repository
+record keeps the reproducible build command, viewport, state, findings, and
+acceptance result instead of linking to machine-local screenshot paths.
 
 ## Findings
 
@@ -30,7 +32,7 @@ No actionable P0, P1, or P2 issues remain.
 - [x] Capability disclosure expands to Jira, GitHub, Google Cloud, and REDCap rows inside a scrollable form.
 - [x] The neutral name requirement and disabled Create workspace action are visible together.
 - [x] Closing replay restores `astra.hasCompletedOnboarding = 1` and `astra.onboardingReplayRequested.v1 = 0`.
-- [x] ASTRA Dev is running from the intended worktree executable.
+- [x] ASTRA Dev is running from the verified development-channel bundle.
 
 ## Follow-up Polish
 

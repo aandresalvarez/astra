@@ -158,7 +158,8 @@ final class RuntimeSetupModel: ObservableObject {
     }
 
     var runtimeBlockers: [RuntimeReadinessCheck] {
-        readinessReport?.checks.filter { $0.state == .blocked } ?? []
+        guard readinessReportRuntime == selectedRuntime else { return [] }
+        return readinessReport?.checks.filter { $0.state == .blocked } ?? []
     }
 
     var isBusy: Bool {
@@ -189,6 +190,7 @@ final class RuntimeSetupModel: ObservableObject {
             if isRefreshing || isCheckingReadiness { return .checking }
         }
         guard let readinessReport else { return .needsInstall(selectedRuntime) }
+        guard readinessReportRuntime == selectedRuntime else { return .checking }
 
         if readinessReport.checks.contains(where: { $0.state == .blocked }) {
             switch statuses[selectedRuntime] {

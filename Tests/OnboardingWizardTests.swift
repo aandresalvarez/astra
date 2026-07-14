@@ -46,8 +46,8 @@ struct OnboardingWizardTests {
         #expect(OnboardingWizardView.Step.allCases.count == 4)
     }
 
-    @Test("First run stays mandatory after it has been presented")
-    func firstRunDismissibilityDoesNotDependOnPresentationHistory() {
+    @Test("UI-testing seeded launches suppress onboarding without changing first-run policy")
+    func uiTestingSeededLaunchSuppressesPresentation() {
         let shouldPresent = OnboardingPresentationPolicy.shouldPresent(
             hasCompletedOnboarding: false,
             isUITestingSeededLaunch: false
@@ -65,11 +65,12 @@ struct OnboardingWizardTests {
         var hasCompletedOnboarding = true
         var replayRequested = false
 
-        OnboardingPresentationPolicy.requestReplay(
+        let accepted = OnboardingPresentationPolicy.requestReplay(
             hasCompletedOnboarding: &hasCompletedOnboarding,
             replayRequested: &replayRequested
         )
 
+        #expect(accepted)
         #expect(!hasCompletedOnboarding)
         #expect(replayRequested)
 
@@ -79,6 +80,21 @@ struct OnboardingWizardTests {
         )
 
         #expect(hasCompletedOnboarding)
+        #expect(!replayRequested)
+    }
+
+    @Test("Incomplete first run cannot be converted into dismissible replay")
+    func incompleteFirstRunRejectsReplayRequest() {
+        var hasCompletedOnboarding = false
+        var replayRequested = false
+
+        let accepted = OnboardingPresentationPolicy.requestReplay(
+            hasCompletedOnboarding: &hasCompletedOnboarding,
+            replayRequested: &replayRequested
+        )
+
+        #expect(!accepted)
+        #expect(!hasCompletedOnboarding)
         #expect(!replayRequested)
     }
 
@@ -94,6 +110,20 @@ struct OnboardingWizardTests {
 
         #expect(!defaults.bool(forKey: AppStorageKeys.hasCompletedOnboarding))
         #expect(defaults.bool(forKey: AppStorageKeys.onboardingReplayRequested))
+    }
+
+    @Test("Replay request service fails closed during incomplete first run")
+    func replayRequestServiceRejectsIncompleteFirstRun() throws {
+        let suiteName = "OnboardingWizardTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: AppStorageKeys.hasCompletedOnboarding)
+        defaults.set(true, forKey: AppStorageKeys.onboardingReplayRequested)
+
+        OnboardingReplayRequestService.request(in: defaults)
+
+        #expect(!defaults.bool(forKey: AppStorageKeys.hasCompletedOnboarding))
+        #expect(!defaults.bool(forKey: AppStorageKeys.onboardingReplayRequested))
     }
 
     @Test("Each step has specific action and hover guidance")
