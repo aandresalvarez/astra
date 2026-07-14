@@ -490,6 +490,26 @@ enum TaskStateMachine {
     }
 
     @discardableResult
+    static func pauseForExternalOutcome(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        at date: Date = Date(),
+        savePolicy: SavePolicy = .none
+    ) -> TransitionResult {
+        apply(
+            task,
+            to: .pendingUser,
+            intent: "external_outcome_pending_user",
+            allowedFrom: Set(TaskStatus.allCases),
+            completedAt: .clear,
+            readState: .unread,
+            modelContext: modelContext,
+            at: date,
+            savePolicy: savePolicy
+        )
+    }
+
+    @discardableResult
     static func pauseForRuntimeReview(
         _ task: AgentTask,
         modelContext: ModelContext,

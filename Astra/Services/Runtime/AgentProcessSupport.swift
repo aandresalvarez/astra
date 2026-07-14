@@ -795,7 +795,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             )
         }
 
-        if case .toolResult(let toolID, let content) = parsed {
+        if case .toolResult(let toolID, let content, _) = parsed {
             if !toolID.isEmpty {
                 activeToolUseIDs.remove(toolID)
             }
@@ -2032,7 +2032,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return nonEmpty(text) == nil ? .diagnostic : .visibleProgress
         case .thinking(let text):
             return nonEmpty(text) == nil ? .diagnostic : .providerLiveness
-        case .toolResult(_, let content):
+        case .toolResult(_, let content, _):
             return nonEmpty(content) == nil ? .diagnostic : .actionableProgress
         case .toolUse, .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage, .permissionDenied:
             return .actionableProgress
@@ -2058,7 +2058,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return nonEmpty(text).map { textSignature(prefix: "think", text: $0) }
         case .toolUse(let name, _, let input):
             return "tool:\(name):\(inputSignature(input))"
-        case .toolResult(_, let content):
+        case .toolResult(_, let content, _):
             return nonEmpty(content).map { textSignature(prefix: "tool.result", text: $0) }
         case .teammateStarted(_, let name, let prompt):
             return "teammate.start:\(name):\(textSignature(prefix: "prompt", text: prompt))"
@@ -2096,8 +2096,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         case .thinking(let t): return textSignature(prefix: "think", text: t)
         case .toolUse(let name, let id, let input):
             return "tool:\(name):\(id):\(inputSignature(input))"
-        case .toolResult(let id, let content):
-            return "\(textSignature(prefix: "tool.result:\(id)", text: content))"
+        case .toolResult(let id, let content, let isError):
+            return "\(textSignature(prefix: "tool.result:\(id):\(isError)", text: content))"
         case .usage(let input, let output): return "usage:\(input):\(output)"
         case .result(let t, _, _, _, _, _, _): return textSignature(prefix: "result", text: t ?? "")
         case .systemInit: return "init"

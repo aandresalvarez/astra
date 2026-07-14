@@ -5,6 +5,20 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("Git publish request takes priority over generic pending review")
+    func gitPublishRequestUsesTypedReviewAction() throws {
+        var input = context(status: .pendingUser)
+        input.hasGitPublishRequest = true
+
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(presentation.id == "git-publish-approval")
+        #expect(presentation.title == "Publication approval needed")
+        #expect(presentation.primaryAction?.kind == .reviewGitPublish)
+        #expect(presentation.primaryAction?.title == "Review & publish")
+        #expect(!actionTitles(presentation).contains("Approve result"))
+    }
+
     @Test("dock summarizes result evidence and groups status details")
     func dockSummarizesResultEvidenceAndGroupsStatusDetails() throws {
         let mission = MissionControlPresentation(

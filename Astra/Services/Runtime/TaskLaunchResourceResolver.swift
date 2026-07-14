@@ -18,6 +18,7 @@ enum TaskLaunchResourceResolver {
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimePermissionGrants: [PermissionGrant] = [],
+        permissionPolicy: PermissionPolicy = .autonomous,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -72,7 +73,23 @@ enum TaskLaunchResourceResolver {
             capabilityScope: capabilityScope,
             precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
-        let gitCredentialContext = routesGitHubMetadataThroughHostControl
+        // Ask publication stays behind ASTRA's typed review workflow even when
+        // workspace commands are Docker-routed: the provider still runs on the
+        // host, so Docker is not a credential boundary for that process.
+        // Preserve the established Docker credential path for other explicit
+        // Git operations (for example, an approved `git pull`) that ASTRA's
+        // typed publication service does not own.
+        let astraOwnsAskPublication = AskGitPullRequestWorkflowPolicy.isActive(
+            task: task,
+            permissionPolicy: permissionPolicy,
+            contextText: [prompt, contextText].joined(separator: "\n")
+        )
+        // Native credentials are suppressed only for the operation ASTRA owns.
+        // Other Ask-mode network Git commands still execute through the normal
+        // approval path and must retain the credentials needed by private repos.
+        let brokersNetworkGitThroughAstra = permissionPolicy != .autonomous
+            && astraOwnsAskPublication
+        let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
             ? .empty
             : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(

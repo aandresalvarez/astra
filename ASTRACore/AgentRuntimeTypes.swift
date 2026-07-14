@@ -159,7 +159,7 @@ public enum AgentEvent: Sendable, Equatable {
     case thinking(text: String)
     case text(text: String)
     case toolUse(name: String, id: String, inputSummary: String?)
-    case toolResult(id: String, content: String)
+    case toolResult(id: String, content: String, isError: Bool = false)
     /// `oldString`/`newString` carry a precise before/after diff when the
     /// originating provider's structured tool input has them (currently only
     /// Claude's `Edit` tool). Other providers always pass `nil` here and rely

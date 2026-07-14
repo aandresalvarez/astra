@@ -724,10 +724,16 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(
+        let basePrompt = promptOverride ?? buildPrompt(
             for: task,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
+        let prompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+            to: basePrompt,
+            task: task,
+            permissionPolicy: launchPermissionPolicy,
+            contextText: providerLaunchContextText
         )
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
@@ -740,6 +746,7 @@ final class AgentRuntimeWorker {
             executionEnvironment: executionEnvironment,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
+            permissionPolicy: launchPermissionPolicy,
             // appliedRuntime.requirements is already resolved above (~line 528),
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of
@@ -839,8 +846,17 @@ final class AgentRuntimeWorker {
         }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
+        guard let publicationBeforeGitStatus = TaskGitPublicationWorkspaceBaselineService.capture(
+            task: task,
+            run: run,
+            workspacePath: executionPath,
+            modelContext: modelContext
+        ) else {
+            isRunning = false
+            return
+        }
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
-            ? AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
+            ? publicationBeforeGitStatus
             : nil
         let beforeDirtyFingerprints = beforeGitStatus.map {
             AgentFileChangeDetector.fileFingerprints(
@@ -1039,18 +1055,12 @@ final class AgentRuntimeWorker {
             run.typedStopReason = .cancelled
             TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
         } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.typedStopReason = .permissionApprovalRequired
-            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-            let payload = result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue."
-            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-            let event = TaskEvent(
+            TaskRuntimeOutcomeTransition.applyPolicyApproval(
                 task: task,
-                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                payload: payload,
-                run: run
+                run: run,
+                approvalMessage: result.policyApprovalMessage,
+                modelContext: modelContext
             )
-            modelContext.insert(event)
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout
@@ -1124,13 +1134,14 @@ final class AgentRuntimeWorker {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     switch task.validationStrategy {
                     case .manual:
-                        let completedManually = Self.applyManualCompletion(
+                        let completed = TaskSuccessfulCompletionService.apply(
                             task: task,
                             run: run,
                             modelContext: modelContext,
-                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
+                            permissionPolicy: launchPermissionPolicy
                         )
-                        if completedManually {
+                        if completed {
                             await Self.applyAutomaticBaselineVerificationIfNeeded(
                                 task: task,
                                 run: run,
@@ -1143,9 +1154,13 @@ final class AgentRuntimeWorker {
                         let testResult = await ValidationService.runTests(task: task)
                         switch testResult {
                         case .passed(let details):
-                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
-                            modelContext.insert(event)
+                            _ = TaskSuccessfulCompletionService.apply(
+                                task: task,
+                                run: run,
+                                modelContext: modelContext,
+                                successPayload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))",
+                                permissionPolicy: launchPermissionPolicy
+                            )
                         case .failed(let details):
                             TaskStateMachine.failFromValidation(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
@@ -1172,9 +1187,13 @@ final class AgentRuntimeWorker {
                         )
                         switch aiResult {
                         case .passed(let details):
-                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
-                            modelContext.insert(event)
+                            _ = TaskSuccessfulCompletionService.apply(
+                                task: task,
+                                run: run,
+                                modelContext: modelContext,
+                                successPayload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))",
+                                permissionPolicy: launchPermissionPolicy
+                            )
                         case .failed(let details):
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
@@ -1186,13 +1205,14 @@ final class AgentRuntimeWorker {
                         }
                     }
                 } else {
-                    let completedManually = Self.applyManualCompletion(
+                    let completed = TaskSuccessfulCompletionService.apply(
                         task: task,
                         run: run,
                         modelContext: modelContext,
-                        successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                        successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
+                        permissionPolicy: launchPermissionPolicy
                     )
-                    if completedManually {
+                    if completed {
                         await Self.applyAutomaticBaselineVerificationIfNeeded(
                             task: task,
                             run: run,
@@ -1404,7 +1424,12 @@ final class AgentRuntimeWorker {
             return false
         }
 
-        applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+        TaskRuntimeOutcomeTransition.applyCompletionBlock(
+            decision,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
         return true
     }
 
@@ -1435,46 +1460,14 @@ final class AgentRuntimeWorker {
 
         let decision = TaskCompletionPolicy.decide(inferredValidation: result)
         guard decision.canComplete else {
-            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                decision,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
             return
         }
-    }
-
-    @MainActor
-    private static func applyManualCompletion(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        successPayload: String
-    ) -> Bool {
-        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
-        if decision.shouldBlockCompletion {
-            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
-            return false
-        }
-
-        TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
-        modelContext.insert(event)
-        return true
-    }
-
-    @MainActor
-    private static func applyCompletionBlock(
-        _ decision: TaskCompletionPolicyDecision,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) {
-        run.status = .failed
-        run.typedStopReason = decision.typedStopReason ?? TaskRunStopReason.custom(decision.gate.rawValue)
-        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-        modelContext.insert(TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.System.error,
-            payload: decision.userVisibleMessage ?? "Task completion blocked by \(decision.gate.rawValue).",
-            run: run
-        ))
     }
 
     @MainActor
@@ -2013,18 +2006,15 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private func effectivePermissionPolicy(
+    func effectivePermissionPolicy(
         for task: AgentTask,
         selectedRuntime: AgentRuntimeID,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> PermissionPolicy {
-        if skipPermissions {
-            return .autonomous
-        }
         let resolution = TaskPolicyStore.resolve(
             for: task,
             globalDefaultLevel: AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw),
-            fallbackPermissionPolicy: permissionPolicy,
+            fallbackPermissionPolicy: skipPermissions ? .autonomous : permissionPolicy,
             executionPolicy: executionPolicy
         )
         return ProviderPolicyModeResolver.permissionPolicy(

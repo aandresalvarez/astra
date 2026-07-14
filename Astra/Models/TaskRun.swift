@@ -90,6 +90,27 @@ public final class TaskRun {
         fileChangesJSON = TaskEvent.payloadString(changes, fallback: fileChangesJSON)
         task?.updatedAt = Date()
     }
+
+    public func recordPermissionApprovalRequired() {
+        status = .failed
+        typedStopReason = .permissionApprovalRequired
+    }
+
+    public func recordCompletionBlocked(stopReason: TaskRunStopReason?) {
+        status = .failed
+        typedStopReason = stopReason
+    }
+
+    public func recordExternalOutcomePending() {
+        status = .completed
+        typedStopReason = .externalOutcomePending
+    }
+
+    public func recordExternalOutcomeCompleted(at date: Date = Date()) {
+        status = .completed
+        completedAt = completedAt ?? date
+        typedStopReason = .completed
+    }
 }
 
 public extension TaskRun {

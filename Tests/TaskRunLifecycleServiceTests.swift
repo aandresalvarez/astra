@@ -147,7 +147,7 @@ struct TaskRunLifecycleServiceTests {
 
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
-        let blockedDecision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        let blockedDecision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
         #expect(blockedDecision.shouldBlockCompletion)
         #expect(blockedDecision.stopReason == "no_usable_result")
 
@@ -157,7 +157,7 @@ struct TaskRunLifecycleServiceTests {
             encoding: .utf8
         )
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
-        #expect(TaskCompletionPolicy.decideManualCompletion(task: task, run: run).canComplete)
+        #expect(TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run).canComplete)
     }
 
     @Test("Misspelled HTML slide deck request still requires artifact")
@@ -644,6 +644,46 @@ struct TaskRunLifecycleServiceTests {
         #expect(task.status == .completed)
         #expect(run.status == .completed)
         #expect(run.stopReason == "completed")
+    }
+
+    @Test("Startup recovery preserves completed work awaiting typed publication")
+    func startupRecoveryPreservesPendingPublicationReview() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(
+            title: "Publish",
+            goal: "Implement the fix and create a pull request"
+        )
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.completedAt = Date(timeIntervalSince1970: 4_000)
+        run.typedStopReason = .externalOutcomePending
+        context.insert(run)
+
+        let request = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationRequested,
+            payload: TaskRequiredExternalOutcomeRequest(
+                kind: .githubPullRequest,
+                runID: run.id,
+                message: "Review the exact proposal."
+            ),
+            run: run
+        )
+        context.insert(request)
+        try context.save()
+
+        let summary = TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: context)
+
+        #expect(!summary.hasChanges)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .completed)
+        #expect(run.typedStopReason == .externalOutcomePending)
+        #expect(TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task))
+        #expect(!task.events.contains { $0.type == TaskEventTypes.Task.interrupted.rawValue })
     }
 
     @Test("Startup recovery can skip workspace auto-export")

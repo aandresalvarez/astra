@@ -5,6 +5,20 @@ import ASTRACore
 
 @Suite("OpenCode CLI Runtime")
 struct OpenCodeCLIRuntimeTests {
+    @Test("OpenCode tool state errors preserve failed-result metadata")
+    func openCodeToolStateErrorsPreserveFailedResultMetadata() {
+        let line = #"{"type":"tool_use","part":{"id":"tool-pr","type":"tool","tool":"bash","state":{"status":"error","input":{"command":"gh pr create"},"error":"HTTP 500"}}}"#
+
+        let events = OpenCodeStreamEventParser.parseAgentEvents(line: line)
+
+        #expect(events.contains {
+            if case .toolResult(let id, let content, let isError) = $0 {
+                return id == "tool-pr" && content == "HTTP 500" && isError
+            }
+            return false
+        })
+    }
+
     @Test("OpenCode model suggestions match provider-qualified defaults")
     func openCodeModelSuggestionsMatchProviderQualifiedDefaults() {
         #expect(OpenCodeCLIRuntime.availableModelNames() == [
@@ -227,7 +241,7 @@ struct OpenCodeCLIRuntimeTests {
             return false
         })
         #expect(toolEvents.contains { event in
-            if case .toolResult(let id, let content) = event {
+            if case .toolResult(let id, let content, _) = event {
                 return id == "tool-1" && content == "clean"
             }
             return false

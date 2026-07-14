@@ -140,7 +140,7 @@ struct CopilotStreamEventParserTests {
     func toolResult() {
         let line = #"{"type":"tool_result","toolUseId":"call-1","output":"ok"}"#
         let parsed = CopilotStreamEventParser.parse(line: line)
-        if case .toolResult(let id, let content) = parsed {
+        if case .toolResult(let id, let content, _) = parsed {
             #expect(id == "call-1")
             #expect(content == "ok")
         } else {
@@ -152,7 +152,7 @@ struct CopilotStreamEventParserTests {
     func toolResultDataPayload() {
         let line = #"{"type":"tool_result","id":"event-2","data":{"toolUseId":"call-1","output":"ok"}}"#
         let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
-        if case .toolResult(let id, let content) = parsed.first {
+        if case .toolResult(let id, let content, _) = parsed.first {
             #expect(id == "call-1")
             #expect(content == "ok")
         } else {
@@ -176,11 +176,26 @@ struct CopilotStreamEventParserTests {
             Issue.record("Expected tool use")
         }
 
-        if case .toolResult(let id, let content) = completeEvents.first {
+        if case .toolResult(let id, let content, _) = completeEvents.first {
             #expect(id == "toolu_browser")
             #expect(content.contains("google_docs_controlled_browser_required"))
         } else {
             Issue.record("Expected tool result")
+        }
+    }
+
+    @Test("Failed Copilot tool completion preserves error metadata")
+    func failedToolCompletionPreservesErrorMetadata() {
+        let line = #"{"type":"tool.execution_complete","data":{"toolCallId":"toolu_pr","success":false,"result":{"content":"HTTP 500"}},"id":"event-complete"}"#
+
+        let events = CopilotStreamEventParser.parseAgentEvents(line: line)
+
+        if case .toolResult(let id, let content, let isError) = events.first {
+            #expect(id == "toolu_pr")
+            #expect(content.contains("HTTP 500"))
+            #expect(isError)
+        } else {
+            Issue.record("Expected failed tool result")
         }
     }
 

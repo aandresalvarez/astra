@@ -29,6 +29,18 @@ enum AgentFileChangeDetector {
         return Set(output.split(separator: "\n").map(String.init))
     }
 
+    static func publicationWorkspaceBaseline(
+        runID: UUID,
+        workspacePath: String,
+        beforeGitStatus: Set<String>
+    ) -> TaskGitPublicationWorkspaceBaseline? {
+        let paths = absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: workspacePath)
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .sorted()
+        guard !paths.isEmpty else { return nil }
+        return TaskGitPublicationWorkspaceBaseline(runID: runID, dirtyPaths: paths)
+    }
+
     @MainActor
     static func appendInferredFileChanges(
         to run: TaskRun,
@@ -79,7 +91,12 @@ enum AgentFileChangeDetector {
 
         let userPaths = paths.filter { !isIgnoredRuntimePath($0, workspacePath: workspacePath) }
         let existing = Set(run.fileChanges.map(\.path))
-        for path in userPaths.subtracting(existing).sorted().prefix(50) {
+        // Publication ownership is derived from these durable run changes.
+        // Capping a Git-backed change set makes later code unable to
+        // distinguish task work from pre-existing user edits, so retain every
+        // detected path. The fallback filesystem scan remains independently
+        // bounded above when Git status is unavailable.
+        for path in userPaths.subtracting(existing).sorted() {
             let change = FileChange(
                 path: path,
                 changeType: .edit,

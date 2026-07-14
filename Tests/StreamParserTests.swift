@@ -96,6 +96,42 @@ struct StreamParserTests {
         #expect(content.id == "tool_123")
     }
 
+    @Test("Failed tool result preserves error metadata")
+    func failedToolResultPreservesErrorMetadata() throws {
+        let json = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_pr","is_error":true,"content":"gh pr create failed"}]}}"#
+
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .toolResult(let toolID, let content, let isError) = parsed else {
+            Issue.record("Expected a structured tool result, got \(String(describing: parsed))")
+            return
+        }
+
+        #expect(toolID == "tool_pr")
+        #expect(content == "gh pr create failed")
+        #expect(isError)
+    }
+
+    @Test("All tool results in one Claude user message are preserved")
+    func multipleToolResultsArePreserved() {
+        let json = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_ok","is_error":false,"content":"done"},{"type":"tool_result","tool_use_id":"tool_pr","is_error":true,"content":"gh pr create failed"}]}}"#
+
+        let parsed = StreamEventParser.parseAll(line: json)
+
+        #expect(parsed.count == 2)
+        #expect(parsed.contains {
+            if case .toolResult(let id, let content, let isError) = $0 {
+                return id == "tool_ok" && content == "done" && !isError
+            }
+            return false
+        })
+        #expect(parsed.contains {
+            if case .toolResult(let id, let content, let isError) = $0 {
+                return id == "tool_pr" && content == "gh pr create failed" && isError
+            }
+            return false
+        })
+    }
+
     @Test("Assistant usage event is emitted with cache tokens")
     func assistantUsageEvent() throws {
         let events = StreamEventParser.parseAll(line: textJSON)

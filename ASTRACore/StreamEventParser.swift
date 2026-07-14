@@ -73,6 +73,10 @@ public struct StreamToolResultBlock: Decodable {
     public let type: String
     public let tool_use_id: String?
     public let content: ToolResultContent?
+    /// Claude can report a failed tool call inside an otherwise successful
+    /// provider process. Preserve that outcome so task completion does not
+    /// mistake process exit 0 for completion of the requested external action.
+    public let is_error: Bool?
 
     public enum ToolResultContent: Decodable {
         case string(String)
@@ -189,7 +193,7 @@ public enum ParsedEvent {
     case thinking(text: String)
     case text(text: String)
     case toolUse(name: String, id: String, input: [String: Any]?)
-    case toolResult(toolId: String, content: String)
+    case toolResult(toolId: String, content: String, isError: Bool = false)
     case usage(totalInputTokens: Int, totalOutputTokens: Int)
     case result(text: String?, costUSD: Double?, totalInputTokens: Int, totalOutputTokens: Int, durationMs: Int?, numTurns: Int?, isError: Bool)
     case teammateStarted(taskId: String, name: String, prompt: String)
@@ -280,16 +284,18 @@ public enum StreamEventParser {
             }
             if let userEvent = try? JSONDecoder().decode(StreamUserEvent.self, from: data),
                let blocks = userEvent.message?.content {
-                let results = blocks.compactMap { block -> (String, String)? in
+                let results = blocks.compactMap { block -> (String, String, Bool)? in
                     guard block.type == "tool_result" else { return nil }
                     let text = block.textContent
-                    return text.isEmpty ? nil : (block.tool_use_id ?? "", text)
+                    return text.isEmpty ? nil : (block.tool_use_id ?? "", text, block.is_error ?? false)
                 }
-                if let first = results.first {
-                    return [.toolResult(toolId: first.0, content: first.1)]
+                if !results.isEmpty {
+                    return results.map {
+                        .toolResult(toolId: $0.0, content: $0.1, isError: $0.2)
+                    }
                 }
             }
-            return [.toolResult(toolId: "", content: "")]
+            return [.toolResult(toolId: "", content: "", isError: false)]
 
         case "result":
             guard let event = try? JSONDecoder().decode(StreamResultEvent.self, from: data) else {

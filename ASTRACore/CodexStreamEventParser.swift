@@ -177,8 +177,8 @@ public enum CodexStreamEventParser {
         case .toolUse(let name, let id, let inputSummary):
             let input: [String: Any]? = inputSummary.map { ["summary": $0] }
             return .toolUse(name: name, id: id, input: input)
-        case .toolResult(let id, let content):
-            return .toolResult(toolId: id, content: content)
+        case .toolResult(let id, let content, let isError):
+            return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):

@@ -97,17 +97,39 @@ enum HostControlPlaneMCPProjection {
     static func requiresNativeShellDenial(
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
+        permissionPolicy: PermissionPolicy,
         contextText: String = "",
         capabilityScope: TaskCapabilityPromptScope? = nil,
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> Bool {
-        !enabledToolNames(
+        let requiredTools = enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
             capabilityScope: capabilityScope,
             precomputedRuntimeRequirements: precomputedRuntimeRequirements
-        ).isEmpty
+        )
+        return requiresNativeShellDenial(
+            environment: environment,
+            permissionPolicy: permissionPolicy,
+            requiredTools: requiredTools
+        )
+    }
+
+    /// Host-control capabilities and provider-native developer authority are
+    /// independent policy layers. Ask keeps native shell behind ASTRA's typed
+    /// capability/approval path, while Auto may use native developer tools on
+    /// the host. A Docker workspace remains MCP-routed in every policy mode so
+    /// host Bash cannot silently escape the selected execution environment.
+    static func requiresNativeShellDenial(
+        environment: WorkspaceExecutionEnvironment,
+        permissionPolicy: PermissionPolicy,
+        requiredTools: [String]
+    ) -> Bool {
+        if DockerWorkspaceMCPProjection.isEnabled(for: environment) {
+            return true
+        }
+        return permissionPolicy != .autonomous && !requiredTools.isEmpty
     }
 
     static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
