@@ -96,6 +96,7 @@ struct OrphanedV12StoreMigratorTests {
     )
 
     #expect(report.destinationStoreURL == destinationURL)
+    #expect(report.sourceShapeRaw == "runtime_selection_only_v12")
     #expect(try Data(contentsOf: sourceURL) == sourceBytes)
     #expect(
       try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .runtimeSelectionOnlyV12)
@@ -141,7 +142,7 @@ struct OrphanedV12StoreMigratorTests {
     let destinationURL = root.appendingPathComponent("recovery.store")
     let fixtureURL = try #require(
       Bundle.module.url(
-        forResource: "production-v12-htf3-empty",
+        forResource: "feedback-only-v12-htf3-empty",
         withExtension: "store"
       )
     )
@@ -182,6 +183,14 @@ struct OrphanedV12StoreMigratorTests {
       try context.fetch(FetchDescriptor<PersistentStoreMigrationRecord>()).first
     )
     #expect(migrationRecord.sourceShapeRaw == "feedback_only_v12")
+  }
+
+  @Test("known store shapes expose stable audit values")
+  func knownStoreShapesExposeStableAuditValues() {
+    #expect(PersistentStoreKnownShape.runtimeSelectionOnlyV12.auditValue == "runtime_selection_only_v12")
+    #expect(PersistentStoreKnownShape.feedbackOnlyV12.auditValue == "feedback_only_v12")
+    #expect(PersistentStoreKnownShape.productionV12.auditValue == "production_v12")
+    #expect(PersistentStoreKnownShape.other.auditValue == "other")
   }
 
   @Test("production V12 is recognized and never routed through orphan recovery")

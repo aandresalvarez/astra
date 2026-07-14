@@ -490,7 +490,7 @@ enum AstraStoreStartupCoordinator {
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "result": "orphaned_v12_migration_blocked",
-                "source_shape": String(describing: migrationShape),
+                "source_shape": migrationShape.auditValue,
                 "error_type": String(describing: type(of: error)),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ], level: .error)

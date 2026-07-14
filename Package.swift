@@ -162,7 +162,7 @@ let package = Package(
             dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "AstraTestSeamBootstrap", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
-            resources: [.copy("Fixtures/production-v12-htf3-empty.store")]
+            resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(
             name: "MailToolSupportTests",

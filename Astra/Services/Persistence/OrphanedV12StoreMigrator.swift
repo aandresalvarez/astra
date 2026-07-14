@@ -114,9 +114,14 @@ public enum OrphanedV12StoreMigrator {
         throw OrphanedV12StoreMigrationError.schemaVersionMismatch(actual: version)
       }
 
+      var verificationTables = preservedTables
+      if !verificationTables.contains("ZFEEDBACKREPORT") {
+        verificationTables.append("ZFEEDBACKREPORT")
+      }
+      verificationTables.append("ZPERSISTENTSTOREMIGRATIONRECORD")
       let migratedCounts = try tableRowCounts(
         at: destinationStoreURL,
-        tables: preservedTables + ["ZFEEDBACKREPORT", "ZPERSISTENTSTOREMIGRATIONRECORD"]
+        tables: verificationTables
       )
       for table in preservedTables {
         let expected = sourceCounts[table] ?? 0
@@ -143,7 +148,7 @@ public enum OrphanedV12StoreMigrator {
       return OrphanedV12StoreMigrationReport(
         destinationStoreURL: destinationStoreURL,
         preservedRowCounts: sourceCounts,
-        sourceShapeRaw: sourceShapeRaw(sourceShape)
+        sourceShapeRaw: sourceShape.auditValue
       )
     } catch {
       if stagedCopyCreated {
@@ -179,7 +184,7 @@ public enum OrphanedV12StoreMigrator {
     context.insert(
       PersistentStoreMigrationRecord(
         sourceSchemaVersion: 12,
-        sourceShapeRaw: sourceShapeRaw(sourceShape),
+        sourceShapeRaw: sourceShape.auditValue,
         destinationSchemaVersion: ASTRASchema.currentVersion,
         reason: "reconcile_colliding_v12_shapes"
       ))
@@ -240,19 +245,6 @@ public enum OrphanedV12StoreMigrator {
       return commonPreservedTables + ["ZFEEDBACKREPORT"]
     case .runtimeSelectionOnlyV12, .productionV12, .other:
       return commonPreservedTables
-    }
-  }
-
-  private static func sourceShapeRaw(_ shape: PersistentStoreKnownShape) -> String {
-    switch shape {
-    case .runtimeSelectionOnlyV12:
-      return "runtime_selection_only_v12"
-    case .feedbackOnlyV12:
-      return "feedback_only_v12"
-    case .productionV12:
-      return "production_v12"
-    case .other:
-      return "other"
     }
   }
 
