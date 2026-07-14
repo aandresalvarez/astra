@@ -101,23 +101,116 @@ enum AgentEventRecordingPresentation {
         // output's tail — and the echo can concatenate segments that were
         // recorded as separate chunks, shifting interior whitespace. Compare
         // with all whitespace runs collapsed; a substantial chunk whose
-        // collapsed text already appears in the collapsed output (tail or
-        // interior) is an echo. The length floor keeps short legitimate
-        // repeats ("Done.") appendable.
+        // collapsed text already appears in the recent collapsed output is an
+        // echo. The length floor keeps short legitimate repeats ("Done.")
+        // appendable.
+        // Whole-output envelope echoes are the common shape; one lockstep byte
+        // walk decides collapsed-form equality without materializing the
+        // collapsed run output, which is quadratic across a streamed run.
+        // Pure-ASCII text resolves here; anything else defers to the
+        // containment scan below.
+        switch asciiWhitespaceCollapsedComparison(normalizedIncoming, normalizedExisting) {
+        case .equal(let collapsedLength):
+            return collapsedLength >= echoLengthFloor ? "" : incomingText
+        case .notEqual, .indeterminate:
+            break
+        }
+        // Interior echoes trail the live output by the handful of chunks
+        // recorded after the message they re-send, so containment needs only a
+        // bounded tail window of the output. Repeats older than the window
+        // count as new output. collapsed(tail) is always a suffix of
+        // collapsed(whole), so the window only shrinks the match set; it
+        // cannot invent an echo.
         let collapsedIncoming = whitespaceCollapsed(normalizedIncoming)
-        if collapsedIncoming.count >= echoLengthFloor,
-           whitespaceCollapsed(normalizedExisting).contains(collapsedIncoming) {
-            return ""
+        if collapsedIncoming.count >= echoLengthFloor {
+            let window = normalizedIncoming.count + echoSearchWindowSlack
+            if whitespaceCollapsed(normalizedExisting.suffix(window)).contains(collapsedIncoming) {
+                return ""
+            }
         }
         return incomingText
     }
 
     private static let echoLengthFloor = 80
 
-    private static func whitespaceCollapsed(_ text: String) -> String {
+    /// How far beyond the incoming text's own length the echo containment
+    /// check looks back into existing output. Envelope echoes land within a
+    /// few chunks of the content they re-send; 8x the chunk coalescing cap is
+    /// comfortably past that while keeping the per-delta scan bounded.
+    static let echoSearchWindowSlack = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap * 8
+
+    private static func whitespaceCollapsed<Text: StringProtocol>(_ text: Text) -> String {
         text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private enum AsciiCollapsedComparison {
+        /// Collapsed forms are identical; the payload is their shared length
+        /// (bytes == Characters, since the collapsed form is pure ASCII).
+        case equal(collapsedLength: Int)
+        case notEqual
+        /// A non-ASCII byte or non-contiguous storage: only the
+        /// CharacterSet-based slow path can classify whitespace exactly.
+        case indeterminate
+    }
+
+    /// Compares `whitespaceCollapsed(lhs) == whitespaceCollapsed(rhs)` with a
+    /// single lockstep walk over the utf8 bytes, allocating nothing. ASCII
+    /// whitespace here is exactly CharacterSet.whitespacesAndNewlines
+    /// restricted to ASCII (0x09-0x0D, 0x20), so an `.equal`/`.notEqual`
+    /// verdict matches what collapsing both strings would conclude.
+    private static func asciiWhitespaceCollapsedComparison(
+        _ lhs: String,
+        _ rhs: String
+    ) -> AsciiCollapsedComparison {
+        lhs.utf8.withContiguousStorageIfAvailable { lhsBytes -> AsciiCollapsedComparison in
+            rhs.utf8.withContiguousStorageIfAvailable { rhsBytes -> AsciiCollapsedComparison in
+                asciiCollapsedComparison(lhsBytes, rhsBytes)
+            } ?? .indeterminate
+        } ?? .indeterminate
+    }
+
+    private static func asciiCollapsedComparison(
+        _ lhsBytes: UnsafeBufferPointer<UInt8>,
+        _ rhsBytes: UnsafeBufferPointer<UInt8>
+    ) -> AsciiCollapsedComparison {
+        func isWhitespace(_ byte: UInt8) -> Bool {
+            byte == 0x20 || (byte >= 0x09 && byte <= 0x0D)
+        }
+        var lhsIndex = 0
+        var rhsIndex = 0
+        var collapsedLength = 0
+        while true {
+            var lhsGap = false
+            var rhsGap = false
+            while lhsIndex < lhsBytes.count, isWhitespace(lhsBytes[lhsIndex]) {
+                lhsIndex += 1
+                lhsGap = true
+            }
+            while rhsIndex < rhsBytes.count, isWhitespace(rhsBytes[rhsIndex]) {
+                rhsIndex += 1
+                rhsGap = true
+            }
+            let lhsEnded = lhsIndex == lhsBytes.count
+            let rhsEnded = rhsIndex == rhsBytes.count
+            if lhsEnded || rhsEnded {
+                return lhsEnded && rhsEnded ? .equal(collapsedLength: collapsedLength) : .notEqual
+            }
+            let lhsByte = lhsBytes[lhsIndex]
+            let rhsByte = rhsBytes[rhsIndex]
+            if lhsByte >= 0x80 || rhsByte >= 0x80 { return .indeterminate }
+            // Token boundaries must align: a gap on one side only means the
+            // same bytes split into different tokens ("ab c" vs "a bc").
+            // Leading whitespace (before any token byte) doesn't collapse to
+            // anything, so it is exempt.
+            if collapsedLength > 0, lhsGap != rhsGap { return .notEqual }
+            if lhsByte != rhsByte { return .notEqual }
+            if collapsedLength > 0, lhsGap { collapsedLength += 1 }
+            collapsedLength += 1
+            lhsIndex += 1
+            rhsIndex += 1
+        }
     }
 
     static func permissionReasonSummary(_ reason: String) -> String {

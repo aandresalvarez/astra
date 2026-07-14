@@ -467,3 +467,40 @@ struct AgentEventRecorderTests {
         #expect(task.events.contains { $0.type == "team.agent.completed" && $0.agentId == "agent-1" })
     }
 }
+
+@Suite("Agent Event Recording Presentation echo window")
+struct AgentEventRecordingPresentationEchoWindowTests {
+    @Test("a repeat older than the echo search window is appended, not swallowed")
+    func repeatBeyondEchoWindowIsAppended() {
+        // The echo containment scan looks back incoming.count +
+        // echoSearchWindowSlack characters; older content is out of dedupe
+        // range by design — the bound is what keeps the recording path linear
+        // across a long streamed run. A repeat inside the window is still an
+        // echo (the UI stress suite documents that half of the trade-off).
+        let sentence = "The deployment completed successfully and all twelve health checks passed on the first attempt."
+        let fillerLine = "Later progress detail keeps arriving in realistic streamed sentences.\n"
+        let fillerLines = (AgentEventRecordingPresentation.echoSearchWindowSlack + sentence.count) / fillerLine.count + 40
+        let filler = String(repeating: fillerLine, count: fillerLines)
+        let existing = "Earlier: \(sentence)\n\(filler)"
+        #expect(filler.count > AgentEventRecordingPresentation.echoSearchWindowSlack + sentence.count)
+
+        let appended = AgentEventRecordingPresentation.responseTextToAppend(sentence, after: existing)
+        #expect(appended == sentence, "repeats beyond the bounded window are new output")
+    }
+
+    @Test("a whole-output envelope echo is swallowed regardless of output size")
+    func wholeOutputEnvelopeEchoSwallowedBeyondWindowSize() {
+        // The window bounds only the interior containment scan; a whole-output
+        // envelope echo (interior whitespace shifted) is caught by the
+        // collapsed-equality walk at any size.
+        var output = ""
+        for index in 0..<600 {
+            output += "Streamed sentence \(index) carrying a realistic amount of prose per tick.\n"
+        }
+        #expect(output.count > AgentEventRecordingPresentation.echoSearchWindowSlack)
+
+        let envelope = output.replacingOccurrences(of: "\n", with: " \n")
+        let appended = AgentEventRecordingPresentation.responseTextToAppend(envelope, after: output)
+        #expect(appended.isEmpty, "whitespace-shifted whole-output echoes must never re-append")
+    }
+}
