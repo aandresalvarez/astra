@@ -49,6 +49,38 @@ struct PanelLayoutGeometryTests {
         #expect(TaskChatLayoutGeometry.columnMaxWidth(for: 700) == 668)
     }
 
+    @Test("Canvas shelf preserves the detail proposal and recenters visually")
+    func canvasShelfUsesCompositedLayout() {
+        let mode = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .canvas(.markdown),
+            usesInspectorOverlay: false
+        )
+
+        #expect(mode == .compositedCanvas)
+        #expect(mode.detailProposalWidth(availableWidth: 1_688, panelWidth: 700) == 1_688)
+        #expect(mode.detailVisualOffset(panelWidth: 700) == -350)
+    }
+
+    @Test("Workspace context retains docked and compact overlay proposals")
+    func workspaceContextRetainsExistingPlacement() {
+        let workspaceID = UUID()
+        let docked = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .context(workspaceID),
+            usesInspectorOverlay: false
+        )
+        let overlay = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .context(workspaceID),
+            usesInspectorOverlay: true
+        )
+
+        #expect(docked == .dockedContext)
+        #expect(docked.detailProposalWidth(availableWidth: 1_200, panelWidth: 392) == 808)
+        #expect(docked.detailVisualOffset(panelWidth: 392) == 0)
+        #expect(overlay == .overlayContext)
+        #expect(overlay.detailProposalWidth(availableWidth: 700, panelWidth: 392) == 700)
+        #expect(overlay.detailVisualOffset(panelWidth: 392) == 0)
+    }
+
     @Test("A true inspector overlay may animate because detail width stays stable")
     func inspectorOverlayMayAnimate() {
         let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: true)

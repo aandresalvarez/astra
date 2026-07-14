@@ -31,10 +31,20 @@ struct UIStressFilesShelfTests {
         let shelfClosedViewport: CGFloat = 1_688
         let shelfOpenViewport: CGFloat = 988
         let expectedWidth = TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport)
+        let closedMode = WorkspaceRightPanelLayoutMode.resolve(
+            panel: nil,
+            usesInspectorOverlay: false
+        )
+        let openMode = WorkspaceRightPanelLayoutMode.resolve(
+            panel: .canvas(.markdown),
+            usesInspectorOverlay: false
+        )
 
         for _ in 0..<10_000 {
             #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfOpenViewport) == expectedWidth)
             #expect(TaskChatLayoutGeometry.columnMaxWidth(for: shelfClosedViewport) == expectedWidth)
+            #expect(closedMode.detailProposalWidth(availableWidth: 1_688, panelWidth: 0) == 1_688)
+            #expect(openMode.detailProposalWidth(availableWidth: 1_688, panelWidth: 700) == 1_688)
         }
     }
 

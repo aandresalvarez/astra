@@ -68,6 +68,43 @@ enum WorkspaceRightPanelTransitionMode: Equatable {
     }
 }
 
+/// Determines whether a right panel participates in the task detail's layout
+/// proposal. Canvas shelves are composited over a stable, full-width detail
+/// surface and visually recenter that surface with a transform. This prevents
+/// a shelf toggle from proposing a new width to every retained transcript row.
+/// The workspace context panel keeps its existing docked/compact behavior.
+enum WorkspaceRightPanelLayoutMode: Equatable {
+    case detailOnly
+    case dockedContext
+    case compositedCanvas
+    case overlayContext
+
+    static func resolve(
+        panel: WorkspaceRightPanel?,
+        usesInspectorOverlay: Bool
+    ) -> Self {
+        guard let panel else { return .detailOnly }
+        switch panel {
+        case .canvas:
+            return .compositedCanvas
+        case .context:
+            return usesInspectorOverlay ? .overlayContext : .dockedContext
+        }
+    }
+
+    var preservesDetailProposalWidth: Bool {
+        self != .dockedContext
+    }
+
+    func detailProposalWidth(availableWidth: CGFloat, panelWidth: CGFloat) -> CGFloat {
+        preservesDetailProposalWidth ? availableWidth : max(0, availableWidth - panelWidth)
+    }
+
+    func detailVisualOffset(panelWidth: CGFloat) -> CGFloat {
+        self == .compositedCanvas ? -(panelWidth / 2) : 0
+    }
+}
+
 struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false

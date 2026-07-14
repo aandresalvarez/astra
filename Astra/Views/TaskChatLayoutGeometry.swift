@@ -8,6 +8,7 @@ import CoreGraphics
 /// a docked shelf opens or closes.
 enum TaskChatLayoutGeometry {
     static let readableColumnMaxWidth: CGFloat = 900
+    static let wideContainerMaxWidth: CGFloat = readableColumnMaxWidth + 64
 
     static func horizontalPadding(for viewportWidth: CGFloat) -> CGFloat {
         if viewportWidth < 520 { return 12 }

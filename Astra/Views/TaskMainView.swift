@@ -5110,6 +5110,8 @@ struct TaskMainView: View {
                 return true
             }
         }
+        .frame(maxWidth: TaskChatLayoutGeometry.wideContainerMaxWidth)
+        .frame(maxWidth: .infinity)
     }
 
     /// Smart paste: inspect clipboard and route to the right action.

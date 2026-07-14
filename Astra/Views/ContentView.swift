@@ -2896,27 +2896,29 @@ private struct ContentDetailAreaView: View {
             let dockedPanelWidth = activePanel.flatMap { panel in
                 usesInspectorOverlay ? nil : rightPanelWidth(for: panel, availableWidth: availableWidth, isOverlay: false)
             } ?? 0
-            let detailWidth = max(0, proxy.size.width - dockedPanelWidth)
-            let transitionMode = WorkspaceRightPanelTransitionMode.resolve(
-                usesInspectorOverlay: usesInspectorOverlay
+            let layoutMode = WorkspaceRightPanelLayoutMode.resolve(
+                panel: activePanel, usesInspectorOverlay: usesInspectorOverlay
             )
-
+            let detailProposalWidth = layoutMode.detailProposalWidth(
+                availableWidth: availableWidth, panelWidth: dockedPanelWidth
+            )
+            let detailVisualOffset = layoutMode.detailVisualOffset(panelWidth: dockedPanelWidth)
+            let transitionMode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: usesInspectorOverlay)
             ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
-                    detailContent
-                        .frame(width: usesInspectorOverlay ? proxy.size.width : detailWidth, height: proxy.size.height)
-                        .clipped()
-
-                    if let activePanel, !usesInspectorOverlay {
-                        rightPanel(
-                            activePanel,
-                            width: dockedPanelWidth,
-                            availableWidth: availableWidth,
-                            isOverlay: false
-                        )
-                    }
+                detailContent
+                    .frame(width: detailProposalWidth, height: proxy.size.height)
+                    .offset(x: detailVisualOffset)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
+                    .clipped()
+                if let activePanel, !usesInspectorOverlay {
+                    rightPanel(
+                        activePanel,
+                        width: dockedPanelWidth,
+                        availableWidth: availableWidth,
+                        isOverlay: false
+                    )
+                    .zIndex(1)
                 }
-                .frame(width: proxy.size.width, height: proxy.size.height)
 
                 if let activePanel, usesInspectorOverlay {
                     let overlayWidth = rightPanelWidth(for: activePanel, availableWidth: availableWidth, isOverlay: true)
