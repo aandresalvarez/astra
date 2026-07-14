@@ -48,9 +48,11 @@ struct UIStressStateChurnTests {
         return condition()
     }
 
-    private func scratchDefaults(_ name: String = #function) -> UserDefaults {
+    private func scratchDefaults(_ name: String = #function) throws -> UserDefaults {
         let suiteName = "ui-stress-\(name)-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        // Fail fast rather than fall back to .standard: a fallback would
+        // silently write stress-test state into the real defaults domain.
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
     }
@@ -143,8 +145,8 @@ struct UIStressStateChurnTests {
     // MARK: - Sidebar presentation churn
 
     @Test("seeded sidebar op storm preserves mode/width invariants")
-    func sidebarOpStormPreservesInvariants() {
-        let model = SidebarPresentationModel(defaults: scratchDefaults())
+    func sidebarOpStormPreservesInvariants() throws {
+        let model = SidebarPresentationModel(defaults: try scratchDefaults())
         var rng = SplitMix64(state: 0xA57A_0003)
         var width: CGFloat = 1_500
         var hasPanel = false
@@ -183,13 +185,13 @@ struct UIStressStateChurnTests {
     }
 
     @Test("a docked reveal with no readable-width probe leaves the settle guard armed")
-    func dockedRevealWithoutProbeKeepsSettleArmed() async {
+    func dockedRevealWithoutProbeKeepsSettleArmed() async throws {
         // Documents the deliberate guard in SidebarPresentationModel.beginSettle:
         // the fallback timer refuses to clear `isSettling` for a docked reveal,
         // so if the AppKit probe never reports a readable width the
         // compressed-collapse proposals stay suppressed indefinitely. See the
         // stress findings report; a missed probe leaves the guard armed forever.
-        let model = SidebarPresentationModel(defaults: scratchDefaults())
+        let model = SidebarPresentationModel(defaults: try scratchDefaults())
         model.setResponsiveWidth(1_500)
         model.toggle() // hide
         #expect(model.mode == .collapsed)
@@ -212,8 +214,8 @@ struct UIStressStateChurnTests {
     }
 
     @Test("rapid toggle bursts leave intent, persistence, and mode coherent")
-    func rapidToggleBurstsStayCoherent() async {
-        let defaults = scratchDefaults()
+    func rapidToggleBurstsStayCoherent() async throws {
+        let defaults = try scratchDefaults()
         let model = SidebarPresentationModel(defaults: defaults)
         model.setResponsiveWidth(1_600)
 
@@ -324,7 +326,7 @@ struct UIStressStateChurnTests {
         // Documents the missing eviction in WorkspaceCanvasItemPreference
         // storage: one JSON entry per conversation ever seen, decoded and
         // re-encoded on every canvas change. See the stress findings report.
-        let model = RightPanelPresentationModel(defaults: scratchDefaults())
+        let model = RightPanelPresentationModel(defaults: try scratchDefaults())
         let conversations = 2_000
 
         let elapsed = ContinuousClock().measure {
