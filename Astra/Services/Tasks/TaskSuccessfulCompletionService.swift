@@ -13,6 +13,13 @@ enum TaskSuccessfulCompletionService {
         successPayload: String,
         permissionPolicy: PermissionPolicy
     ) -> Bool {
+        if permissionPolicy != .autonomous {
+            TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+        }
         let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
             task: task,
             run: run,

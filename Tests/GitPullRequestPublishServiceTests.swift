@@ -58,6 +58,7 @@ struct GitPullRequestPublishServiceTests {
         var lookupRemoteURLs: [String] = []
         var lookupBases: [String] = []
         var createRemoteURLs: [String] = []
+        var remoteHeadSHAAfterFoundPullRequestLookup: String?
 
         func acquireIndexGuard() -> Bool {
             calls.append("acquire")
@@ -176,6 +177,11 @@ struct GitPullRequestPublishServiceTests {
             ghPathOverride: String?
         ) async -> GitHubPullRequestLookupResult {
             calls.append("lookup:\(head)")
+            if case .found = lookupResult,
+               let replacement = remoteHeadSHAAfterFoundPullRequestLookup {
+                remoteRefSHAs["origin/\(head)"] = replacement
+                remoteHeadSHAAfterFoundPullRequestLookup = nil
+            }
             return lookupResult
         }
 
@@ -804,6 +810,29 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
+    }
+
+    @Test("created PR receipt rechecks the authoritative remote head")
+    func createdPullRequestRemoteHeadRaceFailsClosed() async throws {
+        let git = FakeGit()
+        let changedRemoteHead = String(repeating: "d", count: 40)
+        git.remoteHeadSHAAfterFoundPullRequestLookup = changedRemoteHead
+        let publisher = service(git: git)
+        let proposal = try await publisher.prepare(request())
+
+        do {
+            _ = try await publisher.publish(
+                proposal,
+                approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+            )
+            Issue.record("A created PR with a changed remote head unexpectedly produced a receipt")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .remoteCommitMismatch(
+                ref: "origin/feature/typed-publish",
+                expected: Self.commitSHA,
+                actual: changedRemoteHead
+            ))
+        }
     }
 
     @Test("untracked binary content is fingerprinted and remains drift protected")

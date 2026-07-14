@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Task completion policy")
@@ -218,6 +219,62 @@ struct TaskCompletionPolicyTests {
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .manualArtifactRequirement)
         #expect(decision.typedStopReason == .noUsableResult)
+    }
+
+    @Test("Artifact-first Ask completion queues and later presents the PR gate")
+    func artifactApprovalRechecksQueuedPullRequestOutcome() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("artifact-pr-gate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Completion", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Publish web page",
+            goal: "Write a web page with HTML and JavaScript, then create a pull request",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: run,
+            modelContext: context,
+            successPayload: "Local work finished.",
+            permissionPolicy: .restricted
+        )
+        try context.save()
+
+        #expect(!completed)
+        #expect(run.typedStopReason == .noUsableResult)
+        #expect(task.events.contains {
+            $0.run?.id == run.id && $0.type == TaskExternalOutcomeEventTypes.publicationRequested
+        })
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try "<html></html>".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context,
+            taskQueue: TaskQueue()
+        )
+        coordinator.approveTask(task)
+
+        #expect(task.status == .pendingUser)
+        #expect(run.typedStopReason == .externalOutcomePending)
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
+            task: task,
+            run: run
+        ) != nil)
     }
 
     @Test("publication receipt cannot complete a task whose deliverable is missing")

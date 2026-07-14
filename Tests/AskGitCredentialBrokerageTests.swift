@@ -275,6 +275,29 @@ struct AskGitCredentialBrokerageTests {
         #expect(!AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git push *"))
     }
 
+    @Test("Ask publication workflow detects acceptance criteria and constraints")
+    func askPublicationWorkflowUsesAllTaskIntentFields() {
+        let acceptanceTask = AgentTask(title: "Implement", goal: "Finish the code")
+        acceptanceTask.acceptanceCriteria = ["Create a draft pull request"]
+        let constrainedTask = AgentTask(title: "Implement", goal: "Finish the code")
+        constrainedTask.constraints = ["Open a PR after tests pass"]
+
+        for task in [acceptanceTask, constrainedTask] {
+            #expect(AskGitPullRequestWorkflowPolicy.isActive(
+                task: task,
+                permissionPolicy: .restricted,
+                contextText: "Local implementation work"
+            ))
+            let prompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+                to: "Local implementation work",
+                task: task,
+                permissionPolicy: .restricted,
+                contextText: "Local implementation work"
+            )
+            #expect(prompt.contains("ASTRA Ask-mode pull request workflow"))
+        }
+    }
+
     private var externalHTTPSCredentialContext: GitCredentialSandboxContext {
         GitCredentialSandboxContext(
             readablePaths: ["/tmp/ask-git-config", "/tmp/ask-git-credentials"],

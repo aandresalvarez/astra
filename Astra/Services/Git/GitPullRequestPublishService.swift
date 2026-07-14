@@ -340,7 +340,8 @@ final class GitPullRequestPublishService {
             phase = .verifyPullRequest
             let verifiedPullRequest = try await verifyDraftPullRequest(
                 proposal: proposal,
-                expected: pullRequest
+                expected: pullRequest,
+                expectedHeadSHA: commitSHA
             )
 
             let result = try receipt(
@@ -532,7 +533,8 @@ final class GitPullRequestPublishService {
         }
         let verifiedReference = try await verifyDraftPullRequest(
             proposal: proposal,
-            expected: reference
+            expected: reference,
+            expectedHeadSHA: effectiveCheckpoint.commitSHA
         )
         let result = try receipt(
             proposal: proposal,
@@ -704,7 +706,8 @@ final class GitPullRequestPublishService {
 
     private func verifyDraftPullRequest(
         proposal: GitPullRequestPublishProposal,
-        expected: GitHubPullRequestRef
+        expected: GitHubPullRequestRef,
+        expectedHeadSHA: String
     ) async throws -> GitHubPullRequestRef {
         switch await git.lookupOpenPullRequest(
             repoPath: proposal.repositoryPath,
@@ -723,6 +726,14 @@ final class GitPullRequestPublishService {
                     url: reference.url
                 )
             }
+            // GitHub metadata and the branch ref are separate mutable
+            // authorities. Re-read the network-backed head after the PR lookup
+            // so the receipt cannot describe an earlier, reviewed commit while
+            // the newly created PR points at different content.
+            try await verifyAuthoritativeRemoteCommit(
+                proposal: proposal,
+                expectedSHA: expectedHeadSHA
+            )
             return reference
         case .none:
             throw GitPullRequestPublishError.pullRequestLookupUnavailable(

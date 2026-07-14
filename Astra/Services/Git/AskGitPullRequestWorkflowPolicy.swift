@@ -20,10 +20,21 @@ enum AskGitPullRequestWorkflowPolicy {
     ) -> Bool {
         permissionPolicy != .autonomous
             && GitOperationIntentDetector.detectsPullRequestPublicationIntent(
-                prompt: contextText,
+                prompt: publicationIntentText(task: task, contextText: contextText),
                 task: task,
                 contextText: contextText
             )
+    }
+
+    private static func publicationIntentText(
+        task: AgentTask,
+        contextText: String
+    ) -> String {
+        [
+            contextText,
+            task.acceptanceCriteria.joined(separator: "\n"),
+            task.constraints.joined(separator: "\n")
+        ].joined(separator: "\n")
     }
 
     static func appendingProviderGuidance(

@@ -4,6 +4,34 @@ import ASTRAModels
 /// Applies task/run state transitions when the provider has finished local work
 /// but ASTRA must retain control of either an approval or completion gate.
 enum TaskRuntimeOutcomeTransition {
+    /// Records a future typed publication gate without changing the current
+    /// completion blocker. Artifact review may have to happen first, but the
+    /// durable request ensures a later manual approval re-evaluates the PR
+    /// outcome instead of completing the task directly.
+    @MainActor
+    @discardableResult
+    static func queueGitHubPullRequestIfNeeded(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard let request = TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(
+            task: task,
+            run: run
+        ) else { return false }
+        let alreadyRequested = task.events.contains {
+            $0.run?.id == run.id && $0.type == TaskExternalOutcomeEventTypes.publicationRequested
+        }
+        guard !alreadyRequested else { return false }
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationRequested,
+            payload: request,
+            run: run
+        ))
+        return true
+    }
+
     @MainActor
     static func applyPolicyApproval(
         task: AgentTask,
