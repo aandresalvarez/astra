@@ -22,7 +22,6 @@ struct TaskSidebarContainerView: View {
     var onDeleteTask: ((AgentTask) -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
-    var onImportWorkspace: (() -> Void)?
     var onShowConfigure: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
     var onRenameWorkspace: ((Workspace) -> Void)?
@@ -48,7 +47,6 @@ struct TaskSidebarContainerView: View {
             onDeleteTask: onDeleteTask,
             onNewWorkspace: onNewWorkspace,
             onEditWorkspace: onEditWorkspace,
-            onImportWorkspace: onImportWorkspace,
             onShowConfigure: onShowConfigure,
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
@@ -244,45 +242,6 @@ enum SidebarRevealSettlingPolicy {
     }
 }
 
-private struct SidebarTopToolbar: View {
-    let showsWorkspaceActions: Bool
-    var onNewWorkspace: (() -> Void)?
-    var onImportWorkspace: (() -> Void)?
-
-    private var showsAddWorkspaceMenu: Bool {
-        showsWorkspaceActions && (onNewWorkspace != nil || onImportWorkspace != nil)
-    }
-
-    var body: some View {
-        // Search moved to the leading titlebar accessory (AstraLeadingCommandBar).
-        // Only the workspace-list add menu remains; render nothing when it doesn't
-        // apply so the column toolbar stays empty rather than padded.
-        if showsAddWorkspaceMenu {
-            AstraToolbarCommandCluster {
-                Menu {
-                    if let onNewWorkspace {
-                        Button(action: onNewWorkspace) {
-                            Label("New Workspace", systemImage: "folder.badge.plus")
-                        }
-                    }
-                    if let onImportWorkspace {
-                        Button(action: onImportWorkspace) {
-                            Label("Import Workspace", systemImage: "square.and.arrow.down")
-                        }
-                    }
-                } label: {
-                    AstraToolbarCommandIcon(systemImage: "folder.badge.plus", isActive: false)
-                }
-                .menuStyle(.button)
-                .menuIndicator(.hidden)
-                .buttonStyle(.plain)
-                .help("Add workspace")
-                .accessibilityLabel("Add workspace")
-            }
-        }
-    }
-}
-
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
     /// Overflow controls sit with the task titles, not the full-width row
@@ -316,7 +275,6 @@ struct TaskSidebarView: View {
     var onDeleteTask: ((AgentTask) -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
-    var onImportWorkspace: (() -> Void)?
     var onShowConfigure: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
     var onRenameWorkspace: ((Workspace) -> Void)?
@@ -516,15 +474,6 @@ struct TaskSidebarView: View {
         .onChange(of: selectedTask?.id) { handleSelectedTaskChanged() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                SidebarTopToolbar(
-                    showsWorkspaceActions: selectedWorkspace == nil,
-                    onNewWorkspace: onNewWorkspace,
-                    onImportWorkspace: onImportWorkspace
-                )
-            }
-        }
         .accessibilityIdentifier("TaskSidebar")
         .alert("Rename Task", isPresented: Binding(
             get: { renamingTask != nil },
