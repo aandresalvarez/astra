@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRAGitContracts
 import ASTRAModels
@@ -7,6 +8,8 @@ import ASTRAModels
 @Suite("Task Git pull request publication")
 @MainActor
 struct TaskGitPullRequestPublishCoordinatorTests {
+    private struct ExpectedPersistenceFailure: Error {}
+
     @Test("Only task-owned paths inside the repository are selected")
     func taskOwnedPathsStayInsideRepository() {
         let repository = "/tmp/astra-publish/repo"
@@ -171,5 +174,53 @@ struct TaskGitPullRequestPublishCoordinatorTests {
             runID: run.id,
             checkpointStore: store
         ) == proposal)
+    }
+
+    @Test("A failed proposal save removes the event and fails before approval is exposed")
+    func proposalPersistenceFailureFailsClosed() throws {
+        let schema = Schema(versionedSchema: ASTRASchemaV13.self)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Create a draft pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let previousUpdatedAt = task.updatedAt
+        let event = TaskEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationProposed,
+            payload: "{}",
+            run: run
+        )
+        let coordinator = TaskGitPullRequestPublishCoordinator(
+            modelContext: context,
+            durableEventSave: { _, _, _, _ in
+                throw ExpectedPersistenceFailure()
+            }
+        )
+
+        do {
+            try coordinator.persistBeforeExternalBoundary(
+                event,
+                task: task,
+                previousUpdatedAt: previousUpdatedAt,
+                operation: "git_publish_proposal"
+            )
+            Issue.record("A failed proposal save unexpectedly returned success")
+        } catch is ExpectedPersistenceFailure {
+            // Expected: the review proposal must never be exposed.
+        }
+
+        try context.save()
+        let events = try context.fetch(FetchDescriptor<TaskEvent>())
+        #expect(!events.contains { $0.id == event.id })
+        #expect(!task.events.contains { $0.id == event.id })
+        #expect(task.updatedAt == previousUpdatedAt)
     }
 }

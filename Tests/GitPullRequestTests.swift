@@ -574,11 +574,11 @@ struct GitPullRequestTests {
 
         let file = repository.appendingPathComponent("value.txt")
         try "one\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(runShell("git add value.txt && git commit -m one && git push -u upstream main", in: repository.path) == 0)
+        #expect(runShell("git add value.txt && git -c commit.gpgsign=false commit -m one && git push -u upstream main", in: repository.path) == 0)
         let firstSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
 
         try "two\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(runShell("git add value.txt && git commit -m two && git push upstream main", in: repository.path) == 0)
+        #expect(runShell("git add value.txt && git -c commit.gpgsign=false commit -m two && git push upstream main", in: repository.path) == 0)
         let secondSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
         #expect(firstSHA != secondSHA)
 

@@ -648,6 +648,54 @@ struct GitStatusParsingTests {
         #expect(diff.diff.contains("+let value = 1"))
     }
 
+    @Test("Working-tree digest fingerprints untracked binary bytes")
+    func untrackedBinaryContentDigestChangesWithBytes() async throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let fileURL = URL(fileURLWithPath: repo).appendingPathComponent("preview.png")
+        try Data([0x00, 0xFF, 0x01]).write(to: fileURL)
+        let first = await GitService.shared.getWorkingTreeContentDigest(
+            relativePath: "preview.png",
+            at: repo
+        )
+
+        try Data([0x00, 0xFF, 0x02]).write(to: fileURL)
+        let second = await GitService.shared.getWorkingTreeContentDigest(
+            relativePath: "preview.png",
+            at: repo
+        )
+
+        #expect(first != nil)
+        #expect(second != nil)
+        #expect(first != second)
+    }
+
+    @Test("Reviewed index tree restores mixed staged and unstaged hunks")
+    func reviewedIndexTreeRestoresMixedPath() async throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let fileURL = URL(fileURLWithPath: repo).appendingPathComponent("mixed.txt")
+        try "old\nunchanged\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        #expect(runShell("git add mixed.txt && git -c commit.gpgsign=false -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
+        try "staged\nunchanged\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        #expect(runShell("git add mixed.txt", in: repo) == 0)
+        try "staged\nunstaged\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let reviewedStates = await GitService.shared.getStatusFiles(at: repo)
+        let reviewedTree = try #require(await GitService.shared.getIndexTreeSHA(at: repo))
+        #expect(reviewedStates.count == 2)
+        #expect(Set(reviewedStates.map(\.isStaged)) == [true, false])
+
+        #expect(runShell("git add mixed.txt", in: repo) == 0)
+        #expect(await GitService.shared.getStatusFiles(at: repo).count == 1)
+        try await GitService.shared.restoreIndexTreeSHA(reviewedTree, at: repo)
+
+        let restoredStates = await GitService.shared.getStatusFiles(at: repo)
+        #expect(restoredStates == reviewedStates)
+    }
+
     @Test("Tracked file diff is scoped to the selected changed file")
     func trackedFileDiffIsScopedToFile() async throws {
         let repo = try makeTempGitRepo()

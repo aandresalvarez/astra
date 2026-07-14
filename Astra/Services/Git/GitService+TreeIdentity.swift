@@ -33,4 +33,28 @@ extension GitService {
             return nil
         }
     }
+
+    func restoreIndexTreeSHA(_ treeSHA: String, at repoPath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["read-tree", treeSHA])
+    }
+
+    func getWorkingTreeContentDigest(
+        relativePath: String,
+        at repoPath: String
+    ) async -> String? {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["hash-object", "--no-filters", "--", relativePath]
+            )
+            let digest = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return digest.isEmpty ? nil : digest
+        } catch {
+            AppLogger.error(
+                "Failed to hash selected working-tree content: \(error.localizedDescription)",
+                category: "Git"
+            )
+            return nil
+        }
+    }
 }

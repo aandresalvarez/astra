@@ -30,15 +30,32 @@ enum TaskGitPullRequestPublishCoordinatorError: LocalizedError, Equatable {
 
 @MainActor
 final class TaskGitPullRequestPublishCoordinator {
+    typealias DurableEventSave = @MainActor (
+        _ workspace: Workspace?,
+        _ modelContext: ModelContext,
+        _ taskID: UUID,
+        _ auditFields: [String: String]
+    ) throws -> Void
+
     private let modelContext: ModelContext
     private let git: GitRepositoryOperating
+    private let durableEventSave: DurableEventSave
 
     init(
         modelContext: ModelContext,
-        git: GitRepositoryOperating = GitService.shared
+        git: GitRepositoryOperating = GitService.shared,
+        durableEventSave: @escaping DurableEventSave = { workspace, modelContext, taskID, auditFields in
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext,
+                taskID: taskID,
+                auditFields: auditFields
+            )
+        }
     ) {
         self.modelContext = modelContext
         self.git = git
+        self.durableEventSave = durableEventSave
     }
 
     func prepare(task: AgentTask) async throws -> GitPullRequestPublishProposal {
@@ -113,15 +130,18 @@ final class TaskGitPullRequestPublishCoordinator {
             authorizationRequirement: .explicitApproval
         )
         let proposal = try await service(checkpointStore: checkpointStore).prepare(publishRequest)
-        modelContext.insert(TaskEvent.structuredPayloadEvent(
+        let previousUpdatedAt = task.updatedAt
+        let proposedEvent = TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskExternalOutcomeEventTypes.publicationProposed,
             payload: proposal,
             run: run
-        ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
-            modelContext: modelContext
+        )
+        try persistBeforeExternalBoundary(
+            proposedEvent,
+            task: task,
+            previousUpdatedAt: previousUpdatedAt,
+            operation: "git_publish_proposal"
         )
         return proposal
     }
@@ -142,15 +162,18 @@ final class TaskGitPullRequestPublishCoordinator {
             requestDigest: proposal.proposalID,
             isDraft: proposal.isDraft
         )
-        modelContext.insert(TaskEvent.structuredPayloadEvent(
+        let previousUpdatedAt = task.updatedAt
+        let approvalEvent = TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskExternalOutcomeEventTypes.publicationApproved,
             payload: authorization,
             run: run
-        ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
-            modelContext: modelContext
+        )
+        try persistBeforeExternalBoundary(
+            approvalEvent,
+            task: task,
+            previousUpdatedAt: previousUpdatedAt,
+            operation: "git_publish_approval"
         )
 
         do {
@@ -209,6 +232,32 @@ final class TaskGitPullRequestPublishCoordinator {
         checkpointStore: any GitPullRequestPublishCheckpointStoring
     ) -> GitPullRequestPublishService {
         GitPullRequestPublishService(git: git, checkpointStore: checkpointStore)
+    }
+
+    /// Proposal and approval events are recovery authority. They must become
+    /// durable before the UI exposes an approval or the service crosses a Git
+    /// mutation boundary. A failed save removes the in-memory event so a later
+    /// unrelated save cannot accidentally persist an unacknowledged action.
+    func persistBeforeExternalBoundary(
+        _ event: TaskEvent,
+        task: AgentTask,
+        previousUpdatedAt: Date,
+        operation: String
+    ) throws {
+        modelContext.insert(event)
+        do {
+            try durableEventSave(
+                task.workspace,
+                modelContext,
+                task.id,
+                ["operation": operation]
+            )
+        } catch {
+            task.events.removeAll { $0.id == event.id }
+            modelContext.delete(event)
+            task.updatedAt = previousUpdatedAt
+            throw error
+        }
     }
 
     private func checkpointStore(

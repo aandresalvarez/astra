@@ -21,6 +21,14 @@ protocol GitRepositoryOperating: AnyObject {
     /// reviewed content before a push.
     func getIndexTreeSHA(at repoPath: String) async -> String?
     func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String?
+    /// Restores only the Git index to a previously captured immutable tree;
+    /// working-tree bytes remain untouched. Typed publication uses this to
+    /// recover mixed staged/unstaged paths after an interrupted commit.
+    func restoreIndexTreeSHA(_ treeSHA: String, at repoPath: String) async throws
+    /// Returns a Git object identity for the exact working-tree bytes at a
+    /// selected untracked path. The publication service wraps this identity in
+    /// its SHA-256 proposal fingerprint without persisting file contents.
+    func getWorkingTreeContentDigest(relativePath: String, at repoPath: String) async -> String?
     func lookupRemoteCommitSHA(remote: String, branch: String, at repoPath: String) async -> GitRemoteCommitLookupResult
     func getLocalBranches(at repoPath: String) async -> [String]
     func checkoutBranch(_ branch: String, at repoPath: String) async throws
@@ -120,6 +128,13 @@ extension GitRepositoryOperating {
     /// tree is identical to the reviewed staged tree.
     func getIndexTreeSHA(at repoPath: String) async -> String? { nil }
     func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String? { nil }
+    func restoreIndexTreeSHA(_ treeSHA: String, at repoPath: String) async throws {
+        throw GitPullRequestPublishError.operationFailed(
+            phase: .checkpoint,
+            message: "This Git operator cannot restore a reviewed index tree."
+        )
+    }
+    func getWorkingTreeContentDigest(relativePath: String, at repoPath: String) async -> String? { nil }
 
     /// Alternate operators fail closed until they provide an authoritative
     /// network-backed remote lookup.

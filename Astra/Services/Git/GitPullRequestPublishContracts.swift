@@ -72,6 +72,10 @@ struct GitPullRequestPublishProposal: Equatable, Codable, Sendable {
     let expectedHeadSHA: String
     let selectedPaths: [String]
     let selectedFileStates: [GitPullRequestPublishFileState]
+    /// Exact index tree that existed when the proposal was reviewed. This is
+    /// distinct from the final staged tree: it preserves mixed staged and
+    /// unstaged hunks so an interrupted publication can restore them exactly.
+    let initialIndexTreeSHA: String?
     let commitMessage: String
     let pullRequestTitle: String
     let pullRequestBody: String
@@ -94,6 +98,7 @@ struct GitPullRequestPublishProposal: Equatable, Codable, Sendable {
         expectedHeadSHA: String,
         selectedPaths: [String],
         selectedFileStates: [GitPullRequestPublishFileState],
+        initialIndexTreeSHA: String? = nil,
         commitMessage: String,
         pullRequestTitle: String,
         pullRequestBody: String,
@@ -112,6 +117,7 @@ struct GitPullRequestPublishProposal: Equatable, Codable, Sendable {
         self.expectedHeadSHA = expectedHeadSHA
         self.selectedPaths = selectedPaths
         self.selectedFileStates = selectedFileStates
+        self.initialIndexTreeSHA = initialIndexTreeSHA
         self.commitMessage = commitMessage
         self.pullRequestTitle = pullRequestTitle
         self.pullRequestBody = pullRequestBody

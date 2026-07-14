@@ -40,6 +40,10 @@ struct GitPullRequestPublishServiceTests {
             "Sources/Feature.swift": "diff --git a/Sources/Feature.swift b/Sources/Feature.swift\n+feature",
             "Tests/FeatureTests.swift": "diff --git a/Tests/FeatureTests.swift b/Tests/FeatureTests.swift\n+test"
         ]
+        var diffByFileID: [String: String] = [:]
+        var workingTreeDigestByPath: [String: String] = [:]
+        var restoredIndexStatusFiles: [GitStatusFile]?
+        var capturedIndexStatusFiles: [GitStatusFile]?
         var lookupResult: GitHubPullRequestLookupResult = .none
         var remoteURL: String? = "https://github.com/example/repo"
         var existingBranches: Set<String> = []
@@ -69,8 +73,22 @@ struct GitPullRequestPublishServiceTests {
             return refSHAs[ref]
         }
 
-        func getIndexTreeSHA(at repoPath: String) async -> String? { indexTreeSHA }
+        func getIndexTreeSHA(at repoPath: String) async -> String? {
+            if capturedIndexStatusFiles == nil {
+                capturedIndexStatusFiles = statusFiles
+            }
+            return indexTreeSHA
+        }
         func getCommitTreeSHA(_ commit: String, at repoPath: String) async -> String? { committedTreeSHA }
+        func restoreIndexTreeSHA(_ treeSHA: String, at repoPath: String) async throws {
+            calls.append("restore-index:\(treeSHA)")
+            if let states = restoredIndexStatusFiles ?? capturedIndexStatusFiles {
+                statusFiles = states
+            }
+        }
+        func getWorkingTreeContentDigest(relativePath: String, at repoPath: String) async -> String? {
+            workingTreeDigestByPath[relativePath]
+        }
 
         func lookupRemoteCommitSHA(
             remote: String,
@@ -139,6 +157,7 @@ struct GitPullRequestPublishServiceTests {
             }
             headSHA = GitPullRequestPublishServiceTests.commitSHA
             refSHAs[currentBranch] = headSHA
+            statusFiles = []
         }
 
         func pullRebase(at repoPath: String) async throws {}
@@ -195,7 +214,7 @@ struct GitPullRequestPublishServiceTests {
         func getStagedDiff(at repoPath: String, limit: Int) async -> String { "" }
 
         func getFileDiff(at repoPath: String, file: GitStatusFile, limit: Int) async -> GitFileDiff {
-            let value = diffByPath[file.relativePath] ?? ""
+            let value = diffByFileID[file.id] ?? diffByPath[file.relativePath] ?? ""
             return GitFileDiff(
                 id: file.id,
                 file: file,
@@ -658,6 +677,49 @@ struct GitPullRequestPublishServiceTests {
         #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
     }
 
+    @Test("prepared retry restores the exact mixed staged and unstaged index")
+    func mixedIndexCommitFailureRetryRestoresReviewedTree() async throws {
+        let git = FakeGit()
+        let staged = GitStatusFile(
+            relativePath: "Sources/Mixed.swift",
+            status: "M",
+            isStaged: true
+        )
+        let unstaged = GitStatusFile(
+            relativePath: "Sources/Mixed.swift",
+            status: "M",
+            isStaged: false
+        )
+        git.statusFiles = [staged, unstaged]
+        git.diffByFileID = [
+            staged.id: "diff --git a/Sources/Mixed.swift b/Sources/Mixed.swift\n+staged",
+            unstaged.id: "diff --git a/Sources/Mixed.swift b/Sources/Mixed.swift\n+unstaged"
+        ]
+        git.restoredIndexStatusFiles = [staged, unstaged]
+        git.commitFailureCount = 1
+        let store = InMemoryGitPullRequestPublishCheckpointStore()
+        let publisher = service(git: git, store: store)
+        let proposal = try await publisher.prepare(request(paths: ["Sources/Mixed.swift"]))
+        let approval = GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+
+        do {
+            _ = try await publisher.publish(proposal, approval: approval)
+            Issue.record("First mixed-index commit unexpectedly succeeded")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .operationFailed(
+                phase: .commit,
+                message: "pre-commit hook rejected commit"
+            ))
+        }
+
+        let receipt = try await publisher.publish(proposal, approval: approval)
+
+        #expect(receipt.commitSHA == Self.commitSHA)
+        #expect(git.calls.contains("restore-index:\(Self.reviewedTreeSHA)"))
+        #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 2)
+        #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
+    }
+
     @Test("commit hook content mutation stops before push and restores the reviewed branch")
     func commitHookContentMutationFailsClosed() async throws {
         let git = FakeGit()
@@ -723,5 +785,58 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.currentBranch == "main")
         #expect(git.calls.filter { $0 == "remote-lookup:origin:feature/typed-publish" }.count >= 2)
         #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
+    }
+
+    @Test("retry after PR creation uses the pushed checkpoint as reviewed head authority")
+    func receiptPersistenceRetryUsesPushedCheckpoint() async throws {
+        let git = FakeGit()
+        let store = InMemoryGitPullRequestPublishCheckpointStore()
+        let publisher = service(git: git, store: store)
+        let proposal = try await publisher.prepare(request())
+        let approval = GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+
+        _ = try await publisher.publish(proposal, approval: approval)
+        let receipt = try await publisher.publish(proposal, approval: approval)
+
+        #expect(receipt.commitSHA == Self.commitSHA)
+        #expect(receipt.source == .existing)
+        #expect(git.calls.filter { $0.hasPrefix("branch:") }.count == 1)
+        #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
+        #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
+        #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 1)
+    }
+
+    @Test("untracked binary content is fingerprinted and remains drift protected")
+    func untrackedBinaryUsesWorkingTreeDigest() async throws {
+        let git = FakeGit()
+        let binaryPath = "Assets/Preview.png"
+        git.statusFiles = [GitStatusFile(
+            relativePath: binaryPath,
+            status: "?",
+            isStaged: false
+        )]
+        git.diffByPath[binaryPath] = ""
+        git.workingTreeDigestByPath[binaryPath] = "binary-object-v1"
+        let publisher = service(git: git)
+        let proposal = try await publisher.prepare(request(paths: [binaryPath]))
+        #expect(proposal.selectedFileStates.count == 1)
+
+        git.workingTreeDigestByPath[binaryPath] = "binary-object-v2"
+        do {
+            _ = try await publisher.publish(
+                proposal,
+                approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+            )
+            Issue.record("Changed binary content unexpectedly passed revalidation")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .proposalChanged)
+        }
+
+        git.workingTreeDigestByPath[binaryPath] = "binary-object-v1"
+        let receipt = try await publisher.publish(
+            proposal,
+            approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+        )
+        #expect(receipt.commitSHA == Self.commitSHA)
     }
 }

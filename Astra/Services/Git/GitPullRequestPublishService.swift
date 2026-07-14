@@ -100,10 +100,12 @@ final class GitPullRequestPublishService {
             }
 
             let selectedFileStates: [GitPullRequestPublishFileState]
+            let initialIndexTreeSHA: String?
             if existingPullRequest != nil {
                 // Idempotent retry after success: the working-tree changes have
                 // already been committed, so there is nothing left to snapshot.
                 selectedFileStates = []
+                initialIndexTreeSHA = nil
             } else {
                 guard baseSHA.caseInsensitiveCompare(scope.expectedHeadSHA) == .orderedSame else {
                     throw GitPullRequestPublishError.remoteBaseMismatch(
@@ -118,6 +120,13 @@ final class GitPullRequestPublishService {
                     repositoryPath: scope.repositoryPath,
                     selectedPaths: scope.selectedPaths
                 )
+                guard let indexTreeSHA = await git.getIndexTreeSHA(at: scope.repositoryPath) else {
+                    throw GitPullRequestPublishError.operationFailed(
+                        phase: .preflight,
+                        message: "ASTRA could not capture the reviewed Git index."
+                    )
+                }
+                initialIndexTreeSHA = indexTreeSHA
             }
 
             let proposalID = Self.makeProposalID(
@@ -130,6 +139,7 @@ final class GitPullRequestPublishService {
                 expectedHeadSHA: scope.expectedHeadSHA,
                 selectedPaths: scope.selectedPaths,
                 selectedFileStates: selectedFileStates,
+                initialIndexTreeSHA: initialIndexTreeSHA,
                 commitMessage: scope.commitMessage,
                 pullRequestTitle: scope.pullRequestTitle,
                 pullRequestBody: scope.pullRequestBody,
@@ -148,6 +158,7 @@ final class GitPullRequestPublishService {
                 expectedHeadSHA: scope.expectedHeadSHA,
                 selectedPaths: scope.selectedPaths,
                 selectedFileStates: selectedFileStates,
+                initialIndexTreeSHA: initialIndexTreeSHA,
                 commitMessage: scope.commitMessage,
                 pullRequestTitle: scope.pullRequestTitle,
                 pullRequestBody: scope.pullRequestBody,
@@ -556,8 +567,19 @@ final class GitPullRequestPublishService {
         if await git.getCurrentBranch(at: proposal.repositoryPath) != proposal.headBranch {
             try await git.checkoutBranch(proposal.headBranch, at: proposal.repositoryPath)
         }
-        for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where !state.isStaged {
-            try await git.unstageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+        if let initialIndexTreeSHA = proposal.initialIndexTreeSHA {
+            try await git.restoreIndexTreeSHA(initialIndexTreeSHA, at: proposal.repositoryPath)
+        } else {
+            // Backward compatibility for persisted proposals created before
+            // index-tree capture. Non-mixed paths remain safely resumable;
+            // mixed paths fail closed because their original index cannot be
+            // reconstructed from hashes alone.
+            guard !Self.containsMixedIndexStates(proposal.selectedFileStates) else {
+                throw GitPullRequestPublishError.proposalChanged
+            }
+            for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where !state.isStaged {
+                try await git.unstageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+            }
         }
         let restoredStates = try await captureSelectedFileStates(
             repositoryPath: proposal.repositoryPath,
@@ -805,15 +827,27 @@ final class GitPullRequestPublishService {
                 file: file,
                 limit: Self.maximumCapturedDiffBytes
             )
-            guard diff.kind != .unavailable, !diff.isTruncated, diff.hasDiff else {
-                throw GitPullRequestPublishError.selectedContentUnavailable(file.relativePath)
+            let fingerprintSource: String
+            if diff.kind == .untracked && !diff.hasDiff {
+                guard let contentDigest = await git.getWorkingTreeContentDigest(
+                    relativePath: file.relativePath,
+                    at: repositoryPath
+                ) else {
+                    throw GitPullRequestPublishError.selectedContentUnavailable(file.relativePath)
+                }
+                fingerprintSource = "untracked-content:\(contentDigest)"
+            } else {
+                guard diff.kind != .unavailable, !diff.isTruncated, diff.hasDiff else {
+                    throw GitPullRequestPublishError.selectedContentUnavailable(file.relativePath)
+                }
+                fingerprintSource = diff.diff
             }
             states.append(GitPullRequestPublishFileState(
                 relativePath: file.relativePath,
                 originalPath: file.originalPath,
                 status: file.status,
                 isStaged: file.isStaged,
-                diffSHA256: Self.sha256Hex(diff.diff)
+                diffSHA256: Self.sha256Hex(fingerprintSource)
             ))
         }
         return states
@@ -982,11 +1016,23 @@ final class GitPullRequestPublishService {
             branch: proposal.headBranch,
             repositoryPath: proposal.repositoryPath
         )
-        guard let reviewedHeadSHA = proposal.existingPullRequestHeadSHA,
+        let checkpoint = await checkpointStore.checkpoint(for: proposal.proposalID)
+        let reviewedHeadSHA: String?
+        if let proposalHeadSHA = proposal.existingPullRequestHeadSHA {
+            reviewedHeadSHA = proposalHeadSHA
+        } else if let checkpoint, checkpoint.state == .pushed {
+            // The PR may have been created after review but before the receipt
+            // event was saved. The pushed checkpoint is then the durable exact
+            // head that ASTRA already reviewed and published.
+            reviewedHeadSHA = checkpoint.commitSHA
+        } else {
+            reviewedHeadSHA = nil
+        }
+        guard let reviewedHeadSHA,
               reviewedHeadSHA.caseInsensitiveCompare(remoteHeadSHA) == .orderedSame else {
             throw GitPullRequestPublishError.proposalChanged
         }
-        if let checkpoint = await checkpointStore.checkpoint(for: proposal.proposalID) {
+        if let checkpoint {
             guard checkpoint.commitSHA.caseInsensitiveCompare(remoteHeadSHA) == .orderedSame else {
                 throw GitPullRequestPublishError.proposalChanged
             }
@@ -1040,6 +1086,14 @@ final class GitPullRequestPublishService {
         return states.filter { seen.insert($0.relativePath).inserted }
     }
 
+    private static func containsMixedIndexStates(
+        _ states: [GitPullRequestPublishFileState]
+    ) -> Bool {
+        Dictionary(grouping: states, by: \.relativePath).values.contains { statesForPath in
+            Set(statesForPath.map(\.isStaged)).count > 1
+        }
+    }
+
     private static func statusFile(from state: GitPullRequestPublishFileState) -> GitStatusFile {
         GitStatusFile(
             relativePath: state.relativePath,
@@ -1060,8 +1114,12 @@ final class GitPullRequestPublishService {
                 to: proposal.expectedHeadSHA,
                 at: proposal.repositoryPath
             )
-            for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where state.isStaged {
-                try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+            if let initialIndexTreeSHA = proposal.initialIndexTreeSHA {
+                try await git.restoreIndexTreeSHA(initialIndexTreeSHA, at: proposal.repositoryPath)
+            } else {
+                for state in Self.uniqueFileStatesForStaging(proposal.selectedFileStates) where state.isStaged {
+                    try await git.stageFile(Self.statusFile(from: state), at: proposal.repositoryPath)
+                }
             }
         } catch {
             logFailure(
@@ -1083,6 +1141,7 @@ final class GitPullRequestPublishService {
             expectedHeadSHA: proposal.expectedHeadSHA,
             selectedPaths: proposal.selectedPaths,
             selectedFileStates: proposal.selectedFileStates,
+            initialIndexTreeSHA: proposal.initialIndexTreeSHA,
             commitMessage: proposal.commitMessage,
             pullRequestTitle: proposal.pullRequestTitle,
             pullRequestBody: proposal.pullRequestBody,
@@ -1102,6 +1161,7 @@ final class GitPullRequestPublishService {
         expectedHeadSHA: String,
         selectedPaths: [String],
         selectedFileStates: [GitPullRequestPublishFileState],
+        initialIndexTreeSHA: String?,
         commitMessage: String,
         pullRequestTitle: String,
         pullRequestBody: String,
@@ -1133,6 +1193,9 @@ final class GitPullRequestPublishService {
                 "staged:\(state.isStaged)",
                 "diff:\(state.diffSHA256)"
             ])
+        }
+        if let initialIndexTreeSHA {
+            components.append("initial_index_tree:\(initialIndexTreeSHA.lowercased())")
         }
         if let existingPullRequest {
             components.append(contentsOf: [
