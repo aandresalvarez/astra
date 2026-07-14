@@ -99,4 +99,63 @@ struct SidebarTitlebarCommandBridgeTests {
 
         #expect(handlerCount == 1)
     }
+
+    @Test("New workspace handlers remain isolated between window bridges")
+    func newWorkspaceHandlersRemainWindowScoped() {
+        let firstWindowBridge = SidebarTitlebarCommandBridge(notificationCenter: NotificationCenter())
+        let secondWindowBridge = SidebarTitlebarCommandBridge(notificationCenter: NotificationCenter())
+        var firstWindowHandlerCount = 0
+        var secondWindowHandlerCount = 0
+
+        firstWindowBridge.installNewWorkspaceHandler {
+            firstWindowHandlerCount += 1
+        }
+        secondWindowBridge.installNewWorkspaceHandler {
+            secondWindowHandlerCount += 1
+        }
+
+        firstWindowBridge.requestNewWorkspace()
+        #expect(firstWindowHandlerCount == 1)
+        #expect(secondWindowHandlerCount == 0)
+
+        secondWindowBridge.requestNewWorkspace()
+        #expect(firstWindowHandlerCount == 1)
+        #expect(secondWindowHandlerCount == 1)
+    }
+
+    @Test("Clearing one window bridge leaves other window handlers installed")
+    func clearingOneWindowBridgeDoesNotAffectAnother() {
+        let firstWindowBridge = SidebarTitlebarCommandBridge(notificationCenter: NotificationCenter())
+        let secondWindowBridge = SidebarTitlebarCommandBridge(notificationCenter: NotificationCenter())
+        var firstWindowHandlerCount = 0
+        var secondWindowHandlerCount = 0
+
+        firstWindowBridge.installNewWorkspaceHandler {
+            firstWindowHandlerCount += 1
+        }
+        secondWindowBridge.installNewWorkspaceHandler {
+            secondWindowHandlerCount += 1
+        }
+
+        secondWindowBridge.clearNewWorkspaceHandler()
+        firstWindowBridge.requestNewWorkspace()
+        secondWindowBridge.requestNewWorkspace()
+
+        #expect(firstWindowHandlerCount == 1)
+        #expect(secondWindowHandlerCount == 0)
+    }
+
+    @Test("ContentView owns titlebar commands per window")
+    func contentViewOwnsTitlebarCommandsPerWindow() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@StateObject private var sidebarTitlebarCommands = SidebarTitlebarCommandBridge()"
+        ))
+        #expect(!source.contains("SidebarTitlebarCommandBridge.shared"))
+    }
 }

@@ -18,19 +18,18 @@ enum AstraLeadingCommandBarLayout {
         + AstraToolbarCommandMetrics.clusterSpacing
         + (AstraToolbarCommandMetrics.clusterHorizontalPadding * 2)
 
-    /// The collapsed bar visually ends at the workspace icon, but reserves room
-    /// to its right for the hover label. The button can then expand without
-    /// resizing the AppKit titlebar accessory or moving the Search command.
+    /// The collapsed bar ends at the fixed-width workspace icon. Hover changes
+    /// only its chrome, so the AppKit accessory and Search never move.
     static let collapsedCommandBarWidth = leadingCommandClusterWidth
-        + NewWorkspaceCommandPresentation.hoveredControlWidth
+        + AstraToolbarCommandMetrics.iconWidth
         + AstraToolbarCommandMetrics.clusterHorizontalPadding
         + AstraLeadingCommandBarMetrics.trailingPadding
 
-    /// Keep enough room for the complete hover label while the button remains
-    /// pinned to the sidebar edge. Below this width, use intrinsic layout until
-    /// AppKit reports a stable position instead of compressing the label.
+    /// Keep enough room for both leading commands and the trailing workspace
+    /// icon. This threshold fits the sidebar's minimum supported width, allowing
+    /// the spacer to pin the action to the sidebar edge in normal layouts.
     static let minimumExpandedWidth = leadingCommandClusterWidth
-        + NewWorkspaceCommandPresentation.hoveredControlWidth
+        + AstraToolbarCommandMetrics.iconWidth
         + AstraLeadingCommandBarMetrics.expandedTrailingPadding
         + AstraLeadingCommandBarMetrics.trailingPadding
 
@@ -75,7 +74,6 @@ struct AstraLeadingCommandBar: View {
     /// height; the coordinator re-centers on the next layout pass.
     var titleBarHeight: CGFloat? = nil
     /// Width from the accessory's leading edge to the sidebar's trailing edge.
-    /// Collapsed mode reserves transparent trailing room for the hover label.
     var commandBarWidth: CGFloat? = nil
 
     private var sidebarToggleHelp: String {

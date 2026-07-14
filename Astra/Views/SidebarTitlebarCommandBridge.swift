@@ -8,8 +8,6 @@ import SwiftUI
 /// Counting keeps repeated clicks observable for tests and diagnostics.
 @MainActor
 final class SidebarTitlebarCommandBridge: ObservableObject {
-    static let shared = SidebarTitlebarCommandBridge()
-
     static let sidebarToggleRequestedNotification = Notification.Name(
         "SidebarTitlebarCommandBridge.sidebarToggleRequested"
     )

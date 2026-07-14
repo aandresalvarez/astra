@@ -116,7 +116,7 @@ struct ContentView: View {
     /// `activeWorkspaceCanvasItem` `@State`; every writer now routes through
     /// this model instead of touching either property directly.
     @StateObject private var rightPanel = RightPanelPresentationModel()
-    private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
+    @StateObject private var sidebarTitlebarCommands = SidebarTitlebarCommandBridge()
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
     @State private var isSidebarToggleHovered = false
@@ -507,7 +507,6 @@ struct ContentView: View {
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
             onDeleteTask: requestDeleteTask,
-            onNewWorkspace: createWorkspace,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
             onDeleteWorkspace: deleteWorkspace,
