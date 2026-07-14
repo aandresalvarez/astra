@@ -4,8 +4,9 @@ import ASTRACore
 @testable import ASTRA
 
 /// One opt-in knob for every UI stress suite: nothing here runs unless the
-/// run was explicitly asked for with `RUN_UI_STRESS=1`.
-let uiStressSuitesEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] != nil
+/// run was explicitly asked for with `RUN_UI_STRESS=1`. An exact-value check,
+/// so exporting `RUN_UI_STRESS=0` to make the default explicit stays off.
+let uiStressSuitesEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] == "1"
 
 /// Stress tests for the chat text pipeline: `MarkdownRenderPreparation`,
 /// `TaskRunAnswerPresentationPolicy`, `AgentEventRecordingPresentation`, and
@@ -26,7 +27,7 @@ let uiStressSuitesEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"]
     .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
 )
 struct UIStressTextPipelineTests {
-    private static let heavyTierEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] != nil
+    private static let heavyTierEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] == "1"
 
     // MARK: - Fixtures
 
@@ -250,16 +251,21 @@ struct UIStressTextPipelineTests {
         #expect(elapsed < .seconds(2), "reflow took \(elapsed) for \(line.utf8.count) bytes")
     }
 
-    @Test("numbered-list recovery stops at the two-digit heuristic ceiling")
+    @Test("numbered-list recovery currently stops at the two-digit heuristic ceiling")
     func gluedListReflowStopsAtTwoDigits() {
-        // Documents the deliberate `\d{1,2}` bound in listRunSplit: items
-        // beyond 99 stay glued to item 99's line. A glued 200-step provider
-        // answer therefore renders its tail as one long paragraph — see the
-        // findings report.
+        // listRunSplit's `\d{1,2}` marker pattern stops following the
+        // sequence at item 99, so a glued 150-step provider answer renders
+        // its tail as one long paragraph. Two-digit recovery is the hard
+        // contract; full recovery is the desired behavior, recorded as a
+        // known issue so a three-digit fix flips it rather than failing here.
         let line = Self.gluedMarkerLine(items: 150)
         let prepared = MarkdownRenderPreparation.prepareForDisplay(line)
         let lines = prepared.components(separatedBy: "\n")
-        #expect(lines.count == 100, "splitting is expected to stop after item 99, got \(lines.count) lines")
+        #expect(lines.count >= 99, "splitting through item 99 must keep working, got \(lines.count) lines")
+        withKnownIssue("items beyond 99 stay glued to item 99's line") {
+            #expect(lines.count >= 150,
+                    "a fully recovered 150-item run should split one line per item, got \(lines.count)")
+        }
     }
 
     @Test("glued bullet-run reflow on a long single line stays bounded")
@@ -457,19 +463,21 @@ struct UIStressTextPipelineTests {
         #expect(elapsed < .seconds(6), "echo dedupe took \(elapsed) for \(output.utf8.count) bytes")
     }
 
-    @Test("a genuine long repeat that matches earlier output is treated as an echo")
+    @Test("a genuine long repeat inside the echo window is treated as an echo")
     func genuineLongRepeatIsSwallowedByEchoHeuristic() {
-        // Documents the deliberate trade-off in responseTextToAppend: any
-        // ≥80-char chunk whose collapsed text appears in the last
+        // Deliberate, chosen trade-off (PR #306 kept it when bounding the
+        // window): a ≥80-char chunk whose collapsed text appears in the last
         // incoming.count + echoSearchWindowSlack characters of the output is
-        // dropped, even if the agent legitimately repeats itself. Repeats
-        // older than that window append again — that boundary is pinned in
-        // AgentEventRecorderTests. If this starts failing, the heuristic
-        // changed and the findings report entry should be revisited.
+        // dropped, even if the agent legitimately repeats itself, because
+        // provider result-envelope echoes are indistinguishable at this
+        // layer. Repeats older than the window append again — pinned in
+        // AgentEventRecorderTests. This documents the trade-off, it is not a
+        // contract: if the heuristic learns to tell true echoes from
+        // intentional repeats, update this to assert preservation.
         let sentence = "The deployment completed successfully and all twelve health checks passed on the first attempt."
         let existing = "Earlier: \(sentence)\nMore detail followed."
         let appended = AgentEventRecordingPresentation.responseTextToAppend(sentence, after: existing)
-        #expect(appended.isEmpty, "current heuristic swallows legitimate ≥80-char repeats")
+        #expect(appended.isEmpty, "within-window ≥80-char repeats are swallowed by design")
     }
 
     // MARK: - Full parse path (MarkdownTextView.parse)

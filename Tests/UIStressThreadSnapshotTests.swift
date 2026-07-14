@@ -16,7 +16,7 @@ import ASTRACore
     .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
 )
 struct UIStressThreadSnapshotTests {
-    private static let heavyTierEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] != nil
+    private static let heavyTierEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] == "1"
 
     // MARK: - Fixtures
 

@@ -248,18 +248,23 @@ struct UIStressLayoutAndSearchTests {
         #expect(elapsed < .seconds(12), "10 filter passes took \(elapsed) across \(tasks.count) tasks")
     }
 
-    @Test("workspace search results are returned without any cap")
-    func workspaceSearchResultsAreUncapped() {
-        // Documents that filteredWorkspaces has no prefix() bound, unlike the
-        // task variants: a broad query returns every matching workspace row.
+    @Test("workspace search results should be bounded like task results")
+    func workspaceSearchResultsShouldBeBounded() {
+        // filteredWorkspaces has no prefix() bound, unlike the task variants:
+        // a broad query currently returns every matching workspace row. The
+        // desired contract is a task-style cap; the probe flips to passing
+        // once one lands (then remove the withKnownIssue wrapper).
         let (tasks, workspaces) = Self.searchFixture()
         let matches = SearchPanelOverlayResults.filteredWorkspaces(
             searchText: "workspace-",
             workspaces: workspaces,
             taskCount: tasks.count
         )
-        #expect(matches.count == workspaces.count,
-                "expected the unbounded result set; add a cap and update this expectation")
+        #expect(!matches.isEmpty)
+        withKnownIssue("filteredWorkspaces has no result cap; a broad query returns every row") {
+            #expect(matches.count <= 12,
+                    "overlay rows should be bounded like filteredTasks' prefix(12), got \(matches.count)")
+        }
     }
 
     @Test("empty and whitespace queries fall back to bounded recents")

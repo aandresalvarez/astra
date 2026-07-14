@@ -184,13 +184,15 @@ struct UIStressStateChurnTests {
         }
     }
 
-    @Test("a docked reveal with no readable-width probe leaves the settle guard armed")
-    func dockedRevealWithoutProbeKeepsSettleArmed() async throws {
-        // Documents the deliberate guard in SidebarPresentationModel.beginSettle:
-        // the fallback timer refuses to clear `isSettling` for a docked reveal,
-        // so if the AppKit probe never reports a readable width the
-        // compressed-collapse proposals stay suppressed indefinitely. See the
-        // stress findings report; a missed probe leaves the guard armed forever.
+    @Test("a docked reveal whose readable-width probe never fires should still recover")
+    func dockedRevealWithoutProbeShouldEventuallySettle() async throws {
+        // SidebarPresentationModel.beginSettle's fallback timer refuses to
+        // clear `isSettling` for a docked reveal, so a missed AppKit probe
+        // suppresses compressed-collapse proposals indefinitely. The guard is
+        // protective on purpose, but "armed forever" is not a contract worth
+        // pinning — desired recovery is recorded as a known issue so a
+        // timeout/watchdog fix flips it. The probe-driven release below stays
+        // the hard contract either way.
         let model = SidebarPresentationModel(defaults: try scratchDefaults())
         model.setResponsiveWidth(1_500)
         model.toggle() // hide
@@ -199,12 +201,16 @@ struct UIStressStateChurnTests {
         #expect(model.mode == .docked)
         #expect(model.isSettling)
 
-        try? await Task.sleep(for: .milliseconds(650))
-        #expect(model.isSettling, "fallback timeout must not clear a docked reveal")
+        await withKnownIssue("a missed probe leaves the docked settle guard armed forever") {
+            let recovered = await waitUntil(timeout: .milliseconds(900)) { !model.isSettling }
+            #expect(recovered, "the settle guard should release on its own when the probe never reports")
+        }
 
-        // Collapse proposals are suppressed the whole time.
-        model.proposeCompressedCollapse()
-        #expect(model.mode == .docked)
+        if model.isSettling {
+            // Collapse proposals are suppressed while the guard is armed.
+            model.proposeCompressedCollapse()
+            #expect(model.mode == .docked)
+        }
 
         // The AppKit probe finally reports readable width: guard releases.
         model.noteReadableSplitSubviewWidth(SidebarColumnLayout.expandedIdealWidth)
@@ -321,11 +327,13 @@ struct UIStressStateChurnTests {
 
     // MARK: - Right panel: per-conversation canvas memory growth
 
-    @Test("2k-conversation canvas memory grows unbounded and stays functional")
-    func canvasMemoryGrowsUnboundedAcrossConversations() throws {
-        // Documents the missing eviction in WorkspaceCanvasItemPreference
-        // storage: one JSON entry per conversation ever seen, decoded and
-        // re-encoded on every canvas change. See the stress findings report.
+    @Test("2k-conversation canvas memory stays functional and should stay bounded")
+    func canvasMemoryShouldStayBoundedAcrossConversations() throws {
+        // WorkspaceCanvasItemPreference storage keeps one JSON entry per
+        // conversation ever seen, decoded and re-encoded on every canvas
+        // change. Bounded storage is the desired contract, recorded as a
+        // known issue so an eviction policy flips it; functional recall and
+        // the storm budget stay hard assertions.
         let model = RightPanelPresentationModel(defaults: try scratchDefaults())
         let conversations = 2_000
 
@@ -337,8 +345,10 @@ struct UIStressStateChurnTests {
 
         let data = try #require(model.rememberedItemsRawValue.data(using: .utf8))
         let decoded = try JSONDecoder().decode([String: String].self, from: data)
-        #expect(decoded.count == conversations,
-                "every conversation is remembered forever (no eviction policy)")
+        withKnownIssue("no eviction policy: one entry per conversation ever seen") {
+            #expect(decoded.count <= 1_000,
+                    "any real eviction policy keeps far fewer entries, got \(decoded.count)")
+        }
         // Full-blob decode+encode per op is quadratic in remembered
         // conversations; this bounds the whole 2k storm rather than per-op.
         #expect(elapsed < .seconds(10), "2k canvas ops took \(elapsed)")
