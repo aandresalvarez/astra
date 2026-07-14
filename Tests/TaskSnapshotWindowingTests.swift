@@ -186,15 +186,22 @@ extension TaskThreadSnapshotTests {
         let task = makeTask(goal: "Large history fixture")
         task.createdAt = Date(timeIntervalSince1970: 0)
 
+        // Accumulate in local arrays and assign once: every append on an
+        // observed SwiftData relationship array copies the whole array, so
+        // per-element appends make large fixtures quadratic.
+        var runs: [TaskRun] = []
+        var events: [TaskEvent] = []
+        runs.reserveCapacity(250)
+        events.reserveCapacity(250 * 20)
         for runIndex in 0..<250 {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
             run.output = "completed run \(runIndex)"
-            task.runs.append(run)
+            runs.append(run)
 
             for eventIndex in 0..<20 {
-                task.events.append(makeEvent(
+                events.append(makeEvent(
                     task: task,
                     type: eventIndex.isMultiple(of: 2) ? "tool.result" : "agent.response",
                     payload: "event \(runIndex)-\(eventIndex)",
@@ -203,6 +210,8 @@ extension TaskThreadSnapshotTests {
                 ))
             }
         }
+        task.runs = runs
+        task.events = events
 
         let input = TaskThreadSnapshotInput(task: task)
         let snapshot = TaskThreadSnapshot(input: input)
@@ -226,15 +235,17 @@ extension TaskThreadSnapshotTests {
         run.startedAt = Date(timeIntervalSince1970: 10)
         run.stopReason = "policy_violation"
         task.runs.append(run)
-        task.events.append(makeEvent(
+        // Local array + one assignment; see the fixture comment above.
+        var events: [TaskEvent] = [makeEvent(
             task: task,
             type: "task.dismissed",
             payload: "Dismissed",
             timestamp: Date(timeIntervalSince1970: 11),
             run: run
-        ))
+        )]
+        events.reserveCapacity(1 + 1_300)
         for index in 0..<1_300 {
-            task.events.append(makeEvent(
+            events.append(makeEvent(
                 task: task,
                 type: "agent.response",
                 payload: "later event \(index)",
@@ -242,6 +253,7 @@ extension TaskThreadSnapshotTests {
                 run: run
             ))
         }
+        task.events = events
 
         let snapshot = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task))
         let latestRun = try #require(snapshot.latestRun)

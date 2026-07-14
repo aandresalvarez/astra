@@ -1683,15 +1683,22 @@ extension TaskThreadSnapshotTests {
         let task = makeTask()
         task.createdAt = Date(timeIntervalSince1970: 0)
 
+        // Accumulate in local arrays and assign once: every append on an
+        // observed SwiftData relationship array copies the whole array, so
+        // per-element appends make large fixtures quadratic.
+        var runs: [TaskRun] = []
+        var events: [TaskEvent] = []
+        runs.reserveCapacity(100)
+        events.reserveCapacity(100 * 20)
         for runIndex in 0..<100 {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
             run.output = "run \(runIndex)"
-            task.runs.append(run)
+            runs.append(run)
 
             for resultIndex in 0..<20 {
-                task.events.append(makeEvent(
+                events.append(makeEvent(
                     task: task,
                     type: "tool.result",
                     payload: "result \(runIndex)-\(resultIndex)",
@@ -1700,6 +1707,8 @@ extension TaskThreadSnapshotTests {
                 ))
             }
         }
+        task.runs = runs
+        task.events = events
 
         let input = TaskThreadSnapshotInput(task: task)
         let snapshot = TaskThreadSnapshot(input: input)
