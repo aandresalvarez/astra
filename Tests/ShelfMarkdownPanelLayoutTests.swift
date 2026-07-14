@@ -151,7 +151,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("empty workspace file scope stays on the navigator list surface")
     func emptyWorkspaceFileScopeStaysOnNavigatorListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            hasFileRoots: true,
+            configuredRootCount: 1,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: false
@@ -164,7 +164,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("scanning file scope does not present as empty before nodes load")
     func scanningFileScopeDoesNotPresentAsEmptyBeforeNodesLoad() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            hasFileRoots: true,
+            configuredRootCount: 1,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: true
@@ -177,7 +177,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("empty search results keep the populated list surface")
     func emptySearchResultsKeepPopulatedListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            hasFileRoots: true,
+            configuredRootCount: 1,
             hasVisibleFileRoots: false,
             isSearchingFiles: true,
             isScanningFiles: false
@@ -190,7 +190,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("missing workspace paths use the same navigator list surface")
     func missingWorkspacePathsUseSameNavigatorListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            hasFileRoots: false,
+            configuredRootCount: 0,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: false
@@ -198,6 +198,18 @@ struct ShelfMarkdownPanelLayoutTests {
 
         #expect(presentation == .noWorkspacePaths)
         #expect(presentation.usesListSurface)
+    }
+
+    @Test("Empty task scope remains browsable when workspace roots are configured")
+    func emptyTaskScopeRemainsBrowsable() {
+        let presentation = ShelfFileNavigatorContentPresentation.resolve(
+            configuredRootCount: 1,
+            hasVisibleFileRoots: false,
+            isSearchingFiles: false,
+            isScanningFiles: false
+        )
+
+        #expect(presentation == .emptyScope)
     }
 
     @Test("a lone open file still shows its tab so it keeps a per-file close button")
@@ -225,6 +237,9 @@ struct ShelfMarkdownPanelLayoutTests {
         ))
         #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(
             hasFile: false, isLoadingDocument: false, snapshotSource: .cache
+        ))
+        #expect(!ShelfFileAutoOpenPolicy.shouldAutoOpen(
+            hasFile: false, isLoadingDocument: false, snapshotSource: .stale
         ))
         #expect(ShelfFileAutoOpenPolicy.shouldAutoOpen(
             hasFile: false, isLoadingDocument: false, snapshotSource: .fresh

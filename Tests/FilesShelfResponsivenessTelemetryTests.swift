@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Files shelf responsiveness telemetry", .serialized)
@@ -118,6 +119,51 @@ struct FilesShelfResponsivenessTelemetryTests {
         FilesShelfResponsivenessTelemetry.resetForTesting()
     }
 
+    @MainActor
+    @Test("An in-place index refresh does not start a new presentation trace")
+    func refreshDoesNotRestartCompletedPresentationTrace() {
+        let taskID = UUID()
+        let scope = UUID()
+        FilesShelfResponsivenessTelemetry.resetForTesting()
+        FilesShelfResponsivenessTelemetry.begin(
+            source: "shelf_action",
+            taskID: taskID,
+            workspaceID: UUID(),
+            scope: scope
+        )
+        FilesShelfResponsivenessTelemetry.chromeReady(scope: scope)
+        FilesShelfResponsivenessTelemetry.indexReady(
+            scope: scope,
+            fileScope: "task",
+            cacheState: "not_applicable",
+            rootCount: 0,
+            nodeCount: 0,
+            errorCount: 0,
+            isTruncated: false
+        )
+        AppLogger.flushForTesting()
+        AppLogger.resetForTesting()
+
+        let controller = ShelfFileIndexController(store: WorkspaceFileIndexStore())
+        controller.refresh(
+            allRoots: [],
+            scope: .task,
+            includeHidden: false,
+            force: true,
+            reason: "scope_change",
+            taskID: taskID,
+            responsivenessScope: scope
+        )
+        AppLogger.flushForTesting()
+
+        #expect(!AppLogger.entries.contains {
+            $0.category == "Performance"
+                && $0.taskID == taskID
+                && $0.message.contains("event=files_shelf_to_")
+        })
+        FilesShelfResponsivenessTelemetry.resetForTesting()
+    }
+
     @Test("Files shelf samples participate in responsiveness diagnostics")
     func diagnosticsIncludeFilesShelfSamples() {
         let report = UIResponsivenessDiagnostics.makeReport(entries: [
@@ -131,5 +177,32 @@ struct FilesShelfResponsivenessTelemetryTests {
         #expect(report.eventSummaries.map(\.event) == ["files_shelf_to_index_ready"])
         #expect(report.eventSummaries.first?.cacheStates == ["miss": 1])
         #expect(report.slowestTraces.first?.traceID == "files-shelf-safe")
+    }
+
+    @Test("Files shelf diagnostics exclude internal and cancelled timings")
+    func diagnosticsExcludeNonReadinessFilesShelfSamples() {
+        let report = UIResponsivenessDiagnostics.makeReport(entries: [
+            filesShelfMeasurement("files_shelf_to_chrome_ready", 20),
+            filesShelfMeasurement("files_shelf_to_first_results", 60),
+            filesShelfMeasurement("files_shelf_to_index_ready", 120),
+            filesShelfMeasurement("files_shelf_cancelled", 500),
+            filesShelfMeasurement("files_shelf_index_scan", 1_500),
+            filesShelfMeasurement("files_shelf_preview_load", 2_000)
+        ])
+
+        #expect(Set(report.eventSummaries.map(\.event)) == [
+            "files_shelf_to_chrome_ready",
+            "files_shelf_to_first_results",
+            "files_shelf_to_index_ready"
+        ])
+        #expect(report.slowestTraces.first?.event == "files_shelf_to_index_ready")
+    }
+
+    private func filesShelfMeasurement(_ event: String, _ duration: Double) -> LogEntry {
+        LogEntry(
+            level: .info,
+            category: "Performance",
+            message: "event=\(event) duration_ms=\(duration) task_id=01234567 trace_id=files-shelf-safe"
+        )
     }
 }

@@ -24,6 +24,9 @@ struct DefaultShelfFileIndexFilter: ShelfFileIndexFiltering {
 
 enum ShelfFileIndexSnapshotSource: Equatable {
     case none
+    /// A previously presented snapshot remains visible while its replacement
+    /// is loading, but must not drive automatic file selection.
+    case stale
     case cache
     case fresh
 }
@@ -65,23 +68,16 @@ final class ShelfFileIndexController: ObservableObject {
         force: Bool,
         reason: String,
         taskID: UUID?,
-        workspaceID: UUID?,
         responsivenessScope: UUID?
     ) {
         scanTask?.cancel()
         self.allRoots = allRoots
         let selectedRoots = Self.roots(allRoots, for: scope)
         roots = selectedRoots
+        markCurrentSnapshotStale()
         isScanning = true
         errors = []
         isTruncated = false
-        if let responsivenessScope {
-            FilesShelfResponsivenessTelemetry.ensureStarted(
-                taskID: taskID,
-                workspaceID: workspaceID,
-                scope: responsivenessScope
-            )
-        }
 
         guard !selectedRoots.isEmpty else {
             apply(
@@ -243,6 +239,15 @@ final class ShelfFileIndexController: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func markCurrentSnapshotStale() {
+        guard snapshotSource != .none else { return }
+        snapshotSource = .stale
+        // Any filter already running belongs to the previous snapshot. Keep
+        // the rows visible while refreshing, but prevent that work from being
+        // published as if it belonged to the replacement index.
+        indexRevision &+= 1
     }
 
     private func apply(

@@ -11,12 +11,12 @@ enum ShelfFileNavigatorContentPresentation: Equatable {
     case populatedList
 
     static func resolve(
-        hasFileRoots: Bool,
+        configuredRootCount: Int,
         hasVisibleFileRoots: Bool,
         isSearchingFiles: Bool,
         isScanningFiles: Bool
     ) -> ShelfFileNavigatorContentPresentation {
-        if !hasFileRoots {
+        if configuredRootCount == 0 {
             return .noWorkspacePaths
         }
         if isScanningFiles && !hasVisibleFileRoots {
@@ -120,6 +120,13 @@ struct ShelfMarkdownPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(ObjectIdentifier(session))
         .onAppear {
+            if let responsivenessScope {
+                FilesShelfResponsivenessTelemetry.ensureStarted(
+                    taskID: task?.id,
+                    workspaceID: (task?.workspace ?? workspace)?.id,
+                    scope: responsivenessScope
+                )
+            }
             normalizeViewMode()
             normalizeFileNavigatorScope()
             let hasDiscoveredFileNavigator = ShelfFileNavigatorDiscoveryStore.hasDiscovered()
@@ -137,13 +144,6 @@ struct ShelfMarkdownPanelView: View {
             session.cancelPendingDocumentLoad()
         }
         .task(id: responsivenessScope) {
-            if let responsivenessScope {
-                FilesShelfResponsivenessTelemetry.ensureStarted(
-                    taskID: task?.id,
-                    workspaceID: (task?.workspace ?? workspace)?.id,
-                    scope: responsivenessScope
-                )
-            }
             await Task.yield()
             if let responsivenessScope {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
@@ -540,7 +540,7 @@ struct ShelfMarkdownPanelView: View {
 
     private var fileNavigatorContentPresentation: ShelfFileNavigatorContentPresentation {
         ShelfFileNavigatorContentPresentation.resolve(
-            hasFileRoots: !fileIndex.roots.isEmpty,
+            configuredRootCount: fileIndex.allRoots.count,
             hasVisibleFileRoots: !visibleFileRoots.isEmpty,
             isSearchingFiles: isSearchingFiles,
             isScanningFiles: fileIndex.isScanning
@@ -1060,7 +1060,6 @@ struct ShelfMarkdownPanelView: View {
             force: force,
             reason: reason,
             taskID: task?.id,
-            workspaceID: (task?.workspace ?? workspace)?.id,
             responsivenessScope: responsivenessScope
         )
     }
