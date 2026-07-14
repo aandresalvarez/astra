@@ -1,4 +1,5 @@
 import CoreGraphics
+import SwiftUI
 
 enum AppWindowIDs {
     static let main = "astra-main"
@@ -27,6 +28,10 @@ enum AppAccessMenuPresentation {
     static let drawerRowHeight: CGFloat = 36
     static let drawerRowSpacing: CGFloat = 2
 
+    static func drawerRowCount(destinationCount: Int) -> Int {
+        destinationCount + 1
+    }
+
     static func drawerHeight(rowCount: Int) -> CGFloat {
         let rows = max(rowCount, 0)
         let spacingCount = max(rows - 1, 0)
@@ -37,6 +42,23 @@ enum AppAccessMenuPresentation {
 
     static func drawerVerticalOffset(rowCount: Int) -> CGFloat {
         drawerHeight(rowCount: rowCount) + drawerFooterGap
+    }
+}
+
+struct AppearanceTogglePresentation: Equatable {
+    let title: String
+    let systemImageName: String
+    let helpText: String
+    let target: AppearancePreference
+
+    static func make(currentColorScheme: ColorScheme) -> AppearanceTogglePresentation {
+        let target = AppearancePreference.toggled(from: currentColorScheme)
+        return AppearanceTogglePresentation(
+            title: "\(target.label) mode",
+            systemImageName: target.symbolName,
+            helpText: "Switch to \(target.label.lowercased()) mode",
+            target: target
+        )
     }
 }
 
