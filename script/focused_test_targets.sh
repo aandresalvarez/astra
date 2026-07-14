@@ -20,7 +20,6 @@ target_for_path() {
   local path="$1"
 
   if [[ "$path" == "Package.swift" ]]; then
-    add_target "ArchitectureFitnessTests.ArchitectureFitnessTests"
     add_target "MCPGatewaySupportTests"
     add_target "MCPServerKitTests"
     add_target "MailToolSupportTests"
@@ -29,7 +28,6 @@ target_for_path() {
 
   case "$path" in
     Tests/ArchitectureFitnessTests/*)
-      add_target "ArchitectureFitnessTests.ArchitectureFitnessTests"
       ;;
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
