@@ -15,6 +15,20 @@ struct AppAccessPresentationTests {
         ])
     }
 
+    @Test("Appearance shortcut presents the opposite rendered mode")
+    func appearanceShortcutPresentsOppositeRenderedMode() {
+        let fromLight = AppearanceTogglePresentation.make(currentColorScheme: .light)
+        #expect(fromLight.title == "Dark mode")
+        #expect(fromLight.systemImageName == "moon.fill")
+        #expect(fromLight.target == .dark)
+
+        let fromDark = AppearanceTogglePresentation.make(currentColorScheme: .dark)
+        #expect(fromDark.title == "Light mode")
+        #expect(fromDark.systemImageName == "sun.max.fill")
+        #expect(fromDark.target == .light)
+        #expect(AppAccessMenuPresentation.drawerRowCount(destinationCount: 3) == 4)
+    }
+
     @Test("App utility windows use stable scene identifiers")
     func appUtilityWindowsUseStableSceneIdentifiers() {
         #expect(AppWindowIDs.main == "astra-main")

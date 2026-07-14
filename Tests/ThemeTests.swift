@@ -196,6 +196,12 @@ struct AppearancePreferenceTests {
         #expect(AppearancePreference.dark.colorScheme == .dark)
     }
 
+    @Test("Quick toggle switches away from the currently rendered mode")
+    func quickToggleUsesResolvedColorScheme() {
+        #expect(AppearancePreference.toggled(from: .light) == .dark)
+        #expect(AppearancePreference.toggled(from: .dark) == .light)
+    }
+
     @Test("Raw values round-trip through AppStorage")
     func rawValuesRoundTrip() {
         for p in AppearancePreference.allCases {
