@@ -47,7 +47,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
-    @State private var taskOpenResponsivenessScope = UUID()
+    @State var taskOpenResponsivenessScope = UUID()
     @State var screenTransitionCoordinator = ScreenTransitionCoordinator()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
@@ -198,7 +198,7 @@ struct ContentView: View {
         sceneSelection.isComposingWorkspaceApp
     }
 
-    private var effectiveWorkspace: Workspace? {
+    var effectiveWorkspace: Workspace? {
         sceneCoordinator.effectiveWorkspace
     }
 
@@ -589,6 +589,7 @@ struct ContentView: View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
+            filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: runtime.taskQueue,
@@ -1334,10 +1335,11 @@ struct ContentView: View {
         case .plan:
             return
         case .markdown:
-            currentMarkdownSession.bindToTask(selectedTask?.id)
+            let session = currentMarkdownSession
+            session.bindToTask(selectedTask?.id)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
+            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1416,10 +1418,11 @@ struct ContentView: View {
             }
             return
         }
-        currentMarkdownSession.bindToTask(selectedTask?.id)
+        let session = currentMarkdownSession
+        session.bindToTask(selectedTask?.id)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
+            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
@@ -1849,8 +1852,8 @@ struct ContentView: View {
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
             let session = currentMarkdownSession
-            session.load(url)
             presentCanvas(.markdown)
+            Task { await session.loadAsync(url) }
             return
 
         case .query?:
@@ -1892,12 +1895,12 @@ struct ContentView: View {
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
         let session = currentMarkdownSession
-        session.load(url)
         AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
             "path": url.path,
             "result": FileManager.default.fileExists(atPath: url.path) ? "opened" : "missing"
         ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
         presentCanvas(.markdown)
+        Task { await session.loadAsync(url) }
     }
 
     private func syncBrowserPresentation() {
@@ -2787,6 +2790,7 @@ private struct ContentToolbar: ToolbarContent {
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
     let taskOpenResponsivenessScope: UUID
+    let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -3253,7 +3257,8 @@ private struct ContentDetailAreaView: View {
                 isPinnedToTask: $isMarkdownPinnedToTask,
                 workspace: effectiveWorkspace,
                 task: selectedTask,
-                onOpenGeneratedFile: onOpenGeneratedFile
+                onOpenGeneratedFile: onOpenGeneratedFile,
+                responsivenessScope: filesShelfResponsivenessScope
             )
         case .browser:
             ShelfBrowserPanelView(
