@@ -17,6 +17,7 @@ struct AgentProcessResult {
     let timedOut: Bool
     let repetitionKilled: Bool
     let maxTurnsExceeded: Bool
+    let readOnlyBoundaryEvidence: ReadOnlyBoundaryEvidence?
 
     init(
         exitCode: Int,
@@ -34,7 +35,8 @@ struct AgentProcessResult {
         terminatedAfterTerminalProgress: Bool = false,
         timedOut: Bool = false,
         repetitionKilled: Bool = false,
-        maxTurnsExceeded: Bool = false
+        maxTurnsExceeded: Bool = false,
+        readOnlyBoundaryEvidence: ReadOnlyBoundaryEvidence? = nil
     ) {
         self.exitCode = terminatedAfterTerminalProgress ? 0 : exitCode
         self.error = error
@@ -52,6 +54,7 @@ struct AgentProcessResult {
         self.timedOut = timedOut
         self.repetitionKilled = repetitionKilled
         self.maxTurnsExceeded = maxTurnsExceeded
+        self.readOnlyBoundaryEvidence = readOnlyBoundaryEvidence
     }
 
     var runtimeStopped: Bool {

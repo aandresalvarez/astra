@@ -217,9 +217,9 @@ struct CodexCLIRuntimeTests {
         #expect(plan.parsesJSONLines)
     }
 
-    @Test("Codex adapter keeps read-only task inputs out of writable --add-dir roots")
+    @Test("Codex adapter exposes read-only inputs only from the typed boundary contract")
     @MainActor
-    func codexAdapterKeepsReadOnlyTaskInputsOutOfAddDirScope() throws {
+    func codexAdapterUsesTypedReadOnlyInputBoundaryContract() throws {
         let fileManager = FileManager.default
         let workspaceRoot = fileManager.temporaryDirectory
             .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
@@ -258,6 +258,44 @@ struct CodexCLIRuntimeTests {
             .filter { plan.arguments[$0] == "--add-dir" }
             .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
         #expect(!addDirValues.contains(inputDirectory.standardizedFileURL.path))
+
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: task.id,
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: workspaceRoot.path,
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [RuntimePathGrant(
+                path: inputDirectory.path,
+                access: .read,
+                source: .taskInput,
+                reason: "Task input selected by the user.",
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: true
+            )]
+        )
+        let boundaryPlan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(
+            context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspaceRoot.path,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                launchResourcePlan: launchResourcePlan
+            )
+        )
+        let boundaryAddDirValues = boundaryPlan.arguments.indices
+            .filter { boundaryPlan.arguments[$0] == "--add-dir" }
+            .compactMap { boundaryPlan.arguments.indices.contains($0 + 1) ? boundaryPlan.arguments[$0 + 1] : nil }
+        #expect(boundaryAddDirValues.contains(inputDirectory.standardizedFileURL.path))
     }
 
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")

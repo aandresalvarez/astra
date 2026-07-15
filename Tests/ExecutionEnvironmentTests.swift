@@ -82,6 +82,99 @@ struct ExecutionEnvironmentTests {
         #expect(inputMount.access == .readOnly)
     }
 
+    @Test("Docker overlays current-message inputs read-only inside writable workspace mounts")
+    func dockerMountPlanOverlaysCurrentMessageInputReadOnly() throws {
+        let root = try makeTempDir("docker-message-input-overlay")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let nestedDirectory = (workspace as NSString).appendingPathComponent("references")
+        let attachment = (nestedDirectory as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: nestedDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: attachment))
+
+        let task = AgentTask(
+            title: "Review message attachment",
+            goal: "Read the attachment",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        )
+
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: workspace,
+            environment: environment,
+            task: task,
+            additionalReadOnlyInputPaths: [attachment]
+        )
+        let workspaceMount = try #require(mounts.first { $0.hostPath == workspace })
+        let attachmentMount = try #require(mounts.first { $0.hostPath == attachment })
+
+        #expect(workspaceMount.access == .readWrite)
+        #expect(attachmentMount.access == .readOnly)
+        #expect(attachmentMount.containerPath == "/workspace/references/attached.pdf")
+        #expect(ExecutionEnvironmentPathMapper(mounts: mounts).containerPath(forHostPath: attachment)
+            == "/workspace/references/attached.pdf")
+
+        let providerPlan = try DockerExecutionPlanner.plan(
+            base: makeBasePlan(
+                currentDirectory: workspace,
+                environment: ["ASTRA_WORKSPACE_DOCKER_MOUNTS": "[]"]
+            ),
+            environment: environment,
+            task: task,
+            runID: UUID(),
+            additionalReadOnlyInputPaths: [attachment]
+        ).get()
+        let projectedMounts = try jsonArray(providerPlan.environment["ASTRA_WORKSPACE_DOCKER_MOUNTS"])
+        let projectedAttachment = try #require(projectedMounts.first {
+            $0["hostPath"] as? String == attachment
+        })
+        #expect(projectedAttachment["containerPath"] as? String == "/workspace/references/attached.pdf")
+        #expect(projectedAttachment["access"] as? String == "ro")
+    }
+
+    @Test("Docker provider launch binds current-message inputs read-only")
+    func dockerProviderLaunchBindsCurrentMessageInputReadOnly() throws {
+        let root = try makeTempDir("docker-message-input-provider")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let attachment = (root as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: attachment))
+
+        let task = AgentTask(
+            title: "Review message attachment",
+            goal: "Read the attachment",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest",
+            runtimeExecutablePath: "/bin/claude",
+            providerPlacement: .container
+        )
+        let plan = try DockerExecutionPlanner.plan(
+            base: makeBasePlan(currentDirectory: workspace),
+            environment: environment,
+            task: task,
+            runID: UUID(),
+            additionalReadOnlyInputPaths: [attachment]
+        ).get()
+
+        #expect(plan.arguments.contains("\(attachment):/mnt/astra/input-1:ro"))
+        let boundary = ReadOnlyInputEnforcementBoundary(
+            paths: [attachment],
+            executionEnvironment: plan.executionEnvironment
+        )
+        #expect(boundary.unprotectedContainerPaths(in: plan.executionEnvironment.mounts).isEmpty)
+    }
+
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")

@@ -1008,10 +1008,10 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
-
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
+        ReadOnlyBoundaryEvidenceRecorder.record(result.readOnlyBoundaryEvidence, task: task, run: run, in: modelContext)
         streamDebugCapture?.recordStderr(result.error)
         if let streamSnapshot {
             runtimeAdapter.logStreamTelemetry(

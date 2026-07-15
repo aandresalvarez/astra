@@ -112,11 +112,14 @@ enum ExecutionSandboxReadScope: String, Codable, Sendable, CaseIterable, Identif
 
 enum ExecutionSandboxResolutionReason: String, Codable, Sendable, Equatable {
     case autonomousPrivacyBoundary = "auto_privacy_boundary"
+    case readOnlyInputBoundary = "read_only_input_boundary"
 
     var displayText: String {
         switch self {
         case .autonomousPrivacyBoundary:
             "Auto requires ASTRA's strict privacy sandbox."
+        case .readOnlyInputBoundary:
+            "Read-only task inputs require a fail-closed integrity boundary."
         }
     }
 }
@@ -570,6 +573,10 @@ enum ExecutionSandbox: Sendable {
             protectedReadRoots: protectedReadRoots
         )
         let protectedWriteDenyRoots = protectedWriteDenyRoots(plan: plan, writableRoots: roots)
+        let protectedWriteAncestorDenyRoots = protectedWriteAncestorDenyRoots(
+            plan: plan,
+            writableRoots: roots
+        )
         let profile = makeProfile(
             writableRootCount: roots.count,
             readableRootCount: readableRoots.count,
@@ -577,6 +584,7 @@ enum ExecutionSandbox: Sendable {
             protectedReadRootCount: protectedReadRoots.count,
             explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
             protectedWriteDenyRootCount: protectedWriteDenyRoots.count,
+            protectedWriteAncestorDenyRootCount: protectedWriteAncestorDenyRoots.count,
             allowNetwork: settings.allowNetwork,
             readScope: settings.readScope
         )
@@ -588,6 +596,7 @@ enum ExecutionSandbox: Sendable {
             protectedReadRoots: protectedReadRoots,
             explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
             protectedWriteDenyRoots: protectedWriteDenyRoots,
+            protectedWriteAncestorDenyRoots: protectedWriteAncestorDenyRoots,
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
@@ -996,8 +1005,7 @@ enum ExecutionSandbox: Sendable {
     /// Specific files to keep read-only even though they sit inside a writable
     /// root (e.g. injection-sensitive config under a shared provider home). Only
     /// paths that actually fall under a granted writable root are emitted — a
-    /// deny for a path nothing can write would be a no-op. Returned as literal
-    /// spellings so only the exact files (not their parents) are denied.
+    /// deny for a path nothing can write would be a no-op.
     static func protectedWriteDenyRoots(
         plan: AgentRuntimeProcessLaunchPlan,
         writableRoots: [String]
@@ -1009,6 +1017,36 @@ enum ExecutionSandbox: Sendable {
             .filter { path in writableRoots.contains { isSameOrDescendant(path, of: $0) } }
             .flatMap(sandboxPathSpellings)
             .filter { seen.insert($0).inserted }
+    }
+
+    /// Literal ancestors whose rename/unlink must be denied so a provider cannot
+    /// move a protected input to a new spelling and then mutate it outside the
+    /// path-based deny above. These rules intentionally do not deny writes to
+    /// descendants; ordinary workspace files beside the input remain writable.
+    static func protectedWriteAncestorDenyRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        writableRoots: [String]
+    ) -> [String] {
+        let protectedPaths = plan.sandboxProtectedWriteDenyPaths.compactMap(canonicalize)
+        guard !protectedPaths.isEmpty else { return [] }
+
+        var seen: Set<String> = []
+        var ancestors: [String] = []
+        for protectedPath in protectedPaths {
+            var current = (protectedPath as NSString).deletingLastPathComponent
+            while current != "/", !current.isEmpty {
+                guard writableRoots.contains(where: { isSameOrDescendant(current, of: $0) }) else {
+                    break
+                }
+                for spelling in sandboxPathSpellings(current) where seen.insert(spelling).inserted {
+                    ancestors.append(spelling)
+                }
+                let parent = (current as NSString).deletingLastPathComponent
+                guard parent != current else { break }
+                current = parent
+            }
+        }
+        return ancestors
     }
 
     private static func providerStateRoots(
@@ -1072,6 +1110,7 @@ enum ExecutionSandbox: Sendable {
         protectedReadRootCount: Int = 0,
         explicitProtectedReadAllowRootCount: Int = 0,
         protectedWriteDenyRootCount: Int = 0,
+        protectedWriteAncestorDenyRootCount: Int = 0,
         allowNetwork: Bool,
         readScope: ExecutionSandboxReadScope = .open
     ) -> String {
@@ -1114,10 +1153,13 @@ enum ExecutionSandbox: Sendable {
         // these and they are not user data.
         allow.append("    (subpath \"/dev\"))")
         lines.append(contentsOf: allow)
-        // Carve specific files back out of the writable allow above. Last match
-        // wins in SBPL, so this deny overrides the broad write-allow for exactly
-        // these literals (e.g. shared-home config the next session would load).
+        // Carve protected files or directories back out of the writable allow
+        // above. Last match wins in SBPL, so this deny overrides the broad
+        // write-allow for both the root itself and every descendant.
         lines.append(contentsOf: protectedWriteDenyBlock(protectedWriteDenyRootCount: protectedWriteDenyRootCount))
+        lines.append(contentsOf: protectedWriteAncestorDenyBlock(
+            protectedWriteAncestorDenyRootCount: protectedWriteAncestorDenyRootCount
+        ))
 
         return lines.joined(separator: "\n") + "\n"
     }
@@ -1127,6 +1169,19 @@ enum ExecutionSandbox: Sendable {
         var deny: [String] = ["(deny file-write*"]
         for index in 0..<protectedWriteDenyRootCount {
             deny.append("    (literal (param \"\(protectedWriteDenyRootParameterName(index))\"))")
+            deny.append("    (subpath (param \"\(protectedWriteDenyRootParameterName(index))\"))")
+        }
+        deny.append(")")
+        return deny
+    }
+
+    private static func protectedWriteAncestorDenyBlock(
+        protectedWriteAncestorDenyRootCount: Int
+    ) -> [String] {
+        guard protectedWriteAncestorDenyRootCount > 0 else { return [] }
+        var deny: [String] = ["(deny file-write-unlink"]
+        for index in 0..<protectedWriteAncestorDenyRootCount {
+            deny.append("    (literal (param \"\(protectedWriteAncestorDenyRootParameterName(index))\"))")
         }
         deny.append(")")
         return deny
@@ -1204,6 +1259,10 @@ enum ExecutionSandbox: Sendable {
         "PROTECTED_WRITE_DENY_ROOT_\(index)"
     }
 
+    static func protectedWriteAncestorDenyRootParameterName(_ index: Int) -> String {
+        "PROTECTED_WRITE_ANCESTOR_DENY_ROOT_\(index)"
+    }
+
     /// Assembles the full `sandbox-exec` argument vector:
     /// `-p <profile> -D ROOT_0=<path> -D READ_ROOT_0=<path> ... <realExecutable> <realArgs...>`.
     static func makeArguments(
@@ -1214,6 +1273,7 @@ enum ExecutionSandbox: Sendable {
         protectedReadRoots: [String] = [],
         explicitProtectedReadAllowRoots: [String] = [],
         protectedWriteDenyRoots: [String] = [],
+        protectedWriteAncestorDenyRoots: [String] = [],
         executablePath: String,
         arguments: [String]
     ) -> [String] {
@@ -1241,6 +1301,10 @@ enum ExecutionSandbox: Sendable {
         for (index, root) in protectedWriteDenyRoots.enumerated() {
             result.append("-D")
             result.append("\(protectedWriteDenyRootParameterName(index))=\(root)")
+        }
+        for (index, root) in protectedWriteAncestorDenyRoots.enumerated() {
+            result.append("-D")
+            result.append("\(protectedWriteAncestorDenyRootParameterName(index))=\(root)")
         }
         result.append(canonicalize(executablePath) ?? executablePath)
         result.append(contentsOf: arguments)

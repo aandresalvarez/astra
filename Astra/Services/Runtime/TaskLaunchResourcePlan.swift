@@ -229,13 +229,12 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var hostProtectedWriteDenyPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            guard grant.source == .remoteWorkspace,
-                  grant.access == .read,
-                  grant.path.contains("/.ssh/") else {
-                return nil
-            }
-            return grant.path
+            grant.access == .read ? grant.path : nil
         })
+    }
+
+    var readOnlyResourceContract: ReadOnlyResourceContract {
+        ReadOnlyResourceContract(grants: hostPathGrants)
     }
 
     var providerNativeCredentialReadablePaths: [String] {
@@ -249,12 +248,18 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         !providerNativeCredentialReadablePaths.isEmpty
     }
 
+    var providerNativeReadOnlyResourcePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            grant.access == .read ? grant.path : nil
+        })
+    }
+
+    /// User-selected inputs remain a useful presentation subset, but execution
+    /// enforcement is driven by `readOnlyResourceContract` above.
     var providerNativeReadOnlyInputPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
             guard grant.access == .read,
-                  grant.source == .taskInput || grant.source == .userAttachment else {
-                return nil
-            }
+                  grant.source == .taskInput || grant.source == .userAttachment else { return nil }
             return grant.path
         })
     }

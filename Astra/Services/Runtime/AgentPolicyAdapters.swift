@@ -1114,9 +1114,18 @@ enum AgentPolicyManifestService {
         // so the final provider render is the source of truth for the effective
         // permission mode after task defaults, one-run grants, and runtime clamps.
         let effectiveSandboxPolicy = PermissionPolicy(providerMode: render.permissionMode)
-        let sandboxResolution = ExecutionSandboxSettings.resolve(
+        let baseSandboxResolution = ExecutionSandboxSettings.resolve(
             permissionPolicy: effectiveSandboxPolicy,
             defaults: sandboxSettingsDefaults
+        )
+        let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
+            contract: launchResourcePlan?.readOnlyResourceContract
+                ?? ReadOnlyResourceContract(uncheckedPaths: []),
+            executionEnvironment: executionEnvironment
+        )
+        let sandboxResolution = readOnlyInputBoundary.enforcingHostBoundary(
+            in: baseSandboxResolution,
+            runtime: runtime
         )
         let sandboxSettings = sandboxResolution.effectiveSettings
         if !executionEnvironment.providerRunsInsideContainer,
@@ -1195,6 +1204,9 @@ enum AgentPolicyManifestService {
             "sandbox_effective_enforcement": sandboxSettings.enforcement.rawValue,
             "sandbox_resolution_reason": sandboxResolution.reason?.rawValue ?? "none",
             "brokered_read_only_path_count": String(additionalReadOnlyPaths.count),
+            "read_only_input_boundary_required": String(readOnlyInputBoundary.isRequired),
+            "read_only_input_boundary_mode": readOnlyInputBoundary.mode.rawValue,
+            "read_only_input_boundary_path_count": String(readOnlyInputBoundary.paths.count),
             "diagnostics_blocked": String(render.diagnostics.filter { $0.severity == .blocked }.count),
             "diagnostics_warning": String(render.diagnostics.filter { $0.severity == .warning }.count),
             "uses_broad_provider_permissions": String(render.usesBroadProviderPermissions)

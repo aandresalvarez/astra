@@ -633,6 +633,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// can't be reduced to a replayable scoped grant. Hard denies still stop.
     let liveApprovalsActive: Bool
     let astraSandboxApplied: Bool
+    let readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
 
     private let lock = NSLock()
 
@@ -709,7 +710,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
         liveApprovalsActive: Bool = false,
-        astraSandboxApplied: Bool = false
+        astraSandboxApplied: Bool = false,
+        readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -725,6 +727,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.policyGuard = policyGuard
         self.liveApprovalsActive = liveApprovalsActive
         self.astraSandboxApplied = astraSandboxApplied
+        self.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -1683,25 +1686,25 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         toolID: String?,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        guard astraSandboxApplied,
+        guard astraSandboxApplied || readOnlyBoundaryReceipt != nil,
               !_policyViolation,
               !_policyApprovalRequired,
               _runtimeStopReason == nil else { return false }
         let context = toolContext(for: toolID)
         let toolName = Self.nonEmpty(context?.name) ?? "Tool"
-        let requestText = context?.summary
-            .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
-            ?? ""
+        let requestText = RuntimeSandboxDenialApproval.requestText(for: context?.summary)
         let decision = RuntimeSandboxDenialApproval.resolve(
             denial: denial,
             toolName: toolName,
             requestText: requestText,
             approvalWasApplied: policyGuard?.hasAppliedApprovalGrants([
                 .sandboxPath(path: ExecutionSandbox.canonicalize(denial.path) ?? denial.path, access: "read")
-            ]) == true
+            ]) == true,
+            readOnlyBoundaryReceipt: readOnlyBoundaryReceipt
         )
         guard case .request(let request, let grants) = decision else {
             guard case .terminal(let reason, let message) = decision else { return false }
+            RuntimeSandboxDenialAudit.recordTerminal(reason: reason, denial: denial, toolName: toolName, taskID: taskID)
             _runtimeStopReason = reason
             _runtimeStopMessage = message
             process?.terminate()

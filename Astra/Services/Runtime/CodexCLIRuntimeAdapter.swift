@@ -203,10 +203,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
-        // Codex defines `--add-dir` as an additional writable root. Keep
-        // read-only task inputs out of this list; the process runner fails
-        // closed when a host-mode Codex launch cannot project them safely.
+        // Codex exposes external paths only through writable `--add-dir` roots.
+        // The typed launch-resource contract lets us grant that native
+        // reachability while AgentRuntimeProcessRunner's mandatory outer
+        // Seatbelt boundary keeps task inputs read-only. Never infer these
+        // paths directly from prompt text or mutable task presentation state.
         let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
+            + (context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [])
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty

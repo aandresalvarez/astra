@@ -293,10 +293,19 @@ enum TaskLaunchResourceResolver {
         let stripped = AgentRuntimeAttachmentProjection.stripPathDecoratorsForLaunchResources(rawPath)
         guard !stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let normalized = existingPath(stripped, fileManager: fileManager) else {
+            grants.append(RuntimePathGrant(
+                path: normalizedPath(stripped),
+                access: .read,
+                source: source,
+                reason: reason,
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: false
+            ))
             diagnostics.append(RuntimeResourceDiagnostic(
-                severity: .warning,
+                severity: .error,
                 code: "input_path_missing",
-                message: "ASTRA could not project attached path because it does not exist: \(stripped)",
+                message: "ASTRA could not establish the required read-only boundary because this input does not exist: \(stripped)",
                 repairAction: "Attach the file again or move it back to the original path."
             ))
             return

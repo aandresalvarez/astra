@@ -547,7 +547,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
 
         if let sandbox = manifest.sandboxEvidence {
             facts.append(.init(title: "Stored sandbox", value: sandbox.storedEnforcement))
-            facts.append(.init(title: "Effective sandbox", value: sandbox.effectiveEnforcement))
+            facts.append(.init(title: "Planned sandbox", value: sandbox.effectiveEnforcement))
             if let reason = sandbox.resolutionReason, !reason.isEmpty {
                 facts.append(.init(title: "Sandbox reason", value: reason))
             }

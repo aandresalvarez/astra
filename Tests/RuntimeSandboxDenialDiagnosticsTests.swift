@@ -16,6 +16,27 @@ struct RuntimeSandboxDenialDiagnosticsTests {
         #expect(denial?.detail.contains("not-the-denied-path") == false)
     }
 
+    @Test("Container read-only filesystem denial is classified as a terminal write")
+    func containerReadOnlyFilesystemDenialIsWrite() throws {
+        let output = "/bin/rm: /workspace/attached.pdf: Read-only file system"
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(in: output))
+        #expect(denial.operation == .write)
+        #expect(denial.path == "/workspace/attached.pdf")
+
+        let decision = RuntimeSandboxDenialApproval.resolve(
+            denial: denial,
+            toolName: "Bash",
+            requestText: "",
+            approvalWasApplied: false
+        )
+        guard case .terminal(let reason, let message) = decision else {
+            Issue.record("A container write denial must never create an approval")
+            return
+        }
+        #expect(reason == "os_sandbox_file_write_denied")
+        #expect(message.contains("sandbox_write_approval_not_supported"))
+    }
+
     @Test("Shell-prefixed denial reports the denied executable")
     func shellPrefixedDenialReportsExecutable() {
         let output = """

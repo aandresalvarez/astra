@@ -59,6 +59,8 @@ struct AppSemanticFitnessTests {
         let expectedCategories: [String: TaskEventCategory] = [
             "activity.compacted": .lifecycle,
             "astra.artifact_preflight": .system,
+            "astra.read_only_boundary.applied": .system,
+            "astra.read_only_boundary.unavailable": .system,
             "budget.exceeded": .system,
             "budget.warning": .system,
             "corrective.step.approved": .lifecycle,

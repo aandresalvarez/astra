@@ -767,6 +767,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
     var pathMapper: ExecutionEnvironmentPathMapper?
     var executionEnvironment: WorkspaceExecutionEnvironment
+    /// Set only by `AgentRuntimeProcessRunner` after every required read-only
+    /// enforcement surface has been applied and verified.
+    var readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
 
     init(
         runtime: AgentRuntimeID,
@@ -804,6 +807,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.interactiveAsk = interactiveAsk
         self.pathMapper = pathMapper
         self.executionEnvironment = executionEnvironment
+        self.readOnlyBoundaryReceipt = nil
     }
 
 }
