@@ -726,25 +726,24 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
-        let executionEnvironment = DockerExecutionPlanner.snapshotForRun(
+        let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
             task: task,
-            currentDirectory: executionPath
+            currentDirectory: executionPath,
+            providerLaunchContextText: providerLaunchContextText
         )
-        let executionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(executionEnvironment)
-        task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
-        run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
-
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.taskSnapshot)
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
         let basePrompt = promptOverride ?? buildPrompt(
             for: task,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
-        let prompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+        let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
             to: basePrompt,
             task: task,
             permissionPolicy: launchPermissionPolicy,
             contextText: providerLaunchContextText
-        )
+        ))
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -753,7 +752,7 @@ final class AgentRuntimeWorker {
             prompt: prompt,
             contextText: providerLaunchContextText,
             workspacePath: executionPath,
-            executionEnvironment: executionEnvironment,
+            executionEnvironment: runEnvironment.runSnapshot,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,

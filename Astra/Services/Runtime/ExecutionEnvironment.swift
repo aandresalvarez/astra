@@ -633,14 +633,16 @@ enum DockerExecutionPlanner {
 
     static func snapshotForRun(
         task: AgentTask,
-        currentDirectory: String
+        currentDirectory: String,
+        additionalReadOnlyInputPaths: [String] = []
     ) -> WorkspaceExecutionEnvironment {
         var environment = resolveEnvironment(for: task)
         guard environment.isContainerized else { return environment }
         environment.mounts = mountPlan(
             currentDirectory: currentDirectory,
             environment: environment,
-            task: task
+            task: task,
+            additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         return environment
     }

@@ -175,6 +175,44 @@ struct ExecutionEnvironmentTests {
         #expect(boundary.unprotectedContainerPaths(in: plan.executionEnvironment.mounts).isEmpty)
     }
 
+    @MainActor
+    @Test("Run environment advertises current-message Docker input paths without persisting them on the task")
+    func runEnvironmentAdvertisesDynamicReadOnlyInputPaths() throws {
+        let root = try makeTempDir("docker-message-input-prompt")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let attachment = (root as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: attachment))
+
+        let task = AgentTask(
+            title: "Review message attachment",
+            goal: "Read the attachment",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest",
+            runtimeExecutablePath: "/bin/claude",
+            providerPlacement: .container
+        ))
+        let context = AgentRuntimeRunEnvironmentContext.prepare(
+            task: task,
+            currentDirectory: workspace,
+            providerLaunchContextText: "Attached files:\n- \(attachment)"
+        )
+
+        #expect(!context.taskSnapshot.mounts.contains { $0.hostPath == attachment })
+        let mount = try #require(context.runSnapshot.mounts.first { $0.hostPath == attachment })
+        #expect(mount.containerPath == "/mnt/astra/input-1")
+        #expect(mount.access == .readOnly)
+        let prompt = context.appendingReadOnlyInputGuidance(to: "Summarize the attachment.")
+        #expect(prompt.contains("\(attachment) -> /mnt/astra/input-1 (read-only)"))
+        #expect(prompt.contains("host paths are not available inside the container"))
+    }
+
     @Test("Docker mount plan deduplicates firmlink spellings for one read-only input")
     func dockerMountPlanDeduplicatesFirmlinkInputSpellings() throws {
         let visibleRoot = "/tmp/astra-docker-input-alias-\(UUID().uuidString)"
