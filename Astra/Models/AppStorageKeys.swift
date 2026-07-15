@@ -22,6 +22,8 @@ public enum AppStorageKeys {
     // see ApplicationsFolderMover.
     public static let declinedMoveToApplications = "astra.install.declinedMoveToApplications.v1"
     public static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
+    public static let workspaceSidebarSortMode = "astra.sidebar.workspaceSortMode.v1"
+    public static let workspaceSidebarOrderingState = "astra.sidebar.workspaceOrderingState.v1"
     public static let diagnosticsScope = "astra.diagnostics.scope.v1"
     public static let feedbackInstallationID = "astra.feedback.installationID.v1"
     public static let feedbackCrashOfferLedger = "astra.feedback.crashOfferLedger.v1"

@@ -85,6 +85,10 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: task,
+            selectedRuntime: selectedRuntime,
+            phase: "run")
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
         TaskCapabilitySnapshotter.refreshForFreshRun(task: task)
@@ -149,12 +153,17 @@ final class AgentRuntimeWorker {
         }
 
         TaskPlanService.recordExecutionStarted(planID: currentPlan.planID, task: task, modelContext: modelContext)
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: task,
+            selectedRuntime: selectedRuntime,
+            phase: "run"
+        )
         let prompt = if let approvedStep {
             AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: task, plan: currentPlan, step: approvedStep)
         } else {
             AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: currentPlan)
         }
-        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         let executionPolicy = Self.approvedPlanExecutionPolicy(
             runtime: selectedRuntime,
             currentPermissionPolicy: permissionPolicy,
@@ -408,6 +417,11 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: task,
+            selectedRuntime: selectedRuntime,
+            phase: "resume"
+        )
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
@@ -492,10 +506,6 @@ final class AgentRuntimeWorker {
         }
         isRunning = true
         cancellationRequested = false
-
-        if task.runtimeID == nil {
-            task.runtimeID = selectedRuntime.rawValue
-        }
 
         // Settle executionEnvironmentSnapshotJSON before resolving
         // requirements, not the whole TaskRun: the resolver's own
