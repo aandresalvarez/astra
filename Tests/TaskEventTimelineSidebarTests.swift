@@ -582,7 +582,8 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.usesQuietNewTaskCommand)
         #expect(SidebarLeanPresentation.sectionHeadersShowCounts)
         #expect(SidebarLeanPresentation.workspacesUseSingleFlatList)
-        #expect(SidebarLeanPresentation.sidebarTaskTitlesUsePrefixPrimaryPresentation)
+        #expect(SidebarLeanPresentation.sidebarTaskTitlesShowPrimaryTextOnly)
+        #expect(SidebarLeanPresentation.sidebarTaskActionsLiveInOptionsMenu)
         #expect(SidebarLeanPresentation.workspaceStarsMoveToTrailingEdge)
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
         #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
@@ -685,6 +686,36 @@ struct SidebarGroupingTests {
                 updatedAt: now.addingTimeInterval(60),
                 now: now
             ) == "Updated just now"
+        )
+    }
+
+    @Test("Task action prefixes move from rows into the options menu")
+    func taskActionsUseOptionsMenuMetadata() {
+        let checkRow = SidebarTaskActionPresentation.rowTitle(
+            for: "Check PR comments and todos"
+        )
+        #expect(checkRow.prefix == nil)
+        #expect(checkRow.primary == "PR comments and todos")
+        #expect(checkRow.fullTitle == "Check PR comments and todos")
+        #expect(
+            SidebarTaskActionPresentation.menuLabel(
+                for: "Check PR comments and todos"
+            ) == "Action: Check"
+        )
+        #expect(
+            SidebarTaskActionPresentation.menuLabel(
+                for: "Summarize two GitHub repositories"
+            ) == "Action: Summarize"
+        )
+
+        let unprefixedRow = SidebarTaskActionPresentation.rowTitle(
+            for: "Fork of Summarize two GitHub repositories"
+        )
+        #expect(unprefixedRow.primary == "Fork of Summarize two GitHub repositories")
+        #expect(
+            SidebarTaskActionPresentation.menuLabel(
+                for: "Fork of Summarize two GitHub repositories"
+            ) == nil
         )
     }
 
