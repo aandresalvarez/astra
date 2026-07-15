@@ -1555,6 +1555,7 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let requiredFiles = [
             ".github/workflows/ci.yml",
+            ".github/workflows/memory-monitoring.yml",
             ".github/CODEOWNERS",
             ".githooks/pre-commit",
             ".githooks/pre-push",
@@ -1591,6 +1592,7 @@ struct ArchitectureFitnessTests {
         let prePushScript = try fileText("script/prepush.sh", root: root)
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
         let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
+        let memoryMonitoringWorkflow = try fileText(".github/workflows/memory-monitoring.yml", root: root)
         let codeowners = try fileText(".github/CODEOWNERS", root: root)
         let branchProtectionPayload = try branchProtectionJSONPayload(from: branchProtectionScript)
         let branchProtection = try #require(
@@ -1652,11 +1654,19 @@ struct ArchitectureFitnessTests {
         #expect(ciWorkflow.contains("Focused Swift tests"))
         #expect(ciWorkflow.contains("Full Swift test suite"))
         #expect(ciWorkflow.contains("workflow_dispatch:"))
-        #expect(ciWorkflow.contains("schedule:"))
+        #expect(!ciWorkflow.contains("schedule:"))
         #expect(ciWorkflow.contains("swift test"))
         #expect(ciWorkflow.contains("fetch-depth: 0"))
         #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
         #expect(ciWorkflow.contains("git diff --check"))
+        #expect(memoryMonitoringWorkflow.contains("name: Memory Monitoring"))
+        #expect(memoryMonitoringWorkflow.contains("workflow_dispatch:"))
+        #expect(memoryMonitoringWorkflow.contains("schedule:"))
+        #expect(memoryMonitoringWorkflow.contains("script/run_memory_stress.sh"))
+        #expect(memoryMonitoringWorkflow.contains("MemoryLifecycleTests"))
+        #expect(memoryMonitoringWorkflow.contains("GITHUB_STEP_SUMMARY"))
+        #expect(memoryMonitoringWorkflow.contains("retention-days: 30"))
+        #expect(memoryMonitoringWorkflow.contains("retention-days: 14"))
         #expect(!codeowners.contains("* @aandresalvarez"))
         #expect(codeowners.contains("Astra/Services/Runtime/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))

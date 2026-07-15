@@ -2483,10 +2483,10 @@ struct ContentView: View {
             setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
-        // Release the task's browser (WebContent process + bridge listener) and
-        // markdown sessions; otherwise they leak until the window closes.
+        // Release browser/WebContent and markdown sessions; otherwise they live until window close.
         browserSessionStore.releaseSession(for: deletedTaskID)
         markdownSessionStore.releaseSession(for: deletedTaskID)
+        WorkspaceCanvasItemPreferenceStore.remove(conversationID: deletedTaskID.uuidString)
         refreshRunningTaskCount()
     }
 

@@ -46,7 +46,14 @@ final class RightPanelPresentationModel: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.isRailShown = (defaults.object(forKey: Self.railShownDefaultsKey) as? Bool) ?? true
-        self.rememberedItemsRawValue = WorkspaceCanvasItemPreferenceStore.load(defaults: defaults)
+        let loadedItems = WorkspaceCanvasItemPreferenceStore.load(defaults: defaults)
+        let normalizedItems = WorkspaceCanvasItemPreference.normalizedStorageRawValue(loadedItems)
+        self.rememberedItemsRawValue = normalizedItems
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: loadedItems,
+            updatedRawValue: normalizedItems,
+            defaults: defaults
+        )
     }
 
     // MARK: - Derived presentation
@@ -152,8 +159,24 @@ final class RightPanelPresentationModel: ObservableObject {
 
         isRailShown = false
         persistRailShown()
+        touchRememberedItem(conversationID: conversationID)
         setActiveCanvasItem(item, remember: false, conversationID: conversationID)
         return item
+    }
+
+    private func touchRememberedItem(conversationID: String?) {
+        let updated = WorkspaceCanvasItemPreference.touchingStorageRawValue(
+            rememberedItemsRawValue,
+            conversationID: conversationID
+        )
+        guard updated != rememberedItemsRawValue else { return }
+        let previousRawValue = rememberedItemsRawValue
+        rememberedItemsRawValue = updated
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: previousRawValue,
+            updatedRawValue: updated,
+            defaults: defaults
+        )
     }
 
     private func persistRailShown() {
