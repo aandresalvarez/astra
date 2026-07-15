@@ -2457,7 +2457,7 @@ struct CardinalKeyClientCertificateTests {
 /// runner and returns a canned success — no real process ever spawns. Proves
 /// the `AgentRuntimeProcessRunning` seam is real: `AgentRuntimeWorker` depends
 /// on the protocol, not the concrete `AgentRuntimeProcessRunner`.
-private final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
+final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
     private(set) var receivedTaskIDs: [UUID] = []
     private(set) var receivedWorkspacePaths: [String] = []
     private(set) var receivedPrompts: [String] = []

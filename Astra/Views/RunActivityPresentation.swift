@@ -783,9 +783,138 @@ struct RunActivityPresentation: Hashable, Sendable {
     }
 }
 
+enum RunActivityTab: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case updates
+    case tools
+    case files
+    case policy
+    case logs
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .updates: "Updates"
+        case .tools: "Tools"
+        case .files: "Files"
+        case .policy: "Policy"
+        case .logs: "Logs"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .updates: "text.bubble"
+        case .tools: "wrench.and.screwdriver"
+        case .files: "doc.text"
+        case .policy: "checkmark.shield"
+        case .logs: "terminal"
+        }
+    }
+}
+
+struct RunActivityTabDescriptor: Hashable, Identifiable, Sendable {
+    let tab: RunActivityTab
+    let count: Int?
+
+    var id: RunActivityTab { tab }
+
+    var accessibilityLabel: String {
+        guard let count else { return tab.title }
+        return "\(tab.title), \(count)"
+    }
+}
+
+extension RunActivityPresentation {
+    func tabDescriptors(hasPlanItems: Bool) -> [RunActivityTabDescriptor] {
+        var tabs: [RunActivityTabDescriptor] = []
+        if !progressMessages.isEmpty || hasPlanItems {
+            tabs.append(.init(
+                tab: .updates,
+                count: progressMessages.isEmpty ? nil : progressMessages.count
+            ))
+        }
+
+        let toolCallCount = tools.reduce(0) { $0 + $1.count }
+        if toolCallCount > 0 {
+            tabs.append(.init(tab: .tools, count: toolCallCount))
+        }
+        if !files.isEmpty {
+            tabs.append(.init(tab: .files, count: files.count))
+        }
+        if policy != nil {
+            tabs.append(.init(tab: .policy, count: nil))
+        }
+        if !technicalOutputs.isEmpty || !stats.isEmpty {
+            tabs.append(.init(
+                tab: .logs,
+                count: technicalOutputs.isEmpty ? nil : technicalOutputs.count
+            ))
+        }
+        return tabs
+    }
+}
+
+enum RunActivityProgressPhaseStatus: Hashable, Sendable {
+    case completed
+    case active
+    case upcoming
+}
+
+struct RunActivityProgressPhasePresentation: Hashable, Identifiable, Sendable {
+    let id: String
+    let title: String
+    let status: RunActivityProgressPhaseStatus
+}
+
+struct RunActivityProgressTimelinePresentation: Hashable, Sendable {
+    static let compactMessageLimit = 3
+
+    let phases: [RunActivityProgressPhasePresentation]
+    let messageAttachmentPhaseID: String?
+    let visibleMessages: [TaskRunProgressMessage]
+    let hiddenMessageCount: Int
+    let showsAllMessages: Bool
+
+    init(
+        messages: [TaskRunProgressMessage],
+        planItems: [TaskProtocolTodoItem],
+        showsAllMessages: Bool
+    ) {
+        let firstPendingIndex = planItems.firstIndex { !$0.isDone }
+        phases = planItems.enumerated().map { index, item in
+            let status: RunActivityProgressPhaseStatus
+            if item.isDone {
+                status = .completed
+            } else if index == firstPendingIndex {
+                status = .active
+            } else {
+                status = .upcoming
+            }
+            return RunActivityProgressPhasePresentation(
+                id: item.id,
+                title: item.text,
+                status: status
+            )
+        }
+        messageAttachmentPhaseID = phases.first(where: { $0.status == .active })?.id
+            ?? phases.last?.id
+
+        self.showsAllMessages = showsAllMessages
+        if showsAllMessages {
+            visibleMessages = messages
+        } else {
+            visibleMessages = Array(messages.suffix(Self.compactMessageLimit))
+        }
+        hiddenMessageCount = max(0, messages.count - visibleMessages.count)
+    }
+}
+
 struct RunActivityDisclosureState: Hashable, Sendable {
     private var manuallyExpandedRunIDs: Set<UUID> = []
     private var manuallyCollapsedRunIDs: Set<UUID> = []
+    private var selectedTabsByRunID: [UUID: RunActivityTab] = [:]
+    private var runsShowingAllUpdates: Set<UUID> = []
 
     func isExpanded(
         runID: UUID,
@@ -810,6 +939,38 @@ struct RunActivityDisclosureState: Hashable, Sendable {
         } else {
             manuallyCollapsedRunIDs.remove(runID)
             manuallyExpandedRunIDs.insert(runID)
+        }
+    }
+
+    func selectedTab(
+        runID: UUID,
+        availableTabs: [RunActivityTabDescriptor]
+    ) -> RunActivityTab? {
+        let available = Set(availableTabs.map(\.tab))
+        if let selected = selectedTabsByRunID[runID], available.contains(selected) {
+            return selected
+        }
+        return availableTabs.first?.tab
+    }
+
+    mutating func select(
+        _ tab: RunActivityTab,
+        runID: UUID,
+        availableTabs: [RunActivityTabDescriptor]
+    ) {
+        guard availableTabs.contains(where: { $0.tab == tab }) else { return }
+        selectedTabsByRunID[runID] = tab
+    }
+
+    func showsAllUpdates(runID: UUID) -> Bool {
+        runsShowingAllUpdates.contains(runID)
+    }
+
+    mutating func toggleAllUpdates(runID: UUID) {
+        if runsShowingAllUpdates.contains(runID) {
+            runsShowingAllUpdates.remove(runID)
+        } else {
+            runsShowingAllUpdates.insert(runID)
         }
     }
 }

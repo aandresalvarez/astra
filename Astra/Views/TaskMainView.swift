@@ -2573,12 +2573,13 @@ struct TaskMainView: View {
                 runActivityDisclosure(
                     run: run,
                     presentation: runActivityPresentation,
+                    protocolState: protocolState,
                     notices: displayNotices
                 )
             }
         }
         .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent response")
     }
 
@@ -2703,6 +2704,7 @@ struct TaskMainView: View {
     private func runActivityDisclosure(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
+        protocolState: TaskRunProtocolState,
         notices: [TaskRunNotice]
     ) -> some View {
         // Previously the whole disclosure (including the expanded details with
@@ -2714,6 +2716,7 @@ struct TaskMainView: View {
         runActivityDisclosureContent(
             run: run,
             presentation: presentation,
+            protocolState: protocolState,
             notices: notices
         )
     }
@@ -2721,6 +2724,7 @@ struct TaskMainView: View {
     private func runActivityDisclosureContent(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
+        protocolState: TaskRunProtocolState,
         notices: [TaskRunNotice]
     ) -> some View {
         let isExpanded = runActivityDisclosureState.isExpanded(runID: run.id, presentation: presentation)
@@ -2737,7 +2741,7 @@ struct TaskMainView: View {
             now: Date()
         )
 
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(chatStatusDisclosureAnimation) {
                     runActivityDisclosureState.toggle(runID: run.id, presentation: presentation)
@@ -2746,12 +2750,14 @@ struct TaskMainView: View {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(Stanford.ui(10))
-                        .frame(width: 12)
-                        .padding(.top, 2)
+                        .frame(
+                            width: RunActivityLayout.disclosureIconHitFrame,
+                            height: RunActivityLayout.disclosureIconHitFrame
+                        )
                     if run.status != .running {
                         Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
                             .font(Stanford.ui(12))
-                            .padding(.top, 1)
+                            .frame(height: RunActivityLayout.disclosureIconHitFrame)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top, spacing: 6) {
@@ -2794,21 +2800,33 @@ struct TaskMainView: View {
                     Spacer(minLength: 8)
                 }
                 .foregroundStyle(accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: RunActivityLayout.disclosureMinimumHitHeight,
+                    alignment: .leading
+                )
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(isExpanded ? "Hide" : "Show") run activity. \(title)")
+            .accessibilityValue(accessibilityParts.joined(separator: ", "))
+            .accessibilityHint(isExpanded ? "Collapses run activity details" : "Shows run activity details")
 
             if isExpanded {
-                runActivityDetails(run: run, presentation: presentation)
+                runActivityDetails(
+                    run: run,
+                    presentation: presentation,
+                    protocolState: protocolState
+                )
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 5)
                     .transition(chatStatusDetailsTransition)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
         .background(Color.primary.opacity(TaskThreadStatusChrome.runActivityBackgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title). \(accessibilityParts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
     }
 
@@ -2867,11 +2885,18 @@ struct TaskMainView: View {
 
     private func runActivityDetails(
         run: TaskRunSnapshot,
-        presentation: RunActivityPresentation
+        presentation: RunActivityPresentation,
+        protocolState: TaskRunProtocolState
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let tabs = presentation.tabDescriptors(hasPlanItems: !protocolState.todoItems.isEmpty)
+        let selectedTab = runActivityDisclosureState.selectedTab(
+            runID: run.id,
+            availableTabs: tabs
+        )
+
+        return VStack(alignment: .leading, spacing: 0) {
             if !presentation.approvals.isEmpty {
-                runActivityDetailSection(
+                RunActivityDetailSection(
                     title: presentation.approvals.count == 1 ? "Permission" : "Permissions",
                     systemImage: "hand.raised"
                 ) {
@@ -2880,7 +2905,7 @@ struct TaskMainView: View {
             }
 
             if !presentation.issues.isEmpty {
-                runActivityDetailSection(
+                RunActivityDetailSection(
                     title: presentation.issues.count == 1 ? "Issue" : "Issues",
                     systemImage: "exclamationmark.circle"
                 ) {
@@ -2890,84 +2915,78 @@ struct TaskMainView: View {
                 }
             }
 
-            if !presentation.progressMessages.isEmpty {
-                runActivityDetailSection(
-                    title: presentation.progressMessages.count == 1 ? "Progress" : "Progress updates",
-                    systemImage: "text.bubble"
-                ) {
-                    progressMessageList(presentation.progressMessages)
-                }
-            }
-
-            if !presentation.tools.isEmpty {
-                runActivityDetailSection(title: "Tool activity", systemImage: "wrench.and.screwdriver") {
-                    toolActivityList(presentation.tools)
-                }
-            }
-
-            if !presentation.files.isEmpty {
-                runActivityDetailSection(title: "Files", systemImage: "doc.text") {
-                    Button {
-                        isShowingFilesPopover = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "doc.text")
-                                .font(Stanford.ui(11))
-                            Text("\(presentation.files.count) changed \(presentation.files.count == 1 ? "file" : "files")")
-                                .font(Stanford.chatSection())
-                            Spacer(minLength: 8)
-                            Image(systemName: "arrow.right")
-                                .font(Stanford.ui(10))
-                        }
-                        .foregroundStyle(Stanford.lagunita)
+            if let selectedTab {
+                RunActivityTabStrip(
+                    tabs: tabs,
+                    selectedTab: selectedTab,
+                    onSelect: { tab in
+                        runActivityDisclosureState.select(
+                            tab,
+                            runID: run.id,
+                            availableTabs: tabs
+                        )
                     }
-                    .buttonStyle(.plain)
-                }
-            }
+                )
+                .padding(.top, 2)
 
-            if let policy = presentation.policy {
-                runActivityDetailSection(title: "Policy", systemImage: "checkmark.shield") {
-                    runPolicySummaryView(policy, for: run)
-                }
-            }
+                Divider()
+                    .overlay(Stanford.sandstone.opacity(0.18))
 
-            if !presentation.technicalOutputs.isEmpty {
-                runActivityDetailSection(title: "Technical output", systemImage: "terminal") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(presentation.technicalOutputs) { output in
-                            technicalOutputView(output)
-                        }
-                    }
-                }
-            }
-
-            if !presentation.stats.isEmpty {
-                runActivityDetailSection(title: "Stats", systemImage: "chart.bar") {
-                    factList(presentation.stats)
-                }
+                runActivitySelectedTab(
+                    selectedTab,
+                    run: run,
+                    presentation: presentation,
+                    protocolState: protocolState
+                )
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
             }
         }
-        .padding(.top, 2)
     }
 
-    private func runActivityDetailSection<Content: View>(
-        title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
+    @ViewBuilder private func runActivitySelectedTab(
+        _ selectedTab: RunActivityTab,
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        protocolState: TaskRunProtocolState
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label(title, systemImage: systemImage)
-                .font(Stanford.chatMeta())
-                .foregroundStyle(Stanford.coolGrey.opacity(0.86))
-            content()
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(Color.primary.opacity(TaskThreadStatusChrome.runActivityDetailBackgroundOpacity))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(0.052), lineWidth: 1)
+        RunActivitySelectedTabView(
+            selectedTab: selectedTab,
+            isRunning: run.status == .running,
+            presentation: presentation,
+            planItems: protocolState.todoItems,
+            showsAllUpdates: runActivityDisclosureState.showsAllUpdates(runID: run.id),
+            onToggleHistory: {
+                withAnimation(chatStatusDisclosureAnimation) {
+                    runActivityDisclosureState.toggleAllUpdates(runID: run.id)
+                }
+            },
+            onOpenFiles: { isShowingFilesPopover = true },
+            toolsContent: {
+                toolActivityList(presentation.tools)
+            },
+            policyContent: {
+                if let policy = presentation.policy {
+                    runPolicySummaryView(policy, for: run)
+                }
+            },
+            logsContent: {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(presentation.technicalOutputs) { output in
+                        technicalOutputView(output)
+                    }
+                    if !presentation.technicalOutputs.isEmpty, !presentation.stats.isEmpty {
+                        Divider()
+                            .overlay(Stanford.sandstone.opacity(0.18))
+                    }
+                    if !presentation.stats.isEmpty {
+                        Label("Run stats", systemImage: "chart.bar")
+                            .font(Stanford.chatMeta())
+                            .foregroundStyle(Stanford.textTertiary)
+                        factList(presentation.stats)
+                    }
+                }
+            }
         )
     }
 
@@ -3236,26 +3255,6 @@ struct TaskMainView: View {
             }
         }
         .padding(.vertical, 1)
-    }
-
-    private func progressMessageList(_ messages: [TaskRunProgressMessage]) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(messages) { message in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "text.bubble")
-                        .font(Stanford.ui(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                        .frame(width: 14)
-                    Text(message.text)
-                        .font(Stanford.chatSection())
-                        .foregroundStyle(Stanford.coolGrey)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.vertical, 1)
-            }
-        }
     }
 
     private func factList(_ facts: [RunFactPresentation]) -> some View {
@@ -4296,7 +4295,8 @@ struct TaskMainView: View {
                 }
                 runActivityDetails(
                     run: entry.element,
-                    presentation: currentThreadSnapshot.activityPresentation(for: entry.element)
+                    presentation: currentThreadSnapshot.activityPresentation(for: entry.element),
+                    protocolState: currentThreadSnapshot.protocolState(for: entry.element)
                 )
             }
         }

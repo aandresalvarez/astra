@@ -303,8 +303,9 @@ enum AgentRuntimeLaunchPreflight {
             labels: credentialRequest.labels
         )
         let grants = PermissionBroker.approvalGrants(for: request)
+        let runtime = registeredLaunchRuntime(task: task, run: run)
         let payload = PermissionBroker.approvalPayloadString(
-            providerID: task.resolvedRuntimeID,
+            providerID: runtime,
             request: request,
             reason: "Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
             providerDetail: credentialRequest.displayName,
@@ -313,7 +314,7 @@ enum AgentRuntimeLaunchPreflight {
         let fields: [String: String] = [
             "source": "connector_credential_egress",
             "phase": phase.rawValue,
-            "runtime": task.resolvedRuntimeID.rawValue,
+            "runtime": runtime.rawValue,
             "connector_id": credentialRequest.connectorID.uuidString,
             "connector_name": credentialRequest.connectorName,
             "credential_label_count": String(credentialRequest.labels.count),
@@ -484,10 +485,11 @@ enum AgentRuntimeLaunchPreflight {
         report: RuntimeReadinessReport
     ) -> AgentRuntimeLaunchPreflightResult {
         let blockedChecks = report.checks.filter { $0.state == .blocked }
+        let runtime = registeredLaunchRuntime(task: task, run: run)
         var fields: [String: String] = [
             "source": "runtime_readiness_preflight",
             "phase": phase.rawValue,
-            "runtime": task.resolvedRuntimeID.rawValue,
+            "runtime": runtime.rawValue,
             "readiness_state": report.state.rawValue,
             "blocked_check_count": String(blockedChecks.count)
         ]
@@ -551,6 +553,7 @@ enum AgentRuntimeLaunchPreflight {
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> AgentRuntimeLaunchPreflightResult {
+        let runtime = registeredLaunchRuntime(task: task, run: run)
         var report = ExecutionEnvironmentCredentialReadinessService.evaluate(
             task: task,
             codeDirectory: codeDirectory,
@@ -559,7 +562,7 @@ enum AgentRuntimeLaunchPreflight {
         )
         var fields = report.auditFields
         fields["phase"] = phase.rawValue
-        fields["runtime"] = task.resolvedRuntimeID.rawValue
+        fields["runtime"] = runtime.rawValue
         fields["diagnostic_result"] = report.shouldBlockLaunch
             ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
             : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
@@ -582,7 +585,7 @@ enum AgentRuntimeLaunchPreflight {
             )
             fields = report.auditFields
             fields["phase"] = phase.rawValue
-            fields["runtime"] = task.resolvedRuntimeID.rawValue
+            fields["runtime"] = runtime.rawValue
             fields["auto_projected_credentials"] = "true"
             fields["diagnostic_result"] = report.shouldBlockLaunch
                 ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
@@ -686,10 +689,11 @@ enum AgentRuntimeLaunchPreflight {
         imageAvailabilityChecker: any DockerImageAvailabilityChecking = DockerImageInventoryService()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let runtime = registeredLaunchRuntime(task: task, run: run)
         var fields: [String: String] = [
             "source": "docker_image_availability_preflight",
             "phase": phase.rawValue,
-            "runtime": task.resolvedRuntimeID.rawValue,
+            "runtime": runtime.rawValue,
             "execution_environment_kind": environment.kind.rawValue,
             "execution_environment_id": environment.id,
             "execution_environment_provider_placement": environment.effectiveProviderPlacement.rawValue,
@@ -865,7 +869,7 @@ enum AgentRuntimeLaunchPreflight {
         // MCP servers are materialized only for runtimes that support them;
         // for those, a stdio server whose command can't be resolved would
         // fail opaquely mid-run, so it blocks the launch here instead.
-        let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
+        let runtime = registeredLaunchRuntime(task: task, run: run)
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if runtimeProfile(runtime).supportsTaskScopedMCPDelivery {
             let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
@@ -1083,13 +1087,30 @@ enum AgentRuntimeLaunchPreflight {
             }
         }
         return { runtime in
-            let settings = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+            let registeredRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(
+                rawValue: runtime.rawValue,
+                fallback: configuration.defaultRuntimeID
+            )
+            let settings = AgentRuntimeAdapterRegistry.adapter(for: registeredRuntime)
                 .launchSettings(configuration: configuration)
             return AgentRuntimeCapabilityProfileService.profile(
-                for: runtime,
+                for: registeredRuntime,
                 executablePath: settings.executablePath
             )
         }
+    }
+
+    /// A run records the provider actually admitted for this launch. Prefer it
+    /// over task metadata, which can contain a provider removed by a newer app.
+    private static func registeredLaunchRuntime(task: AgentTask, run: TaskRun) -> AgentRuntimeID {
+        let registeredTaskRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: task.runtimeID,
+            fallback: TaskExecutionDefaults.runtime
+        )
+        return AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: run.runtimeID,
+            fallback: registeredTaskRuntime
+        )
     }
 
     private static func runtimeReadinessFailureMessage(_ check: RuntimeReadinessCheck) -> String {

@@ -26,6 +26,31 @@ enum AgentRuntimeLaunchRuntimeResolver {
         let launchBlock: TaskRuntimeCompatibilityLaunchBlock?
     }
 
+    /// Persisted tasks can outlive the runtime provider that created them.
+    /// Normalize that stale value at launch admission so every downstream
+    /// consumer observes the same registered runtime selected by configuration.
+    @MainActor
+    @discardableResult
+    static func reconcilePersistedRuntime(
+        task: AgentTask,
+        selectedRuntime: AgentRuntimeID,
+        phase: RunPhase
+    ) -> Bool {
+        guard task.runtimeID != selectedRuntime.rawValue else { return false }
+
+        let previousRuntime = task.runtimeID ?? "none"
+        task.runtimeID = selectedRuntime.rawValue
+        task.updatedAt = Date()
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
+            "event": "runtime_registration_fallback",
+            "from_runtime": previousRuntime,
+            "to_runtime": selectedRuntime.rawValue,
+            "phase": phase.rawValue,
+            "reason": "persisted_runtime_unregistered_or_noncanonical"
+        ], level: .warning)
+        return true
+    }
+
     @MainActor
     static func resolve(
         task: AgentTask,
