@@ -10,15 +10,24 @@ struct ShellCommandMutationContext: Equatable, Sendable {
 
     var pathReferenceExpressions: [String] {
         var expressions = [command] + pipelineInputExpressions
-        expressions += referencedVariables.sorted().flatMap {
-            variableBindings[$0, default: []].sorted()
-        }
+        var pendingReferences = referencedVariables
         if referencedVariables.contains(where: { $0.allSatisfy(\.isNumber) }) {
-            expressions += variableBindings["@", default: []].sorted()
+            pendingReferences.insert("@")
         }
         for reference in indirectReferencedVariables.sorted() {
             for targetName in variableBindings[reference, default: []].sorted() {
-                expressions += variableBindings[targetName, default: []].sorted()
+                pendingReferences.insert(targetName)
+            }
+        }
+
+        var visitedReferences: Set<String> = []
+        while let reference = pendingReferences.popFirst() {
+            guard visitedReferences.insert(reference).inserted else { continue }
+            for expression in variableBindings[reference, default: []].sorted() {
+                expressions.append(expression)
+                pendingReferences.formUnion(
+                    ShellCommandMutationContextParser.directVariableReferences(in: expression)
+                )
             }
         }
         return expressions
@@ -71,6 +80,20 @@ enum ShellCommandMutationContextParser {
     }
 
     static func contexts(for rawCommand: String) -> [ShellCommandMutationContext] {
+        contexts(
+            for: rawCommand,
+            initialBindings: [:],
+            inheritedFunctions: [:],
+            recursionDepth: 0
+        )
+    }
+
+    private static func contexts(
+        for rawCommand: String,
+        initialBindings: [String: Set<String>],
+        inheritedFunctions: [String: String],
+        recursionDepth: Int
+    ) -> [ShellCommandMutationContext] {
         let trimmedCommand = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommand.isEmpty else { return [] }
 
@@ -84,19 +107,26 @@ enum ShellCommandMutationContextParser {
             let references = variableReferences(in: trimmedCommand)
             return [ShellCommandMutationContext(
                 command: trimmedCommand,
-                variableBindings: [:],
+                variableBindings: initialBindings,
                 referencedVariables: references.direct,
                 indirectReferencedVariables: references.indirect,
                 pipelineInputExpressions: []
             )]
         }
-        var bindings: [String: Set<String>] = [:]
+        var bindings = initialBindings
+        var functions = inheritedFunctions
         var contexts: [ShellCommandMutationContext] = []
         var pipelineInputExpressions: [String] = []
         var separatorBefore: SegmentSeparator = .sequence
 
         for segment in segments {
             let semanticCommand = ProviderToolSemantics.mutationAnalysisShellCommand(segment.command)
+            if let definition = functionDefinition(in: semanticCommand) {
+                functions[definition.name] = definition.body
+                pipelineInputExpressions.removeAll(keepingCapacity: true)
+                separatorBefore = segment.separatorAfter
+                continue
+            }
             var contextBindings = bindings
             if semanticCommand != segment.command {
                 contextBindings.merge(leadingEnvironmentAssignments(in: segment.command)) {
@@ -104,7 +134,9 @@ enum ShellCommandMutationContextParser {
                 }
             }
             var references = variableReferences(in: semanticCommand)
-            if shellWords(in: semanticCommand).first == "eval" {
+            let commandWords = executableWords(in: semanticCommand)
+            if let commandName = commandWords.first,
+               commandName == "eval" || commandName == "trap" {
                 references.formUnion(variableReferences(
                     in: semanticCommand,
                     treatsSingleQuotedTextAsCode: true
@@ -118,30 +150,56 @@ enum ShellCommandMutationContextParser {
                 pipelineInputExpressions: pipelineInputExpressions
             ))
 
-            if let positionalAssignments = setPositionalAssignments(in: segment.command) {
-                if separatorBefore != .conditional {
-                    bindings = bindings.filter { !isPositionalBindingName($0.key) }
-                }
-                for (name, values) in positionalAssignments {
-                    if separatorBefore == .conditional {
-                        bindings[name, default: []].formUnion(values)
-                    } else {
-                        bindings[name] = values
+            if recursionDepth < 8,
+               let functionName = commandWords.first,
+               let functionBody = functions[functionName] {
+                // Function bodies are deferred shell programs. Analyze the
+                // invoked body with the call's arguments projected onto the
+                // function-local positional parameter scope.
+                var functionBindings = contextBindings
+                functionBindings.merge(
+                    positionalAssignments(values: Array(commandWords.dropFirst()))
+                ) { _, argumentValue in argumentValue }
+                contexts.append(contentsOf: self.contexts(
+                    for: functionBody,
+                    initialBindings: functionBindings,
+                    inheritedFunctions: functions,
+                    recursionDepth: recursionDepth + 1
+                ))
+            }
+
+            let isPipelineStage = separatorBefore == .pipeline
+                || segment.separatorAfter == .pipeline
+            // Bash pipeline stages run in subshells by default. Their writes
+            // must not replace the parent-shell bindings used by later
+            // sequential commands.
+            if !isPipelineStage {
+                if let positionalAssignments = setPositionalAssignments(in: segment.command) {
+                    if separatorBefore != .conditional {
+                        bindings = bindings.filter { !isPositionalBindingName($0.key) }
                     }
-                }
-            } else if let assignments = persistentAssignments(in: segment.command)
-                ?? loopAssignments(in: segment.command)
-                ?? readAssignments(in: segment.command) {
-                for (name, values) in assignments {
-                    if separatorBefore == .conditional {
-                        bindings[name, default: []].formUnion(values)
-                    } else {
-                        bindings[name] = values
+                    for (name, values) in positionalAssignments {
+                        if separatorBefore == .conditional {
+                            bindings[name, default: []].formUnion(values)
+                        } else {
+                            bindings[name] = values
+                        }
                     }
-                }
-            } else if separatorBefore != .conditional {
-                for name in unsetVariableNames(in: segment.command) {
-                    bindings.removeValue(forKey: name)
+                } else if let assignments = persistentAssignments(in: segment.command)
+                    ?? loopAssignments(in: segment.command)
+                    ?? readAssignments(in: segment.command)
+                    ?? printfVariableAssignment(in: segment.command) {
+                    for (name, values) in assignments {
+                        if separatorBefore == .conditional {
+                            bindings[name, default: []].formUnion(values)
+                        } else {
+                            bindings[name] = values
+                        }
+                    }
+                } else if separatorBefore != .conditional {
+                    for name in unsetVariableNames(in: segment.command) {
+                        bindings.removeValue(forKey: name)
+                    }
                 }
             }
 
@@ -246,6 +304,19 @@ enum ShellCommandMutationContextParser {
             }
 
             if frames.count == 1, quote == nil, !isInBacktickSubstitution {
+                if character == "{",
+                   groupingDepth > 0 || isFunctionDeclarationPrefix(current) {
+                    groupingDepth += 1
+                    current.append(character)
+                    index = nextIndex
+                    continue
+                }
+                if character == "}", groupingDepth > 0 {
+                    groupingDepth -= 1
+                    current.append(character)
+                    index = nextIndex
+                    continue
+                }
                 if character == "(" {
                     groupingDepth += 1
                     current.append(character)
@@ -320,7 +391,7 @@ enum ShellCommandMutationContextParser {
     private static func persistentAssignments(in segment: String) -> [String: Set<String>]? {
         var tokens = shellWords(in: segment)
         let assignmentControlWords: Set<String> = [
-            "if", "then", "do", "else", "elif", "while", "until", "!"
+            "if", "then", "do", "else", "elif", "while", "until", "!", "{"
         ]
         while let first = tokens.first, assignmentControlWords.contains(first) {
             tokens.removeFirst()
@@ -372,6 +443,42 @@ enum ShellCommandMutationContextParser {
         return [name: [tokens[tokens.index(after: redirectIndex)]]]
     }
 
+    private static func printfVariableAssignment(in segment: String) -> [String: Set<String>]? {
+        let tokens = executableWords(in: segment)
+        guard tokens.first == "printf",
+              let variableOptionIndex = tokens.firstIndex(of: "-v"),
+              tokens.index(after: variableOptionIndex) < tokens.endIndex else {
+            return nil
+        }
+        let nameIndex = tokens.index(after: variableOptionIndex)
+        let name = tokens[nameIndex]
+        let valueStart = tokens.index(after: nameIndex)
+        guard isValidVariableName(name), valueStart < tokens.endIndex else { return nil }
+        let format = tokens[valueStart]
+        var outputExpressions = [format]
+        if printfFormatConsumesArguments(format) {
+            outputExpressions.append(contentsOf: tokens[tokens.index(after: valueStart)...])
+        }
+        return [name: [outputExpressions.joined(separator: " ")]]
+    }
+
+    private static func printfFormatConsumesArguments(_ format: String) -> Bool {
+        var index = format.startIndex
+        while index < format.endIndex {
+            guard format[index] == "%" else {
+                index = format.index(after: index)
+                continue
+            }
+            let nextIndex = format.index(after: index)
+            guard nextIndex < format.endIndex else { return false }
+            if format[nextIndex] != "%" {
+                return true
+            }
+            index = format.index(after: nextIndex)
+        }
+        return false
+    }
+
     private static func setPositionalAssignments(in segment: String) -> [String: Set<String>]? {
         var tokens = shellWords(in: segment)
         let controlWords: Set<String> = ["if", "then", "do", "else", "elif", "while", "until", "!"]
@@ -382,7 +489,10 @@ enum ShellCommandMutationContextParser {
             return nil
         }
 
-        let values = Array(tokens.dropFirst(2))
+        return positionalAssignments(values: Array(tokens.dropFirst(2)))
+    }
+
+    private static func positionalAssignments(values: [String]) -> [String: Set<String>] {
         var assignments: [String: Set<String>] = [:]
         for (offset, value) in values.enumerated() {
             assignments[String(offset + 1)] = [value]
@@ -391,6 +501,49 @@ enum ShellCommandMutationContextParser {
         assignments["@"] = allValues
         assignments["*"] = allValues
         return assignments
+    }
+
+    private static func executableWords(in segment: String) -> [String] {
+        var tokens = shellWords(in: segment)
+        let controlWords: Set<String> = [
+            "if", "then", "do", "else", "elif", "while", "until", "!", "{"
+        ]
+        while let first = tokens.first, controlWords.contains(first) {
+            tokens.removeFirst()
+        }
+        return tokens
+    }
+
+    private static func isFunctionDeclarationPrefix(_ value: String) -> Bool {
+        functionName(inDeclarationPrefix: value) != nil
+    }
+
+    private static func functionName(inDeclarationPrefix value: String) -> String? {
+        var compact = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasFunctionKeyword = compact.hasPrefix("function ")
+        if hasFunctionKeyword {
+            compact.removeFirst("function ".count)
+            compact = compact.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        compact.removeAll(where: \.isWhitespace)
+        if compact.hasSuffix("()") {
+            compact.removeLast(2)
+        } else if !hasFunctionKeyword {
+            return nil
+        }
+        return isValidVariableName(compact) ? compact : nil
+    }
+
+    private static func functionDefinition(in segment: String) -> (name: String, body: String)? {
+        guard let openingBrace = segment.firstIndex(of: "{"),
+              let closingBrace = segment.lastIndex(of: "}"),
+              openingBrace < closingBrace else {
+            return nil
+        }
+        let prefix = String(segment[..<openingBrace])
+        guard let name = functionName(inDeclarationPrefix: prefix) else { return nil }
+        let bodyStart = segment.index(after: openingBrace)
+        return (name, String(segment[bodyStart..<closingBrace]))
     }
 
     private static func isPositionalBindingName(_ name: String) -> Bool {
@@ -620,6 +773,10 @@ enum ShellCommandMutationContextParser {
             index = valueStart
         }
         return references
+    }
+
+    fileprivate static func directVariableReferences(in expression: String) -> Set<String> {
+        variableReferences(in: expression).direct
     }
 
     private static func isValidVariableName(_ value: String) -> Bool {

@@ -258,7 +258,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "read -r input <<< '\(attachment.path)'; rm \"$input\"",
             "name=input; input='\(attachment.path)'; rm \"${!name}\"",
             "if true; then input='\(attachment.path)'; rm \"$input\"; fi",
-            "set -- '\(attachment.path)'; rm \"$1\""
+            "set -- '\(attachment.path)'; rm \"$1\"",
+            "{ input='\(attachment.path)'; rm \"$input\"; }",
+            "input='\(attachment.path)'; trap 'rm \"$input\"' EXIT; true",
+            "a='\(attachment.path)'; b=\"$a\"; rm \"$b\"",
+            "printf -v input %s '\(attachment.path)'; rm \"$input\"",
+            "input='\(attachment.path)'; input=/tmp/other | cat; rm \"$input\"",
+            "f(){ rm -- \"$1\"; }; f '\(attachment.path)'"
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -318,6 +324,34 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "positional-read-before-unrelated-mutation",
             input: [
                 "command": "set -- '\(attachment.path)'; printf '%s\\n' \"$1\"; rm -rf /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "literal-function-argument-before-unrelated-mutation",
+            input: [
+                "command": "f(){ printf '%s\\n' \"$1\"; rm -rf /tmp/unrelated-output; }; f '\(attachment.path)'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "pipeline-local-binding-does-not-replace-parent",
+            input: [
+                "command": "input=/tmp/unrelated; input='\(attachment.path)' | cat; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "single-quoted-binding-is-not-transitive",
+            input: [
+                "command": "a='\(attachment.path)'; b='$a'; rm \"$b\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "printf-ignored-argument-does-not-bind",
+            input: [
+                "command": "printf -v input literal '\(attachment.path)'; rm \"$input\""
             ]
         )) == nil)
     }
