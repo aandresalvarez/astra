@@ -68,7 +68,7 @@ public enum ProviderToolSemantics {
         allowingLauncherEnvironment: Bool
     ) -> String? {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let markerRange = trimmed.range(of: " -lc ") else { return nil }
+        guard let markerRange = unquotedRange(of: " -lc ", in: trimmed) else { return nil }
 
         let launcherPrefix = String(trimmed[..<markerRange.lowerBound])
         guard let executable = shellLauncherExecutable(
@@ -115,7 +115,8 @@ public enum ProviderToolSemantics {
     ) -> String? {
         guard var words = shellWords(in: prefix), !words.isEmpty else { return nil }
         var hasEnvironmentConfiguration = false
-        if words.first == "env" {
+        if let first = words.first,
+           URL(fileURLWithPath: first).lastPathComponent.lowercased() == "env" {
             hasEnvironmentConfiguration = true
             words.removeFirst()
             guard consumeEnvOptions(from: &words) else { return nil }
@@ -127,6 +128,43 @@ public enum ProviderToolSemantics {
         guard allowingEnvironmentConfiguration || !hasEnvironmentConfiguration else { return nil }
         guard words.count == 1 else { return nil }
         return words[0]
+    }
+
+    private static func unquotedRange(
+        of marker: String,
+        in value: String
+    ) -> Range<String.Index>? {
+        var index = value.startIndex
+        var quote: Character?
+        var isEscaped = false
+        while index < value.endIndex {
+            let character = value[index]
+            if isEscaped {
+                isEscaped = false
+                index = value.index(after: index)
+                continue
+            }
+            if character == "\\", quote != "'" {
+                isEscaped = true
+                index = value.index(after: index)
+                continue
+            }
+            if character == "'", quote != "\"" {
+                quote = quote == "'" ? nil : "'"
+                index = value.index(after: index)
+                continue
+            }
+            if character == "\"", quote != "'" {
+                quote = quote == "\"" ? nil : "\""
+                index = value.index(after: index)
+                continue
+            }
+            if quote == nil, value[index...].hasPrefix(marker) {
+                return index..<value.index(index, offsetBy: marker.count)
+            }
+            index = value.index(after: index)
+        }
+        return nil
     }
 
     private static func consumeEnvOptions(from words: inout [String]) -> Bool {

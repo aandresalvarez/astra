@@ -29,6 +29,8 @@ struct RuntimePermissionContinuationRegressionTests {
         let ordinaryCommand = "rm -- /tmp/attached.pdf /bin/sh -lc 'true'"
         let assignmentWrapper = "ATTACH='/tmp/path with spaces.pdf' /bin/sh -lc 'rm \"$ATTACH\"'"
         let envWrapper = "env -u OLD ATTACH='/tmp/path with spaces.pdf' /bin/bash -lc 'rm \"$ATTACH\"'"
+        let quotedMarkerWrapper = "FOO='x -lc y' /bin/bash -lc 'rm \"$ATTACH\"'"
+        let envPathWrapper = "/usr/bin/env ATTACH=/tmp/input /bin/bash -lc 'rm \"$ATTACH\"'"
 
         #expect(ProviderToolSemantics.semanticShellCommand(ordinaryCommand) == ordinaryCommand)
         #expect(ProviderToolSemantics.semanticShellCommand(assignmentWrapper) == assignmentWrapper)
@@ -39,6 +41,14 @@ struct RuntimePermissionContinuationRegressionTests {
         )
         #expect(
             ProviderToolSemantics.mutationAnalysisShellCommand(envWrapper)
+                == "rm \"$ATTACH\""
+        )
+        #expect(
+            ProviderToolSemantics.mutationAnalysisShellCommand(quotedMarkerWrapper)
+                == "rm \"$ATTACH\""
+        )
+        #expect(
+            ProviderToolSemantics.mutationAnalysisShellCommand(envPathWrapper)
                 == "rm \"$ATTACH\""
         )
     }

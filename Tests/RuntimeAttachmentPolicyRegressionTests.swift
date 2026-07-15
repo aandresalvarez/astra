@@ -294,7 +294,15 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "declare +x input='\(attachment.path)'; rm \"$input\"",
             "set -- '\(attachment.path)'; for f; do rm \"$f\"; done",
             "readonly input='\(attachment.path)'; unset input; rm \"$input\"",
-            "f(){ rm \"$input\"; }; input='\(attachment.path)' f"
+            "f(){ rm \"$input\"; }; input='\(attachment.path)' f",
+            "IFS= read input <<< '\(attachment.path)'; rm \"$input\"",
+            "eval \"input='\(attachment.path)'\"; rm \"$input\"",
+            "unset input; : \"${input:=\(attachment.path)}\"; rm \"$input\"",
+            "read input < <(printf '%s\\n' '\(attachment.path)'); rm \"$input\"",
+            ". <(printf \"input='\(attachment.path)'\\n\"); rm \"$input\"",
+            "alias d='rm -f'; d '\(attachment.path)'",
+            "export input='\(attachment.path)'; FOO='x -lc y' /bin/bash -lc 'rm \"$input\"'",
+            "export input='\(attachment.path)'; /usr/bin/env bash -lc 'rm \"$input\"'"
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -526,6 +534,34 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "successful-unset-clears-mutable-binding",
             input: [
                 "command": "input='\(attachment.path)'; unset input; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "redirected-read-does-not-feed-unrelated-mutation",
+            input: [
+                "command": "IFS= read input < <(printf '%s\\n' '\(attachment.path)'); rm /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "parameter-assignment-does-not-feed-unrelated-mutation",
+            input: [
+                "command": "unset input; : \"${input:=\(attachment.path)}\"; rm /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "eval-read-does-not-feed-unrelated-mutation",
+            input: [
+                "command": "eval 'printf \"%s\" \"\(attachment.path)\"'; rm /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "removed-alias-does-not-remain-a-mutator",
+            input: [
+                "command": "alias d='rm -f'; unalias d; d '\(attachment.path)'"
             ]
         )) == nil)
     }
