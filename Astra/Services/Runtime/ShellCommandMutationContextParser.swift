@@ -33,6 +33,20 @@ enum ShellCommandMutationContextParser {
         let separatorAfter: SegmentSeparator
     }
 
+    private struct LexicalFrame {
+        var quote: Character?
+        var isInBacktickSubstitution: Bool
+        var parenthesisDepth: Int?
+
+        static var topLevel: Self {
+            Self(quote: nil, isInBacktickSubstitution: false, parenthesisDepth: nil)
+        }
+
+        static var substitution: Self {
+            Self(quote: nil, isInBacktickSubstitution: false, parenthesisDepth: 1)
+        }
+    }
+
     static func contexts(for rawCommand: String) -> [ShellCommandMutationContext] {
         let trimmedCommand = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommand.isEmpty else { return [] }
@@ -85,10 +99,8 @@ enum ShellCommandMutationContextParser {
         var segments: [Segment] = []
         var current = ""
         var index = command.startIndex
-        var quote: Character?
         var isEscaped = false
-        var commandSubstitutionDepth = 0
-        var isInBacktickSubstitution = false
+        var frames: [LexicalFrame] = [.topLevel]
 
         func finishSegment(separatorAfter: SegmentSeparator) {
             let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,6 +114,9 @@ enum ShellCommandMutationContextParser {
             let character = command[index]
             let nextIndex = command.index(after: index)
             let next = nextIndex < command.endIndex ? command[nextIndex] : nil
+            let frameIndex = frames.index(before: frames.endIndex)
+            let quote = frames[frameIndex].quote
+            let isInBacktickSubstitution = frames[frameIndex].isInBacktickSubstitution
 
             if isEscaped {
                 current.append(character)
@@ -116,19 +131,19 @@ enum ShellCommandMutationContextParser {
                 continue
             }
             if character == "'", quote != "\"", !isInBacktickSubstitution {
-                quote = quote == "'" ? nil : "'"
+                frames[frameIndex].quote = quote == "'" ? nil : "'"
                 current.append(character)
                 index = nextIndex
                 continue
             }
             if character == "\"", quote != "'", !isInBacktickSubstitution {
-                quote = quote == "\"" ? nil : "\""
+                frames[frameIndex].quote = quote == "\"" ? nil : "\""
                 current.append(character)
                 index = nextIndex
                 continue
             }
             if character == "`", quote != "'" {
-                isInBacktickSubstitution.toggle()
+                frames[frameIndex].isInBacktickSubstitution.toggle()
                 current.append(character)
                 index = nextIndex
                 continue
@@ -136,24 +151,27 @@ enum ShellCommandMutationContextParser {
 
             if quote != "'", !isInBacktickSubstitution,
                (character == "$" || character == "<" || character == ">"), next == "(" {
-                commandSubstitutionDepth += 1
+                frames.append(.substitution)
                 current.append(character)
                 current.append("(")
                 index = command.index(after: nextIndex)
                 continue
             }
-            if quote == nil, !isInBacktickSubstitution, commandSubstitutionDepth > 0 {
+            if frames.count > 1, quote == nil, !isInBacktickSubstitution {
                 if character == "(" {
-                    commandSubstitutionDepth += 1
+                    frames[frameIndex].parenthesisDepth? += 1
                 } else if character == ")" {
-                    commandSubstitutionDepth -= 1
+                    frames[frameIndex].parenthesisDepth? -= 1
+                    if frames[frameIndex].parenthesisDepth == 0 {
+                        frames.removeLast()
+                    }
                 }
                 current.append(character)
                 index = nextIndex
                 continue
             }
 
-            if quote == nil, !isInBacktickSubstitution, commandSubstitutionDepth == 0 {
+            if frames.count == 1, quote == nil, !isInBacktickSubstitution {
                 if (character == "&" && next == "&") || (character == "|" && next == "|") {
                     finishSegment(separatorAfter: .control)
                     index = command.index(after: nextIndex)
@@ -233,10 +251,8 @@ enum ShellCommandMutationContextParser {
         var words: [String] = []
         var current = ""
         var index = command.startIndex
-        var quote: Character?
         var isEscaped = false
-        var commandSubstitutionDepth = 0
-        var isInBacktickSubstitution = false
+        var frames: [LexicalFrame] = [.topLevel]
 
         func finishWord() {
             if !current.isEmpty {
@@ -249,6 +265,9 @@ enum ShellCommandMutationContextParser {
             let character = command[index]
             let nextIndex = command.index(after: index)
             let next = nextIndex < command.endIndex ? command[nextIndex] : nil
+            let frameIndex = frames.index(before: frames.endIndex)
+            let quote = frames[frameIndex].quote
+            let isInBacktickSubstitution = frames[frameIndex].isInBacktickSubstitution
 
             if isEscaped {
                 current.append(character)
@@ -263,36 +282,39 @@ enum ShellCommandMutationContextParser {
                 continue
             }
             if character == "'", quote != "\"", !isInBacktickSubstitution {
-                quote = quote == "'" ? nil : "'"
+                frames[frameIndex].quote = quote == "'" ? nil : "'"
                 current.append(character)
                 index = nextIndex
                 continue
             }
             if character == "\"", quote != "'", !isInBacktickSubstitution {
-                quote = quote == "\"" ? nil : "\""
+                frames[frameIndex].quote = quote == "\"" ? nil : "\""
                 current.append(character)
                 index = nextIndex
                 continue
             }
             if character == "`", quote != "'" {
-                isInBacktickSubstitution.toggle()
+                frames[frameIndex].isInBacktickSubstitution.toggle()
                 current.append(character)
                 index = nextIndex
                 continue
             }
             if quote != "'", !isInBacktickSubstitution,
                (character == "$" || character == "<" || character == ">"), next == "(" {
-                commandSubstitutionDepth += 1
+                frames.append(.substitution)
                 current.append(character)
                 current.append("(")
                 index = command.index(after: nextIndex)
                 continue
             }
-            if quote == nil, !isInBacktickSubstitution, commandSubstitutionDepth > 0 {
+            if frames.count > 1, quote == nil, !isInBacktickSubstitution {
                 if character == "(" {
-                    commandSubstitutionDepth += 1
+                    frames[frameIndex].parenthesisDepth? += 1
                 } else if character == ")" {
-                    commandSubstitutionDepth -= 1
+                    frames[frameIndex].parenthesisDepth? -= 1
+                    if frames[frameIndex].parenthesisDepth == 0 {
+                        frames.removeLast()
+                    }
                 }
                 current.append(character)
                 index = nextIndex
@@ -300,7 +322,7 @@ enum ShellCommandMutationContextParser {
             }
             if character.isWhitespace,
                quote == nil,
-               commandSubstitutionDepth == 0,
+               frames.count == 1,
                !isInBacktickSubstitution {
                 finishWord()
                 index = nextIndex

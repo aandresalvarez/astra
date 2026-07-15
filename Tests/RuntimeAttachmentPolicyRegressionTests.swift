@@ -239,6 +239,7 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "rm '\(attachment.path)'",
             "printf '%s\\n' '\(attachment.path)' | xargs rm -f",
             "input=$(printf %s '\(attachment.path)') && rm \"$input\"",
+            "input=\"$(printf %s '\(attachment.path)')\" && rm \"$input\"",
             "rm '\(attachment.path)' && /bin/sh -lc 'true'",
             "input='\(attachment.path)' && rm \"${input:?missing}\"",
             "declare input='\(attachment.path)' && rm \"$input\"",
@@ -267,6 +268,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "reverse-pipeline-data-flow",
             input: [
                 "command": "rm /tmp/unrelated-output | printf '%s\\n' '\(attachment.path)'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "quoted-substitution-before-unrelated-mutation",
+            input: [
+                "command": "printf \"$(printf '%s' '\(attachment.path)')\" && rm -rf /tmp/unrelated-output"
             ]
         )) == nil)
     }

@@ -233,10 +233,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         return nil
     }
 
-    /// Best-effort shell data-flow match: flags a command when one top-level
-    /// segment both looks mutating and targets a read-only path directly or
-    /// through an explicit shell variable assignment. It complements rather
-    /// than replaces OS-level sandbox enforcement in broad/Auto mode.
+    /// Best-effort shell data-flow match: flags a mutating segment when it
+    /// targets a read-only path directly, through an explicit shell variable
+    /// assignment, or through an upstream pipeline stage. It complements
+    /// rather than replaces OS-level sandbox enforcement in broad/Auto mode.
     private func validateShellReadOnlyInputMutation(
         _ command: String?,
         toolName: String
@@ -245,6 +245,7 @@ struct AgentRuntimePolicyGuard: Sendable {
               !trimmedCommand.isEmpty else {
             return nil
         }
+        guard Self.shellCommandLooksMutating(trimmedCommand) else { return nil }
         let contexts = ShellCommandMutationContextParser.contexts(for: trimmedCommand)
         guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
             contexts.contains { context in
