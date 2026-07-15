@@ -41,6 +41,11 @@ enum UIResponsivenessDiagnostics {
         "files_shelf_to_first_results",
         "files_shelf_to_index_ready"
     ]
+    private static let filesShelfInternalTimingEvents: Set<String> = [
+        "files_shelf_cancelled",
+        "files_shelf_index_scan",
+        "files_shelf_preview_load"
+    ]
 
     private struct Measurement {
         let event: String
@@ -149,7 +154,12 @@ enum UIResponsivenessDiagnostics {
     }
 
     static func isRoutineMeasurement(_ event: String) -> Bool {
-        isResponsivenessEvent(event) && event != "task_selection_timeout"
+        event != "task_selection_timeout"
+            && (isResponsivenessEvent(event) || isFilesShelfInternalTiming(event))
+    }
+
+    static func isFilesShelfInternalTiming(_ event: String) -> Bool {
+        filesShelfInternalTimingEvents.contains(event)
     }
 
     private static func isResponsivenessEvent(_ event: String) -> Bool {

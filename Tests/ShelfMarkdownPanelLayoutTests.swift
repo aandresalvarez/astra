@@ -151,7 +151,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("empty workspace file scope stays on the navigator list surface")
     func emptyWorkspaceFileScopeStaysOnNavigatorListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: 1,
+            hasConfiguredRoots: true,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: false
@@ -164,7 +164,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("scanning file scope does not present as empty before nodes load")
     func scanningFileScopeDoesNotPresentAsEmptyBeforeNodesLoad() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: 1,
+            hasConfiguredRoots: true,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: true
@@ -177,7 +177,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("empty search results keep the populated list surface")
     func emptySearchResultsKeepPopulatedListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: 1,
+            hasConfiguredRoots: true,
             hasVisibleFileRoots: false,
             isSearchingFiles: true,
             isScanningFiles: false
@@ -190,7 +190,7 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("missing workspace paths use the same navigator list surface")
     func missingWorkspacePathsUseSameNavigatorListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: 0,
+            hasConfiguredRoots: false,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: false
@@ -203,13 +203,47 @@ struct ShelfMarkdownPanelLayoutTests {
     @Test("Empty task scope remains browsable when workspace roots are configured")
     func emptyTaskScopeRemainsBrowsable() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: 1,
+            hasConfiguredRoots: true,
             hasVisibleFileRoots: false,
             isSearchingFiles: false,
             isScanningFiles: false
         )
 
         #expect(presentation == .emptyScope)
+    }
+
+    @Test("Workspace scope reports missing paths when only task roots exist")
+    func workspaceScopeDoesNotUseTaskRootsAsConfiguration() {
+        let hasConfiguredRoots = ShelfFileNavigatorRootAvailability.hasConfiguredRoots(
+            allRootCount: 1,
+            scopedRootCount: 0,
+            scope: .workspace
+        )
+
+        #expect(!hasConfiguredRoots)
+        #expect(ShelfFileNavigatorContentPresentation.resolve(
+            hasConfiguredRoots: hasConfiguredRoots,
+            hasVisibleFileRoots: false,
+            isSearchingFiles: false,
+            isScanningFiles: false
+        ) == .noWorkspacePaths)
+    }
+
+    @Test("Task scope keeps workspace roots as an empty-scope escape hatch")
+    func taskScopeUsesWorkspaceRootsAsEscapeHatch() {
+        let hasConfiguredRoots = ShelfFileNavigatorRootAvailability.hasConfiguredRoots(
+            allRootCount: 1,
+            scopedRootCount: 0,
+            scope: .task
+        )
+
+        #expect(hasConfiguredRoots)
+        #expect(ShelfFileNavigatorContentPresentation.resolve(
+            hasConfiguredRoots: hasConfiguredRoots,
+            hasVisibleFileRoots: false,
+            isSearchingFiles: false,
+            isScanningFiles: false
+        ) == .emptyScope)
     }
 
     @Test("a lone open file still shows its tab so it keeps a per-file close button")

@@ -198,9 +198,28 @@ struct FilesShelfResponsivenessTelemetryTests {
         #expect(report.slowestTraces.first?.event == "files_shelf_to_index_ready")
     }
 
-    private func filesShelfMeasurement(_ event: String, _ duration: Double) -> LogEntry {
+    @Test("Slow internal Files shelf timings remain non-actionable notices")
+    func slowInternalTimingsDoNotBecomeApplicationWarnings() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            filesShelfMeasurement("files_shelf_index_scan", 1_500, level: .warning),
+            filesShelfMeasurement("files_shelf_preview_load", 2_000, level: .warning)
+        ])
+
+        #expect(report.issueCount == 0)
+        #expect(Set(report.notices.map(\.id)) == [
+            "performance.responsiveness.files_shelf_index_scan",
+            "performance.responsiveness.files_shelf_preview_load"
+        ])
+        #expect(report.responsiveness.eventSummaries.isEmpty)
+    }
+
+    private func filesShelfMeasurement(
+        _ event: String,
+        _ duration: Double,
+        level: LogLevel = .info
+    ) -> LogEntry {
         LogEntry(
-            level: .info,
+            level: level,
             category: "Performance",
             message: "event=\(event) duration_ms=\(duration) task_id=01234567 trace_id=files-shelf-safe"
         )

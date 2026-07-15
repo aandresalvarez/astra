@@ -11,12 +11,12 @@ enum ShelfFileNavigatorContentPresentation: Equatable {
     case populatedList
 
     static func resolve(
-        configuredRootCount: Int,
+        hasConfiguredRoots: Bool,
         hasVisibleFileRoots: Bool,
         isSearchingFiles: Bool,
         isScanningFiles: Bool
     ) -> ShelfFileNavigatorContentPresentation {
-        if configuredRootCount == 0 {
+        if !hasConfiguredRoots {
             return .noWorkspacePaths
         }
         if isScanningFiles && !hasVisibleFileRoots {
@@ -539,8 +539,12 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var fileNavigatorContentPresentation: ShelfFileNavigatorContentPresentation {
-        ShelfFileNavigatorContentPresentation.resolve(
-            configuredRootCount: fileIndex.allRoots.count,
+        let scope = effectiveFileNavigatorScope
+        return ShelfFileNavigatorContentPresentation.resolve(
+            hasConfiguredRoots: ShelfFileNavigatorRootAvailability.hasConfiguredRoots(
+                allRootCount: fileIndex.allRoots.count, scopedRootCount: fileIndex.roots.count,
+                scope: scope
+            ),
             hasVisibleFileRoots: !visibleFileRoots.isEmpty,
             isSearchingFiles: isSearchingFiles,
             isScanningFiles: fileIndex.isScanning
