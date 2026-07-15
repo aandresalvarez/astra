@@ -100,7 +100,6 @@ struct ShelfFileIndexControllerTests {
             force: false,
             reason: "test",
             taskID: nil,
-            workspaceID: nil,
             responsivenessScope: nil
         )
         controller.refresh(
@@ -110,7 +109,6 @@ struct ShelfFileIndexControllerTests {
             force: false,
             reason: "test",
             taskID: nil,
-            workspaceID: nil,
             responsivenessScope: nil
         )
 
@@ -152,7 +150,7 @@ struct ShelfFileIndexControllerTests {
 
         controller.refresh(
             allRoots: [root], scope: .workspace, includeHidden: false, force: false,
-            reason: "warm", taskID: nil, workspaceID: nil, responsivenessScope: nil
+            reason: "warm", taskID: nil, responsivenessScope: nil
         )
         for _ in 0..<100 where controller.isScanning {
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -162,7 +160,7 @@ struct ShelfFileIndexControllerTests {
 
         controller.refresh(
             allRoots: [root], scope: .workspace, includeHidden: false, force: false,
-            reason: "race", taskID: nil, workspaceID: nil, responsivenessScope: nil
+            reason: "race", taskID: nil, responsivenessScope: nil
         )
         await filtering.waitUntilBlocked()
         await controller.applySearchText("beta")
@@ -195,7 +193,7 @@ struct ShelfFileIndexControllerTests {
         )
         controller.refresh(
             allRoots: [root], scope: .workspace, includeHidden: false, force: true,
-            reason: "initial", taskID: nil, workspaceID: nil, responsivenessScope: nil
+            reason: "initial", taskID: nil, responsivenessScope: nil
         )
         for _ in 0..<100 where controller.isScanning {
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -212,7 +210,7 @@ struct ShelfFileIndexControllerTests {
         )
         controller.refresh(
             allRoots: [root], scope: .workspace, includeHidden: false, force: true,
-            reason: "replacement", taskID: nil, workspaceID: nil, responsivenessScope: nil
+            reason: "replacement", taskID: nil, responsivenessScope: nil
         )
         for _ in 0..<100 where controller.isScanning {
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -223,6 +221,42 @@ struct ShelfFileIndexControllerTests {
         #expect(controller.nodes.map(\.name) == ["beta.txt"])
         #expect(controller.nodes(for: root).isEmpty)
         #expect(controller.snapshotSource == .fresh)
+    }
+
+    @MainActor
+    @Test("Starting a replacement scan marks the presented snapshot stale")
+    func replacementScanMarksPresentedSnapshotStale() async throws {
+        let directory = try temporaryDirectory(name: "stale-snapshot")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "old".write(
+            to: directory.appendingPathComponent("old.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let root = WorkspaceFileRoot(
+            id: "workspace",
+            kind: .primary,
+            title: "Workspace",
+            path: directory.path,
+            isDirectory: true
+        )
+        let controller = ShelfFileIndexController(store: WorkspaceFileIndexStore())
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: true,
+            reason: "initial", taskID: nil, responsivenessScope: nil
+        )
+        for _ in 0..<100 where controller.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(controller.snapshotSource == .fresh)
+
+        controller.refresh(
+            allRoots: [root], scope: .workspace, includeHidden: false, force: true,
+            reason: "replacement", taskID: nil, responsivenessScope: nil
+        )
+
+        #expect(controller.snapshotSource == .stale)
+        controller.cancel(responsivenessScope: nil)
     }
 
     private func root(id: String, kind: WorkspaceFileRoot.Kind) -> WorkspaceFileRoot {

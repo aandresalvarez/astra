@@ -36,6 +36,17 @@ struct UIResponsivenessReport: Equatable {
 /// the parser separate from `LogDiagnosticsService` makes percentile behavior
 /// deterministic and directly regression-testable.
 enum UIResponsivenessDiagnostics {
+    private static let filesShelfReadinessEvents: Set<String> = [
+        "files_shelf_to_chrome_ready",
+        "files_shelf_to_first_results",
+        "files_shelf_to_index_ready"
+    ]
+    private static let filesShelfInternalTimingEvents: Set<String> = [
+        "files_shelf_cancelled",
+        "files_shelf_index_scan",
+        "files_shelf_preview_load"
+    ]
+
     private struct Measurement {
         let event: String
         let durationMilliseconds: Double
@@ -143,7 +154,12 @@ enum UIResponsivenessDiagnostics {
     }
 
     static func isRoutineMeasurement(_ event: String) -> Bool {
-        isResponsivenessEvent(event) && event != "task_selection_timeout"
+        event != "task_selection_timeout"
+            && (isResponsivenessEvent(event) || isFilesShelfInternalTiming(event))
+    }
+
+    static func isFilesShelfInternalTiming(_ event: String) -> Bool {
+        filesShelfInternalTimingEvents.contains(event)
     }
 
     private static func isResponsivenessEvent(_ event: String) -> Bool {
@@ -152,7 +168,7 @@ enum UIResponsivenessDiagnostics {
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
             || event.hasPrefix("run_finalize_")
-            || event.hasPrefix("files_shelf_")
+            || filesShelfReadinessEvents.contains(event)
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
     }

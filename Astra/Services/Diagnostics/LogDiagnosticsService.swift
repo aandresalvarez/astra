@@ -1224,11 +1224,16 @@ enum LogDiagnosticsService {
            let event = field("event", in: message),
            event != "task_selection_timeout",
            UIResponsivenessDiagnostics.isRoutineMeasurement(event) {
+            let isInternalFilesShelfTiming = UIResponsivenessDiagnostics.isFilesShelfInternalTiming(event)
             return (
                 key: "performance.responsiveness.\(event)",
-                title: "Slow UI responsiveness sample",
+                title: isInternalFilesShelfTiming
+                    ? "Slow Files shelf internal timing"
+                    : "Slow UI responsiveness sample",
                 signal: "event=\(event)",
-                analysis: "This completed interaction exceeded the responsiveness warning threshold and is summarized in the UI Responsiveness section. It is diagnostic evidence, not an application failure by itself."
+                analysis: isInternalFilesShelfTiming
+                    ? "This internal Files shelf operation exceeded its telemetry threshold. It is retained as a non-actionable measurement and excluded from user-visible readiness summaries."
+                    : "This completed interaction exceeded the responsiveness warning threshold and is summarized in the UI Responsiveness section. It is diagnostic evidence, not an application failure by itself."
             )
         }
 

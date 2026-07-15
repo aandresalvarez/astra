@@ -174,11 +174,17 @@ Notable files:
 - `astra-icon-v7-custom-a-arch.png`
 - `astra-icon-v8-stroked-a.png`
 
-The active app icon source is:
+The active app icon masters are:
 
 ```text
-Astra/Assets.xcassets/AppIcon.appiconset/appicon_1024.png
+docs/icon-iterations/astra-icon-v9-reticle-master.png
+docs/icon-iterations/astra-icon-v9-reticle-dev-master.png
 ```
+
+The masters reserve a 64 px transparent margin around an 896 px optical tile.
+That 87.5% canvas fill keeps ASTRA visually aligned with neighboring macOS Dock
+icons. The packaged icon resources are `Astra/Resources/AppIcon.icns` and
+`Astra/Resources/AppIconDev.icns`.
 
 The next logo should preserve what works:
 
