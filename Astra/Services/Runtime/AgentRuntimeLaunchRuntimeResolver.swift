@@ -39,12 +39,15 @@ enum AgentRuntimeLaunchRuntimeResolver {
         guard task.runtimeID != selectedRuntime.rawValue else { return false }
 
         let previousRuntime = task.runtimeID ?? "none"
+        let clearedExplicitRuntimeSelection = task.runtimeExplicitlySelected
         task.runtimeID = selectedRuntime.rawValue
+        task.runtimeExplicitlySelected = false
         task.updatedAt = Date()
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "event": "runtime_registration_fallback",
             "from_runtime": previousRuntime,
             "to_runtime": selectedRuntime.rawValue,
+            "cleared_explicit_runtime_selection": String(clearedExplicitRuntimeSelection),
             "phase": phase.rawValue,
             "reason": "persisted_runtime_unregistered_or_noncanonical"
         ], level: .warning)
