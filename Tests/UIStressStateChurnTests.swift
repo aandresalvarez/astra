@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import SwiftUI
+import SwiftData
 import ASTRAModels
 @testable import ASTRA
 import ASTRACore
@@ -325,41 +326,46 @@ struct UIStressStateChurnTests {
         #expect(recoveries == 1, "token guard must collapse 500 armed timers into one recovery")
     }
 
-    // MARK: - Right panel: per-conversation canvas memory growth
+    // MARK: - Right panel: task-owned canvas memory
 
-    @Test("2k-conversation canvas memory stays functional and should stay bounded")
+    @Test("2k-task canvas memory follows live task rows without a global blob")
     func canvasMemoryShouldStayBoundedAcrossConversations() throws {
-        // WorkspaceCanvasItemPreference storage keeps one JSON entry per
-        // conversation ever seen, decoded and re-encoded on every canvas
-        // change. Bounded storage is the desired contract, recorded as a
-        // known issue so an eviction policy flips it; functional recall and
-        // the storm budget stay hard assertions.
-        let model = RightPanelPresentationModel(defaults: try scratchDefaults())
-        let conversations = 2_000
-
-        let elapsed = ContinuousClock().measure {
-            for index in 0..<conversations {
-                model.presentCanvas(.markdown, conversationID: "conversation-\(index)")
-            }
-        }
-
-        let data = try #require(model.rememberedItemsRawValue.data(using: .utf8))
-        let decoded = try JSONDecoder().decode([String: String].self, from: data)
-        withKnownIssue("no eviction policy: one entry per conversation ever seen") {
-            #expect(decoded.count <= 1_000,
-                    "any real eviction policy keeps far fewer entries, got \(decoded.count)")
-        }
-        // Full-blob decode+encode per op is quadratic in remembered
-        // conversations; this bounds the whole 2k storm rather than per-op.
-        #expect(elapsed < .seconds(10), "2k canvas ops took \(elapsed)")
-
-        model.setActiveCanvasItem(nil, remember: false, conversationID: nil)
-        model.dismissRail()
-        let restored = model.restoreRememberedItemIfAvailable(
-            conversationID: "conversation-42",
-            canPresent: { _ in true }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
-        #expect(restored == .markdown, "storm must not corrupt individual conversation memory")
+        let context = container.mainContext
+        var persistedTaskIDs: [UUID] = []
+        let preferences = WorkspaceCanvasItemPreferenceService(modelContext: context) { task, _ in
+            persistedTaskIDs.append(task.id)
+        }
+        let tasks = (0..<2_000).map { index in
+            let task = AgentTask(title: "Conversation \(index)", goal: "Remember Files")
+            context.insert(task)
+            #expect(preferences.apply(.explicitUserChoice, item: .markdown, for: task))
+            return task
+        }
+        try context.save()
+
+        #expect(tasks.allSatisfy { $0.rememberedWorkspaceCanvasItemRawValue == "markdown" })
+        #expect(persistedTaskIDs.count == tasks.count)
+        #expect(Set(persistedTaskIDs).count == tasks.count)
+
+        #expect(preferences.apply(.explicitUserChoice, item: .browser, for: tasks[42]))
+        #expect(persistedTaskIDs.last == tasks[42].id)
+        #expect(persistedTaskIDs.count == tasks.count + 1)
+        #expect(tasks[42].rememberedWorkspaceCanvasItemRawValue == "browser")
+        #expect(tasks[41].rememberedWorkspaceCanvasItemRawValue == "markdown")
+        #expect(tasks[43].rememberedWorkspaceCanvasItemRawValue == "markdown")
+
+        for task in tasks.dropFirst() {
+            context.delete(task)
+        }
+        try context.save()
+        let survivingTasks = try context.fetch(FetchDescriptor<AgentTask>())
+        #expect(survivingTasks.count == 1)
+        #expect(survivingTasks.first?.rememberedWorkspaceCanvasItemRawValue == "markdown")
     }
 
     // MARK: - Scene selection churn

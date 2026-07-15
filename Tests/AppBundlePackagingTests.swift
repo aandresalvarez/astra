@@ -55,6 +55,7 @@ struct AppBundlePackagingTests {
     func buildScriptEmbedsStoreSchemaVersion() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
         #expect(script.contains("public static let currentVersion"))
+        #expect(script.contains(#"$ROOT_DIR/Astra/Models/CurrentSchema.swift"#))
         #expect(script.contains("<key>ASTRASchemaVersion</key>"))
         #expect(script.contains("<integer>$ASTRA_SCHEMA_VERSION</integer>"))
         #expect(!script.contains("ASTRA_SCHEMA_VERSION:-"))

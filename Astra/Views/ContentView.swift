@@ -686,7 +686,7 @@ struct ContentView: View {
             context: shelfAvailabilityContext
         )
         pendingAppPreviewPolicyRestore = appPreviewItem == nil
-        setActiveWorkspaceCanvasItem(appPreviewItem, remember: false)
+        setActiveWorkspaceCanvasItem(appPreviewItem, intent: .transient)
     }
 
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
@@ -695,7 +695,7 @@ struct ContentView: View {
         sceneSelection.clearWorkspaceAppSurface()
         pendingAppPreviewPolicyRestore = false
         if activeWorkspaceCanvasItem == .appPreview {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
     }
 
@@ -703,14 +703,14 @@ struct ContentView: View {
         if activeWorkspaceCanvasItem == .appPreview {
             pendingAppPreviewPolicyRestore = false
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: false)
+                setActiveWorkspaceCanvasItem(nil, intent: .transient)
             }
         } else {
             guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
             pendingAppPreviewPolicyRestore = false
             animatePanelChange {
                 rightPanel.hideRailWithoutClearingCanvasItem()
-                setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+                setActiveWorkspaceCanvasItem(.appPreview, intent: .transient)
             }
         }
     }
@@ -741,12 +741,12 @@ struct ContentView: View {
                 startWorkspaceAppStudio(workspace: workspace)
                 workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
             } else if activeWorkspaceCanvasItem == .appPreview {
-                setActiveWorkspaceCanvasItem(nil, remember: false)
+                setActiveWorkspaceCanvasItem(nil, intent: .transient)
             }
             return
         }
         if activeWorkspaceCanvasItem == .appPreview {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
         applySceneSelectionIntent {
             sceneSelection.openApp(app, workspace: sceneCoordinator.workspace(for: app))
@@ -953,7 +953,7 @@ struct ContentView: View {
             if let activeWorkspaceCanvasItem,
                !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
                 animatePanelChange {
-                    setActiveWorkspaceCanvasItem(nil, remember: false)
+                    setActiveWorkspaceCanvasItem(nil, intent: .transient)
                 }
             }
             // Opening a task while the sidebar is a too-narrow overlay drawer
@@ -1228,7 +1228,7 @@ struct ContentView: View {
         }
 
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: true)
+            setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             rightPanel.dismissRail()
             presentation.revealAfterClearingRightSidePanel()
         }
@@ -1238,7 +1238,7 @@ struct ContentView: View {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
         if let activeWorkspaceCanvasItem,
            !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
@@ -1246,18 +1246,21 @@ struct ContentView: View {
         restoreRememberedWorkspaceCanvasItemIfAvailable()
     }
 
+    private var workspaceCanvasPreferenceService: WorkspaceCanvasItemPreferenceService { WorkspaceCanvasItemPreferenceService(modelContext: modelContext) }
+
     private func setRightRailPresented(_ isPresented: Bool) {
-        animatePanelChange {
-            rightPanel.setRailPresented(isPresented, conversationID: selectedWorkspaceCanvasConversationID)
+        animatePanelChange { rightPanel.setRailPresented(isPresented) }
+        if isPresented {
+            workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            rightPanel.presentRail(
-                rememberShelfState: rememberShelfState,
-                conversationID: selectedWorkspaceCanvasConversationID
-            )
+            rightPanel.presentRail()
+        }
+        if rememberShelfState {
+            workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
     }
 
@@ -1265,8 +1268,9 @@ struct ContentView: View {
         guard canPresentWorkspaceCanvasItem(item) else { return }
         beginScreenTransitionIfNeeded(to: item, source: "shelf_action")
         commitWorkspaceCanvasItemChange {
-            rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
+            rightPanel.presentCanvas(item)
         }
+        workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: item, for: selectedTask)
         screenTransitionCoordinator.stateCommitted()
     }
 
@@ -1275,24 +1279,17 @@ struct ContentView: View {
             get: { activeWorkspaceCanvasItem },
             set: { item in
                 guard item.map(canPresentWorkspaceCanvasItem) ?? true else { return }
-                setActiveWorkspaceCanvasItem(item, remember: true)
+                setActiveWorkspaceCanvasItem(item, intent: .explicitUserChoice)
             }
         )
     }
 
-    private var selectedWorkspaceCanvasConversationID: String? {
-        selectedTask?.id.uuidString
-    }
-
-    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
+    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, intent: WorkspaceCanvasPreferenceIntent) {
         beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
         commitWorkspaceCanvasItemChange {
-            rightPanel.setActiveCanvasItem(
-                item,
-                remember: remember,
-                conversationID: selectedWorkspaceCanvasConversationID
-            )
+            rightPanel.setActiveCanvasItem(item)
         }
+        workspaceCanvasPreferenceService.apply(intent, item: item, for: selectedTask)
         screenTransitionCoordinator.stateCommitted()
     }
 
@@ -1308,7 +1305,7 @@ struct ContentView: View {
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
         guard let item = rightPanel.restoreRememberedItemIfAvailable(
-            conversationID: selectedWorkspaceCanvasConversationID,
+            rememberedItem: workspaceCanvasPreferenceService.rememberedItem(for: selectedTask),
             canPresent: canPresentWorkspaceCanvasItem
         ) else {
             return
@@ -1325,7 +1322,7 @@ struct ContentView: View {
             context: shelfAvailabilityContext
         )
         guard nextItem != activeWorkspaceCanvasItem else { return }
-        setActiveWorkspaceCanvasItem(nextItem, remember: remember)
+        setActiveWorkspaceCanvasItem(nextItem, intent: remember ? .explicitUserChoice : .transient)
     }
 
     private func restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable() {
@@ -1338,7 +1335,7 @@ struct ContentView: View {
         )
         if nextItem != activeWorkspaceCanvasItem {
             pendingAppPreviewPolicyRestore = false
-            setActiveWorkspaceCanvasItem(nextItem, remember: false)
+            setActiveWorkspaceCanvasItem(nextItem, intent: .transient)
             return
         }
         if !isComposingWorkspaceApp { pendingAppPreviewPolicyRestore = false }
@@ -1386,14 +1383,14 @@ struct ContentView: View {
         guard canPresentWorkspaceCanvasItem(.plan) else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
-                    setActiveWorkspaceCanvasItem(nil, remember: true)
+                    setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
                 }
             }
             return
         }
         if activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: true)
+                setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
         } else {
             presentCanvas(.plan)
@@ -1403,7 +1400,7 @@ struct ContentView: View {
     private func toggleBrowserCanvas() {
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: true)
+                setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
         } else {
             guard canPresentWorkspaceCanvasItem(.browser) else { return }
@@ -1431,7 +1428,7 @@ struct ContentView: View {
         guard canPresentWorkspaceCanvasItem(.markdown) else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
-                    setActiveWorkspaceCanvasItem(nil, remember: true)
+                    setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
                 }
             }
             return
@@ -1444,7 +1441,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: true)
+                setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
         } else {
             presentCanvas(.markdown)
@@ -1455,7 +1452,7 @@ struct ContentView: View {
         guard canPresentWorkspaceCanvasItem(.query) else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
-                    setActiveWorkspaceCanvasItem(nil, remember: true)
+                    setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
                 }
             }
             return
@@ -1469,7 +1466,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .query {
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: true)
+                setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
         } else {
             presentCanvas(.query)
@@ -1638,14 +1635,14 @@ struct ContentView: View {
     private func closeMarkdownShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .markdown, effectiveWorkspace == nil else { return }
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
     }
 
     private func closeQueryShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .query, !selectedTaskHasQueryShelfContent else { return }
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
     }
 
@@ -1984,7 +1981,7 @@ struct ContentView: View {
             pendingAppPreviewPolicyRestore = false
         }
         if activeWorkspaceCanvasItem == .appPreview {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, intent: .transient)
         }
     }
 
@@ -2042,7 +2039,7 @@ struct ContentView: View {
 
         if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                setActiveWorkspaceCanvasItem(nil, remember: true)
+                setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
             return
         }
@@ -2400,7 +2397,8 @@ struct ContentView: View {
                     usesSelectedTask: false
                 )
             }
-            rightPanel.setActiveCanvasItem(nextCanvasItem, remember: false, conversationID: nextTaskID?.uuidString)
+            rightPanel.setActiveCanvasItem(nextCanvasItem)
+            workspaceCanvasPreferenceService.apply(.transient, item: nextCanvasItem, for: selectedTask)
         }
     }
 

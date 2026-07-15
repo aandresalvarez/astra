@@ -132,7 +132,6 @@ struct PanelLayoutGeometryTests {
 
     @Test("Workspace shelf visibility uses stable persisted item values")
     func workspaceShelfVisibilityUsesStablePersistedValues() {
-        #expect(AppStorageKeys.activeWorkspaceCanvasItemsByConversation == "astra.workspaceCanvas.activeItemsByConversation.v1")
         #expect(WorkspaceCanvasItem.plan.rawValue == "plan")
         #expect(WorkspaceCanvasItem.markdown.rawValue == "markdown")
         #expect(WorkspaceCanvasItem.browser.rawValue == "browser")
@@ -140,10 +139,11 @@ struct PanelLayoutGeometryTests {
         #expect(WorkspaceCanvasItem.appPreview.rawValue == "appPreview")
         #expect(WorkspaceCanvasItem.markdown.shelfID == .files)
         #expect(ShelfID.files.workspaceCanvasItem.rawValue == "markdown")
+        #expect(WorkspaceCanvasItemPreference.item(for: nil) == nil)
         #expect(WorkspaceCanvasItemPreference.item(for: "") == nil)
-        #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == "")
+        #expect(WorkspaceCanvasItemPreference.item(for: "unsupported") == nil)
+        #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == nil)
         #expect(WorkspaceCanvasItemPreference.rawValue(for: .browser) == "browser")
-        #expect(WorkspaceCanvasItemPreference.emptyStorageRawValue == "{}")
         #expect(GeneratedHTMLDiscoveryState.empty.preferredPath == "")
         #expect(GeneratedHTMLDiscoveryState.empty.signature == "")
     }
@@ -157,105 +157,6 @@ struct PanelLayoutGeometryTests {
         #expect(discovered.preferredPath == path)
         #expect(!discovered.shouldApplyDiscovery(preferredPath: path, taskID: taskID))
         #expect(GeneratedHTMLDiscoveryState.empty.shouldApplyDiscovery(preferredPath: path, taskID: taskID))
-    }
-
-    @Test("Workspace shelf preference changes only for explicit user choices in the current conversation")
-    func workspaceShelfPreferenceChangesOnlyForExplicitUserChoicesInCurrentConversation() {
-        let conversationA = "conversation-a"
-        let conversationB = "conversation-b"
-
-        let withBrowser = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
-            conversationID: conversationA,
-            item: .browser,
-            remember: true
-        )
-
-        #expect(WorkspaceCanvasItemPreference.item(in: withBrowser, for: conversationA) == .browser)
-        #expect(WorkspaceCanvasItemPreference.item(in: withBrowser, for: conversationB) == nil)
-
-        #expect(WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: withBrowser,
-            conversationID: conversationA,
-            item: nil,
-            remember: false
-        ) == withBrowser)
-
-        let withConversationAClosed = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: withBrowser,
-            conversationID: conversationA,
-            item: nil,
-            remember: true
-        )
-        #expect(withConversationAClosed == WorkspaceCanvasItemPreference.emptyStorageRawValue)
-        #expect(WorkspaceCanvasItemPreference.item(in: withConversationAClosed, for: conversationA) == nil)
-        #expect(!withConversationAClosed.contains(conversationA))
-
-        let withConversationBMarkdown = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: withConversationAClosed,
-            conversationID: conversationB,
-            item: .markdown,
-            remember: true
-        )
-        #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationA) == nil)
-        #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationB) == .markdown)
-        #expect(!withConversationBMarkdown.contains(conversationA))
-        #expect(WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: withConversationBMarkdown,
-            conversationID: nil,
-            item: nil,
-            remember: true
-        ) == withConversationBMarkdown)
-    }
-
-    @Test("Workspace shelf preference store persists the conversation map")
-    func workspaceShelfPreferenceStorePersistsConversationMap() throws {
-        let suiteName = "WorkspaceCanvasItemPreferenceStore.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
-            conversationID: "conversation-a",
-            item: .browser,
-            remember: true
-        )
-
-        #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == WorkspaceCanvasItemPreference.emptyStorageRawValue)
-
-        WorkspaceCanvasItemPreferenceStore.save(storage, defaults: defaults)
-
-        #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == storage)
-    }
-
-    @Test("Workspace shelf preference store skips unchanged writes")
-    func workspaceShelfPreferenceStoreSkipsUnchangedWrites() throws {
-        let suiteName = "WorkspaceCanvasItemPreferenceStore.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-
-        let storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
-            conversationID: "conversation-a",
-            item: .browser,
-            remember: true
-        )
-
-        #expect(WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
-            updatedRawValue: storage,
-            defaults: defaults
-        ))
-        #expect(!WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: storage,
-            updatedRawValue: storage,
-            defaults: defaults
-        ))
-        #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == storage)
     }
 
     @Test("Remembered shelf restore yields to an explicitly visible right rail")
