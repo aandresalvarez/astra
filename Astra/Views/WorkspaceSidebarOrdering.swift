@@ -268,6 +268,30 @@ enum WorkspaceSidebarScrollAnchor {
     }
 }
 
+/// Ephemeral ownership for one workspace reorder gesture. SwiftUI's macOS
+/// `onDrag` API does not report cancellation, so the view ends this state from
+/// a mouse-button watchdog as well as from successful drop completion.
+struct WorkspaceSidebarDragSessionState: Equatable {
+    private(set) var sourceID: UUID?
+    private(set) var dropTargetID: UUID?
+
+    var isActive: Bool { sourceID != nil }
+
+    mutating func begin(sourceID: UUID) {
+        self.sourceID = sourceID
+        dropTargetID = nil
+    }
+
+    mutating func setDropTarget(_ workspaceID: UUID?) {
+        dropTargetID = workspaceID
+    }
+
+    mutating func end() {
+        sourceID = nil
+        dropTargetID = nil
+    }
+}
+
 enum WorkspaceSidebarDragPayload {
     /// Use the same system-declared text-object bridge as ASTRA's working task
     /// and Kanban drags. A private type registered only as raw data started a

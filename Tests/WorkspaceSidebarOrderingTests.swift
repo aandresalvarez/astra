@@ -243,6 +243,27 @@ struct WorkspaceSidebarOrderingTests {
         #expect(loadedID == workspaceID)
     }
 
+    @Test("Ending a canceled workspace drag clears ownership and drop chrome")
+    func canceledWorkspaceDragClearsSession() {
+        let sourceID = UUID()
+        let targetID = UUID()
+        var session = WorkspaceSidebarDragSessionState()
+
+        session.begin(sourceID: sourceID)
+        session.setDropTarget(targetID)
+        #expect(session.isActive)
+        #expect(session.sourceID == sourceID)
+        #expect(session.dropTargetID == targetID)
+
+        session.end()
+
+        #expect(!session.isActive)
+        #expect(session.sourceID == nil)
+        #expect(session.dropTargetID == nil)
+        #expect(SidebarDragReleaseWatchdog.primaryButtonIsReleased(pressedMouseButtons: 0))
+        #expect(!SidebarDragReleaseWatchdog.primaryButtonIsReleased(pressedMouseButtons: 1))
+    }
+
     @Test("Workspace drop payload rejects ordinary task text")
     func dragPayloadRejectsTaskIDs() async {
         let taskProvider = NSItemProvider(object: UUID().uuidString as NSString)

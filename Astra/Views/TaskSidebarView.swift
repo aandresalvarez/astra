@@ -352,7 +352,7 @@ struct TaskSidebarView: View {
     // `.onDrag` arms it, and a pressed-mouse-button watchdog clears it
     // when the session ends — drop, cancel, or release outside the app.
     @State private var isTaskDragInFlight = false
-    @State private var taskDragWatchdog: Timer?
+    @State private var taskDragWatchdog = SidebarDragReleaseWatchdog()
     @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesFilterHovered = false
@@ -366,8 +366,8 @@ struct TaskSidebarView: View {
     @State private var isShowingNewTaskNudge = false
     @State private var isNewTaskNudgePulsing = false
     @State private var workspaceOrderingState = WorkspaceSidebarOrderingStore.load()
-    @State private var draggedWorkspaceID: UUID?
-    @State private var workspaceDropTargetID: UUID?
+    @State private var workspaceDragSession = WorkspaceSidebarDragSessionState()
+    @State private var workspaceDragWatchdog = SidebarDragReleaseWatchdog()
     @State private var selectedWorkspaceRowFrame: CGRect?
     @State private var workspaceViewportHeight: CGFloat = 0
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
@@ -572,10 +572,13 @@ struct TaskSidebarView: View {
             rebuildSchedules()
             updateNewTaskNudge()
         }
-        // Tear the drag watchdog down with the view: if the sidebar leaves
-        // the hierarchy mid-drag (window close, split collapse) the
-        // repeating timer must not outlive it.
-        .onDisappear { endTaskDrag() }
+        // Tear the drag watchdogs down with the view: if the sidebar leaves
+        // the hierarchy mid-drag (window close, split collapse) their
+        // repeating timers must not outlive it.
+        .onDisappear {
+            endTaskDrag()
+            endWorkspaceDrag()
+        }
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
         .onChange(of: searchText) {
             rebuildTaskIndex()
@@ -1401,16 +1404,16 @@ struct TaskSidebarView: View {
 
     private func workspaceDropTargetBinding(for workspaceID: UUID) -> Binding<Bool> {
         Binding(
-            get: { workspaceDropTargetID == workspaceID },
+            get: { workspaceDragSession.dropTargetID == workspaceID },
             set: { isTargeted in
                 if isTargeted {
-                    guard let draggedWorkspaceID,
-                          let source = workspaces.first(where: { $0.id == draggedWorkspaceID }),
+                    guard let sourceID = workspaceDragSession.sourceID,
+                          let source = workspaces.first(where: { $0.id == sourceID }),
                           let target = workspaces.first(where: { $0.id == workspaceID }),
                           source.isStarred == target.isStarred else { return }
-                    workspaceDropTargetID = workspaceID
-                } else if workspaceDropTargetID == workspaceID {
-                    workspaceDropTargetID = nil
+                    workspaceDragSession.setDropTarget(workspaceID)
+                } else if workspaceDragSession.dropTargetID == workspaceID {
+                    workspaceDragSession.setDropTarget(nil)
                 }
             }
         )
@@ -1421,7 +1424,7 @@ struct TaskSidebarView: View {
             AppLogger.warning("Workspace reorder drop rejected outside Manual sort", category: "UI")
             return false
         }
-        guard draggedWorkspaceID != nil else {
+        guard workspaceDragSession.isActive else {
             // Text is also used by task/Kanban drags. Only consume a drop when
             // this sidebar owns the active workspace drag session.
             return false
@@ -1432,8 +1435,7 @@ struct TaskSidebarView: View {
             category: "UI"
         )
         return WorkspaceSidebarDragPayload.loadWorkspaceID(from: providers) { sourceID in
-            draggedWorkspaceID = nil
-            workspaceDropTargetID = nil
+            endWorkspaceDrag()
             guard let sourceID,
                   let reorderedIDs = WorkspaceSidebarOrdering.reorderedManualIDs(
                     moving: sourceID,
@@ -1511,11 +1513,7 @@ struct TaskSidebarView: View {
                     .frame(width: 20, height: 28)
                     .contentShape(Rectangle())
                     .onDrag {
-                        draggedWorkspaceID = workspace.id
-                        AppLogger.debug(
-                            "Workspace reorder drag started source=\(workspace.id.uuidString)",
-                            category: "UI"
-                        )
+                        beginWorkspaceDrag(workspace.id)
                         return WorkspaceSidebarDragPayload.provider(for: workspace.id)
                     }
                     .help("Drag to reorder \(workspace.name)")
@@ -1638,7 +1636,7 @@ struct TaskSidebarView: View {
             handleWorkspaceDrop(providers, onto: workspace)
         }
         .overlay(alignment: .top) {
-            if workspaceDropTargetID == workspace.id {
+            if workspaceDragSession.dropTargetID == workspace.id {
                 Capsule()
                     .fill(Stanford.lagunita)
                     .frame(height: 2)
@@ -2042,22 +2040,35 @@ struct TaskSidebarView: View {
     /// mask is the one signal that covers drop, cancel, and release outside
     /// the window alike.
     private func beginTaskDrag() {
-        taskDragWatchdog?.invalidate()
+        endWorkspaceDrag()
         withAnimation(disclosureAnimation) {
             isTaskDragInFlight = true
         }
-        taskDragWatchdog = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { _ in
-            guard NSEvent.pressedMouseButtons & 0x1 == 0 else { return }
-            DispatchQueue.main.async { endTaskDrag() }
-        }
+        taskDragWatchdog.start { endTaskDrag() }
     }
 
     private func endTaskDrag() {
-        taskDragWatchdog?.invalidate()
-        taskDragWatchdog = nil
+        taskDragWatchdog.stop()
         withAnimation(disclosureAnimation) {
             isTaskDragInFlight = false
         }
+    }
+    /// Workspace reorders need the same explicit end signal as task drags.
+    /// `onDrag` has no cancellation callback on macOS, so polling the pressed
+    /// button clears ownership after drop, cancel, or release outside ASTRA.
+    private func beginWorkspaceDrag(_ workspaceID: UUID) {
+        endTaskDrag()
+        workspaceDragSession.begin(sourceID: workspaceID)
+        AppLogger.debug(
+            "Workspace reorder drag started source=\(workspaceID.uuidString)",
+            category: "UI"
+        )
+        workspaceDragWatchdog.start { endWorkspaceDrag() }
+    }
+
+    private func endWorkspaceDrag() {
+        workspaceDragWatchdog.stop()
+        workspaceDragSession.end()
     }
 
     private func togglePinned(for task: AgentTask) {
