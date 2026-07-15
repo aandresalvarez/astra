@@ -243,7 +243,20 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "rm '\(attachment.path)' && /bin/sh -lc 'true'",
             "input='\(attachment.path)' && rm \"${input:?missing}\"",
             "declare input='\(attachment.path)' && rm \"$input\"",
-            "typeset input='\(attachment.path)' && rm \"$input\""
+            "typeset input='\(attachment.path)' && rm \"$input\"",
+            "rm -- '\(attachment.path)' /bin/sh -lc 'true'",
+            "cat <<EOF | xargs rm -f\n\(attachment.path)\nEOF",
+            "input='\(attachment.path)'; false && input=/tmp/other; rm \"$input\"",
+            "for f in '\(attachment.path)'; do rm \"$f\"; done",
+            "input='\(attachment.path)'; unset -f input; rm \"$input\"",
+            "( input='\(attachment.path)'; rm \"$input\" )",
+            "p='\(attachment.path)' && rm \"'$p'\"",
+            "export ATTACH='\(attachment.path)'; /bin/bash -lc 'rm \"$ATTACH\"'",
+            "env -u OLD ATTACH='\(attachment.path)' /bin/bash -lc 'rm \"$ATTACH\"'",
+            "input='\(attachment.path)'; eval 'rm \"$input\"'",
+            "files=( '\(attachment.path)' ); rm \"${files[@]}\"",
+            "read -r input <<< '\(attachment.path)'; rm \"$input\"",
+            "name=input; input='\(attachment.path)'; rm \"${!name}\""
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -275,6 +288,27 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "quoted-substitution-before-unrelated-mutation",
             input: [
                 "command": "printf \"$(printf '%s' '\(attachment.path)')\" && rm -rf /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "quoted-heredoc-text-before-unrelated-mutation",
+            input: [
+                "command": "printf '%s' '<<EOF \(attachment.path)' && rm -rf /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "variable-read-before-unrelated-mutation",
+            input: [
+                "command": "input='\(attachment.path)'; printf '%s\\n' \"$input\"; rm -rf /tmp/unrelated-output"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "unused-export-before-wrapper-mutation",
+            input: [
+                "command": "export ATTACH='\(attachment.path)'; /bin/bash -lc 'rm -rf /tmp/unrelated-output'"
             ]
         )) == nil)
     }

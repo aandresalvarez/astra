@@ -48,8 +48,10 @@ public enum ProviderToolSemantics {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let markerRange = trimmed.range(of: " -lc ") else { return nil }
 
-        let executable = String(trimmed[..<markerRange.lowerBound])
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        let launcherPrefix = String(trimmed[..<markerRange.lowerBound])
+        guard let executable = shellLauncherExecutable(from: launcherPrefix) else {
+            return nil
+        }
         guard ["sh", "bash", "zsh"].contains(
             URL(fileURLWithPath: executable).lastPathComponent.lowercased()
         ) else {
@@ -76,5 +78,87 @@ public enum ProviderToolSemantics {
             }
         }
         return payload
+    }
+
+    /// Accepts only an exact shell executable, optionally preceded by `env`
+    /// options and environment assignments. Ordinary commands that merely end
+    /// an argument list with `/bin/sh` must never be mistaken for launchers.
+    private static func shellLauncherExecutable(from prefix: String) -> String? {
+        guard var words = shellWords(in: prefix), !words.isEmpty else { return nil }
+        if words.first == "env" {
+            words.removeFirst()
+            guard consumeEnvOptions(from: &words) else { return nil }
+        }
+        while let first = words.first, isEnvironmentAssignment(first) {
+            words.removeFirst()
+        }
+        guard words.count == 1 else { return nil }
+        return words[0]
+    }
+
+    private static func consumeEnvOptions(from words: inout [String]) -> Bool {
+        let optionsWithSeparateOperands: Set<String> = [
+            "-u", "--unset", "-C", "--chdir", "-S", "--split-string",
+            "--block-signal", "--default-signal", "--ignore-signal"
+        ]
+        while let option = words.first, option.hasPrefix("-") {
+            words.removeFirst()
+            if option == "--" {
+                return true
+            }
+            if optionsWithSeparateOperands.contains(option) {
+                guard !words.isEmpty else { return false }
+                words.removeFirst()
+            }
+        }
+        return true
+    }
+
+    private static func shellWords(in value: String) -> [String]? {
+        var words: [String] = []
+        var current = ""
+        var quote: Character?
+        var isEscaped = false
+
+        for character in value {
+            if isEscaped {
+                current.append(character)
+                isEscaped = false
+                continue
+            }
+            if character == "\\", quote != "'" {
+                isEscaped = true
+                continue
+            }
+            if character == "'", quote != "\"" {
+                quote = quote == "'" ? nil : "'"
+                continue
+            }
+            if character == "\"", quote != "'" {
+                quote = quote == "\"" ? nil : "\""
+                continue
+            }
+            if character.isWhitespace, quote == nil {
+                if !current.isEmpty {
+                    words.append(current)
+                    current = ""
+                }
+                continue
+            }
+            current.append(character)
+        }
+
+        guard quote == nil, !isEscaped else { return nil }
+        if !current.isEmpty {
+            words.append(current)
+        }
+        return words
+    }
+
+    private static func isEnvironmentAssignment(_ word: String) -> Bool {
+        guard let separator = word.firstIndex(of: "=") else { return false }
+        let name = word[..<separator]
+        guard let first = name.first, first == "_" || first.isLetter else { return false }
+        return name.dropFirst().allSatisfy { $0 == "_" || $0.isLetter || $0.isNumber }
     }
 }

@@ -3,34 +3,54 @@ import ASTRACore
 
 struct ShellCommandMutationContext: Equatable, Sendable {
     let command: String
-    let variableBindings: [String: String]
+    let variableBindings: [String: Set<String>]
     let referencedVariables: Set<String>
+    let indirectReferencedVariables: Set<String>
     let pipelineInputExpressions: [String]
 
     var pathReferenceExpressions: [String] {
-        [command]
-            + pipelineInputExpressions
-            + referencedVariables.sorted().compactMap { variableBindings[$0] }
+        var expressions = [command] + pipelineInputExpressions
+        expressions += referencedVariables.sorted().flatMap {
+            variableBindings[$0, default: []].sorted()
+        }
+        for reference in indirectReferencedVariables.sorted() {
+            for targetName in variableBindings[reference, default: []].sorted() {
+                expressions += variableBindings[targetName, default: []].sorted()
+            }
+        }
+        return expressions
     }
 }
 
 /// Produces mutation-checking contexts without flattening shell data flow.
 ///
-/// Top-level control separators create independent contexts, while pipeline
+/// Top-level commands create independent contexts, while pipeline
 /// stages preserve their directional input expressions for downstream mutation
-/// checks. Quoted separators and command/process substitutions remain attached
-/// to their parent command. Simple assignment-only segments flow into later
-/// contexts, including assignments that wrap an exact `sh -lc` provider launcher.
+/// checks. Bindings retain every value that can survive conditional execution,
+/// and exact `sh -lc` provider launchers are normalized per segment so earlier
+/// exported values and launcher-local environment assignments remain visible.
 enum ShellCommandMutationContextParser {
     private enum SegmentSeparator {
         case pipeline
-        case control
+        case conditional
+        case sequence
         case end
     }
 
     private struct Segment {
         let command: String
         let separatorAfter: SegmentSeparator
+        let containsHeredoc: Bool
+    }
+
+    private struct VariableReferences {
+        var direct: Set<String> = []
+        var indirect: Set<String> = []
+
+        mutating func formUnion(_ other: Self) {
+            direct.formUnion(other.direct)
+            indirect.formUnion(other.indirect)
+        }
     }
 
     private struct LexicalFrame {
@@ -51,42 +71,75 @@ enum ShellCommandMutationContextParser {
         let trimmedCommand = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommand.isEmpty else { return [] }
 
-        let rawSegments = topLevelSegments(in: trimmedCommand)
-        let semanticCommand = rawSegments.count == 1
-            ? ProviderToolSemantics.semanticShellCommand(trimmedCommand)
-            : trimmedCommand
-        let segments = semanticCommand == trimmedCommand
-            ? rawSegments
-            : topLevelSegments(in: semanticCommand)
-        var bindings = semanticCommand == trimmedCommand
-            ? [:]
-            : leadingEnvironmentAssignments(in: trimmedCommand)
+        let segments = topLevelSegments(in: trimmedCommand)
+        // A heredoc body belongs to its producer even though it contains raw
+        // newlines. Keep a heredoc-fed pipeline intact so the body remains
+        // correlated with a downstream mutator.
+        if segments.contains(where: {
+            $0.containsHeredoc && $0.separatorAfter == .pipeline
+        }) {
+            let references = variableReferences(in: trimmedCommand)
+            return [ShellCommandMutationContext(
+                command: trimmedCommand,
+                variableBindings: [:],
+                referencedVariables: references.direct,
+                indirectReferencedVariables: references.indirect,
+                pipelineInputExpressions: []
+            )]
+        }
+        var bindings: [String: Set<String>] = [:]
         var contexts: [ShellCommandMutationContext] = []
         var pipelineInputExpressions: [String] = []
+        var separatorBefore: SegmentSeparator = .sequence
 
         for segment in segments {
-            let referenced = referencedVariables(in: segment.command)
+            let semanticCommand = ProviderToolSemantics.semanticShellCommand(segment.command)
+            var contextBindings = bindings
+            if semanticCommand != segment.command {
+                contextBindings.merge(leadingEnvironmentAssignments(in: segment.command)) {
+                    _, launcherValue in launcherValue
+                }
+            }
+            var references = variableReferences(in: semanticCommand)
+            if shellWords(in: semanticCommand).first == "eval" {
+                references.formUnion(variableReferences(
+                    in: semanticCommand,
+                    treatsSingleQuotedTextAsCode: true
+                ))
+            }
             contexts.append(ShellCommandMutationContext(
-                command: segment.command,
-                variableBindings: bindings,
-                referencedVariables: referenced,
+                command: semanticCommand,
+                variableBindings: contextBindings,
+                referencedVariables: references.direct,
+                indirectReferencedVariables: references.indirect,
                 pipelineInputExpressions: pipelineInputExpressions
             ))
 
-            if let assignments = persistentAssignments(in: segment.command) {
-                bindings.merge(assignments) { _, replacement in replacement }
-            } else {
+            if let assignments = persistentAssignments(in: segment.command)
+                ?? loopAssignments(in: segment.command)
+                ?? readAssignments(in: segment.command) {
+                for (name, value) in assignments {
+                    if separatorBefore == .conditional {
+                        bindings[name, default: []].insert(value)
+                    } else {
+                        bindings[name] = [value]
+                    }
+                }
+            } else if separatorBefore != .conditional {
                 for name in unsetVariableNames(in: segment.command) {
                     bindings.removeValue(forKey: name)
                 }
             }
 
             if segment.separatorAfter == .pipeline {
-                pipelineInputExpressions.append(segment.command)
-                pipelineInputExpressions.append(contentsOf: referenced.sorted().compactMap { bindings[$0] })
+                pipelineInputExpressions.append(semanticCommand)
+                pipelineInputExpressions += references.direct.sorted().flatMap {
+                    contextBindings[$0, default: []].sorted()
+                }
             } else {
                 pipelineInputExpressions.removeAll(keepingCapacity: true)
             }
+            separatorBefore = segment.separatorAfter
         }
         return contexts
     }
@@ -98,16 +151,23 @@ enum ShellCommandMutationContextParser {
             .replacingOccurrences(of: "\\\r", with: " ")
         var segments: [Segment] = []
         var current = ""
+        var currentContainsHeredoc = false
         var index = command.startIndex
         var isEscaped = false
         var frames: [LexicalFrame] = [.topLevel]
+        var groupingDepth = 0
 
         func finishSegment(separatorAfter: SegmentSeparator) {
             let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                segments.append(Segment(command: trimmed, separatorAfter: separatorAfter))
+                segments.append(Segment(
+                    command: trimmed,
+                    separatorAfter: separatorAfter,
+                    containsHeredoc: currentContainsHeredoc
+                ))
             }
             current = ""
+            currentContainsHeredoc = false
         }
 
         while index < command.endIndex {
@@ -172,18 +232,34 @@ enum ShellCommandMutationContextParser {
             }
 
             if frames.count == 1, quote == nil, !isInBacktickSubstitution {
-                if (character == "&" && next == "&") || (character == "|" && next == "|") {
-                    finishSegment(separatorAfter: .control)
+                if character == "(" {
+                    groupingDepth += 1
+                    current.append(character)
+                    index = nextIndex
+                    continue
+                }
+                if character == ")", groupingDepth > 0 {
+                    groupingDepth -= 1
+                    current.append(character)
+                    index = nextIndex
+                    continue
+                }
+                if character == "<", next == "<" {
+                    currentContainsHeredoc = true
+                }
+                if groupingDepth == 0,
+                   (character == "&" && next == "&") || (character == "|" && next == "|") {
+                    finishSegment(separatorAfter: .conditional)
                     index = command.index(after: nextIndex)
                     continue
                 }
-                if character == "|" {
+                if groupingDepth == 0, character == "|" {
                     finishSegment(separatorAfter: .pipeline)
                     index = nextIndex
                     continue
                 }
-                if character == ";" || character.isNewline {
-                    finishSegment(separatorAfter: .control)
+                if groupingDepth == 0, character == ";" || character.isNewline {
+                    finishSegment(separatorAfter: .sequence)
                     index = nextIndex
                     continue
                 }
@@ -196,21 +272,35 @@ enum ShellCommandMutationContextParser {
         return segments
     }
 
-    private static func leadingEnvironmentAssignments(in command: String) -> [String: String] {
+    private static func leadingEnvironmentAssignments(in command: String) -> [String: Set<String>] {
         var tokens = shellWords(in: command)
         if tokens.first == "env" {
             tokens.removeFirst()
-            while tokens.first?.hasPrefix("-") == true {
-                tokens.removeFirst()
-            }
+            consumeEnvOptions(from: &tokens)
         }
 
-        var assignments: [String: String] = [:]
+        var assignments: [String: Set<String>] = [:]
         for token in tokens {
             guard let assignment = assignment(from: token) else { break }
-            assignments[assignment.name] = assignment.value
+            assignments[assignment.name] = [assignment.value]
         }
         return assignments
+    }
+
+    private static func consumeEnvOptions(from words: inout [String]) {
+        let optionsWithSeparateOperands: Set<String> = [
+            "-u", "--unset", "-C", "--chdir", "-S", "--split-string",
+            "--block-signal", "--default-signal", "--ignore-signal"
+        ]
+        while let option = words.first, option.hasPrefix("-") {
+            words.removeFirst()
+            if option == "--" {
+                return
+            }
+            if optionsWithSeparateOperands.contains(option), !words.isEmpty {
+                words.removeFirst()
+            }
+        }
     }
 
     private static func persistentAssignments(in segment: String) -> [String: String]? {
@@ -234,10 +324,59 @@ enum ShellCommandMutationContextParser {
         return assignments
     }
 
-    private static func unsetVariableNames(in segment: String) -> [String] {
+    private static func loopAssignments(in segment: String) -> [String: String]? {
         let tokens = shellWords(in: segment)
+        guard tokens.count >= 4,
+              tokens[0] == "for",
+              isValidVariableName(tokens[1]),
+              tokens[2] == "in" else {
+            return nil
+        }
+        return [tokens[1]: tokens.dropFirst(3).joined(separator: " ")]
+    }
+
+    private static func readAssignments(in segment: String) -> [String: String]? {
+        var tokens = shellWords(in: segment)
+        guard tokens.first == "read" else { return nil }
+        tokens.removeFirst()
+        while tokens.first?.hasPrefix("-") == true {
+            tokens.removeFirst()
+        }
+        guard let redirectIndex = tokens.firstIndex(of: "<<<"),
+              redirectIndex > tokens.startIndex,
+              tokens.index(after: redirectIndex) < tokens.endIndex else {
+            return nil
+        }
+        let name = tokens[tokens.index(before: redirectIndex)]
+        guard isValidVariableName(name) else { return nil }
+        return [name: tokens[tokens.index(after: redirectIndex)]]
+    }
+
+    private static func unsetVariableNames(in segment: String) -> [String] {
+        var tokens = shellWords(in: segment)
         guard tokens.first == "unset" else { return [] }
-        return tokens.dropFirst().filter(isValidVariableName)
+        tokens.removeFirst()
+
+        var names: [String] = []
+        var functionOnly = false
+        var reachedNames = false
+        for token in tokens {
+            if !reachedNames, token == "--" {
+                reachedNames = true
+                continue
+            }
+            if !reachedNames, token.hasPrefix("-") {
+                if token.dropFirst().contains("f") {
+                    functionOnly = true
+                }
+                continue
+            }
+            reachedNames = true
+            if isValidVariableName(token) {
+                names.append(token)
+            }
+        }
+        return functionOnly ? [] : names
     }
 
     private static func assignment(from token: String) -> (name: String, value: String)? {
@@ -253,6 +392,7 @@ enum ShellCommandMutationContextParser {
         var index = command.startIndex
         var isEscaped = false
         var frames: [LexicalFrame] = [.topLevel]
+        var wordGroupingDepth = 0
 
         func finishWord() {
             if !current.isEmpty {
@@ -320,9 +460,17 @@ enum ShellCommandMutationContextParser {
                 index = nextIndex
                 continue
             }
+            if frames.count == 1, quote == nil, !isInBacktickSubstitution {
+                if character == "(", !current.isEmpty {
+                    wordGroupingDepth += 1
+                } else if character == ")", wordGroupingDepth > 0 {
+                    wordGroupingDepth -= 1
+                }
+            }
             if character.isWhitespace,
                quote == nil,
                frames.count == 1,
+               wordGroupingDepth == 0,
                !isInBacktickSubstitution {
                 finishWord()
                 index = nextIndex
@@ -335,10 +483,13 @@ enum ShellCommandMutationContextParser {
         return words
     }
 
-    private static func referencedVariables(in command: String) -> Set<String> {
-        var variables: Set<String> = []
+    private static func variableReferences(
+        in command: String,
+        treatsSingleQuotedTextAsCode: Bool = false
+    ) -> VariableReferences {
+        var references = VariableReferences()
         var index = command.startIndex
-        var isInSingleQuote = false
+        var quote: Character?
         var isEscaped = false
 
         while index < command.endIndex {
@@ -348,17 +499,22 @@ enum ShellCommandMutationContextParser {
                 index = command.index(after: index)
                 continue
             }
-            if character == "\\" {
+            if character == "\\", quote != "'" {
                 isEscaped = true
                 index = command.index(after: index)
                 continue
             }
-            if character == "'" {
-                isInSingleQuote.toggle()
+            if character == "'", quote != "\"", !treatsSingleQuotedTextAsCode {
+                quote = quote == "'" ? nil : "'"
                 index = command.index(after: index)
                 continue
             }
-            guard character == "$", !isInSingleQuote else {
+            if character == "\"", quote != "'" {
+                quote = quote == "\"" ? nil : "\""
+                index = command.index(after: index)
+                continue
+            }
+            guard character == "$", quote != "'" else {
                 index = command.index(after: index)
                 continue
             }
@@ -366,8 +522,12 @@ enum ShellCommandMutationContextParser {
             let valueStart = command.index(after: index)
             guard valueStart < command.endIndex else { break }
             if command[valueStart] == "{" {
-                let nameStart = command.index(after: valueStart)
+                var nameStart = command.index(after: valueStart)
                 if let closingBrace = command[nameStart...].firstIndex(of: "}") {
+                    let isIndirect = nameStart < closingBrace && command[nameStart] == "!"
+                    if isIndirect {
+                        nameStart = command.index(after: nameStart)
+                    }
                     var nameEnd = nameStart
                     if nameEnd < closingBrace, isVariableNameStart(command[nameEnd]) {
                         nameEnd = command.index(after: nameEnd)
@@ -375,7 +535,12 @@ enum ShellCommandMutationContextParser {
                               isVariableNameContinuation(command[nameEnd]) {
                             nameEnd = command.index(after: nameEnd)
                         }
-                        variables.insert(String(command[nameStart..<nameEnd]))
+                        let name = String(command[nameStart..<nameEnd])
+                        if isIndirect {
+                            references.indirect.insert(name)
+                        } else {
+                            references.direct.insert(name)
+                        }
                     }
                     index = command.index(after: closingBrace)
                     continue
@@ -385,13 +550,13 @@ enum ShellCommandMutationContextParser {
                 while nameEnd < command.endIndex, isVariableNameContinuation(command[nameEnd]) {
                     nameEnd = command.index(after: nameEnd)
                 }
-                variables.insert(String(command[valueStart..<nameEnd]))
+                references.direct.insert(String(command[valueStart..<nameEnd]))
                 index = nameEnd
                 continue
             }
             index = valueStart
         }
-        return variables
+        return references
     }
 
     private static func isValidVariableName(_ value: String) -> Bool {

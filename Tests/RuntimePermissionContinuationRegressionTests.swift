@@ -24,6 +24,23 @@ struct RuntimePermissionContinuationRegressionTests {
         }
     }
 
+    @Test("Semantic shell normalization rejects ordinary commands ending in a launcher-like argument")
+    func semanticShellNormalizationRequiresExactLauncherPrefix() {
+        let ordinaryCommand = "rm -- /tmp/attached.pdf /bin/sh -lc 'true'"
+
+        #expect(ProviderToolSemantics.semanticShellCommand(ordinaryCommand) == ordinaryCommand)
+        #expect(
+            ProviderToolSemantics.semanticShellCommand(
+                "ATTACH='/tmp/path with spaces.pdf' /bin/sh -lc 'rm \"$ATTACH\"'"
+            ) == "rm \"$ATTACH\""
+        )
+        #expect(
+            ProviderToolSemantics.semanticShellCommand(
+                "env -u OLD ATTACH='/tmp/path with spaces.pdf' /bin/bash -lc 'rm \"$ATTACH\"'"
+            ) == "rm \"$ATTACH\""
+        )
+    }
+
     @Test("Codex resumed Ask approval authorizes the exact wrapped command once")
     func codexResumedAskApprovalAuthorizesExactWrappedCommand() {
         let grant = PermissionGrant.shellCommand(
