@@ -2486,7 +2486,7 @@ struct ContentView: View {
         // Release browser/WebContent and markdown sessions; otherwise they live until window close.
         browserSessionStore.releaseSession(for: deletedTaskID)
         markdownSessionStore.releaseSession(for: deletedTaskID)
-        WorkspaceCanvasItemPreferenceStore.remove(conversationID: deletedTaskID.uuidString)
+        rightPanel.removeRememberedItem(conversationID: deletedTaskID.uuidString)
         refreshRunningTaskCount()
     }
 

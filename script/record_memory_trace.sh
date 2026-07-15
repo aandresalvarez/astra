@@ -9,7 +9,7 @@ OUTPUT_DIR="${ASTRA_MEMORY_TRACE_OUTPUT_DIR:-$ROOT_DIR/.artifacts/memory-trace}"
 PID="${ASTRA_MEMORY_TRACE_PID:-}"
 
 if [[ -z "$PID" ]]; then
-  matches="$(pgrep -f '/ASTRA Dev.app/Contents/MacOS/ASTRA$' || true)"
+  matches="$(pgrep -f '/ASTRA Dev.app/Contents/MacOS/ASTRA Dev$' || true)"
   if [[ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')" != "1" ]]; then
     echo "Launch exactly one ASTRA Dev.app process or set ASTRA_MEMORY_TRACE_PID" >&2
     exit 2
@@ -18,7 +18,7 @@ if [[ -z "$PID" ]]; then
 fi
 
 command_path="$(ps -p "$PID" -o command=)"
-if [[ "$command_path" != *"/ASTRA Dev.app/Contents/MacOS/ASTRA"* ]]; then
+if [[ "$command_path" != *"/ASTRA Dev.app/Contents/MacOS/ASTRA Dev"* ]]; then
   echo "Refusing to profile PID $PID because it is not ASTRA Dev.app: $command_path" >&2
   exit 2
 fi

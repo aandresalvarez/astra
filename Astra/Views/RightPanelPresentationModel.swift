@@ -128,6 +128,26 @@ final class RightPanelPresentationModel: ObservableObject {
         )
     }
 
+    /// Forget the shelf item for a deleted conversation in both the live
+    /// model and durable storage. Callers must route cleanup through this
+    /// owner so a later preference write cannot resurrect stale state.
+    func removeRememberedItem(conversationID: String) {
+        let updated = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: rememberedItemsRawValue,
+            conversationID: conversationID,
+            item: nil,
+            remember: true
+        )
+        guard updated != rememberedItemsRawValue else { return }
+        let previousRawValue = rememberedItemsRawValue
+        rememberedItemsRawValue = updated
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: previousRawValue,
+            updatedRawValue: updated,
+            defaults: defaults
+        )
+    }
+
     /// Hide the rail without touching the active canvas item or the
     /// remembered per-conversation item — used by callers that are about to
     /// set `activeCanvasItem` themselves (App Studio start/toggle), where the

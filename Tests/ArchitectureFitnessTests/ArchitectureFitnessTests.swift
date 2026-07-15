@@ -1565,6 +1565,7 @@ struct ArchitectureFitnessTests {
             "script/focused_validation_plan_tests.sh",
             "script/precommit.sh",
             "script/prepush.sh",
+            "script/record_memory_trace.sh",
             "script/test_architecture.sh",
             "script/test_git_contracts.sh",
             "script/configure_branch_protection.sh"
@@ -1593,6 +1594,7 @@ struct ArchitectureFitnessTests {
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
         let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
         let memoryMonitoringWorkflow = try fileText(".github/workflows/memory-monitoring.yml", root: root)
+        let memoryTraceScript = try fileText("script/record_memory_trace.sh", root: root)
         let codeowners = try fileText(".github/CODEOWNERS", root: root)
         let branchProtectionPayload = try branchProtectionJSONPayload(from: branchProtectionScript)
         let branchProtection = try #require(
@@ -1667,6 +1669,9 @@ struct ArchitectureFitnessTests {
         #expect(memoryMonitoringWorkflow.contains("GITHUB_STEP_SUMMARY"))
         #expect(memoryMonitoringWorkflow.contains("retention-days: 30"))
         #expect(memoryMonitoringWorkflow.contains("retention-days: 14"))
+        #expect(memoryTraceScript.contains("/ASTRA Dev.app/Contents/MacOS/ASTRA Dev$"))
+        #expect(memoryTraceScript.contains(#"*"/ASTRA Dev.app/Contents/MacOS/ASTRA Dev"*"#))
+        #expect(!memoryTraceScript.contains("/ASTRA Dev.app/Contents/MacOS/ASTRA$"))
         #expect(!codeowners.contains("* @aandresalvarez"))
         #expect(codeowners.contains("Astra/Services/Runtime/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))
