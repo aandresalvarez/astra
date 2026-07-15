@@ -84,6 +84,18 @@ enum ShellCommandMutationContextParser {
         let containsHeredoc: Bool
     }
 
+    private struct ChildShellCommand {
+        let payload: String
+        let environmentAssignments: [String: Set<String>]
+        let arguments: [String]
+    }
+
+    private struct FunctionInvocation {
+        let name: String
+        let environmentAssignments: [String: Set<String>]
+        let arguments: [String]
+    }
+
     private struct VariableReferences {
         var direct: Set<String> = []
         var indirect: Set<String> = []
@@ -113,6 +125,9 @@ enum ShellCommandMutationContextParser {
             for: rawCommand,
             initialBindings: [:],
             initialWorkingDirectories: [],
+            initialPreviousWorkingDirectories: [],
+            initialExportedNames: [],
+            initialReadonlyNames: [],
             inheritedFunctions: [:],
             recursionDepth: 0
         )
@@ -122,6 +137,9 @@ enum ShellCommandMutationContextParser {
         for rawCommand: String,
         initialBindings: [String: Set<String>],
         initialWorkingDirectories: Set<String>,
+        initialPreviousWorkingDirectories: Set<String>,
+        initialExportedNames: Set<String>,
+        initialReadonlyNames: Set<String>,
         inheritedFunctions: [String: String],
         recursionDepth: Int
     ) -> [ShellCommandMutationContext] {
@@ -148,6 +166,9 @@ enum ShellCommandMutationContextParser {
         }
         var bindings = initialBindings
         var workingDirectories = initialWorkingDirectories
+        var previousWorkingDirectories = initialPreviousWorkingDirectories
+        var exportedNames = initialExportedNames
+        var readonlyNames = initialReadonlyNames
         var functions = inheritedFunctions
         var contexts: [ShellCommandMutationContext] = []
         if recursionDepth < 8,
@@ -158,6 +179,9 @@ enum ShellCommandMutationContextParser {
                 for: loop.body,
                 initialBindings: loopBindings,
                 initialWorkingDirectories: initialWorkingDirectories,
+                initialPreviousWorkingDirectories: initialPreviousWorkingDirectories,
+                initialExportedNames: initialExportedNames,
+                initialReadonlyNames: initialReadonlyNames,
                 inheritedFunctions: inheritedFunctions,
                 recursionDepth: recursionDepth + 1
             ))
@@ -179,41 +203,93 @@ enum ShellCommandMutationContextParser {
                     _, launcherValue in launcherValue
                 }
             }
-            var references = variableReferences(in: semanticCommand)
-            let commandWords = executableWords(in: semanticCommand)
-            if let commandName = commandWords.first,
-               commandName == "eval" || commandName == "trap" {
-                references.formUnion(variableReferences(
-                    in: semanticCommand,
-                    treatsSingleQuotedTextAsCode: true
+            let childShell = childShellCommand(in: semanticCommand)
+            let analysisCommand = childShell?.payload ?? semanticCommand
+            if let childShell {
+                contextBindings = contextBindings.filter { exportedNames.contains($0.key) }
+                contextBindings.merge(childShell.environmentAssignments) {
+                    _, launcherValue in launcherValue
+                }
+                contextBindings = contextBindings.filter { !isPositionalBindingName($0.key) }
+                contextBindings.merge(positionalAssignments(values: childShell.arguments)) {
+                    _, argumentValue in argumentValue
+                }
+            }
+            var references = variableReferences(in: analysisCommand)
+            let commandWords = executableWords(in: analysisCommand)
+            var functionSideEffects: [String: Set<String>]?
+            if let childShell, recursionDepth < 8 {
+                let childExportedNames = exportedNames
+                    .intersection(contextBindings.keys)
+                    .union(childShell.environmentAssignments.keys)
+                let childContexts = self.contexts(
+                    for: childShell.payload,
+                    initialBindings: contextBindings,
+                    initialWorkingDirectories: workingDirectories,
+                    initialPreviousWorkingDirectories: previousWorkingDirectories,
+                    initialExportedNames: childExportedNames,
+                    initialReadonlyNames: [],
+                    inheritedFunctions: [:],
+                    recursionDepth: recursionDepth + 1
+                )
+                contexts.append(contentsOf: childContexts.map { context in
+                    ShellCommandMutationContext(
+                        command: context.command,
+                        variableBindings: context.variableBindings,
+                        referencedVariables: context.referencedVariables,
+                        indirectReferencedVariables: context.indirectReferencedVariables,
+                        pipelineInputExpressions: pipelineInputExpressions
+                            + context.pipelineInputExpressions,
+                        workingDirectoryExpressions: context.workingDirectoryExpressions
+                    )
+                })
+            } else {
+                if let commandName = commandWords.first,
+                   commandName == "eval" || commandName == "trap" {
+                    references.formUnion(variableReferences(
+                        in: analysisCommand,
+                        treatsSingleQuotedTextAsCode: true
+                    ))
+                }
+                contexts.append(ShellCommandMutationContext(
+                    command: analysisCommand,
+                    variableBindings: contextBindings,
+                    referencedVariables: references.direct,
+                    indirectReferencedVariables: references.indirect,
+                    pipelineInputExpressions: pipelineInputExpressions,
+                    workingDirectoryExpressions: workingDirectories.sorted()
                 ))
             }
-            contexts.append(ShellCommandMutationContext(
-                command: semanticCommand,
-                variableBindings: contextBindings,
-                referencedVariables: references.direct,
-                indirectReferencedVariables: references.indirect,
-                pipelineInputExpressions: pipelineInputExpressions,
-                workingDirectoryExpressions: workingDirectories.sorted()
-            ))
 
-            if recursionDepth < 8,
-               let functionName = commandWords.first,
-               let functionBody = functions[functionName] {
+            if childShell == nil,
+               recursionDepth < 8,
+               let invocation = functionInvocation(in: analysisCommand, functions: functions),
+               let functionBody = functions[invocation.name] {
                 // Function bodies are deferred shell programs. Analyze the
                 // invoked body with the call's arguments projected onto the
                 // function-local positional parameter scope.
                 var functionBindings = contextBindings
+                functionBindings.merge(invocation.environmentAssignments) {
+                    _, argumentValue in argumentValue
+                }
+                functionBindings = functionBindings.filter { !isPositionalBindingName($0.key) }
                 functionBindings.merge(
-                    positionalAssignments(values: Array(commandWords.dropFirst()))
+                    positionalAssignments(values: invocation.arguments)
                 ) { _, argumentValue in argumentValue }
                 contexts.append(contentsOf: self.contexts(
                     for: functionBody,
                     initialBindings: functionBindings,
                     initialWorkingDirectories: workingDirectories,
+                    initialPreviousWorkingDirectories: previousWorkingDirectories,
+                    initialExportedNames: exportedNames,
+                    initialReadonlyNames: readonlyNames,
                     inheritedFunctions: functions,
                     recursionDepth: recursionDepth + 1
                 ))
+                functionSideEffects = functionBindingSideEffects(
+                    in: functionBody,
+                    initialBindings: functionBindings
+                ).filter { !invocation.environmentAssignments.keys.contains($0.key) }
             }
 
             let isPipelineStage = separatorBefore == .pipeline
@@ -222,7 +298,15 @@ enum ShellCommandMutationContextParser {
             // must not replace the parent-shell bindings used by later
             // sequential commands.
             if !isPipelineStage {
-                if let positionalAssignments = setPositionalAssignments(in: segment.command) {
+                if let functionSideEffects {
+                    for (name, values) in functionSideEffects {
+                        if separatorBefore == .conditional {
+                            bindings[name, default: []].formUnion(values)
+                        } else {
+                            bindings[name] = values
+                        }
+                    }
+                } else if let positionalAssignments = setPositionalAssignments(in: segment.command) {
                     if separatorBefore != .conditional {
                         bindings = bindings.filter { !isPositionalBindingName($0.key) }
                     }
@@ -234,7 +318,7 @@ enum ShellCommandMutationContextParser {
                         }
                     }
                 } else if let assignments = persistentAssignments(in: segment.command)
-                    ?? loopAssignments(in: segment.command)
+                    ?? loopAssignments(in: segment.command, bindings: bindings)
                     ?? readAssignments(in: segment.command)
                     ?? arrayReadAssignment(in: segment.command)
                     ?? printfVariableAssignment(in: segment.command) {
@@ -247,21 +331,37 @@ enum ShellCommandMutationContextParser {
                         }
                     }
                 } else if separatorBefore != .conditional {
-                    for name in unsetVariableNames(in: segment.command) {
+                    for name in unsetVariableNames(in: segment.command)
+                    where !readonlyNames.contains(name) {
                         bindings.removeValue(forKey: name)
+                        exportedNames.remove(name)
                     }
                 }
                 if let workingDirectory = workingDirectoryAssignment(in: segment.command) {
-                    if separatorBefore == .conditional {
+                    if workingDirectory == "-" {
+                        let destination = previousWorkingDirectories
+                        previousWorkingDirectories = workingDirectories
+                        if separatorBefore == .conditional {
+                            workingDirectories.formUnion(destination)
+                        } else {
+                            workingDirectories = destination
+                        }
+                    } else if separatorBefore == .conditional {
+                        previousWorkingDirectories.formUnion(workingDirectories)
                         workingDirectories.insert(workingDirectory)
                     } else {
+                        previousWorkingDirectories = workingDirectories
                         workingDirectories = [workingDirectory]
                     }
                 }
+                let exportChanges = exportedVariableChanges(in: segment.command)
+                exportedNames.formUnion(exportChanges.added)
+                exportedNames.subtract(exportChanges.removed)
+                readonlyNames.formUnion(readonlyVariableNames(in: segment.command))
             }
 
             if segment.separatorAfter == .pipeline {
-                pipelineInputExpressions.append(semanticCommand)
+                pipelineInputExpressions.append(analysisCommand)
                 pipelineInputExpressions += references.direct.sorted().flatMap {
                     contextBindings[$0, default: []].sorted()
                 }
@@ -499,11 +599,14 @@ enum ShellCommandMutationContextParser {
         var isDisplayOnly = false
         if let first = tokens.first, declarationBuiltins.contains(first) {
             tokens.removeFirst()
-            while tokens.first?.hasPrefix("-") == true {
-                if tokens[0].dropFirst().contains("n") {
+            while tokens.first.map({ $0.hasPrefix("-") || $0.hasPrefix("+") }) == true {
+                if tokens[0].hasPrefix("-"), tokens[0].dropFirst().contains("n") {
                     isNameReference = true
                 }
-                if tokens[0].dropFirst().contains("p") {
+                if tokens[0].hasPrefix("+"), tokens[0].dropFirst().contains("n") {
+                    isNameReference = false
+                }
+                if tokens[0].hasPrefix("-"), tokens[0].dropFirst().contains("p") {
                     isDisplayOnly = true
                 }
                 tokens.removeFirst()
@@ -523,14 +626,20 @@ enum ShellCommandMutationContextParser {
         return assignments
     }
 
-    private static func loopAssignments(in segment: String) -> [String: Set<String>]? {
+    private static func loopAssignments(
+        in segment: String,
+        bindings: [String: Set<String>]
+    ) -> [String: Set<String>]? {
         let tokens = shellWords(in: segment)
-        guard tokens.count >= 4,
+        guard tokens.count >= 2,
               tokens[0] == "for",
-              isValidVariableName(tokens[1]),
-              tokens[2] == "in" else {
+              isValidVariableName(tokens[1]) else {
             return nil
         }
+        if tokens.count == 2 {
+            return [tokens[1]: bindings["@", default: []]]
+        }
+        guard tokens.count >= 4, tokens[2] == "in" else { return nil }
         return [tokens[1]: [tokens.dropFirst(3).joined(separator: " ")]]
     }
 
@@ -606,6 +715,9 @@ enum ShellCommandMutationContextParser {
         if command == "pushd", tokens.contains("-n") {
             return nil
         }
+        if command == "cd", tokens.first == "-" {
+            return "-"
+        }
         while tokens.first?.hasPrefix("-") == true {
             if tokens.first == "--" {
                 tokens.removeFirst()
@@ -614,6 +726,147 @@ enum ShellCommandMutationContextParser {
             tokens.removeFirst()
         }
         return tokens.first
+    }
+
+    private static func childShellCommand(in segment: String) -> ChildShellCommand? {
+        var tokens = executableWords(in: segment)
+        var environmentAssignments: [String: Set<String>] = [:]
+        while let first = tokens.first, let assignment = assignment(from: first) {
+            environmentAssignments[assignment.name] = [assignment.value]
+            tokens.removeFirst()
+        }
+        guard let executable = tokens.first,
+              ["sh", "bash", "zsh"].contains(
+                URL(fileURLWithPath: unquotedShellScalar(executable)).lastPathComponent.lowercased()
+              ) else {
+            return nil
+        }
+        tokens.removeFirst()
+        guard let optionIndex = tokens.firstIndex(where: {
+            $0.hasPrefix("-") && $0.dropFirst().contains("c")
+        }),
+        tokens.index(after: optionIndex) < tokens.endIndex else {
+            return nil
+        }
+        let payloadIndex = tokens.index(after: optionIndex)
+        let argumentZeroIndex = tokens.index(after: payloadIndex)
+        let arguments = argumentZeroIndex < tokens.endIndex
+            ? Array(tokens[tokens.index(after: argumentZeroIndex)...])
+            : []
+        return ChildShellCommand(
+            payload: unquotedShellScalar(tokens[payloadIndex]),
+            environmentAssignments: environmentAssignments,
+            arguments: arguments
+        )
+    }
+
+    private static func functionInvocation(
+        in segment: String,
+        functions: [String: String]
+    ) -> FunctionInvocation? {
+        var tokens = executableWords(in: segment)
+        var environmentAssignments: [String: Set<String>] = [:]
+        while let first = tokens.first, let assignment = assignment(from: first) {
+            environmentAssignments[assignment.name] = [assignment.value]
+            tokens.removeFirst()
+        }
+        guard let name = tokens.first, functions[name] != nil else { return nil }
+        return FunctionInvocation(
+            name: name,
+            environmentAssignments: environmentAssignments,
+            arguments: Array(tokens.dropFirst())
+        )
+    }
+
+    private static func functionBindingSideEffects(
+        in body: String,
+        initialBindings: [String: Set<String>]
+    ) -> [String: Set<String>] {
+        var bindings = initialBindings
+        var assignedNames: Set<String> = []
+        var localNames: Set<String> = []
+        var separatorBefore: SegmentSeparator = .sequence
+        for segment in topLevelSegments(in: body) {
+            if let declaredLocals = functionLocalVariableNames(in: segment.command) {
+                localNames.formUnion(declaredLocals)
+                separatorBefore = segment.separatorAfter
+                continue
+            }
+            guard let assignments = persistentAssignments(in: segment.command) else {
+                separatorBefore = segment.separatorAfter
+                continue
+            }
+            let additiveNames = additiveAssignmentNames(in: segment.command)
+            let nonLocalAssignments = assignments.filter { !localNames.contains($0.key) }
+            assignedNames.formUnion(nonLocalAssignments.keys)
+            for (name, values) in nonLocalAssignments {
+                if separatorBefore == .conditional || additiveNames.contains(name) {
+                    bindings[name, default: []].formUnion(values)
+                } else {
+                    bindings[name] = values
+                }
+            }
+            separatorBefore = segment.separatorAfter
+        }
+        return bindings.filter { assignedNames.contains($0.key) }
+    }
+
+    private static func functionLocalVariableNames(in segment: String) -> Set<String>? {
+        var tokens = executableWords(in: segment)
+        guard let command = tokens.first else { return nil }
+        guard command == "local" || command == "declare" || command == "typeset" else {
+            return nil
+        }
+        tokens.removeFirst()
+        let isGlobal = tokens.contains(where: {
+            $0.hasPrefix("-") && $0.dropFirst().contains("g")
+        })
+        guard command == "local" || !isGlobal else { return nil }
+        while tokens.first.map({ $0.hasPrefix("-") || $0.hasPrefix("+") }) == true {
+            tokens.removeFirst()
+        }
+        return Set(tokens.compactMap { token -> String? in
+            if let assignment = assignment(from: token) { return assignment.name }
+            return isValidVariableName(token) ? token : nil
+        })
+    }
+
+    private static func exportedVariableChanges(
+        in segment: String
+    ) -> (added: Set<String>, removed: Set<String>) {
+        var tokens = executableWords(in: segment)
+        guard tokens.first == "export" else { return ([], []) }
+        tokens.removeFirst()
+        var removesExport = false
+        while let option = tokens.first, option.hasPrefix("-") {
+            removesExport = removesExport || option.dropFirst().contains("n")
+            tokens.removeFirst()
+        }
+        let names = Set(tokens.compactMap { token -> String? in
+            if let assignment = assignment(from: token) { return assignment.name }
+            return isValidVariableName(token) ? token : nil
+        })
+        return removesExport ? ([], names) : (names, [])
+    }
+
+    private static func readonlyVariableNames(in segment: String) -> Set<String> {
+        var tokens = executableWords(in: segment)
+        guard let command = tokens.first else { return [] }
+        tokens.removeFirst()
+        var declaresReadonly = command == "readonly"
+        if command == "declare" || command == "typeset" {
+            declaresReadonly = tokens.contains(where: {
+                $0.hasPrefix("-") && $0.dropFirst().contains("r")
+            })
+        }
+        guard declaresReadonly else { return [] }
+        while tokens.first.map({ $0.hasPrefix("-") || $0.hasPrefix("+") }) == true {
+            tokens.removeFirst()
+        }
+        return Set(tokens.compactMap { token -> String? in
+            if let assignment = assignment(from: token) { return assignment.name }
+            return isValidVariableName(token) ? token : nil
+        })
     }
 
     private static func printfVariableAssignment(in segment: String) -> [String: Set<String>]? {

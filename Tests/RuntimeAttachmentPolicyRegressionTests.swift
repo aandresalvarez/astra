@@ -288,7 +288,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "while read input; do rm \"$input\"; done <<< '\(attachment.path)'",
             "case x in x) input='\(attachment.path)'; rm \"$input\";; esac",
             "cmd=rm && \"$cmd\" '\(attachment.path)'",
-            "input=''; input+='\(attachment.path)'; rm \"$input\""
+            "input=''; input+='\(attachment.path)'; rm \"$input\"",
+            "export input='\(attachment.path)'; bash -c 'rm \"$input\"'",
+            "f(){ input='\(attachment.path)'; }; f; rm \"$input\"",
+            "declare +x input='\(attachment.path)'; rm \"$input\"",
+            "set -- '\(attachment.path)'; for f; do rm \"$f\"; done",
+            "readonly input='\(attachment.path)'; unset input; rm \"$input\"",
+            "f(){ rm \"$input\"; }; input='\(attachment.path)' f"
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -320,6 +326,18 @@ struct RuntimeAttachmentPolicyRegressionTests {
         )))
         #expect(pushdViolation.violationCategory == "read_only_input_mutation")
         #expect(pushdViolation.detail == attachmentDirectory.path)
+
+        let previousWorkingDirectoryViolation = try #require(guardUnderTest.violation(
+            for: .toolUse(
+                name: "Bash",
+                id: "read-only-previous-working-directory",
+                input: [
+                    "command": "cd '\(attachmentDirectory.path)'; cd /tmp; cd -; rm child.txt"
+                ]
+            )
+        ))
+        #expect(previousWorkingDirectoryViolation.violationCategory == "read_only_input_mutation")
+        #expect(previousWorkingDirectoryViolation.detail == attachmentDirectory.path)
 
         #expect(guardUnderTest.violation(for: .toolUse(
             name: "Bash",
@@ -459,6 +477,55 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "pushd-no-change-option-does-not-change-working-directory",
             input: [
                 "command": "pushd -n '\(attachmentDirectory.path)'; rm unrelated"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "child-shell-does-not-inherit-unexported-binding",
+            input: [
+                "command": "input='\(attachment.path)'; bash -c 'rm \"$input\"'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "child-shell-read-does-not-feed-unrelated-mutation",
+            input: [
+                "command": "export input='\(attachment.path)'; bash -c 'printf \"%s\" \"$input\"; rm /tmp/unrelated-output'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "function-local-binding-does-not-escape-call",
+            input: [
+                "command": "input=/tmp/unrelated; f(){ local input='\(attachment.path)'; }; f; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "function-local-reassignment-does-not-escape-call",
+            input: [
+                "command": "input=/tmp/unrelated; f(){ local input; input='\(attachment.path)'; }; f; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "function-prefix-assignment-does-not-escape-call",
+            input: [
+                "command": "input=/tmp/unrelated; f(){ input='\(attachment.path)'; }; input=/tmp/temporary f; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "child-positional-binding-is-not-exported-to-grandchild",
+            input: [
+                "command": "bash -c 'bash -c \'rm \"$1\"\'' ignored '\(attachment.path)'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "successful-unset-clears-mutable-binding",
+            input: [
+                "command": "input='\(attachment.path)'; unset input; rm \"$input\""
             ]
         )) == nil)
     }
