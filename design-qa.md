@@ -1,41 +1,47 @@
-# Workspace Creation Design QA
+# Progress Module Design QA
 
-## Verification setup
+- Source visual truth: `/Users/alvaro1/.codex/generated_images/019f63c1-72d4-75c2-8648-101d977f4e63/exec-784e91f5-0267-436f-ad01-591dea37c975.png`
+- Rendered implementation: `/tmp/astra-progress-popover-current.png`
+- Collapsed-state evidence: `/tmp/astra-window.png`
+- Focused comparison: `/tmp/astra-progress-comparison.png`
+- Viewport: ASTRA Dev window 1550 x 1220 points; run-details popover 566 x 564 points
+- State: completed Run 3, Updates selected, three real progress messages; Run 2 visible below
 
-- Visual baseline: the onboarding and standard-sheet screenshots supplied with the workspace-creation review.
-- Verification build: the development-channel bundle produced by `./script/build_and_run.sh --verify` at `dist/ASTRA Dev.app`.
-- Onboarding viewport: 920 × 640 macOS setup sheet, step 3 of 4
-- Standard state: New Workspace sheet with name focused and capabilities collapsed
-- Durable review rationale: [`docs/design-reviews/2026-07-13-workspace-creation-unification.md`](docs/design-reviews/2026-07-13-workspace-creation-unification.md)
+## Full-view comparison evidence
 
-The visual captures were inspected during the manual QA pass. This repository
-record keeps the reproducible build command, viewport, state, findings, and
-acceptance result instead of linking to machine-local screenshot paths.
+The source is a wide inline module, while the reachable production fixture renders the same component inside ASTRA's narrower run-details popover. The implementation preserves the requested hierarchy: status context, scan-first tabs with counts, one selected content surface, and a compact progress timeline. The narrow state wraps message copy without horizontal overflow or hidden controls.
+
+## Focused comparison evidence
+
+The combined comparison at `/tmp/astra-progress-comparison.png` verifies the tab treatment, selected underline, count placement, timeline markers, timestamps, and update-message rhythm. A focused comparison was necessary because those controls are too small to assess reliably in the full-window capture.
 
 ## Findings
 
-No actionable P0, P1, or P2 issues remain.
+No actionable P0, P1, or P2 differences remain.
 
-- Hierarchy: both entry points now follow the same scan path—purpose, name, shared guidance, optional capabilities, folder location, action.
-- Density: optional capability configuration is collapsed by default in both flows. The four integration rows remain available through the disclosure and were verified in the running app.
-- Understanding: onboarding adds one compact primer explaining when work belongs together; the standard sheet communicates the same model in one header sentence.
-- Consistency: wording, field sizes, disclosure styling, capability summary, and folder location come from the same shared presentation contract.
-- Validation: the empty required name is expressed as a neutral instruction in onboarding, not a red error before interaction.
-- Accessibility: the live accessibility tree exposes labels for Workspace name, Workspace guidance, Capabilities, each capability toggle, and the disabled primary action with its consequence. Keyboard focus begins in the name field.
-- Reflow: the onboarding form is constrained to a 720-point reading width inside the 920-point sheet, with no clipped fields or hidden primary action at the captured state.
+- Expected responsive difference: the mock shows a wide inline header; the verified fixture uses the existing 566-point run-details popover. The tab strip remains readable at this width and has a menu fallback below its fitting width.
+- Expected data difference: this fixture has no typed todo plan for the selected run, so it correctly shows the message timeline without invented phase labels. Runs with typed plan items render completed, current, and queued phases.
+- Expected domain difference: update rows do not show file badges because progress events do not carry a durable file association. The Files tab remains the source of truth for changed files.
 
-## Interaction Checks
+## Required fidelity surfaces
 
-- [x] Onboarding advances from runtime to access to workspace setup.
-- [x] Onboarding initial capability disclosure is collapsed.
-- [x] Standard New Workspace initial capability disclosure is collapsed.
-- [x] Capability disclosure expands to Jira, GitHub, Google Cloud, and REDCap rows inside a scrollable form.
-- [x] The neutral name requirement and disabled Create workspace action are visible together.
-- [x] Closing replay restores `astra.hasCompletedOnboarding = 1` and `astra.onboardingReplayRequested.v1 = 0`.
-- [x] ASTRA Dev is running from the verified development-channel bundle.
+- Fonts and typography: existing Stanford UI, section, metadata, and monospace tokens preserve ASTRA's hierarchy; wrapped progress copy remains readable.
+- Spacing and layout rhythm: 40-point disclosure target, 34-point tab targets, compact row spacing, and dividers remain consistent in the narrow surface.
+- Colors and visual tokens: Lagunita selection and underline, semantic status colors, sandstone dividers, and existing text tokens match ASTRA's design system.
+- Image quality and asset fidelity: the target contains only interface icons; production uses the existing SF Symbols rather than substitute artwork.
+- Copy and content: real run labels, timestamps, counts, tool names, and progress text are shown; no mock-only copy leaked into production.
 
-## Follow-up Polish
+## Primary interactions tested
 
-No P3 follow-up is required for acceptance.
+- Collapsed activity keeps the current status and live duration visible.
+- The disclosure is exposed as an accessibility button rather than flattened into the agent-response container.
+- Selecting Tools removes Updates rows from the accessibility tree and constructs only tool rows; returning to Updates restores only progress content.
+- Per-run tab selection and update-history choice are covered by deterministic regression tests.
+
+## Comparison history
+
+- Initial live pass found the parent agent-response accessibility container flattened the disclosure control.
+- Fix: changed the parent container from combined children to contained children and added a regression test.
+- Post-fix evidence: the live accessibility tree exposes `Show run activity` as a button with its current status value.
 
 final result: passed
