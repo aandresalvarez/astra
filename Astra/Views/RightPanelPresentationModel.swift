@@ -46,7 +46,14 @@ final class RightPanelPresentationModel: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.isRailShown = (defaults.object(forKey: Self.railShownDefaultsKey) as? Bool) ?? true
-        self.rememberedItemsRawValue = WorkspaceCanvasItemPreferenceStore.load(defaults: defaults)
+        let loadedItems = WorkspaceCanvasItemPreferenceStore.load(defaults: defaults)
+        let normalizedItems = WorkspaceCanvasItemPreference.normalizedStorageRawValue(loadedItems)
+        self.rememberedItemsRawValue = normalizedItems
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: loadedItems,
+            updatedRawValue: normalizedItems,
+            defaults: defaults
+        )
     }
 
     // MARK: - Derived presentation
@@ -121,6 +128,26 @@ final class RightPanelPresentationModel: ObservableObject {
         )
     }
 
+    /// Forget the shelf item for a deleted conversation in both the live
+    /// model and durable storage. Callers must route cleanup through this
+    /// owner so a later preference write cannot resurrect stale state.
+    func removeRememberedItem(conversationID: String) {
+        let updated = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: rememberedItemsRawValue,
+            conversationID: conversationID,
+            item: nil,
+            remember: true
+        )
+        guard updated != rememberedItemsRawValue else { return }
+        let previousRawValue = rememberedItemsRawValue
+        rememberedItemsRawValue = updated
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: previousRawValue,
+            updatedRawValue: updated,
+            defaults: defaults
+        )
+    }
+
     /// Hide the rail without touching the active canvas item or the
     /// remembered per-conversation item — used by callers that are about to
     /// set `activeCanvasItem` themselves (App Studio start/toggle), where the
@@ -152,8 +179,24 @@ final class RightPanelPresentationModel: ObservableObject {
 
         isRailShown = false
         persistRailShown()
+        touchRememberedItem(conversationID: conversationID)
         setActiveCanvasItem(item, remember: false, conversationID: conversationID)
         return item
+    }
+
+    private func touchRememberedItem(conversationID: String?) {
+        let updated = WorkspaceCanvasItemPreference.touchingStorageRawValue(
+            rememberedItemsRawValue,
+            conversationID: conversationID
+        )
+        guard updated != rememberedItemsRawValue else { return }
+        let previousRawValue = rememberedItemsRawValue
+        rememberedItemsRawValue = updated
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: previousRawValue,
+            updatedRawValue: updated,
+            defaults: defaults
+        )
     }
 
     private func persistRailShown() {

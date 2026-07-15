@@ -656,8 +656,15 @@ struct RunActivityPresentation: Hashable, Sendable {
         )
     }
 
-    var hasVisibleDetails: Bool {
+    private var hasActivityDetails: Bool {
         !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+    }
+
+    /// Plan items live in the run protocol snapshot rather than activity
+    /// presentation. Include that external state when deciding whether the
+    /// disclosure containing the Updates tab is reachable.
+    func hasVisibleDetails(hasPlanItems: Bool) -> Bool {
+        hasActivityDetails || hasPlanItems
     }
 
     private static func prefersExpandedDetails(

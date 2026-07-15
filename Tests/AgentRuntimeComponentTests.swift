@@ -250,6 +250,7 @@ struct AgentRuntimeLaunchPreflightTests {
             goal: "Continue with an available provider",
             runtime: legacyRuntime
         )
+        task.runtimeExplicitlySelected = true
         let configuration = AgentRuntimeConfiguration(defaultRuntimeID: .codexCLI)
         let selectedRuntime = configuration.selectedRuntime(for: task)
 
@@ -262,6 +263,27 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(selectedRuntime == .codexCLI)
         #expect(changed)
         #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(!task.runtimeExplicitlySelected)
+    }
+
+    @Test("Launch admission preserves a registered explicit runtime selection")
+    func launchAdmissionPreservesRegisteredExplicitRuntimeSelection() {
+        let task = AgentTask(
+            title: "Explicit provider task",
+            goal: "Keep using the selected provider",
+            runtime: .codexCLI
+        )
+        task.runtimeExplicitlySelected = true
+
+        let changed = AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: task,
+            selectedRuntime: .codexCLI,
+            phase: "resume"
+        )
+
+        #expect(!changed)
+        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(task.runtimeExplicitlySelected)
     }
 
     @Test("Capability preflight uses the canonical run runtime over stale task metadata")

@@ -55,6 +55,14 @@ struct RunActivityTabPresentationTests {
         #expect(presentation.tabDescriptors(hasPlanItems: false).first?.count == nil)
     }
 
+    @Test("plan-only runs keep activity details reachable")
+    func planOnlyRunHasVisibleDetails() {
+        let presentation = RunActivityPresentation.empty
+
+        #expect(!presentation.hasVisibleDetails(hasPlanItems: false))
+        #expect(presentation.hasVisibleDetails(hasPlanItems: true))
+    }
+
     @Test("tab selection is per-run and survives disclosure toggles")
     func selectionSurvivesDisclosureToggle() {
         let runID = Self.runID
