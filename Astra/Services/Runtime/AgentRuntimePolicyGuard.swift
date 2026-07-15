@@ -249,12 +249,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
             contexts.contains { context in
                 guard Self.shellCommandLooksMutating(context.command) else { return false }
-                if shellCommand(context.command, referencesHostPath: path) {
-                    return true
-                }
-                return context.referencedVariables.contains { variable in
-                    guard let binding = context.variableBindings[variable] else { return false }
-                    return shellCommand(binding, referencesHostPath: path)
+                return context.pathReferenceExpressions.contains { expression in
+                    shellCommand(expression, referencesHostPath: path)
                 }
             }
         }) else {

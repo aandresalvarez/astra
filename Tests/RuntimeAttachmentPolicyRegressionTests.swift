@@ -236,7 +236,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "rm $(printf %s '\(attachment.path)')",
             "rm `printf %s '\(attachment.path)'`",
             "ATTACH='\(attachment.path)' /bin/sh -lc 'rm \"$ATTACH\"'",
-            "rm '\(attachment.path)'"
+            "rm '\(attachment.path)'",
+            "printf '%s\\n' '\(attachment.path)' | xargs rm -f",
+            "input=$(printf %s '\(attachment.path)') && rm \"$input\"",
+            "rm '\(attachment.path)' && /bin/sh -lc 'true'",
+            "input='\(attachment.path)' && rm \"${input:?missing}\"",
+            "declare input='\(attachment.path)' && rm \"$input\"",
+            "typeset input='\(attachment.path)' && rm \"$input\""
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -254,6 +260,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "unused-wrapper-assignment",
             input: [
                 "command": "ATTACH='\(attachment.path)' /bin/sh -lc 'rm /tmp/unrelated-output'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "reverse-pipeline-data-flow",
+            input: [
+                "command": "rm /tmp/unrelated-output | printf '%s\\n' '\(attachment.path)'"
             ]
         )) == nil)
     }
