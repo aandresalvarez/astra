@@ -16,6 +16,24 @@ enum ShelfFileNavigatorScope: String, CaseIterable, Identifiable {
     }
 }
 
+enum ShelfFileNavigatorRootAvailability {
+    /// Task scope intentionally treats workspace roots as an escape hatch when
+    /// the task has no roots yet. Other scopes must describe their own paths so
+    /// a task folder cannot mask missing workspace configuration.
+    static func hasConfiguredRoots(
+        allRootCount: Int,
+        scopedRootCount: Int,
+        scope: ShelfFileNavigatorScope
+    ) -> Bool {
+        switch scope {
+        case .task:
+            allRootCount > 0
+        case .workspace, .all:
+            scopedRootCount > 0
+        }
+    }
+}
+
 struct ShelfFileNavigatorHeader: View {
     @Binding var searchText: String
     @Binding var scope: ShelfFileNavigatorScope
