@@ -58,29 +58,6 @@ struct TaskSidebarContainerView: View {
     }
 }
 
-enum WorkspaceSidebarFilter {
-    static func visibleWorkspaces(
-        _ workspaces: [Workspace],
-        showStarredOnly: Bool,
-        searchText: String,
-        workspaceMatchesSearch: (Workspace) -> Bool,
-        hasMatchingTasks: (Workspace) -> Bool
-    ) -> [Workspace] {
-        let sorted = workspaces.sorted {
-            if $0.isStarred != $1.isStarred {
-                return $0.isStarred && !$1.isStarred
-            }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-        let filteredByStar = showStarredOnly ? sorted.filter(\.isStarred) : sorted
-        guard !searchText.isEmpty else { return filteredByStar }
-
-        return filteredByStar.filter { workspace in
-            workspaceMatchesSearch(workspace) || hasMatchingTasks(workspace)
-        }
-    }
-}
-
 enum SidebarLeanPresentation {
     static let usesQuietNewTaskCommand = true
     static let sectionHeadersShowCounts = true
@@ -375,10 +352,11 @@ struct TaskSidebarView: View {
     // `.onDrag` arms it, and a pressed-mouse-button watchdog clears it
     // when the session ends — drop, cancel, or release outside the app.
     @State private var isTaskDragInFlight = false
-    @State private var taskDragWatchdog: Timer?
+    @State private var taskDragWatchdog = SidebarDragReleaseWatchdog()
     @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesFilterHovered = false
+    @State private var isWorkspacesSortHovered = false
     @State private var isWorkspacesHeaderHovered = false
     @State private var isSchedulesAddHovered = false
     @State private var isSchedulesHeaderHovered = false
@@ -387,7 +365,13 @@ struct TaskSidebarView: View {
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
     @State private var isShowingNewTaskNudge = false
     @State private var isNewTaskNudgePulsing = false
+    @State private var workspaceOrderingState = WorkspaceSidebarOrderingStore.load()
+    @State private var workspaceDragSession = WorkspaceSidebarDragSessionState()
+    @State private var workspaceDragWatchdog = SidebarDragReleaseWatchdog()
+    @State private var selectedWorkspaceRowFrame: CGRect?
+    @State private var workspaceViewportHeight: CGFloat = 0
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
+    @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     @State private var taskIndex = SidebarTaskIndex(tasks: [], searchText: "")
@@ -409,6 +393,36 @@ struct TaskSidebarView: View {
 
     private var fastHoverAnimation: Animation? {
         reduceMotion ? nil : .easeOut(duration: 0.10)
+    }
+
+    private var workspaceSortMode: WorkspaceSidebarSortMode {
+        WorkspaceSidebarSortMode(rawValue: workspaceSortModeRaw) ?? .name
+    }
+
+    private var workspaceSortModeBinding: Binding<WorkspaceSidebarSortMode> {
+        Binding(get: { workspaceSortMode }, set: setWorkspaceSortMode)
+    }
+
+    private var workspaceOrderSignature: String {
+        WorkspaceSidebarOrdering.ordered(workspaces, mode: workspaceSortMode, state: workspaceOrderingState)
+            .map { "\($0.id.uuidString):\($0.isStarred)" }
+            .joined(separator: "|")
+    }
+
+    private func setWorkspaceSortMode(_ mode: WorkspaceSidebarSortMode) {
+        guard mode != workspaceSortMode else { return }
+        if mode == .manual {
+            let resolvedManualOrder = WorkspaceSidebarOrdering.manualOrderIDsForEnteringManual(
+                workspaces,
+                currentMode: workspaceSortMode,
+                state: workspaceOrderingState
+            )
+            if resolvedManualOrder != workspaceOrderingState.manualOrderIDs {
+                workspaceOrderingState.manualOrderIDs = resolvedManualOrder
+                WorkspaceSidebarOrderingStore.save(workspaceOrderingState)
+            }
+        }
+        workspaceSortModeRaw = mode.rawValue
     }
 
     private func rebuildTaskIndex() {
@@ -507,6 +521,35 @@ struct TaskSidebarView: View {
                     }
                     .padding(.bottom, 12)
                 }
+                .coordinateSpace(name: WorkspaceSidebarScrollAnchor.coordinateSpaceName)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: WorkspaceSidebarViewportHeightPreferenceKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+                .onPreferenceChange(WorkspaceSidebarViewportHeightPreferenceKey.self) {
+                    workspaceViewportHeight = $0
+                }
+                .onPreferenceChange(WorkspaceSidebarSelectedRowFramePreferenceKey.self) {
+                    selectedWorkspaceRowFrame = $0
+                }
+                // Sorting, starring, and renaming may move the selected row.
+                // Reapply its prior viewport anchor after layout so the user
+                // can keep tracking the same workspace instead of hunting for it.
+                .onChange(of: workspaceOrderSignature) {
+                    guard let selectedWorkspace,
+                          let selectedWorkspaceRowFrame else { return }
+                    let anchor = WorkspaceSidebarScrollAnchor.unitPoint(
+                        rowFrame: selectedWorkspaceRowFrame,
+                        viewportHeight: workspaceViewportHeight
+                    )
+                    DispatchQueue.main.async {
+                        scrollProxy.scrollTo(selectedWorkspace.id, anchor: anchor)
+                    }
+                }
                 // Keep the drawer that just opened on screen. Matters most
                 // when the open came from elsewhere (a pinned/unread task
                 // click, a new workspace) and the folder row sits below the
@@ -524,14 +567,18 @@ struct TaskSidebarView: View {
         }
         .onAppear {
             loadSidebarDisclosure()
+            loadWorkspaceOrderingState()
             rebuildTaskIndex()
             rebuildSchedules()
             updateNewTaskNudge()
         }
-        // Tear the drag watchdog down with the view: if the sidebar leaves
-        // the hierarchy mid-drag (window close, split collapse) the
-        // repeating timer must not outlive it.
-        .onDisappear { endTaskDrag() }
+        // Tear the drag watchdogs down with the view: if the sidebar leaves
+        // the hierarchy mid-drag (window close, split collapse) their
+        // repeating timers must not outlive it.
+        .onDisappear {
+            endTaskDrag()
+            endWorkspaceDrag()
+        }
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
         .onChange(of: searchText) {
             rebuildTaskIndex()
@@ -1069,6 +1116,8 @@ struct TaskSidebarView: View {
                 workspaces,
                 showStarredOnly: showStarredWorkspacesOnly,
                 searchText: searchText,
+                sortMode: workspaceSortMode,
+                orderingState: workspaceOrderingState,
                 workspaceMatchesSearch: workspaceMatchesSearch
             ) { workspace in
                 taskIndex.reviewTasks(
@@ -1082,6 +1131,11 @@ struct TaskSidebarView: View {
 
     private func workspaceSection(using taskIndex: SidebarTaskIndex) -> some View {
         let visibleWorkspaces = visibleWorkspaces(using: taskIndex)
+        let workspaceGroups = WorkspaceSidebarOrdering.groups(visibleWorkspaces)
+        let showGroupLabels = WorkspaceSidebarGroupingPresentation.showsLabels(
+            groupCount: workspaceGroups.count,
+            showStarredOnly: showStarredWorkspacesOnly
+        )
         // Liveness invariant: running work whose own row is hidden (section
         // collapsed, or workspace filtered out by star/search) signals from
         // the header instead, so it is never invisible.
@@ -1102,8 +1156,13 @@ struct TaskSidebarView: View {
                 }
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
-                ForEach(visibleWorkspaces) { workspace in
-                    workspaceListRow(for: workspace, using: taskIndex)
+                ForEach(workspaceGroups) { group in
+                    if showGroupLabels {
+                        WorkspaceSidebarGroupLabel(title: group.title)
+                    }
+                    ForEach(group.workspaces) { workspace in
+                        workspaceListRow(for: workspace, using: taskIndex)
+                    }
                 }
             }
         } header: {
@@ -1146,6 +1205,27 @@ struct TaskSidebarView: View {
 
                 Spacer()
 
+                Menu {
+                    Picker("Sort workspaces", selection: workspaceSortModeBinding) {
+                        ForEach(WorkspaceSidebarSortMode.allCases) { mode in
+                            Label(mode.title, systemImage: mode.systemImage)
+                                .tag(mode)
+                        }
+                    }
+                } label: {
+                    SidebarWorkspaceSortIcon(
+                        mode: workspaceSortMode,
+                        isHovered: isWorkspacesSortHovered
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .onHover { isWorkspacesSortHovered = $0 }
+                .help("Sort workspaces: \(workspaceSortMode.title)")
+                .accessibilityLabel("Sort workspaces, current: \(workspaceSortMode.title)")
+                .accessibilityHint("Choose name, recently used, or manual order.")
+
                 Button {
                     withAnimation(disclosureAnimation) {
                         showStarredWorkspacesOnly.toggle()
@@ -1158,8 +1238,9 @@ struct TaskSidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { isWorkspacesFilterHovered = $0 }
-                .help(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
-                .accessibilityLabel(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
+                .help(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
+                .accessibilityLabel(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
+                .accessibilityHint(WorkspaceSidebarFilterPresentation.accessibilityHint)
                 .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
 
             }
@@ -1277,6 +1358,16 @@ struct TaskSidebarView: View {
         .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
         .padding(.vertical, 1)
         .animation(accordionAnimation, value: isExpanded)
+        .background {
+            if selectedWorkspace?.id == workspace.id {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: WorkspaceSidebarSelectedRowFramePreferenceKey.self,
+                        value: proxy.frame(in: .named(WorkspaceSidebarScrollAnchor.coordinateSpaceName))
+                    )
+                }
+            }
+        }
     }
 
     @State private var hoveredWorkspaceID: UUID?
@@ -1311,6 +1402,85 @@ struct TaskSidebarView: View {
         }
     }
 
+    private func workspaceDropTargetBinding(for workspaceID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { workspaceDragSession.dropTargetID == workspaceID },
+            set: { isTargeted in
+                if isTargeted {
+                    guard let sourceID = workspaceDragSession.sourceID,
+                          let source = workspaces.first(where: { $0.id == sourceID }),
+                          let target = workspaces.first(where: { $0.id == workspaceID }),
+                          source.isStarred == target.isStarred else { return }
+                    workspaceDragSession.setDropTarget(workspaceID)
+                } else if workspaceDragSession.dropTargetID == workspaceID {
+                    workspaceDragSession.setDropTarget(nil)
+                }
+            }
+        )
+    }
+
+    private func handleWorkspaceDrop(_ providers: [NSItemProvider], onto target: Workspace) -> Bool {
+        guard workspaceSortMode == .manual else {
+            AppLogger.warning("Workspace reorder drop rejected outside Manual sort", category: "UI")
+            return false
+        }
+        guard workspaceDragSession.isActive else {
+            // Text is also used by task/Kanban drags. Only consume a drop when
+            // this sidebar owns the active workspace drag session.
+            return false
+        }
+        let providerTypes = providers.flatMap(\.registeredTypeIdentifiers).joined(separator: ",")
+        AppLogger.debug(
+            "Workspace reorder drop received target=\(target.id.uuidString) providerTypes=\(providerTypes)",
+            category: "UI"
+        )
+        return WorkspaceSidebarDragPayload.loadWorkspaceID(from: providers) { sourceID in
+            endWorkspaceDrag()
+            guard let sourceID,
+                  let reorderedIDs = WorkspaceSidebarOrdering.reorderedManualIDs(
+                    moving: sourceID,
+                    onto: target.id,
+                    workspaces: workspaces,
+                    storedIDs: workspaceOrderingState.manualOrderIDs
+                  ) else {
+                AppLogger.warning(
+                    "Workspace reorder drop rejected target=\(target.id.uuidString)",
+                    category: "UI"
+                )
+                return
+            }
+
+            withAnimation(disclosureAnimation) {
+                workspaceOrderingState.manualOrderIDs = reorderedIDs
+            }
+            WorkspaceSidebarOrderingStore.save(workspaceOrderingState)
+            AppLogger.info(
+                "Workspace reorder completed source=\(sourceID.uuidString) target=\(target.id.uuidString)",
+                category: "UI"
+            )
+        }
+    }
+
+    private func loadWorkspaceOrderingState() {
+        if WorkspaceSidebarSortMode(rawValue: workspaceSortModeRaw) == nil {
+            workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
+        }
+        var state = WorkspaceSidebarOrderingStore.load().pruned(to: workspaces)
+        if let selectedWorkspace {
+            state.recordUse(of: selectedWorkspace.id)
+        }
+        workspaceOrderingState = state
+        WorkspaceSidebarOrderingStore.save(state)
+    }
+
+    private func recordRecentUse(of workspace: Workspace?) {
+        guard let workspace else { return }
+        var state = workspaceOrderingState.pruned(to: workspaces)
+        state.recordUse(of: workspace.id)
+        workspaceOrderingState = state
+        WorkspaceSidebarOrderingStore.save(state)
+    }
+
     private var workspaceEmptyTitle: String {
         if showStarredWorkspacesOnly {
             return searchText.isEmpty ? "No starred workspaces" : "No starred matches"
@@ -1336,6 +1506,20 @@ struct TaskSidebarView: View {
         let runningTaskCount = isExpanded ? 0 : taskIndex.runningTaskCount(in: workspace)
 
         return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
+            if workspaceSortMode == .manual {
+                Image(systemName: "line.3.horizontal")
+                    .font(Stanford.ui(10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 20, height: 28)
+                    .contentShape(Rectangle())
+                    .onDrag {
+                        beginWorkspaceDrag(workspace.id)
+                        return WorkspaceSidebarDragPayload.provider(for: workspace.id)
+                    }
+                    .help("Drag to reorder \(workspace.name)")
+                    .accessibilityLabel("Reorder \(workspace.name)")
+            }
+
             // One button spanning chevron + folder + title. These used to be
             // two buttons with the identical action, which made VoiceOver
             // announce "Expand <workspace>" twice per row.
@@ -1439,6 +1623,23 @@ struct TaskSidebarView: View {
                 onDeleteWorkspace?(workspace)
             } label: {
                 Label("Remove", systemImage: "trash")
+            }
+        }
+        // Keep the destination on the fixed-height workspace header. The
+        // enclosing List row can also contain an expanded task drawer, and
+        // AppKit's table-backed row does not reliably expose that composite
+        // subtree as a SwiftUI drop destination.
+        .onDrop(
+            of: [WorkspaceSidebarDragPayload.type],
+            isTargeted: workspaceDropTargetBinding(for: workspace.id)
+        ) { providers in
+            handleWorkspaceDrop(providers, onto: workspace)
+        }
+        .overlay(alignment: .top) {
+            if workspaceDragSession.dropTargetID == workspace.id {
+                Capsule()
+                    .fill(Stanford.lagunita)
+                    .frame(height: 2)
             }
         }
     }
@@ -1839,22 +2040,35 @@ struct TaskSidebarView: View {
     /// mask is the one signal that covers drop, cancel, and release outside
     /// the window alike.
     private func beginTaskDrag() {
-        taskDragWatchdog?.invalidate()
+        endWorkspaceDrag()
         withAnimation(disclosureAnimation) {
             isTaskDragInFlight = true
         }
-        taskDragWatchdog = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { _ in
-            guard NSEvent.pressedMouseButtons & 0x1 == 0 else { return }
-            DispatchQueue.main.async { endTaskDrag() }
-        }
+        taskDragWatchdog.start { endTaskDrag() }
     }
 
     private func endTaskDrag() {
-        taskDragWatchdog?.invalidate()
-        taskDragWatchdog = nil
+        taskDragWatchdog.stop()
         withAnimation(disclosureAnimation) {
             isTaskDragInFlight = false
         }
+    }
+    /// Workspace reorders need the same explicit end signal as task drags.
+    /// `onDrag` has no cancellation callback on macOS, so polling the pressed
+    /// button clears ownership after drop, cancel, or release outside ASTRA.
+    private func beginWorkspaceDrag(_ workspaceID: UUID) {
+        endTaskDrag()
+        workspaceDragSession.begin(sourceID: workspaceID)
+        AppLogger.debug(
+            "Workspace reorder drag started source=\(workspaceID.uuidString)",
+            category: "UI"
+        )
+        workspaceDragWatchdog.start { endWorkspaceDrag() }
+    }
+
+    private func endWorkspaceDrag() {
+        workspaceDragWatchdog.stop()
+        workspaceDragSession.end()
     }
 
     private func togglePinned(for task: AgentTask) {
@@ -1877,6 +2091,7 @@ struct TaskSidebarView: View {
     }
 
     private func handleSelectedWorkspaceChanged() {
+        recordRecentUse(of: selectedWorkspace)
         // Accordion: the open drawer follows the workspace you switch to,
         // wherever the switch originates (row click, new workspace, schedule
         // row, App Studio). The drawer animates because `workspaceListRow`
