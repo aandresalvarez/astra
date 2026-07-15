@@ -217,6 +217,47 @@ struct RuntimeAttachmentPolicyRegressionTests {
         )) == nil)
     }
 
+    @Test("Broad shell guard preserves mutation data flow across shell syntax")
+    func broadShellGuardPreservesMutationDataFlow() throws {
+        let attachment = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-attached;final-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: attachment) }
+        try Data("literature".utf8).write(to: attachment)
+        let manifest = makeManifest(
+            allowedTools: ["*"],
+            readOnlyPaths: [attachment.path],
+            permissionMode: .autonomous,
+            policyLevel: .autonomous,
+            usesBroadProviderPermissions: true
+        )
+        let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest)
+        let mutationCommands = [
+            "input='\(attachment.path)' && rm \"$input\"",
+            "rm $(printf %s '\(attachment.path)')",
+            "rm `printf %s '\(attachment.path)'`",
+            "ATTACH='\(attachment.path)' /bin/sh -lc 'rm \"$ATTACH\"'",
+            "rm '\(attachment.path)'"
+        ]
+
+        for (index, command) in mutationCommands.enumerated() {
+            let violation = try #require(guardUnderTest.violation(for: .toolUse(
+                name: "Bash",
+                id: "shell-data-flow-\(index)",
+                input: ["command": command]
+            )))
+            #expect(violation.violationCategory == "read_only_input_mutation")
+            #expect(violation.detail == attachment.path)
+        }
+
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "unused-wrapper-assignment",
+            input: [
+                "command": "ATTACH='\(attachment.path)' /bin/sh -lc 'rm /tmp/unrelated-output'"
+            ]
+        )) == nil)
+    }
+
     @Test("Docker broad shell guard translates container paths before checking read-only inputs")
     func dockerBroadShellGuardTranslatesReadOnlyInputPaths() throws {
         let workspacePath = "/tmp/astra-policy-guard"

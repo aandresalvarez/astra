@@ -233,13 +233,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         return nil
     }
 
-    /// Best-effort text match: flags a shell command as a read-only-input
-    /// mutation only when it both looks like a mutating command (contains a
-    /// known write/delete indicator) and literally references one of this
-    /// run's read-only paths. This cannot see through shell
-    /// expansion/variables/aliasing, so it complements rather than replaces
-    /// OS-level sandbox enforcement - it exists for the broad/Auto path where
-    /// that enforcement may not be applied at all.
+    /// Best-effort shell data-flow match: flags a command when one top-level
+    /// segment both looks mutating and targets a read-only path directly or
+    /// through an explicit shell variable assignment. It complements rather
+    /// than replaces OS-level sandbox enforcement in broad/Auto mode.
     private func validateShellReadOnlyInputMutation(
         _ command: String?,
         toolName: String
@@ -248,15 +245,17 @@ struct AgentRuntimePolicyGuard: Sendable {
               !trimmedCommand.isEmpty else {
             return nil
         }
-        let semanticCommand = ProviderToolSemantics.semanticShellCommand(trimmedCommand)
-        guard Self.shellCommandLooksMutating(semanticCommand) else { return nil }
-        let commandSegments = Self.shellSegmentSeparatorsNormalized(semanticCommand)
-            .split(whereSeparator: { $0.isNewline || $0 == ";" })
-            .map(String.init)
+        let contexts = ShellCommandMutationContextParser.contexts(for: trimmedCommand)
         guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
-            commandSegments.contains { segment in
-                Self.shellCommandLooksMutating(segment)
-                    && shellCommand(segment, referencesHostPath: path)
+            contexts.contains { context in
+                guard Self.shellCommandLooksMutating(context.command) else { return false }
+                if shellCommand(context.command, referencesHostPath: path) {
+                    return true
+                }
+                return context.referencedVariables.contains { variable in
+                    guard let binding = context.variableBindings[variable] else { return false }
+                    return shellCommand(binding, referencesHostPath: path)
+                }
             }
         }) else {
             return nil
