@@ -610,7 +610,9 @@ enum DockerExecutionPlanner {
         var seenInputs: Set<String> = []
         for path in taskAccess.runtimeReadOnlyInputPaths + additionalReadOnlyInputPaths {
             let standardized = WorkspacePathPresentation.standardizedPath(path)
-            guard !standardized.isEmpty, seenInputs.insert(standardized).inserted else { continue }
+            guard !standardized.isEmpty else { continue }
+            let identity = ExecutionSandbox.canonicalize(standardized) ?? standardized
+            guard seenInputs.insert(identity).inserted else { continue }
             appendReadOnlyInput(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
             inputIndex += 1
         }

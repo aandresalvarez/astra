@@ -175,6 +175,50 @@ struct ExecutionEnvironmentTests {
         #expect(boundary.unprotectedContainerPaths(in: plan.executionEnvironment.mounts).isEmpty)
     }
 
+    @Test("Docker mount plan deduplicates firmlink spellings for one read-only input")
+    func dockerMountPlanDeduplicatesFirmlinkInputSpellings() throws {
+        let visibleRoot = "/tmp/astra-docker-input-alias-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: visibleRoot) }
+        let workspace = (visibleRoot as NSString).appendingPathComponent("workspace")
+        let visibleInput = (visibleRoot as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: visibleInput))
+
+        let canonicalInput = try #require(ExecutionSandbox.canonicalize(visibleInput))
+        #expect(canonicalInput != visibleInput)
+
+        let task = AgentTask(
+            title: "Review aliased attachment",
+            goal: "Read the attachment",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        task.inputs = [visibleInput]
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        )
+
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: workspace,
+            environment: environment,
+            task: task,
+            additionalReadOnlyInputPaths: [canonicalInput]
+        )
+        let matchingInputMounts = mounts.filter {
+            ExecutionSandbox.canonicalize($0.hostPath) == canonicalInput
+        }
+        let inputMount = try #require(matchingInputMounts.first)
+
+        #expect(matchingInputMounts.count == 1)
+        #expect(inputMount.hostPath == visibleInput)
+        #expect(inputMount.containerPath == "/mnt/astra/input-1")
+        #expect(inputMount.access == .readOnly)
+        #expect(ExecutionEnvironmentPathMapper(mounts: mounts).containerPath(forHostPath: visibleInput)
+            == "/mnt/astra/input-1")
+    }
+
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")
