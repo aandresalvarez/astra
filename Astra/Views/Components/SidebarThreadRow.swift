@@ -153,7 +153,7 @@ struct SidebarThreadRow: View {
     }
 
     private var titlePresentation: Formatters.SidebarTaskTitlePresentation {
-        Formatters.sidebarTaskTitlePresentation(task.title)
+        SidebarTaskActionPresentation.rowTitle(for: task.title)
     }
 
     var body: some View {

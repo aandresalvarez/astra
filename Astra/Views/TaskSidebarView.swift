@@ -85,7 +85,8 @@ enum SidebarLeanPresentation {
     static let usesQuietNewTaskCommand = true
     static let sectionHeadersShowCounts = true
     static let workspacesUseSingleFlatList = true
-    static let sidebarTaskTitlesUsePrefixPrimaryPresentation = true
+    static let sidebarTaskTitlesShowPrimaryTextOnly = true
+    static let sidebarTaskActionsLiveInOptionsMenu = true
     static let workspaceStarsMoveToTrailingEdge = true
     static let workspaceMetadataAndActionsShareTrailingSlot = true
     static let selectedWorkspaceChildrenUseGuide = false
@@ -165,6 +166,22 @@ enum SidebarTaskAgePresentation {
         if elapsed < 604_800 { return label(Int(elapsed / 86_400), unit: "day") }
         if elapsed < 2_592_000 { return label(Int(elapsed / 604_800), unit: "week") }
         return label(Int(elapsed / 2_592_000), unit: "month")
+    }
+}
+
+/// Keeps generic task actions available without charging every navigation row
+/// for their width. The task object's phrase leads in the rail; the action is
+/// disclosed alongside the task's other metadata in the options menu.
+enum SidebarTaskActionPresentation {
+    static func rowTitle(for title: String) -> Formatters.SidebarTaskTitlePresentation {
+        Formatters.sidebarTaskTitlePresentation(title).primaryOnly
+    }
+
+    static func menuLabel(for title: String) -> String? {
+        guard let action = Formatters.sidebarTaskTitlePresentation(title).prefix else {
+            return nil
+        }
+        return "Action: \(action)"
     }
 }
 
@@ -1647,6 +1664,10 @@ struct TaskSidebarView: View {
                         ),
                         systemImage: "clock"
                     )
+
+                    if let actionLabel = SidebarTaskActionPresentation.menuLabel(for: task.title) {
+                        Label(actionLabel, systemImage: "textformat")
+                    }
                 }
 
                 Section {
