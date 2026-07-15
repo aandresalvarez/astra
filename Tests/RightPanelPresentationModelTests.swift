@@ -285,4 +285,37 @@ struct RightPanelPresentationModelTests {
 
         #expect(restored == .browser)
     }
+
+    @Test("Removing a deleted conversation prevents later writes from resurrecting it")
+    func removingRememberedItemUpdatesLiveAndDurableState() {
+        let suiteName = UUID().uuidString
+        let deletedConversationID = UUID().uuidString
+        let survivingConversationID = UUID().uuidString
+        let model = makeModel(defaultsSuite: suiteName)
+
+        model.setActiveCanvasItem(.browser, remember: true, conversationID: deletedConversationID)
+        model.removeRememberedItem(conversationID: deletedConversationID)
+        model.setActiveCanvasItem(.markdown, remember: true, conversationID: survivingConversationID)
+
+        #expect(
+            WorkspaceCanvasItemPreference.item(
+                in: model.rememberedItemsRawValue,
+                for: deletedConversationID
+            ) == nil
+        )
+
+        let reborn = makeModel(defaultsSuite: suiteName)
+        #expect(
+            WorkspaceCanvasItemPreference.item(
+                in: reborn.rememberedItemsRawValue,
+                for: deletedConversationID
+            ) == nil
+        )
+        #expect(
+            WorkspaceCanvasItemPreference.item(
+                in: reborn.rememberedItemsRawValue,
+                for: survivingConversationID
+            ) == .markdown
+        )
+    }
 }

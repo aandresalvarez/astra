@@ -258,6 +258,80 @@ struct PanelLayoutGeometryTests {
         #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == storage)
     }
 
+    @Test("Workspace shelf preference store removes deleted conversations")
+    func workspaceShelfPreferenceStoreRemovesDeletedConversations() throws {
+        let suiteName = "WorkspaceCanvasItemPreferenceStore.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let conversationID = UUID().uuidString
+        let storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
+            conversationID: conversationID,
+            item: .browser,
+            remember: true
+        )
+        WorkspaceCanvasItemPreferenceStore.save(storage, defaults: defaults)
+
+        #expect(WorkspaceCanvasItemPreferenceStore.remove(conversationID: conversationID, defaults: defaults))
+        #expect(
+            WorkspaceCanvasItemPreference.item(
+                in: WorkspaceCanvasItemPreferenceStore.load(defaults: defaults),
+                for: conversationID
+            ) == nil
+        )
+        #expect(!WorkspaceCanvasItemPreferenceStore.remove(conversationID: conversationID, defaults: defaults))
+    }
+
+    @Test("Workspace shelf preferences migrate legacy JSON and cap it deterministically")
+    func workspaceShelfPreferencesMigrateAndCapLegacyStorage() throws {
+        let legacy = Dictionary(uniqueKeysWithValues: (0..<300).map {
+            (String(format: "conversation-%03d", $0), WorkspaceCanvasItem.markdown.rawValue)
+        })
+        let legacyData = try JSONEncoder().encode(legacy)
+        let legacyRawValue = try #require(String(data: legacyData, encoding: .utf8))
+
+        let normalized = WorkspaceCanvasItemPreference.normalizedStorageRawValue(legacyRawValue)
+
+        #expect(
+            WorkspaceCanvasItemPreference.entryCount(in: normalized)
+                == WorkspaceCanvasItemPreference.maximumEntryCount
+        )
+        #expect(WorkspaceCanvasItemPreference.item(in: normalized, for: "conversation-000") == nil)
+        #expect(WorkspaceCanvasItemPreference.item(in: normalized, for: "conversation-299") == .markdown)
+    }
+
+    @Test("Workspace shelf preference LRU preserves a touched conversation")
+    func workspaceShelfPreferenceLRUPreservesTouchedConversation() {
+        var storage = WorkspaceCanvasItemPreference.emptyStorageRawValue
+        for index in 0..<WorkspaceCanvasItemPreference.maximumEntryCount {
+            storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+                currentStorageRawValue: storage,
+                conversationID: "conversation-\(index)",
+                item: .markdown,
+                remember: true
+            )
+        }
+
+        storage = WorkspaceCanvasItemPreference.touchingStorageRawValue(
+            storage,
+            conversationID: "conversation-0"
+        )
+        storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: storage,
+            conversationID: "conversation-new",
+            item: .browser,
+            remember: true
+        )
+
+        #expect(WorkspaceCanvasItemPreference.entryCount(in: storage) == 256)
+        #expect(WorkspaceCanvasItemPreference.item(in: storage, for: "conversation-0") == .markdown)
+        #expect(WorkspaceCanvasItemPreference.item(in: storage, for: "conversation-1") == nil)
+        #expect(WorkspaceCanvasItemPreference.item(in: storage, for: "conversation-new") == .browser)
+    }
+
     @Test("Remembered shelf restore yields to an explicitly visible right rail")
     func rememberedShelfRestoreYieldsToVisibleRightRail() {
         #expect(!WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(

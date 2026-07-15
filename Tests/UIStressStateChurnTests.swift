@@ -327,13 +327,8 @@ struct UIStressStateChurnTests {
 
     // MARK: - Right panel: per-conversation canvas memory growth
 
-    @Test("2k-conversation canvas memory stays functional and should stay bounded")
+    @Test("2k-conversation canvas memory stays functional and bounded")
     func canvasMemoryShouldStayBoundedAcrossConversations() throws {
-        // WorkspaceCanvasItemPreference storage keeps one JSON entry per
-        // conversation ever seen, decoded and re-encoded on every canvas
-        // change. Bounded storage is the desired contract, recorded as a
-        // known issue so an eviction policy flips it; functional recall and
-        // the storm budget stay hard assertions.
         let model = RightPanelPresentationModel(defaults: try scratchDefaults())
         let conversations = 2_000
 
@@ -343,23 +338,19 @@ struct UIStressStateChurnTests {
             }
         }
 
-        let data = try #require(model.rememberedItemsRawValue.data(using: .utf8))
-        let decoded = try JSONDecoder().decode([String: String].self, from: data)
-        withKnownIssue("no eviction policy: one entry per conversation ever seen") {
-            #expect(decoded.count <= 1_000,
-                    "any real eviction policy keeps far fewer entries, got \(decoded.count)")
-        }
-        // Full-blob decode+encode per op is quadratic in remembered
-        // conversations; this bounds the whole 2k storm rather than per-op.
+        #expect(
+            WorkspaceCanvasItemPreference.entryCount(in: model.rememberedItemsRawValue)
+                == WorkspaceCanvasItemPreference.maximumEntryCount
+        )
         #expect(elapsed < .seconds(10), "2k canvas ops took \(elapsed)")
 
         model.setActiveCanvasItem(nil, remember: false, conversationID: nil)
         model.dismissRail()
         let restored = model.restoreRememberedItemIfAvailable(
-            conversationID: "conversation-42",
+            conversationID: "conversation-1999",
             canPresent: { _ in true }
         )
-        #expect(restored == .markdown, "storm must not corrupt individual conversation memory")
+        #expect(restored == .markdown, "storm must preserve recently used conversation memory")
     }
 
     // MARK: - Scene selection churn

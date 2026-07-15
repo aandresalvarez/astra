@@ -1,0 +1,99 @@
+name: Memory Monitoring
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-monitoring-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  memory-stress:
+    name: Memory stress trend
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-memory-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-memory-
+            ${{ runner.os }}-swiftpm-
+
+      - name: Run deterministic memory stress suites
+        env:
+          ASTRA_MEMORY_STRESS_OUTPUT_DIR: ${{ runner.temp }}/astra-memory-stress
+        run: script/run_memory_stress.sh
+
+      - name: Publish memory trend summary
+        if: always()
+        shell: bash
+        run: |
+          summary="${{ runner.temp }}/astra-memory-stress/summary.json"
+          if [[ ! -f "$summary" ]]; then
+            echo "## Memory stress trend" >> "$GITHUB_STEP_SUMMARY"
+            echo "No summary was produced. Inspect the job log." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Memory stress trend"
+            echo
+            echo '```json'
+            cat "$summary"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain summarized memory trend
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-stress-summary-${{ github.sha }}
+          path: ${{ runner.temp }}/astra-memory-stress/summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Retain failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-stress-failure-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/astra-memory-stress/run-*.log
+            ${{ runner.temp }}/astra-memory-stress/run-*.time
+          if-no-files-found: warn
+          retention-days: 14
+
+  address-sanitizer:
+    name: Address sanitizer
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-asan-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-asan-
+
+      - name: Run lifecycle tests with Address Sanitizer
+        run: >-
+          swift test --no-parallel --sanitize address
+          --filter 'MemoryLifecycleTests|PanelLayoutGeometryTests|ShelfBrowserPanelLayoutTests'

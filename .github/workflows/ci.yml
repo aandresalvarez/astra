@@ -2,8 +2,6 @@ name: CI
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 9 * * *"
   pull_request:
   push:
     branches:
@@ -42,7 +40,7 @@ jobs:
   full-swift-test-suite:
     name: Full Swift test suite
     # Runs on every trigger the workflow supports (pull_request, push to
-    # main, schedule, workflow_dispatch). This job previously deadlocked
+    # main, workflow_dispatch). This job previously deadlocked
     # 100% of the time on pull_request: Swift Testing executes tests
     # concurrently, and the suite's synchronous process-spawning tests
     # exhaust the 3-4 core runner's cooperative thread pool - every test
