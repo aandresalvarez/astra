@@ -242,6 +242,65 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
 @Suite("Agent Runtime Launch Preflight")
 @MainActor
 struct AgentRuntimeLaunchPreflightTests {
+    @Test("Launch admission normalizes a persisted runtime removed from the registry")
+    func launchAdmissionNormalizesRemovedPersistedRuntime() throws {
+        let legacyRuntime = try #require(AgentRuntimeID(rawValue: "local_mlx"))
+        let task = AgentTask(
+            title: "Legacy local model task",
+            goal: "Continue with an available provider",
+            runtime: legacyRuntime
+        )
+        let configuration = AgentRuntimeConfiguration(defaultRuntimeID: .codexCLI)
+        let selectedRuntime = configuration.selectedRuntime(for: task)
+
+        let changed = AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: task,
+            selectedRuntime: selectedRuntime,
+            phase: "resume"
+        )
+
+        #expect(selectedRuntime == .codexCLI)
+        #expect(changed)
+        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+    }
+
+    @Test("Capability preflight uses the canonical run runtime over stale task metadata")
+    func capabilityPreflightUsesCanonicalRunRuntime() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let legacyRuntime = try #require(AgentRuntimeID(rawValue: "local_mlx"))
+        let workspace = Workspace(name: "Legacy runtime", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Continue legacy task",
+            goal: "Use the admitted runtime",
+            workspace: workspace,
+            runtime: legacyRuntime
+        )
+        task.status = .running
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.codexCLI.rawValue
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        var observedRuntimes: [AgentRuntimeID] = []
+
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "resume",
+            runtimeProfile: { runtime in
+                observedRuntimes.append(runtime)
+                return AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
+            }
+        )
+
+        #expect(result.didPass)
+        #expect(observedRuntimes == [.codexCLI])
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+    }
+
     @Test("Prepare task folder creates canonical output directories")
     func prepareTaskFolderCreatesDirectories() throws {
         let root = NSTemporaryDirectory() + "runtime-preflight-\(UUID().uuidString)"
