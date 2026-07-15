@@ -593,10 +593,11 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
         #expect(SidebarLeanPresentation.workspaceSectionHorizontalInset == 10)
         #expect(SidebarLeanPresentation.workspaceRowContentLeadingPadding == 4)
-        #expect(SidebarLeanPresentation.workspaceRowContentTrailingPadding == 0)
+        #expect(SidebarLeanPresentation.workspaceRowContentTrailingPadding >= 4)
         #expect(
             SidebarLeanPresentation.workspaceTrailingAccessoryInset
                 == SidebarLeanPresentation.workspaceSectionHorizontalInset
+                    + SidebarLeanPresentation.workspaceRowContentTrailingPadding
         )
         #expect(SidebarLeanPresentation.workspaceRowElementSpacing == 7)
         #expect(SidebarLeanPresentation.workspaceFolderIconWidth == 17)

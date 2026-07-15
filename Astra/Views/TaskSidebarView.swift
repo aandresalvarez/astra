@@ -104,7 +104,10 @@ enum SidebarLeanPresentation {
     static let workspaceDisclosureChevronWidth: CGFloat = 11
     static let workspaceSectionHorizontalInset: CGFloat = 10
     static let workspaceRowContentLeadingPadding: CGFloat = 4
-    static let workspaceRowContentTrailingPadding: CGFloat = 0
+    // Keep trailing status glyphs clear of the row's rounded stroke. The
+    // section header applies the same inset so both star affordances retain a
+    // shared trailing column without sacrificing the row's optical clearance.
+    static let workspaceRowContentTrailingPadding: CGFloat = 4
     static let workspaceRowElementSpacing: CGFloat = 7
     static let workspaceFolderIconWidth: CGFloat = 17
     static var workspaceTrailingAccessoryInset: CGFloat {
@@ -1157,6 +1160,7 @@ struct TaskSidebarView: View {
                 .onHover { isWorkspacesFilterHovered = $0 }
                 .help(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
                 .accessibilityLabel(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
+                .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
 
             }
             .padding(.horizontal, 10)
@@ -1381,9 +1385,8 @@ struct TaskSidebarView: View {
             )
         }
         .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
-        // The outer section inset already supplies the right breathing room.
-        // Adding another row inset here shifts the workspace star left of the
-        // header filter even when both glyphs share the same frame.
+        // Internal clearance keeps the status glyph away from the rounded row
+        // stroke; the header filter uses the same inset to preserve alignment.
         .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
         .padding(.vertical, 6)
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
