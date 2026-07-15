@@ -156,4 +156,42 @@ struct ShelfBrowserPanelLayoutTests {
             BrowserSiteAdapterID.github
         ])
     }
+
+    @MainActor
+    @Test("browser session store evicts the least-recently-used eligible session")
+    func browserSessionStoreEvictsLeastRecentlyUsedEligibleSession() {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let store = ShelfBrowserSessionStore(
+            maxLiveTaskSessions: 2,
+            evictionEligibility: { _ in true }
+        )
+        let firstID = UUID()
+        let secondID = UUID()
+        let thirdID = UUID()
+
+        _ = store.session(for: firstID, pinnedToTask: true, enabledBrowserAdapters: [])
+        _ = store.session(for: secondID, pinnedToTask: true, enabledBrowserAdapters: [])
+        _ = store.session(for: firstID, pinnedToTask: true, enabledBrowserAdapters: [])
+        _ = store.session(for: thirdID, pinnedToTask: true, enabledBrowserAdapters: [])
+
+        #expect(store.taskSessionCountForTesting == 2)
+        #expect(store.hasTaskSessionForTesting(firstID))
+        #expect(!store.hasTaskSessionForTesting(secondID))
+        #expect(store.hasTaskSessionForTesting(thirdID))
+    }
+
+    @MainActor
+    @Test("browser session store may exceed its soft cap when no session is safe to evict")
+    func browserSessionStoreProtectsIneligibleSessions() {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let store = ShelfBrowserSessionStore(
+            maxLiveTaskSessions: 1,
+            evictionEligibility: { _ in false }
+        )
+
+        _ = store.session(for: UUID(), pinnedToTask: true, enabledBrowserAdapters: [])
+        _ = store.session(for: UUID(), pinnedToTask: true, enabledBrowserAdapters: [])
+
+        #expect(store.taskSessionCountForTesting == 2)
+    }
 }

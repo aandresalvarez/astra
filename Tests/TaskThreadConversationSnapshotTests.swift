@@ -1329,7 +1329,7 @@ extension TaskThreadSnapshotTests {
         #expect(output.progressMessages.map(\.timestamp) == [first.timestamp, next.timestamp])
     }
 
-    @Test("Latest agent plan derives from newest ARP todo.replace event")
+    @Test("Latest agent plan derives from newest ARP todo.replace event and renders its run")
     func latestAgentPlanDerivesFromProtocolEvents() {
         let task = makeTask()
         let run = TaskRun(task: task)
@@ -1354,6 +1354,14 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Inspect", "Test"])
         #expect(snapshot.latestAgentPlanItems.map(\.isDone) == [true, false])
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
+        let runSnapshot = TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+        #expect(snapshot.hasVisibleActivityDetails(for: runSnapshot))
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected the plan-only run to render before its running status is hidden")
+            return
+        }
+        #expect(responseRun.id == run.id)
     }
 
     @Test("Latest agent plan survives the transcript event window")

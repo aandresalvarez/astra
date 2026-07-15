@@ -1,6 +1,85 @@
 import Combine
 import Foundation
 
+/// Deterministic LRU ownership for expensive per-scope sessions. Capacity is
+/// soft: callers decide whether a candidate is safe to evict, so active work
+/// is never interrupted merely to satisfy a memory target.
+struct BoundedSessionRegistry<Key: Hashable, Session: AnyObject> {
+    private(set) var sessions: [Key: Session] = [:]
+    private var accessOrdinals: [Key: UInt64] = [:]
+    private var nextAccessOrdinal: UInt64 = 1
+    let capacity: Int
+
+    init(capacity: Int) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+    }
+
+    var count: Int { sessions.count }
+    var values: Dictionary<Key, Session>.Values { sessions.values }
+
+    mutating func session(for key: Key) -> Session? {
+        guard let session = sessions[key] else { return nil }
+        touch(key)
+        return session
+    }
+
+    mutating func insert(_ session: Session, for key: Key) {
+        sessions[key] = session
+        touch(key)
+    }
+
+    @discardableResult
+    mutating func removeValue(forKey key: Key) -> Session? {
+        accessOrdinals.removeValue(forKey: key)
+        return sessions.removeValue(forKey: key)
+    }
+
+    func contains(_ key: Key) -> Bool {
+        sessions[key] != nil
+    }
+
+    @MainActor
+    mutating func evictIfNeeded(
+        keeping keptKey: Key?,
+        canEvict: @MainActor (Session) -> Bool,
+        onEvict: @MainActor (Session) -> Void
+    ) {
+        let overflow = sessions.count - capacity
+        guard overflow > 0 else { return }
+        let victims = sessions.keys
+            .filter { $0 != keptKey && sessions[$0].map(canEvict) == true }
+            .sorted {
+                let lhs = accessOrdinals[$0] ?? 0
+                let rhs = accessOrdinals[$1] ?? 0
+                if lhs != rhs { return lhs < rhs }
+                return String(describing: $0) < String(describing: $1)
+            }
+            .prefix(overflow)
+        for key in victims {
+            guard let session = removeValue(forKey: key) else { continue }
+            onEvict(session)
+        }
+    }
+
+    private mutating func touch(_ key: Key) {
+        if nextAccessOrdinal == UInt64.max {
+            let orderedKeys = accessOrdinals.keys.sorted {
+                let lhs = accessOrdinals[$0] ?? 0
+                let rhs = accessOrdinals[$1] ?? 0
+                if lhs != rhs { return lhs < rhs }
+                return String(describing: $0) < String(describing: $1)
+            }
+            for (offset, existingKey) in orderedKeys.enumerated() {
+                accessOrdinals[existingKey] = UInt64(offset + 1)
+            }
+            nextAccessOrdinal = UInt64(orderedKeys.count + 1)
+        }
+        accessOrdinals[key] = nextAccessOrdinal
+        nextAccessOrdinal += 1
+    }
+}
+
 @MainActor
 final class ShelfBrowserSessionStore: ObservableObject {
     /// Lazily created shared (non-pinned) browser session. Creating a
@@ -11,18 +90,27 @@ final class ShelfBrowserSessionStore: ObservableObject {
     private var _sharedSession: ShelfBrowserSession?
     private var sharedSession: ShelfBrowserSession {
         if let existing = _sharedSession { return existing }
-        let created = ShelfBrowserSession()
+        let created = sessionFactory()
         _sharedSession = created
         return created
     }
-    private var taskSessions: [UUID: ShelfBrowserSession] = [:]
-    /// Last UI access per task, used to pick LRU eviction victims.
-    private var lastAccess: [UUID: Date] = [:]
+    private var taskSessions: BoundedSessionRegistry<UUID, ShelfBrowserSession>
     /// Soft cap on live per-task WebKit sessions. Each session holds a
     /// WKWebView (its own WebContent process) plus a localhost bridge listener,
     /// so without a cap every task ever browsed in a window leaks one until the
     /// window closes. Idle, non-active sessions over this cap are torn down.
-    private let maxLiveTaskSessions = 6
+    private let sessionFactory: @MainActor () -> ShelfBrowserSession
+    private let evictionEligibility: @MainActor (ShelfBrowserSession) -> Bool
+
+    init(
+        maxLiveTaskSessions: Int = 6,
+        sessionFactory: @escaping @MainActor () -> ShelfBrowserSession = ShelfBrowserSession.init,
+        evictionEligibility: @escaping @MainActor (ShelfBrowserSession) -> Bool = { $0.isEvictable }
+    ) {
+        self.taskSessions = BoundedSessionRegistry(capacity: maxLiveTaskSessions)
+        self.sessionFactory = sessionFactory
+        self.evictionEligibility = evictionEligibility
+    }
 
     func session(
         for taskID: UUID?,
@@ -37,20 +125,18 @@ final class ShelfBrowserSessionStore: ObservableObject {
             return sharedSession
         }
 
-        lastAccess[taskID] = Date()
-
-        if let session = taskSessions[taskID] {
+        if let session = taskSessions.session(for: taskID) {
             session.bindToTask(taskID)
             session.setEnabledBrowserAdapters(enabledBrowserAdapters)
             session.setGitHubReadOnlyMode(githubReadOnlyMode)
             return session
         }
 
-        let session = ShelfBrowserSession()
+        let session = sessionFactory()
         session.bindToTask(taskID)
         session.setEnabledBrowserAdapters(enabledBrowserAdapters)
         session.setGitHubReadOnlyMode(githubReadOnlyMode)
-        taskSessions[taskID] = session
+        taskSessions.insert(session, for: taskID)
         // Only sweep when the dict actually grew (new task), so the hot
         // `session(for:)` path stays cheap during view updates.
         evictIdleSessionsIfNeeded(keeping: taskID)
@@ -59,7 +145,6 @@ final class ShelfBrowserSessionStore: ObservableObject {
 
     /// Tear down and drop the session bound to `taskID` (e.g. on task delete).
     func releaseSession(for taskID: UUID) {
-        lastAccess.removeValue(forKey: taskID)
         guard let session = taskSessions.removeValue(forKey: taskID) else { return }
         session.teardown()
     }
@@ -69,17 +154,11 @@ final class ShelfBrowserSessionStore: ObservableObject {
     /// driving (see ShelfBrowserSession.isEvictable). If everything over the
     /// cap is busy, the cap is exceeded rather than risk interrupting work.
     private func evictIdleSessionsIfNeeded(keeping keepTaskID: UUID?) {
-        guard taskSessions.count > maxLiveTaskSessions else { return }
-        let overflow = taskSessions.count - maxLiveTaskSessions
-        let victims = taskSessions
-            .filter { $0.key != keepTaskID && $0.value.isEvictable }
-            .sorted { (lastAccess[$0.key] ?? .distantPast) < (lastAccess[$1.key] ?? .distantPast) }
-            .prefix(overflow)
-        for (victimID, session) in victims {
-            taskSessions.removeValue(forKey: victimID)
-            lastAccess.removeValue(forKey: victimID)
-            session.teardown()
-        }
+        taskSessions.evictIfNeeded(
+            keeping: keepTaskID,
+            canEvict: evictionEligibility,
+            onEvict: { $0.teardown() }
+        )
     }
 
     func promoteSharedSession(
@@ -93,7 +172,7 @@ final class ShelfBrowserSessionStore: ObservableObject {
         // never made, there is no draft page to promote. Short-circuit on the
         // backing before touching the lazy accessor.
         guard pinnedToTask,
-              taskSessions[taskID] == nil,
+              !taskSessions.contains(taskID),
               let existingShared = _sharedSession,
               existingShared.hasDisplayablePage || existingShared.isLoading else {
             return false
@@ -103,8 +182,7 @@ final class ShelfBrowserSessionStore: ObservableObject {
         existingShared.setEnabledBrowserAdapters(enabledBrowserAdapters)
         existingShared.setGitHubReadOnlyMode(githubReadOnlyMode)
         existingShared.setPresented(isPresented)
-        taskSessions[taskID] = existingShared
-        lastAccess[taskID] = Date()
+        taskSessions.insert(existingShared, for: taskID)
         // Drop the backing so the next shared access lazily mints a fresh draft
         // rather than eagerly rebuilding a WebView the user may never reopen.
         _sharedSession = nil
@@ -137,6 +215,12 @@ final class ShelfBrowserSessionStore: ObservableObject {
             enabledBrowserAdapters: enabledBrowserAdapters,
             githubReadOnlyMode: githubReadOnlyMode
         ).setPresented(true)
+    }
+
+    var taskSessionCountForTesting: Int { taskSessions.count }
+
+    func hasTaskSessionForTesting(_ taskID: UUID) -> Bool {
+        taskSessions.contains(taskID)
     }
 }
 
@@ -189,4 +273,7 @@ final class ShelfMarkdownSessionStore: ObservableObject {
     func releaseSession(forWorkspaceID workspaceID: UUID) {
         workspaceSessions.removeValue(forKey: workspaceID)
     }
+
+    var taskSessionCountForTesting: Int { taskSessions.count }
+    var workspaceSessionCountForTesting: Int { workspaceSessions.count }
 }

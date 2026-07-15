@@ -1929,8 +1929,7 @@ struct TaskMainView: View {
               run.status == .running else {
             return false
         }
-        let presentation = currentThreadSnapshot.activityPresentation(for: run)
-        return shouldShowRunActivityDisclosure(presentation)
+        return currentThreadSnapshot.hasVisibleActivityDetails(for: run)
     }
 
     private var threadStatusCount: Int {
@@ -2568,7 +2567,7 @@ struct TaskMainView: View {
                 .padding(.top, 2)
             }
 
-            if shouldShowRunActivityDisclosure(runActivityPresentation),
+            if currentThreadSnapshot.hasVisibleActivityDetails(for: run),
                !runDetailsLiveInDock(run, decisionDockVisible: decisionDockVisible) {
                 runActivityDisclosure(
                     run: run,
@@ -2695,10 +2694,6 @@ struct TaskMainView: View {
         guard task.tokenBudget > 0 else { return false }
         let used = max(task.tokensUsed, run.tokensUsed)
         return task.status == .budgetExceeded || Double(used) >= Double(task.tokenBudget) * 0.8
-    }
-
-    private func shouldShowRunActivityDisclosure(_ presentation: RunActivityPresentation) -> Bool {
-        presentation.hasVisibleDetails
     }
 
     private func runActivityDisclosure(
@@ -4281,7 +4276,7 @@ struct TaskMainView: View {
     private var dockExtendedRunDetails: some View {
         let inspectableRuns = currentThreadSnapshot.sortedRuns
             .enumerated()
-            .filter { currentThreadSnapshot.activityPresentation(for: $0.element).hasVisibleDetails }
+            .filter { currentThreadSnapshot.hasVisibleActivityDetails(for: $0.element) }
             .reversed()
         ForEach(Array(inspectableRuns), id: \.element.id) { entry in
             VStack(alignment: .leading, spacing: 6) {

@@ -1045,6 +1045,12 @@ struct TaskThreadSnapshot: Sendable {
         activityPresentationByRunID[run.id] ?? .empty
     }
 
+    func hasVisibleActivityDetails(for run: TaskRunSnapshot) -> Bool {
+        activityPresentation(for: run).hasVisibleDetails(
+            hasPlanItems: !protocolState(for: run).todoItems.isEmpty
+        )
+    }
+
     func activity(for run: TaskRunSnapshot) -> TaskRunActivity {
         activityByRunID[run.id] ?? .empty
     }
@@ -1104,11 +1110,11 @@ struct TaskThreadSnapshot: Sendable {
         var items: [TaskConversationItem] = planEchoesGoal
             ? []
             : [.userMessage(text: goal, timestamp: createdAt)]
-        let visibleRuns = runs.filter {
+        let visibleRuns = runs.filter { run in
             shouldShowAgentResponse(
-                for: $0,
-                activity: activityByRunID[$0.id] ?? .empty,
-                protocolByRunID: protocolByRunID
+                for: run,
+                activity: activityByRunID[run.id] ?? .empty,
+                protocolState: protocolByRunID[run.id] ?? .empty
             )
         }
         var nextRunIndex = 0
@@ -1302,11 +1308,12 @@ struct TaskThreadSnapshot: Sendable {
     private static func shouldShowAgentResponse(
         for run: TaskRunSnapshot,
         activity: TaskRunActivity,
-        protocolByRunID: [UUID: TaskRunProtocolState]
+        protocolState: TaskRunProtocolState
     ) -> Bool {
         !run.output.isEmpty
             || activity.hasVisibleActivity
-            || protocolByRunID[run.id]?.hasCompletion == true
+            || !protocolState.todoItems.isEmpty
+            || protocolState.hasCompletion
             || run.completedWithoutUserFacingResult
     }
 
