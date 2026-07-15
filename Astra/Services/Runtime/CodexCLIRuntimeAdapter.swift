@@ -203,13 +203,17 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
-        // Codex exposes external paths only through writable `--add-dir` roots.
+        // Codex exposes external paths only through writable `--add-dir` roots,
+        // and that flag accepts directories rather than individual files.
         // The typed launch-resource contract lets us grant that native
-        // reachability while AgentRuntimeProcessRunner's mandatory outer
-        // Seatbelt boundary keeps task inputs read-only. Never infer these
-        // paths directly from prompt text or mutable task presentation state.
+        // directory reachability while AgentRuntimeProcessRunner's mandatory
+        // outer Seatbelt boundary keeps the exact resources read-only. Never
+        // infer these paths from prompt text or mutable presentation state.
+        let providerReadOnlyDirectories = Self.nativeReachabilityDirectories(
+            for: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? []
+        )
         let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
-            + (context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [])
+            + providerReadOnlyDirectories
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty
@@ -307,6 +311,31 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "browser_bridge_mcp_tool": mcpProjection.browserBridgeMCPToolSupported ? BrowserBridgeMCPProjection.providerToolPermission : "none"
             ]
         )
+    }
+
+    /// Projects a typed resource contract onto Codex's directory-only
+    /// `--add-dir` interface. Integrity remains owned by ASTRA's exact outer
+    /// read-only boundary; this projection provides provider reachability only.
+    static func nativeReachabilityDirectories(
+        for resourcePaths: [String],
+        fileManager: FileManager = .default
+    ) -> [String] {
+        var seen: Set<String> = []
+        return resourcePaths.compactMap { rawPath in
+            let path = WorkspacePathPresentation.standardizedPath(rawPath)
+            guard !path.isEmpty else { return nil }
+            var isDirectory = ObjCBool(false)
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
+                return nil
+            }
+            let directory = isDirectory.boolValue
+                ? path
+                : (path as NSString).deletingLastPathComponent
+            guard !directory.isEmpty else { return nil }
+            let identity = ExecutionSandbox.canonicalize(directory) ?? directory
+            guard seen.insert(identity).inserted else { return nil }
+            return directory
+        }
     }
 
     func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {

@@ -219,6 +219,51 @@ struct ExecutionEnvironmentTests {
             == "/mnt/astra/input-1")
     }
 
+    @Test("Docker overlays canonical input spellings inside aliased workspace mounts")
+    func dockerMountPlanUsesCanonicalIdentityForParentOverlay() throws {
+        let visibleRoot = "/tmp/astra-docker-parent-alias-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: visibleRoot) }
+        let workspace = (visibleRoot as NSString).appendingPathComponent("workspace")
+        let references = (workspace as NSString).appendingPathComponent("references")
+        let visibleInput = (references as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: references, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: visibleInput))
+        let canonicalInput = try #require(ExecutionSandbox.canonicalize(visibleInput))
+        #expect(canonicalInput != visibleInput)
+
+        let task = AgentTask(
+            title: "Review canonical attachment",
+            goal: "Read the attachment",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest",
+            providerPlacement: .container
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: workspace,
+            environment: environment,
+            task: task,
+            additionalReadOnlyInputPaths: [canonicalInput]
+        )
+        let inputMount = try #require(mounts.first {
+            ExecutionSandbox.canonicalize($0.hostPath) == canonicalInput
+        })
+
+        #expect(inputMount.containerPath == "/workspace/references/attached.pdf")
+        #expect(inputMount.access == .readOnly)
+
+        let contract = ReadOnlyResourceContract(grants: [
+            RuntimePathGrant(path: workspace, access: .readWrite, source: .workspace, reason: "workspace", sensitivity: .normal, lifetime: .workspace, exists: true),
+            RuntimePathGrant(path: canonicalInput, access: .read, source: .userAttachment, reason: "attachment", sensitivity: .normal, lifetime: .run, exists: true)
+        ])
+        let boundary = ReadOnlyInputEnforcementBoundary(contract: contract, executionEnvironment: environment)
+        #expect(boundary.unprotectedContainerPaths(in: mounts).isEmpty)
+    }
+
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")

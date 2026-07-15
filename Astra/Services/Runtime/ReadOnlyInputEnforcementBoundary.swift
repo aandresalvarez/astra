@@ -18,6 +18,7 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
         case invalidPath(String)
         case missingPath(String)
         case multipleHardLinks(path: String, count: Int)
+        case directoryScanFailed(String)
         case writableDescendant(readOnlyPath: String, writablePath: String)
 
         var description: String {
@@ -28,6 +29,8 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
                 "missing_path:\(path)"
             case .multipleHardLinks(let path, let count):
                 "multiple_hard_links:\(path):\(count)"
+            case .directoryScanFailed(let path):
+                "directory_scan_failed:\(path)"
             case .writableDescendant(let readOnlyPath, let writablePath):
                 "read_write_conflict:\(readOnlyPath):\(writablePath)"
             }
@@ -69,10 +72,14 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
                 failures.append(.missingPath(requestedPath))
                 continue
             }
-            if !isDirectory.boolValue,
-               let attributes = try? fileManager.attributesOfItem(atPath: requestedPath),
-               let count = (attributes[.referenceCount] as? NSNumber)?.intValue,
-               count > 1 {
+            if isDirectory.boolValue {
+                failures.append(contentsOf: Self.directoryValidationFailures(
+                    at: requestedPath,
+                    fileManager: fileManager
+                ))
+            } else if let attributes = try? fileManager.attributesOfItem(atPath: requestedPath),
+                      let count = (attributes[.referenceCount] as? NSNumber)?.intValue,
+                      count > 1 {
                 failures.append(.multipleHardLinks(path: requestedPath, count: count))
             }
             var value = byCanonicalPath[canonicalPath] ?? Accumulator(
@@ -121,6 +128,40 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
         self.failures = Array(Set(failures.map(\.description))).sorted().compactMap { description in
             failures.first { $0.description == description }
         }
+    }
+
+    private static func directoryValidationFailures(
+        at directoryPath: String,
+        fileManager: FileManager
+    ) -> [ValidationFailure] {
+        var failures: [ValidationFailure] = []
+        let root = URL(fileURLWithPath: directoryPath, isDirectory: true)
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [],
+            errorHandler: { url, _ in
+                failures.append(.directoryScanFailed(url.path))
+                return false
+            }
+        ) else {
+            return [.directoryScanFailed(directoryPath)]
+        }
+        for case let url as URL in enumerator {
+            do {
+                guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                    continue
+                }
+                let attributes = try fileManager.attributesOfItem(atPath: url.path)
+                if let count = (attributes[.referenceCount] as? NSNumber)?.intValue,
+                   count > 1 {
+                    failures.append(.multipleHardLinks(path: url.path, count: count))
+                }
+            } catch {
+                failures.append(.directoryScanFailed(url.path))
+            }
+        }
+        return failures
     }
 
     /// Convenience for narrow boundary unit tests. Production launch planning

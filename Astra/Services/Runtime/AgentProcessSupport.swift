@@ -1686,7 +1686,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         toolID: String?,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        guard astraSandboxApplied || readOnlyBoundaryReceipt != nil,
+        guard astraSandboxApplied || (denial.operation == .write && readOnlyBoundaryReceipt?.protects(denial.path) == true),
               !_policyViolation,
               !_policyApprovalRequired,
               _runtimeStopReason == nil else { return false }

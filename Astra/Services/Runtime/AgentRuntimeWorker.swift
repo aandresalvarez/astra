@@ -824,7 +824,7 @@ final class AgentRuntimeWorker {
             for: task,
             manifest: manifest,
             contextText: providerLaunchContextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,

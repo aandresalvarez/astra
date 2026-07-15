@@ -14,7 +14,7 @@ enum RuntimeSandboxDenialApproval {
         approvalWasApplied: Bool,
         readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
     ) -> Decision {
-        if denial.operation != .read,
+        if denial.operation == .write,
            readOnlyBoundaryReceipt?.protects(denial.path) == true {
             return .terminal(
                 reason: "read_only_resource_write_denied",

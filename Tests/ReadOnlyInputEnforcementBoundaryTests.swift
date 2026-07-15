@@ -54,6 +54,34 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         #expect(conflict.failures.contains { if case .writableDescendant = $0 { true } else { false } })
     }
 
+    @Test("Directory contracts reject descendant files with writable hard-link aliases")
+    func directoryContractRejectsDescendantHardLinkAlias() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-read-directory-hard-link-\(UUID().uuidString)")
+        let inputDirectory = root.appendingPathComponent("input", isDirectory: true)
+        let nestedDirectory = inputDirectory.appendingPathComponent("nested", isDirectory: true)
+        let protectedFile = nestedDirectory.appendingPathComponent("data.txt")
+        let writableAlias = root.appendingPathComponent("writable-alias.txt")
+        try fileManager.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        try "protected".write(to: protectedFile, atomically: true, encoding: .utf8)
+        try fileManager.linkItem(at: protectedFile, to: writableAlias)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let contract = ReadOnlyResourceContract(grants: [
+            RuntimePathGrant(path: inputDirectory.path, access: .read, source: .taskInput, reason: "directory input", sensitivity: .normal, lifetime: .run, exists: true)
+        ])
+
+        #expect(!contract.isValid)
+        #expect(contract.failures.contains {
+            if case .multipleHardLinks(let path, let count) = $0 {
+                return ExecutionSandbox.canonicalize(path) == ExecutionSandbox.canonicalize(protectedFile.path)
+                    && count > 1
+            }
+            return false
+        })
+    }
+
     @Test("Container proof rejects writable aliases and mixed execution requires both surfaces")
     func containerAliasesAndMixedSurfacesAreVerified() throws {
         let fm = FileManager.default

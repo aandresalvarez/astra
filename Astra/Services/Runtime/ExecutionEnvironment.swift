@@ -552,9 +552,12 @@ enum DockerExecutionPlanner {
         func appendReadOnlyInput(_ rawHostPath: String, fallbackContainerPath: String) {
             let hostPath = WorkspacePathPresentation.standardizedPath(rawHostPath)
             guard !hostPath.isEmpty else { return }
+            let canonicalHostPath = ExecutionSandbox.canonicalize(hostPath) ?? hostPath
 
             if let exactIndex = mounts.firstIndex(where: {
-                WorkspacePathPresentation.standardizedPath($0.hostPath) == hostPath
+                let existingPath = WorkspacePathPresentation.standardizedPath($0.hostPath)
+                let existingIdentity = ExecutionSandbox.canonicalize(existingPath) ?? existingPath
+                return existingIdentity == canonicalHostPath
             }) {
                 let existing = mounts[exactIndex]
                 mounts[exactIndex] = ExecutionEnvironmentMount(
@@ -571,16 +574,22 @@ enum DockerExecutionPlanner {
             // would leave the writable parent spelling as a bypass.
             let parentMount = mounts
                 .filter { mount in
-                    let root = WorkspacePathPresentation.standardizedPath(mount.hostPath)
+                    let visibleRoot = WorkspacePathPresentation.standardizedPath(mount.hostPath)
+                    let root = ExecutionSandbox.canonicalize(visibleRoot) ?? visibleRoot
                     return mount.access == .readWrite
                         && !root.isEmpty
-                        && hostPath.hasPrefix(root + "/")
+                        && canonicalHostPath.hasPrefix(root + "/")
                 }
-                .max { lhs, rhs in lhs.hostPath.count < rhs.hostPath.count }
+                .max { lhs, rhs in
+                    let lhsRoot = ExecutionSandbox.canonicalize(lhs.hostPath) ?? lhs.hostPath
+                    let rhsRoot = ExecutionSandbox.canonicalize(rhs.hostPath) ?? rhs.hostPath
+                    return lhsRoot.count < rhsRoot.count
+                }
             let containerPath: String
             if let parentMount {
-                let root = WorkspacePathPresentation.standardizedPath(parentMount.hostPath)
-                let suffix = String(hostPath.dropFirst(root.count + 1))
+                let visibleRoot = WorkspacePathPresentation.standardizedPath(parentMount.hostPath)
+                let root = ExecutionSandbox.canonicalize(visibleRoot) ?? visibleRoot
+                let suffix = String(canonicalHostPath.dropFirst(root.count + 1))
                 containerPath = (parentMount.containerPath as NSString).appendingPathComponent(suffix)
             } else {
                 containerPath = fallbackContainerPath

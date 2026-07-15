@@ -225,12 +225,18 @@ struct CodexCLIRuntimeTests {
             .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
         let inputDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("astra-codex-input-\(UUID().uuidString)", isDirectory: true)
+        let inputFileDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-file-input-\(UUID().uuidString)", isDirectory: true)
+        let inputFile = inputFileDirectory.appendingPathComponent("attached.pdf")
         defer {
             try? fileManager.removeItem(at: workspaceRoot)
             try? fileManager.removeItem(at: inputDirectory)
+            try? fileManager.removeItem(at: inputFileDirectory)
         }
         try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: inputDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: inputFileDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: inputFile)
 
         let workspace = Workspace(name: "Codex Workspace", primaryPath: workspaceRoot.path)
         let task = AgentTask(
@@ -268,15 +274,26 @@ struct CodexCLIRuntimeTests {
             executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
             executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
             providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
-            hostPathGrants: [RuntimePathGrant(
-                path: inputDirectory.path,
-                access: .read,
-                source: .taskInput,
-                reason: "Task input selected by the user.",
-                sensitivity: .normal,
-                lifetime: .run,
-                exists: true
-            )]
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: inputDirectory.path,
+                    access: .read,
+                    source: .taskInput,
+                    reason: "Task input selected by the user.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                ),
+                RuntimePathGrant(
+                    path: inputFile.path,
+                    access: .read,
+                    source: .userAttachment,
+                    reason: "File attached by the user.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                )
+            ]
         )
         let boundaryPlan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(
             context: AgentRuntimeProcessLaunchContext(
@@ -296,6 +313,8 @@ struct CodexCLIRuntimeTests {
             .filter { boundaryPlan.arguments[$0] == "--add-dir" }
             .compactMap { boundaryPlan.arguments.indices.contains($0 + 1) ? boundaryPlan.arguments[$0 + 1] : nil }
         #expect(boundaryAddDirValues.contains(inputDirectory.standardizedFileURL.path))
+        #expect(boundaryAddDirValues.contains(inputFileDirectory.standardizedFileURL.path))
+        #expect(!boundaryAddDirValues.contains(inputFile.standardizedFileURL.path))
     }
 
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")
