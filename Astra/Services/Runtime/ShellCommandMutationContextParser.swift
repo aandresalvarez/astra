@@ -13,6 +13,9 @@ struct ShellCommandMutationContext: Equatable, Sendable {
         expressions += referencedVariables.sorted().flatMap {
             variableBindings[$0, default: []].sorted()
         }
+        if referencedVariables.contains(where: { $0.allSatisfy(\.isNumber) }) {
+            expressions += variableBindings["@", default: []].sorted()
+        }
         for reference in indirectReferencedVariables.sorted() {
             for targetName in variableBindings[reference, default: []].sorted() {
                 expressions += variableBindings[targetName, default: []].sorted()
@@ -93,7 +96,7 @@ enum ShellCommandMutationContextParser {
         var separatorBefore: SegmentSeparator = .sequence
 
         for segment in segments {
-            let semanticCommand = ProviderToolSemantics.semanticShellCommand(segment.command)
+            let semanticCommand = ProviderToolSemantics.mutationAnalysisShellCommand(segment.command)
             var contextBindings = bindings
             if semanticCommand != segment.command {
                 contextBindings.merge(leadingEnvironmentAssignments(in: segment.command)) {
@@ -115,14 +118,25 @@ enum ShellCommandMutationContextParser {
                 pipelineInputExpressions: pipelineInputExpressions
             ))
 
-            if let assignments = persistentAssignments(in: segment.command)
+            if let positionalAssignments = setPositionalAssignments(in: segment.command) {
+                if separatorBefore != .conditional {
+                    bindings = bindings.filter { !isPositionalBindingName($0.key) }
+                }
+                for (name, values) in positionalAssignments {
+                    if separatorBefore == .conditional {
+                        bindings[name, default: []].formUnion(values)
+                    } else {
+                        bindings[name] = values
+                    }
+                }
+            } else if let assignments = persistentAssignments(in: segment.command)
                 ?? loopAssignments(in: segment.command)
                 ?? readAssignments(in: segment.command) {
-                for (name, value) in assignments {
+                for (name, values) in assignments {
                     if separatorBefore == .conditional {
-                        bindings[name, default: []].insert(value)
+                        bindings[name, default: []].formUnion(values)
                     } else {
-                        bindings[name] = [value]
+                        bindings[name] = values
                     }
                 }
             } else if separatorBefore != .conditional {
@@ -303,8 +317,14 @@ enum ShellCommandMutationContextParser {
         }
     }
 
-    private static func persistentAssignments(in segment: String) -> [String: String]? {
+    private static func persistentAssignments(in segment: String) -> [String: Set<String>]? {
         var tokens = shellWords(in: segment)
+        let assignmentControlWords: Set<String> = [
+            "if", "then", "do", "else", "elif", "while", "until", "!"
+        ]
+        while let first = tokens.first, assignmentControlWords.contains(first) {
+            tokens.removeFirst()
+        }
         let declarationBuiltins: Set<String> = [
             "declare", "export", "local", "readonly", "typeset"
         ]
@@ -316,15 +336,15 @@ enum ShellCommandMutationContextParser {
         }
         guard !tokens.isEmpty else { return nil }
 
-        var assignments: [String: String] = [:]
+        var assignments: [String: Set<String>] = [:]
         for token in tokens {
             guard let assignment = assignment(from: token) else { return nil }
-            assignments[assignment.name] = assignment.value
+            assignments[assignment.name] = [assignment.value]
         }
         return assignments
     }
 
-    private static func loopAssignments(in segment: String) -> [String: String]? {
+    private static func loopAssignments(in segment: String) -> [String: Set<String>]? {
         let tokens = shellWords(in: segment)
         guard tokens.count >= 4,
               tokens[0] == "for",
@@ -332,10 +352,10 @@ enum ShellCommandMutationContextParser {
               tokens[2] == "in" else {
             return nil
         }
-        return [tokens[1]: tokens.dropFirst(3).joined(separator: " ")]
+        return [tokens[1]: [tokens.dropFirst(3).joined(separator: " ")]]
     }
 
-    private static func readAssignments(in segment: String) -> [String: String]? {
+    private static func readAssignments(in segment: String) -> [String: Set<String>]? {
         var tokens = shellWords(in: segment)
         guard tokens.first == "read" else { return nil }
         tokens.removeFirst()
@@ -349,7 +369,32 @@ enum ShellCommandMutationContextParser {
         }
         let name = tokens[tokens.index(before: redirectIndex)]
         guard isValidVariableName(name) else { return nil }
-        return [name: tokens[tokens.index(after: redirectIndex)]]
+        return [name: [tokens[tokens.index(after: redirectIndex)]]]
+    }
+
+    private static func setPositionalAssignments(in segment: String) -> [String: Set<String>]? {
+        var tokens = shellWords(in: segment)
+        let controlWords: Set<String> = ["if", "then", "do", "else", "elif", "while", "until", "!"]
+        while let first = tokens.first, controlWords.contains(first) {
+            tokens.removeFirst()
+        }
+        guard tokens.count >= 2, tokens[0] == "set", tokens[1] == "--" else {
+            return nil
+        }
+
+        let values = Array(tokens.dropFirst(2))
+        var assignments: [String: Set<String>] = [:]
+        for (offset, value) in values.enumerated() {
+            assignments[String(offset + 1)] = [value]
+        }
+        let allValues = Set(values)
+        assignments["@"] = allValues
+        assignments["*"] = allValues
+        return assignments
+    }
+
+    private static func isPositionalBindingName(_ name: String) -> Bool {
+        name == "@" || name == "*" || (!name.isEmpty && name.allSatisfy(\.isNumber))
     }
 
     private static func unsetVariableNames(in segment: String) -> [String] {
@@ -529,7 +574,19 @@ enum ShellCommandMutationContextParser {
                         nameStart = command.index(after: nameStart)
                     }
                     var nameEnd = nameStart
-                    if nameEnd < closingBrace, isVariableNameStart(command[nameEnd]) {
+                    if nameEnd < closingBrace,
+                       command[nameEnd].isNumber || command[nameEnd] == "@" || command[nameEnd] == "*" {
+                        nameEnd = command.index(after: nameEnd)
+                        while nameEnd < closingBrace, command[nameEnd].isNumber {
+                            nameEnd = command.index(after: nameEnd)
+                        }
+                        let name = String(command[nameStart..<nameEnd])
+                        if isIndirect {
+                            references.indirect.insert(name)
+                        } else {
+                            references.direct.insert(name)
+                        }
+                    } else if nameEnd < closingBrace, isVariableNameStart(command[nameEnd]) {
                         nameEnd = command.index(after: nameEnd)
                         while nameEnd < closingBrace,
                               isVariableNameContinuation(command[nameEnd]) {
@@ -545,6 +602,12 @@ enum ShellCommandMutationContextParser {
                     index = command.index(after: closingBrace)
                     continue
                 }
+            } else if command[valueStart].isNumber
+                || command[valueStart] == "@"
+                || command[valueStart] == "*" {
+                references.direct.insert(String(command[valueStart]))
+                index = command.index(after: valueStart)
+                continue
             } else if isVariableNameStart(command[valueStart]) {
                 var nameEnd = command.index(after: valueStart)
                 while nameEnd < command.endIndex, isVariableNameContinuation(command[nameEnd]) {

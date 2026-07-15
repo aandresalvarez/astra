@@ -32,24 +32,49 @@ public enum ProviderToolSemantics {
     /// such as `/bin/zsh -lc 'git status'`; policy and approval code must reason
     /// about `git status`, not accidentally grant the wrapper itself.
     ///
-    /// Each wrapper layer must contain one fully quoted payload. Ambiguous
+    /// Each wrapper layer must contain one fully quoted payload and an
+    /// environment-neutral launcher. Environment configuration, ambiguous
     /// quoting, interpolation-capable double-quoted payloads, and extra
-    /// launcher arguments remain unchanged so callers continue to fail closed.
+    /// launcher arguments remain unchanged so approval callers fail closed.
     public static func semanticShellCommand(_ command: String) -> String {
+        semanticShellCommand(command, allowingLauncherEnvironment: false)
+    }
+
+    /// Returns the launcher payload for mutation data-flow analysis, including
+    /// launchers with leading environment configuration. This must not be used
+    /// for approval or allow-list matching because variables such as BASH_ENV
+    /// can execute behavior before the quoted payload begins.
+    public static func mutationAnalysisShellCommand(_ command: String) -> String {
+        semanticShellCommand(command, allowingLauncherEnvironment: true)
+    }
+
+    private static func semanticShellCommand(
+        _ command: String,
+        allowingLauncherEnvironment: Bool
+    ) -> String {
         var semantic = command.trimmingCharacters(in: .whitespacesAndNewlines)
         for _ in 0..<4 {
-            guard let payload = shellLoginCommandPayload(from: semantic) else { break }
+            guard let payload = shellLoginCommandPayload(
+                from: semantic,
+                allowingLauncherEnvironment: allowingLauncherEnvironment
+            ) else { break }
             semantic = payload.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return semantic
     }
 
-    private static func shellLoginCommandPayload(from command: String) -> String? {
+    private static func shellLoginCommandPayload(
+        from command: String,
+        allowingLauncherEnvironment: Bool
+    ) -> String? {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let markerRange = trimmed.range(of: " -lc ") else { return nil }
 
         let launcherPrefix = String(trimmed[..<markerRange.lowerBound])
-        guard let executable = shellLauncherExecutable(from: launcherPrefix) else {
+        guard let executable = shellLauncherExecutable(
+            from: launcherPrefix,
+            allowingEnvironmentConfiguration: allowingLauncherEnvironment
+        ) else {
             return nil
         }
         guard ["sh", "bash", "zsh"].contains(
@@ -80,18 +105,26 @@ public enum ProviderToolSemantics {
         return payload
     }
 
-    /// Accepts only an exact shell executable, optionally preceded by `env`
-    /// options and environment assignments. Ordinary commands that merely end
-    /// an argument list with `/bin/sh` must never be mistaken for launchers.
-    private static func shellLauncherExecutable(from prefix: String) -> String? {
+    /// Accepts only an exact shell executable. Mutation-only analysis may also
+    /// accept leading `env` options and assignments; approval normalization may
+    /// not. Ordinary commands ending an argument list with `/bin/sh` must never
+    /// be mistaken for launchers.
+    private static func shellLauncherExecutable(
+        from prefix: String,
+        allowingEnvironmentConfiguration: Bool
+    ) -> String? {
         guard var words = shellWords(in: prefix), !words.isEmpty else { return nil }
+        var hasEnvironmentConfiguration = false
         if words.first == "env" {
+            hasEnvironmentConfiguration = true
             words.removeFirst()
             guard consumeEnvOptions(from: &words) else { return nil }
         }
         while let first = words.first, isEnvironmentAssignment(first) {
+            hasEnvironmentConfiguration = true
             words.removeFirst()
         }
+        guard allowingEnvironmentConfiguration || !hasEnvironmentConfiguration else { return nil }
         guard words.count == 1 else { return nil }
         return words[0]
     }

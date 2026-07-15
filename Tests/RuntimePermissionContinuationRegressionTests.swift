@@ -27,18 +27,59 @@ struct RuntimePermissionContinuationRegressionTests {
     @Test("Semantic shell normalization rejects ordinary commands ending in a launcher-like argument")
     func semanticShellNormalizationRequiresExactLauncherPrefix() {
         let ordinaryCommand = "rm -- /tmp/attached.pdf /bin/sh -lc 'true'"
+        let assignmentWrapper = "ATTACH='/tmp/path with spaces.pdf' /bin/sh -lc 'rm \"$ATTACH\"'"
+        let envWrapper = "env -u OLD ATTACH='/tmp/path with spaces.pdf' /bin/bash -lc 'rm \"$ATTACH\"'"
 
         #expect(ProviderToolSemantics.semanticShellCommand(ordinaryCommand) == ordinaryCommand)
+        #expect(ProviderToolSemantics.semanticShellCommand(assignmentWrapper) == assignmentWrapper)
+        #expect(ProviderToolSemantics.semanticShellCommand(envWrapper) == envWrapper)
         #expect(
-            ProviderToolSemantics.semanticShellCommand(
-                "ATTACH='/tmp/path with spaces.pdf' /bin/sh -lc 'rm \"$ATTACH\"'"
-            ) == "rm \"$ATTACH\""
+            ProviderToolSemantics.mutationAnalysisShellCommand(assignmentWrapper)
+                == "rm \"$ATTACH\""
         )
         #expect(
-            ProviderToolSemantics.semanticShellCommand(
-                "env -u OLD ATTACH='/tmp/path with spaces.pdf' /bin/bash -lc 'rm \"$ATTACH\"'"
-            ) == "rm \"$ATTACH\""
+            ProviderToolSemantics.mutationAnalysisShellCommand(envWrapper)
+                == "rm \"$ATTACH\""
         )
+    }
+
+    @Test("Environment-configured launchers cannot reuse a payload-only approval")
+    func environmentConfiguredLauncherDoesNotReusePayloadApproval() {
+        let approvedGrant = PermissionGrant.shellCommand(
+            executable: "git",
+            pattern: "status --short *"
+        )
+        let command = "BASH_ENV=/tmp/astra-hook /bin/bash -lc 'git status --short --branch'"
+        let generatedGrants = PermissionBroker.approvalGrants(for: .shell(
+            command: command,
+            toolName: "command_execution"
+        ))
+        #expect(!generatedGrants.contains(approvedGrant))
+
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read"],
+            askFirstTools: ["Bash"],
+            providerID: .codexCLI,
+            approvalGrants: [approvedGrant]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "command_execution",
+                id: "environment-configured-launcher",
+                input: ["command": command]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill)
+        #expect(monitor.policyApprovalRequired)
+        #expect(!monitor.policyViolation)
     }
 
     @Test("Codex resumed Ask approval authorizes the exact wrapped command once")

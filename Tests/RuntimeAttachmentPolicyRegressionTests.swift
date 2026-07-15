@@ -256,7 +256,9 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "input='\(attachment.path)'; eval 'rm \"$input\"'",
             "files=( '\(attachment.path)' ); rm \"${files[@]}\"",
             "read -r input <<< '\(attachment.path)'; rm \"$input\"",
-            "name=input; input='\(attachment.path)'; rm \"${!name}\""
+            "name=input; input='\(attachment.path)'; rm \"${!name}\"",
+            "if true; then input='\(attachment.path)'; rm \"$input\"; fi",
+            "set -- '\(attachment.path)'; rm \"$1\""
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -309,6 +311,13 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "unused-export-before-wrapper-mutation",
             input: [
                 "command": "export ATTACH='\(attachment.path)'; /bin/bash -lc 'rm -rf /tmp/unrelated-output'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "positional-read-before-unrelated-mutation",
+            input: [
+                "command": "set -- '\(attachment.path)'; printf '%s\\n' \"$1\"; rm -rf /tmp/unrelated-output"
             ]
         )) == nil)
     }
