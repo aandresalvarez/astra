@@ -412,10 +412,15 @@ struct TaskSidebarView: View {
     private func setWorkspaceSortMode(_ mode: WorkspaceSidebarSortMode) {
         guard mode != workspaceSortMode else { return }
         if mode == .manual {
-            workspaceOrderingState.manualOrderIDs = WorkspaceSidebarOrdering
-                .ordered(workspaces, mode: workspaceSortMode, state: workspaceOrderingState)
-                .map(\.id)
-            WorkspaceSidebarOrderingStore.save(workspaceOrderingState)
+            let resolvedManualOrder = WorkspaceSidebarOrdering.manualOrderIDsForEnteringManual(
+                workspaces,
+                currentMode: workspaceSortMode,
+                state: workspaceOrderingState
+            )
+            if resolvedManualOrder != workspaceOrderingState.manualOrderIDs {
+                workspaceOrderingState.manualOrderIDs = resolvedManualOrder
+                WorkspaceSidebarOrderingStore.save(workspaceOrderingState)
+            }
         }
         workspaceSortModeRaw = mode.rawValue
     }

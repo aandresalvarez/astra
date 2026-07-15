@@ -126,6 +126,42 @@ struct WorkspaceSidebarOrderingTests {
         #expect(normalized == [beta.id, alpha.id])
     }
 
+    @Test("Returning to Manual restores the saved order instead of the temporary sort")
+    func manualModeEntryRestoresSavedOrder() {
+        let alpha = workspace("Alpha")
+        let beta = workspace("Beta")
+        let charlie = workspace("Charlie")
+        let savedOrder = [charlie.id, alpha.id, beta.id]
+        let state = WorkspaceSidebarOrderingState(manualOrderIDs: savedOrder)
+
+        let restored = WorkspaceSidebarOrdering.manualOrderIDsForEnteringManual(
+            [alpha, beta, charlie],
+            currentMode: .name,
+            state: state
+        )
+
+        #expect(restored == savedOrder)
+    }
+
+    @Test("Entering Manual seeds the visible order only without restorable ranks")
+    func firstManualModeEntrySeedsVisibleOrder() {
+        let alpha = workspace("Alpha")
+        let beta = workspace("Beta")
+        let deletedID = UUID()
+        let state = WorkspaceSidebarOrderingState(
+            manualOrderIDs: [deletedID],
+            recentUseDates: [beta.id: Date(timeIntervalSince1970: 10)]
+        )
+
+        let seeded = WorkspaceSidebarOrdering.manualOrderIDsForEnteringManual(
+            [alpha, beta],
+            currentMode: .recent,
+            state: state
+        )
+
+        #expect(seeded == [beta.id, alpha.id])
+    }
+
     @Test("Ordering state persists manual ranks and recent-use dates")
     func orderingStateRoundTrips() throws {
         let suiteName = "WorkspaceSidebarOrderingTests-\(UUID().uuidString)"

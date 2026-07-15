@@ -118,6 +118,24 @@ enum WorkspaceSidebarOrdering {
         return normalized
     }
 
+    /// Resolves the persisted ranks to use when the user enters Manual mode.
+    /// A valid saved rank represents user intent and must survive temporary
+    /// visits to Name or Recently used. The visible order is used only to seed
+    /// Manual mode when none of the saved ranks belongs to a current workspace.
+    static func manualOrderIDsForEnteringManual(
+        _ workspaces: [Workspace],
+        currentMode: WorkspaceSidebarSortMode,
+        state: WorkspaceSidebarOrderingState
+    ) -> [UUID] {
+        let validIDs = Set(workspaces.map(\.id))
+        let hasRestorableOrder = state.manualOrderIDs.contains(where: validIDs.contains)
+        if hasRestorableOrder {
+            return normalizedManualOrderIDs(state.manualOrderIDs, workspaces: workspaces)
+        }
+
+        return ordered(workspaces, mode: currentMode, state: state).map(\.id)
+    }
+
     /// Moves a workspace relative to another workspace in the same star group.
     /// Cross-group drops are rejected because reordering must never star or
     /// unstar a workspace as a hidden side effect.
