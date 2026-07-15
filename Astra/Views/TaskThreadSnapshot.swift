@@ -1045,6 +1045,12 @@ struct TaskThreadSnapshot: Sendable {
         activityPresentationByRunID[run.id] ?? .empty
     }
 
+    func hasVisibleActivityDetails(for run: TaskRunSnapshot) -> Bool {
+        activityPresentation(for: run).hasVisibleDetails(
+            hasPlanItems: !protocolState(for: run).todoItems.isEmpty
+        )
+    }
+
     func activity(for run: TaskRunSnapshot) -> TaskRunActivity {
         activityByRunID[run.id] ?? .empty
     }

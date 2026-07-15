@@ -1354,6 +1354,8 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Inspect", "Test"])
         #expect(snapshot.latestAgentPlanItems.map(\.isDone) == [true, false])
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
+        let runSnapshot = TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+        #expect(snapshot.hasVisibleActivityDetails(for: runSnapshot))
     }
 
     @Test("Latest agent plan survives the transcript event window")
