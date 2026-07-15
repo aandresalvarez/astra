@@ -204,6 +204,17 @@ struct RuntimeAttachmentPolicyRegressionTests {
         #expect(broadGuard.violation(for: .toolUse(
             name: "Bash", id: "bash-cat", input: ["command": "cat \(attachment.path)"]
         )) == nil)
+
+        // Mutating an unrelated temporary directory in one command segment
+        // must not make a later, read-only attachment inspection look like an
+        // attachment mutation. This is the command shape used when an agent
+        // safely expands an attached archive into a scratch directory.
+        let inspectArchive = """
+        cd /tmp && rm -rf dcq_inspect && mkdir dcq_inspect && cd dcq_inspect && unzip -q \(attachment.path)
+        """
+        #expect(broadGuard.violation(for: .toolUse(
+            name: "Bash", id: "bash-inspect-archive", input: ["command": inspectArchive]
+        )) == nil)
     }
 
     @Test("Docker broad shell guard translates container paths before checking read-only inputs")

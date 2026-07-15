@@ -245,12 +245,19 @@ struct AgentRuntimePolicyGuard: Sendable {
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
         guard let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmedCommand.isEmpty,
-              Self.shellCommandLooksMutating(trimmedCommand) else {
+              !trimmedCommand.isEmpty else {
             return nil
         }
+        let semanticCommand = ProviderToolSemantics.semanticShellCommand(trimmedCommand)
+        guard Self.shellCommandLooksMutating(semanticCommand) else { return nil }
+        let commandSegments = Self.shellSegmentSeparatorsNormalized(semanticCommand)
+            .split(whereSeparator: { $0.isNewline || $0 == ";" })
+            .map(String.init)
         guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
-            shellCommand(trimmedCommand, referencesHostPath: path)
+            commandSegments.contains { segment in
+                Self.shellCommandLooksMutating(segment)
+                    && shellCommand(segment, referencesHostPath: path)
+            }
         }) else {
             return nil
         }
