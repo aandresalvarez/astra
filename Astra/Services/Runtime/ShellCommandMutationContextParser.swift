@@ -134,7 +134,8 @@ enum ShellCommandMutationContextParser {
         // correlated with a downstream mutator.
         if segments.contains(where: {
             $0.containsHeredoc && $0.separatorAfter == .pipeline
-        }) {
+        }) || (segments.first?.containsHeredoc == true
+            && isStandaloneHeredocCommand(trimmedCommand)) {
             let references = variableReferences(in: trimmedCommand)
             return [ShellCommandMutationContext(
                 command: trimmedCommand,
@@ -149,6 +150,18 @@ enum ShellCommandMutationContextParser {
         var workingDirectories = initialWorkingDirectories
         var functions = inheritedFunctions
         var contexts: [ShellCommandMutationContext] = []
+        if recursionDepth < 8,
+           let loop = whileReadLoop(in: trimmedCommand) {
+            var loopBindings = initialBindings
+            loopBindings.merge(loop.assignments) { _, loopValue in loopValue }
+            contexts.append(contentsOf: self.contexts(
+                for: loop.body,
+                initialBindings: loopBindings,
+                initialWorkingDirectories: initialWorkingDirectories,
+                inheritedFunctions: inheritedFunctions,
+                recursionDepth: recursionDepth + 1
+            ))
+        }
         var pipelineInputExpressions: [String] = []
         var separatorBefore: SegmentSeparator = .sequence
 
@@ -225,8 +238,9 @@ enum ShellCommandMutationContextParser {
                     ?? readAssignments(in: segment.command)
                     ?? arrayReadAssignment(in: segment.command)
                     ?? printfVariableAssignment(in: segment.command) {
+                    let additiveNames = additiveAssignmentNames(in: segment.command)
                     for (name, values) in assignments {
-                        if separatorBefore == .conditional {
+                        if separatorBefore == .conditional || additiveNames.contains(name) {
                             bindings[name, default: []].formUnion(values)
                         } else {
                             bindings[name] = values
@@ -257,6 +271,41 @@ enum ShellCommandMutationContextParser {
             separatorBefore = segment.separatorAfter
         }
         return contexts
+    }
+
+    private static func isStandaloneHeredocCommand(_ command: String) -> Bool {
+        let lines = command.components(separatedBy: .newlines)
+        guard lines.count >= 3,
+              let header = lines.first,
+              topLevelSegments(in: header).count == 1,
+              let markerRange = header.range(of: #"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?"#,
+                                             options: .regularExpression),
+              let delimiterRange = header[markerRange]
+                .range(of: #"[A-Za-z_][A-Za-z0-9_]*"#, options: .regularExpression) else {
+            return false
+        }
+        let delimiter = String(header[delimiterRange])
+        return lines.last(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })?.trimmingCharacters(in: .whitespacesAndNewlines) == delimiter
+    }
+
+    private static func whileReadLoop(
+        in command: String
+    ) -> (body: String, assignments: [String: Set<String>])? {
+        guard command.hasPrefix("while "),
+              let doRange = command.range(of: "; do "),
+              let doneRange = command.range(of: "; done <<< ", options: .backwards),
+              doRange.upperBound <= doneRange.lowerBound else {
+            return nil
+        }
+        let headerStart = command.index(command.startIndex, offsetBy: "while ".count)
+        let header = String(command[headerStart..<doRange.lowerBound])
+        let input = String(command[doneRange.upperBound...])
+        guard let assignments = readAssignments(in: "\(header) <<< \(input)") else {
+            return nil
+        }
+        return (String(command[doRange.upperBound..<doneRange.lowerBound]), assignments)
     }
 
     private static func topLevelSegments(in command: String) -> [Segment] {
@@ -439,20 +488,28 @@ enum ShellCommandMutationContextParser {
         while let first = tokens.first, assignmentControlWords.contains(first) {
             tokens.removeFirst()
         }
+        if tokens.first == "case",
+           let armPatternIndex = tokens.firstIndex(where: { $0.hasSuffix(")") }) {
+            tokens.removeFirst(tokens.distance(from: tokens.startIndex, to: armPatternIndex) + 1)
+        }
         let declarationBuiltins: Set<String> = [
             "declare", "export", "local", "readonly", "typeset"
         ]
         var isNameReference = false
+        var isDisplayOnly = false
         if let first = tokens.first, declarationBuiltins.contains(first) {
             tokens.removeFirst()
             while tokens.first?.hasPrefix("-") == true {
                 if tokens[0].dropFirst().contains("n") {
                     isNameReference = true
                 }
+                if tokens[0].dropFirst().contains("p") {
+                    isDisplayOnly = true
+                }
                 tokens.removeFirst()
             }
         }
-        guard !tokens.isEmpty else { return nil }
+        guard !isDisplayOnly, !tokens.isEmpty else { return nil }
 
         var assignments: [String: Set<String>] = [:]
         for token in tokens {
@@ -478,20 +535,53 @@ enum ShellCommandMutationContextParser {
     }
 
     private static func readAssignments(in segment: String) -> [String: Set<String>]? {
-        var tokens = shellWords(in: segment)
+        let tokens = shellWords(in: segment)
         guard tokens.first == "read" else { return nil }
-        tokens.removeFirst()
-        while tokens.first?.hasPrefix("-") == true {
-            tokens.removeFirst()
-        }
         guard let redirectIndex = tokens.firstIndex(of: "<<<"),
-              redirectIndex > tokens.startIndex,
+              redirectIndex > tokens.index(after: tokens.startIndex),
               tokens.index(after: redirectIndex) < tokens.endIndex else {
             return nil
         }
-        let name = tokens[tokens.startIndex]
-        guard isValidVariableName(name) else { return nil }
-        return [name: [tokens[tokens.index(after: redirectIndex)]]]
+        var nameIndex = tokens.index(after: tokens.startIndex)
+        while nameIndex < redirectIndex, tokens[nameIndex].hasPrefix("-") {
+            let option = tokens[nameIndex]
+            nameIndex = tokens.index(after: nameIndex)
+            if readOptionRequiresSeparateOperand(option), nameIndex < redirectIndex {
+                nameIndex = tokens.index(after: nameIndex)
+            }
+            if option == "--" { break }
+        }
+        let names = tokens[nameIndex..<redirectIndex].filter(isValidVariableName)
+        guard !names.isEmpty else { return nil }
+
+        let rawInput = tokens[tokens.index(after: redirectIndex)...].joined(separator: " ")
+        let input = unquotedShellScalar(rawInput)
+        let fields = input.split(whereSeparator: \.isWhitespace).map(String.init)
+        var assignments: [String: Set<String>] = [:]
+        for (offset, name) in names.enumerated() {
+            let value: String
+            if offset == names.count - 1 {
+                value = fields.dropFirst(offset).joined(separator: " ")
+            } else {
+                value = offset < fields.count ? fields[offset] : ""
+            }
+            assignments[name] = [value]
+        }
+        return assignments
+    }
+
+    private static func readOptionRequiresSeparateOperand(_ option: String) -> Bool {
+        ["-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"].contains(option)
+    }
+
+    private static func unquotedShellScalar(_ value: String) -> String {
+        guard value.count >= 2,
+              let first = value.first,
+              (first == "'" || first == "\""),
+              value.last == first else {
+            return value
+        }
+        return String(value.dropFirst().dropLast())
     }
 
     private static func arrayReadAssignment(in segment: String) -> [String: Set<String>]? {
@@ -510,8 +600,12 @@ enum ShellCommandMutationContextParser {
 
     private static func workingDirectoryAssignment(in segment: String) -> String? {
         var tokens = executableWords(in: segment)
-        guard tokens.first == "cd" else { return nil }
+        guard let command = tokens.first,
+              command == "cd" || command == "pushd" else { return nil }
         tokens.removeFirst()
+        if command == "pushd", tokens.contains("-n") {
+            return nil
+        }
         while tokens.first?.hasPrefix("-") == true {
             if tokens.first == "--" {
                 tokens.removeFirst()
@@ -524,12 +618,12 @@ enum ShellCommandMutationContextParser {
 
     private static func printfVariableAssignment(in segment: String) -> [String: Set<String>]? {
         let tokens = executableWords(in: segment)
-        guard tokens.first == "printf",
-              let variableOptionIndex = tokens.firstIndex(of: "-v"),
-              tokens.index(after: variableOptionIndex) < tokens.endIndex else {
+        guard tokens.count >= 4,
+              tokens[0] == "printf",
+              tokens[1] == "-v" else {
             return nil
         }
-        let nameIndex = tokens.index(after: variableOptionIndex)
+        let nameIndex = 2
         let name = tokens[nameIndex]
         let valueStart = tokens.index(after: nameIndex)
         guard isValidVariableName(name), valueStart < tokens.endIndex else { return nil }
@@ -656,11 +750,31 @@ enum ShellCommandMutationContextParser {
         return functionOnly ? [] : names
     }
 
-    private static func assignment(from token: String) -> (name: String, value: String)? {
+    private static func assignment(
+        from token: String
+    ) -> (name: String, value: String, isAdditive: Bool)? {
         guard let separator = token.firstIndex(of: "=") else { return nil }
-        let name = String(token[..<separator])
+        var name = String(token[..<separator])
+        var isAdditive = false
+        if name.hasSuffix("+") {
+            name.removeLast()
+            isAdditive = true
+        }
+        if let arrayIndex = name.firstIndex(of: "["), name.hasSuffix("]") {
+            name = String(name[..<arrayIndex])
+            isAdditive = true
+        }
         guard isValidVariableName(name) else { return nil }
-        return (name, String(token[token.index(after: separator)...]))
+        return (name, String(token[token.index(after: separator)...]), isAdditive)
+    }
+
+    private static func additiveAssignmentNames(in segment: String) -> Set<String> {
+        Set(shellWords(in: segment).compactMap { token in
+            guard let assignment = assignment(from: token), assignment.isAdditive else {
+                return nil
+            }
+            return assignment.name
+        })
     }
 
     private static func shellWords(in command: String) -> [String] {
@@ -859,12 +973,20 @@ enum ShellCommandMutationContextParser {
     }
 
     fileprivate static func leadingCommandVariableReference(in command: String) -> String? {
-        guard let firstWord = shellWords(in: command).first,
-              firstWord.first == "$" else {
-            return nil
+        guard var firstWord = shellWords(in: command).first else { return nil }
+        if firstWord.count >= 2,
+           firstWord.first == "\"",
+           firstWord.last == "\"" {
+            firstWord.removeFirst()
+            firstWord.removeLast()
         }
-        let references = variableReferences(in: firstWord).direct
-        return references.count == 1 ? references.first : nil
+        if firstWord.hasPrefix("${"), firstWord.hasSuffix("}") {
+            let name = String(firstWord.dropFirst(2).dropLast())
+            return isValidVariableName(name) ? name : nil
+        }
+        guard firstWord.first == "$" else { return nil }
+        let name = String(firstWord.dropFirst())
+        return isValidVariableName(name) ? name : nil
     }
 
     fileprivate static func executableName(fromBindingExpression expression: String) -> String? {

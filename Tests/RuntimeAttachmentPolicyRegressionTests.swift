@@ -278,7 +278,17 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "read input unused <<< '\(attachment.path)'; rm \"$input\"",
             "mapfile -t files <<< '\(attachment.path)'; rm \"${files[0]}\"",
             "cmd=rm && $cmd '\(attachment.path)'",
-            "cmd='rm' && $cmd '\(attachment.path)'"
+            "cmd='rm' && $cmd '\(attachment.path)'",
+            "read ignored input <<< 'junk \(attachment.path)'; rm \"$input\"",
+            "input='\(attachment.path)'; printf -- -v input ignored; rm \"$input\"",
+            "read -u 0 input <<< '\(attachment.path)'; rm \"$input\"",
+            "xargs rm -f <<EOF\n\(attachment.path)\nEOF",
+            "files[0]='\(attachment.path)'; rm \"${files[0]}\"",
+            "input='\(attachment.path)'; declare -p input=/tmp/other; rm \"$input\"",
+            "while read input; do rm \"$input\"; done <<< '\(attachment.path)'",
+            "case x in x) input='\(attachment.path)'; rm \"$input\";; esac",
+            "cmd=rm && \"$cmd\" '\(attachment.path)'",
+            "input=''; input+='\(attachment.path)'; rm \"$input\""
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -300,6 +310,16 @@ struct RuntimeAttachmentPolicyRegressionTests {
         )))
         #expect(workingDirectoryViolation.violationCategory == "read_only_input_mutation")
         #expect(workingDirectoryViolation.detail == attachmentDirectory.path)
+
+        let pushdViolation = try #require(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "read-only-pushd-working-directory",
+            input: [
+                "command": "pushd '\(attachmentDirectory.path)'; rm child.txt"
+            ]
+        )))
+        #expect(pushdViolation.violationCategory == "read_only_input_mutation")
+        #expect(pushdViolation.detail == attachmentDirectory.path)
 
         #expect(guardUnderTest.violation(for: .toolUse(
             name: "Bash",
@@ -404,6 +424,41 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "bound-read-command-before-unrelated-mutation",
             input: [
                 "command": "cmd=printf; $cmd '%s\\n' '\(attachment.path)'; rm unrelated"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "quoted-bound-read-command-before-unrelated-mutation",
+            input: [
+                "command": "cmd=printf; \"$cmd\" '%s\\n' '\(attachment.path)'; rm unrelated"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "quoted-compound-command-name-is-not-executable",
+            input: [
+                "command": "cmd=rm; \"$cmd suffix\" '\(attachment.path)'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "standalone-heredoc-does-not-feed-later-conditional-command",
+            input: [
+                "command": "cat <<EOF && rm /tmp/unrelated-output\n\(attachment.path)\nEOF"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "while-read-binding-does-not-leak-to-unrelated-mutation",
+            input: [
+                "command": "while read input; do printf '%s' \"$input\"; rm /tmp/unrelated-output; done <<< '\(attachment.path)'"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "pushd-no-change-option-does-not-change-working-directory",
+            input: [
+                "command": "pushd -n '\(attachmentDirectory.path)'; rm unrelated"
             ]
         )) == nil)
     }
