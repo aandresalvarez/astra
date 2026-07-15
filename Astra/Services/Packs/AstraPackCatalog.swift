@@ -70,13 +70,14 @@ struct AstraPackCatalog {
 
     static func localStorageRoot(
         for channel: AppChannel = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> URL {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-        return appSupport
-            .appendingPathComponent(channel.appSupportDirectoryName, isDirectory: true)
+        AppChannelStoragePaths.applicationSupportDirectory(
+            for: channel,
+            environment: environment,
+            fileManager: fileManager
+        )
             .appendingPathComponent("Packs", isDirectory: true)
     }
 
