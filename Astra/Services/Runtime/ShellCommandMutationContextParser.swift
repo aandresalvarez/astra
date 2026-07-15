@@ -7,10 +7,16 @@ struct ShellCommandMutationContext: Equatable, Sendable {
     let referencedVariables: Set<String>
     let indirectReferencedVariables: Set<String>
     let pipelineInputExpressions: [String]
+    let workingDirectoryExpressions: [String]
 
     var pathReferenceExpressions: [String] {
-        var expressions = [command] + pipelineInputExpressions
+        var expressions = [command] + pipelineInputExpressions + workingDirectoryExpressions
         var pendingReferences = referencedVariables
+        for workingDirectory in workingDirectoryExpressions {
+            pendingReferences.formUnion(
+                ShellCommandMutationContextParser.directVariableReferences(in: workingDirectory)
+            )
+        }
         if referencedVariables.contains(where: { $0.allSatisfy(\.isNumber) }) {
             pendingReferences.insert("@")
         }
@@ -20,6 +26,29 @@ struct ShellCommandMutationContext: Equatable, Sendable {
             }
         }
 
+        expressions += resolvedBindingExpressions(startingWith: pendingReferences)
+        return expressions
+    }
+
+    var mutationCandidateCommands: [String] {
+        var candidates = [command]
+        guard let commandReference = ShellCommandMutationContextParser
+            .leadingCommandVariableReference(in: command) else {
+            return candidates
+        }
+        for expression in resolvedBindingExpressions(startingWith: [commandReference]) {
+            guard let commandName = ShellCommandMutationContextParser
+                .executableName(fromBindingExpression: expression) else {
+                continue
+            }
+            candidates.append("\(commandName) \(command)")
+        }
+        return candidates
+    }
+
+    private func resolvedBindingExpressions(startingWith references: Set<String>) -> [String] {
+        var expressions: [String] = []
+        var pendingReferences = references
         var visitedReferences: Set<String> = []
         while let reference = pendingReferences.popFirst() {
             guard visitedReferences.insert(reference).inserted else { continue }
@@ -83,6 +112,7 @@ enum ShellCommandMutationContextParser {
         contexts(
             for: rawCommand,
             initialBindings: [:],
+            initialWorkingDirectories: [],
             inheritedFunctions: [:],
             recursionDepth: 0
         )
@@ -91,6 +121,7 @@ enum ShellCommandMutationContextParser {
     private static func contexts(
         for rawCommand: String,
         initialBindings: [String: Set<String>],
+        initialWorkingDirectories: Set<String>,
         inheritedFunctions: [String: String],
         recursionDepth: Int
     ) -> [ShellCommandMutationContext] {
@@ -110,10 +141,12 @@ enum ShellCommandMutationContextParser {
                 variableBindings: initialBindings,
                 referencedVariables: references.direct,
                 indirectReferencedVariables: references.indirect,
-                pipelineInputExpressions: []
+                pipelineInputExpressions: [],
+                workingDirectoryExpressions: initialWorkingDirectories.sorted()
             )]
         }
         var bindings = initialBindings
+        var workingDirectories = initialWorkingDirectories
         var functions = inheritedFunctions
         var contexts: [ShellCommandMutationContext] = []
         var pipelineInputExpressions: [String] = []
@@ -147,7 +180,8 @@ enum ShellCommandMutationContextParser {
                 variableBindings: contextBindings,
                 referencedVariables: references.direct,
                 indirectReferencedVariables: references.indirect,
-                pipelineInputExpressions: pipelineInputExpressions
+                pipelineInputExpressions: pipelineInputExpressions,
+                workingDirectoryExpressions: workingDirectories.sorted()
             ))
 
             if recursionDepth < 8,
@@ -163,6 +197,7 @@ enum ShellCommandMutationContextParser {
                 contexts.append(contentsOf: self.contexts(
                     for: functionBody,
                     initialBindings: functionBindings,
+                    initialWorkingDirectories: workingDirectories,
                     inheritedFunctions: functions,
                     recursionDepth: recursionDepth + 1
                 ))
@@ -188,6 +223,7 @@ enum ShellCommandMutationContextParser {
                 } else if let assignments = persistentAssignments(in: segment.command)
                     ?? loopAssignments(in: segment.command)
                     ?? readAssignments(in: segment.command)
+                    ?? arrayReadAssignment(in: segment.command)
                     ?? printfVariableAssignment(in: segment.command) {
                     for (name, values) in assignments {
                         if separatorBefore == .conditional {
@@ -199,6 +235,13 @@ enum ShellCommandMutationContextParser {
                 } else if separatorBefore != .conditional {
                     for name in unsetVariableNames(in: segment.command) {
                         bindings.removeValue(forKey: name)
+                    }
+                }
+                if let workingDirectory = workingDirectoryAssignment(in: segment.command) {
+                    if separatorBefore == .conditional {
+                        workingDirectories.insert(workingDirectory)
+                    } else {
+                        workingDirectories = [workingDirectory]
                     }
                 }
             }
@@ -399,9 +442,13 @@ enum ShellCommandMutationContextParser {
         let declarationBuiltins: Set<String> = [
             "declare", "export", "local", "readonly", "typeset"
         ]
+        var isNameReference = false
         if let first = tokens.first, declarationBuiltins.contains(first) {
             tokens.removeFirst()
             while tokens.first?.hasPrefix("-") == true {
+                if tokens[0].dropFirst().contains("n") {
+                    isNameReference = true
+                }
                 tokens.removeFirst()
             }
         }
@@ -410,7 +457,11 @@ enum ShellCommandMutationContextParser {
         var assignments: [String: Set<String>] = [:]
         for token in tokens {
             guard let assignment = assignment(from: token) else { return nil }
-            assignments[assignment.name] = [assignment.value]
+            if isNameReference, isValidVariableName(assignment.value) {
+                assignments[assignment.name] = ["$\(assignment.value)"]
+            } else {
+                assignments[assignment.name] = [assignment.value]
+            }
         }
         return assignments
     }
@@ -438,9 +489,37 @@ enum ShellCommandMutationContextParser {
               tokens.index(after: redirectIndex) < tokens.endIndex else {
             return nil
         }
+        let name = tokens[tokens.startIndex]
+        guard isValidVariableName(name) else { return nil }
+        return [name: [tokens[tokens.index(after: redirectIndex)]]]
+    }
+
+    private static func arrayReadAssignment(in segment: String) -> [String: Set<String>]? {
+        let tokens = executableWords(in: segment)
+        guard let command = tokens.first,
+              command == "mapfile" || command == "readarray",
+              let redirectIndex = tokens.firstIndex(of: "<<<"),
+              redirectIndex > tokens.startIndex,
+              tokens.index(after: redirectIndex) < tokens.endIndex else {
+            return nil
+        }
         let name = tokens[tokens.index(before: redirectIndex)]
         guard isValidVariableName(name) else { return nil }
         return [name: [tokens[tokens.index(after: redirectIndex)]]]
+    }
+
+    private static func workingDirectoryAssignment(in segment: String) -> String? {
+        var tokens = executableWords(in: segment)
+        guard tokens.first == "cd" else { return nil }
+        tokens.removeFirst()
+        while tokens.first?.hasPrefix("-") == true {
+            if tokens.first == "--" {
+                tokens.removeFirst()
+                break
+            }
+            tokens.removeFirst()
+        }
+        return tokens.first
     }
 
     private static func printfVariableAssignment(in segment: String) -> [String: Set<String>]? {
@@ -777,6 +856,31 @@ enum ShellCommandMutationContextParser {
 
     fileprivate static func directVariableReferences(in expression: String) -> Set<String> {
         variableReferences(in: expression).direct
+    }
+
+    fileprivate static func leadingCommandVariableReference(in command: String) -> String? {
+        guard let firstWord = shellWords(in: command).first,
+              firstWord.first == "$" else {
+            return nil
+        }
+        let references = variableReferences(in: firstWord).direct
+        return references.count == 1 ? references.first : nil
+    }
+
+    fileprivate static func executableName(fromBindingExpression expression: String) -> String? {
+        var value = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.count >= 2,
+           let first = value.first,
+           (first == "'" || first == "\""),
+           value.last == first {
+            value.removeFirst()
+            value.removeLast()
+        }
+        guard let name = value.split(whereSeparator: \.isWhitespace).first,
+              !name.isEmpty else {
+            return nil
+        }
+        return String(name)
     }
 
     private static func isValidVariableName(_ value: String) -> Bool {

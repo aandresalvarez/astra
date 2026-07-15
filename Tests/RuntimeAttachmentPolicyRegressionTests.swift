@@ -221,11 +221,20 @@ struct RuntimeAttachmentPolicyRegressionTests {
     func broadShellGuardPreservesMutationDataFlow() throws {
         let attachment = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-attached;final-\(UUID().uuidString).pdf")
-        defer { try? FileManager.default.removeItem(at: attachment) }
+        let attachmentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-attached-directory-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: attachment)
+            try? FileManager.default.removeItem(at: attachmentDirectory)
+        }
         try Data("literature".utf8).write(to: attachment)
+        try FileManager.default.createDirectory(
+            at: attachmentDirectory,
+            withIntermediateDirectories: true
+        )
         let manifest = makeManifest(
             allowedTools: ["*"],
-            readOnlyPaths: [attachment.path],
+            readOnlyPaths: [attachment.path, attachmentDirectory.path],
             permissionMode: .autonomous,
             policyLevel: .autonomous,
             usesBroadProviderPermissions: true
@@ -264,7 +273,12 @@ struct RuntimeAttachmentPolicyRegressionTests {
             "a='\(attachment.path)'; b=\"$a\"; rm \"$b\"",
             "printf -v input %s '\(attachment.path)'; rm \"$input\"",
             "input='\(attachment.path)'; input=/tmp/other | cat; rm \"$input\"",
-            "f(){ rm -- \"$1\"; }; f '\(attachment.path)'"
+            "f(){ rm -- \"$1\"; }; f '\(attachment.path)'",
+            "input='\(attachment.path)'; declare -n ref=input; rm \"$ref\"",
+            "read input unused <<< '\(attachment.path)'; rm \"$input\"",
+            "mapfile -t files <<< '\(attachment.path)'; rm \"${files[0]}\"",
+            "cmd=rm && $cmd '\(attachment.path)'",
+            "cmd='rm' && $cmd '\(attachment.path)'"
         ]
 
         for (index, command) in mutationCommands.enumerated() {
@@ -276,6 +290,16 @@ struct RuntimeAttachmentPolicyRegressionTests {
             #expect(violation.violationCategory == "read_only_input_mutation")
             #expect(violation.detail == attachment.path)
         }
+
+        let workingDirectoryViolation = try #require(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "read-only-working-directory",
+            input: [
+                "command": "cd '\(attachmentDirectory.path)' && rm child.txt"
+            ]
+        )))
+        #expect(workingDirectoryViolation.violationCategory == "read_only_input_mutation")
+        #expect(workingDirectoryViolation.detail == attachmentDirectory.path)
 
         #expect(guardUnderTest.violation(for: .toolUse(
             name: "Bash",
@@ -352,6 +376,34 @@ struct RuntimeAttachmentPolicyRegressionTests {
             id: "printf-ignored-argument-does-not-bind",
             input: [
                 "command": "printf -v input literal '\(attachment.path)'; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "nameref-to-unrelated-binding",
+            input: [
+                "command": "input='\(attachment.path)'; other=/tmp/unrelated; declare -n ref=other; rm \"$ref\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "read-only-path-assigned-to-second-read-name",
+            input: [
+                "command": "read first input <<< '\(attachment.path)'; rm \"$input\""
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "working-directory-reset-before-mutation",
+            input: [
+                "command": "cd '\(attachmentDirectory.path)'; cd /tmp; rm unrelated"
+            ]
+        )) == nil)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "bound-read-command-before-unrelated-mutation",
+            input: [
+                "command": "cmd=printf; $cmd '%s\\n' '\(attachment.path)'; rm unrelated"
             ]
         )) == nil)
     }

@@ -245,11 +245,12 @@ struct AgentRuntimePolicyGuard: Sendable {
               !trimmedCommand.isEmpty else {
             return nil
         }
-        guard Self.shellCommandLooksMutating(trimmedCommand) else { return nil }
         let contexts = ShellCommandMutationContextParser.contexts(for: trimmedCommand)
         guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
             contexts.contains { context in
-                guard Self.shellCommandLooksMutating(context.command) else { return false }
+                guard context.mutationCandidateCommands.contains(where: {
+                    Self.shellCommandLooksMutating($0)
+                }) else { return false }
                 return context.pathReferenceExpressions.contains { expression in
                     shellCommand(expression, referencesHostPath: path)
                 }
