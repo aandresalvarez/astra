@@ -176,13 +176,22 @@ struct SchemaVersionTests {
         #expect(!ASTRASchemaV12FeedbackOnly.models.contains { $0 == AgentTask.self })
     }
 
-    @MainActor
-    @Test("SchemaV13 declares current model types and explicit-runtime-selection field")
-    func v13ModelCountAndExplicitRuntimeSelectionField() throws {
+    @Test("SchemaV13 freezes the reconciled production task graph")
+    func v13IsFrozen() {
         #expect(ASTRASchemaV13.models.count == 18)
-        #expect(ASTRASchemaV13.models.contains { $0 == AgentTask.self })
-        #expect(ASTRASchemaV13.models.contains { $0 == FeedbackReport.self })
-        #expect(ASTRASchemaV13.models.contains { $0 == PersistentStoreMigrationRecord.self })
+        #expect(ASTRASchemaV13.models.contains { $0 == ASTRASchemaV12RuntimeOnly.AgentTask.self })
+        #expect(ASTRASchemaV13.models.contains { $0 == ASTRASchemaV12Models.FeedbackReport.self })
+        #expect(ASTRASchemaV13.models.contains { $0 == ASTRASchemaV13Models.PersistentStoreMigrationRecord.self })
+        #expect(!ASTRASchemaV13.models.contains { $0 == AgentTask.self })
+    }
+
+    @MainActor
+    @Test("SchemaV14 declares current models and task-owned canvas preference")
+    func v14ModelCountAndCanvasPreferenceField() throws {
+        #expect(ASTRASchemaV14.models.count == 18)
+        #expect(ASTRASchemaV14.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV14.models.contains { $0 == FeedbackReport.self })
+        #expect(ASTRASchemaV14.models.contains { $0 == PersistentStoreMigrationRecord.self })
 
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -200,6 +209,7 @@ struct SchemaVersionTests {
         #expect(task.runtimeExplicitlySelected == false)
         #expect(task.runtimePermissionOpenRequestsJSON == "[]")
         #expect(task.runtimePermissionGrantsJSON == "[]")
+        #expect(task.rememberedWorkspaceCanvasItemRawValue == nil)
         #expect(run.providerLaunchSignatureJSON == nil)
     }
 
@@ -213,31 +223,36 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV13.versionIdentifier == Schema.Version(13, 0, 0))
     }
 
+    @Test("SchemaV14 version identifier is 14.0.0")
+    func v14VersionIdentifier() {
+        #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(14, 0, 0))
+    }
+
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 13)
-        #expect(ASTRASchemaV13.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 14)
+        #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV13")
+    @Test("Migration plan lists SchemaV1 through SchemaV14")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 13)
+        #expect(ASTRAMigrationPlan.schemas.count == 14)
     }
 
-    @Test("Migration plan has V1 to V13 lightweight stages")
+    @Test("Migration plan has V1 to V14 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 12)
+        #expect(ASTRAMigrationPlan.stages.count == 13)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 2)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 1)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 2)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 1)
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 3)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 2)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 3)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 2)
     }
 
-    @Test("Frozen V12 schemas match all observed on-disk fingerprints")
+    @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
     func frozenV12FingerprintsMatchObservedStores() throws {
         #expect(try modelDigest(for: ASTRASchemaV12RuntimeOnly.self) == "gOyhETqn0JsdoYEzwTW4HL0JczNjjAZAP1RnTqyP2OVdSMByOnWSLe1yi6MGcwuSHctPUYlM7dhh3FoKv2Xrug==")
         #expect(try modelDigest(for: ASTRASchemaV12FeedbackOnly.self) == "MMAHCJmoTDsXR0SV6RF+goUZ2DBiNuwEtnq3KS3v0jcU8kGeSbQeZrrAeIFkfK4/xgALX2J2CrYJYdsoc9P0sg==")
@@ -333,6 +348,55 @@ struct SchemaVersionTests {
         #expect(tasks[0].skills.count == 1)
     }
 
+    @MainActor
+    @Test("Populated SchemaV13 store migrates to V14 with an empty canvas preference")
+    func v13StoreMigratesToTaskOwnedCanvasPreference() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v13-canvas-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let workspaceID: UUID
+        let taskID: UUID
+
+        do {
+            let oldContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV13.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = oldContainer.mainContext
+            let workspace = ASTRASchemaV12RuntimeOnly.Workspace()
+            workspace.name = "V13 Workspace"
+            workspace.primaryPath = "/tmp/v13-canvas"
+            context.insert(workspace)
+            let task = ASTRASchemaV12RuntimeOnly.AgentTask()
+            task.title = "V13 Task"
+            task.goal = "Preserve relationships"
+            task.workspace = workspace
+            context.insert(task)
+            let run = ASTRASchemaV12RuntimeOnly.TaskRun()
+            run.task = task
+            context.insert(run)
+            try context.save()
+            workspaceID = workspace.id
+            taskID = task.id
+        }
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let workspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(workspace.id == workspaceID)
+        #expect(task.id == taskID)
+        #expect(task.workspace?.id == workspaceID)
+        #expect(task.runs.count == 1)
+        #expect(task.rememberedWorkspaceCanvasItemRawValue == nil)
+    }
+
     private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-schema-fingerprint-\(UUID().uuidString)", isDirectory: true)
@@ -423,8 +487,8 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Production SchemaV12 migrates to V13 with feedback and runtime state intact")
-    func productionV12MigratesToV13() throws {
+    @Test("Production SchemaV12 migrates to current schema with feedback and runtime state intact")
+    func productionV12MigratesToCurrentSchema() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-schema-v12-production-migration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -481,7 +545,7 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Populated SchemaV11 store migrates through V12 to V13 without disturbing relationships")
+    @Test("Populated SchemaV11 store migrates to current schema without disturbing relationships")
     func v11StoreMigratesToFeedbackReportTable() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-schema-v11-feedback-migration-\(UUID().uuidString)", isDirectory: true)

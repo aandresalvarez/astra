@@ -24,9 +24,11 @@ reference evidence in the running application.
 
 ## Durable ownership contracts
 
-- Remembered canvas preferences are convenience state, not domain state. They
-  use a 256-entry LRU. The version-1 dictionary format is decoded and migrated;
-  oversized legacy state is trimmed deterministically.
+- Remembered canvas preferences are task-owned SwiftData state. Deleting a task
+  deletes its preference naturally, and explicit preference writes touch only
+  that task instead of rewriting a process-global conversation map. The legacy
+  version-1 defaults dictionary is imported once at startup, then removed only
+  after the migrated task values save successfully.
 - The terminal task snapshot cache remains capped at 12 entries.
 - Files snapshots remain capped by their existing store capacity and the
   5,000-node scan limit.
