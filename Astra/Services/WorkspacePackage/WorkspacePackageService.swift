@@ -76,7 +76,15 @@ struct WorkspacePackageService {
             issues.append(blocker("/checksums.json", "Package is missing checksums.json."))
         }
 
-        validateNoForbiddenContent(checksums: declaredChecksums, packageURL: packageURL, issues: &issues)
+        validateNoForbiddenContent(
+            checksums: declaredChecksums,
+            manifest: manifest,
+            packageURL: packageURL,
+            issues: &issues
+        )
+        if let workspaceConfig {
+            validateConfigFreeTextContent(workspaceConfig, issues: &issues)
+        }
 
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
         for entry in manifest?.appEntries ?? [] {
@@ -140,16 +148,24 @@ struct WorkspacePackageService {
         if entry.sha256 != actualDigest {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability package digest does not match the manifest entry."))
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let capability = try? decoder.decode(PluginPackage.self, from: data) else {
-            issues.append(blocker("/\(entry.relativePath)", "Embedded capability package could not be decoded."))
-            return
+        // The existing capability-import validator owns the deep checks
+        // (malformed JSON, unsafe MCP transport, shell-metacharacter tools,
+        // identity/version literals). Prerequisites are deliberately NOT
+        // checked here: a missing CLI on the recipient machine is a
+        // readiness/review item for the import plan, not a package defect.
+        let capabilityReport = CapabilityPackageValidator.validate(data: data, checkPrerequisites: false)
+        for issue in capabilityReport.blockers {
+            issues.append(blocker("/\(entry.relativePath)", "\(issue.title): \(issue.message)"))
         }
         // Package JSON is not a trust boundary (see CapabilityGovernanceNormalizer):
         // an exporter that skipped the local-draft clamp, or a package hand-edited
-        // after export, must not be trusted just because it decodes cleanly.
-        if capability.governance.approvalStatus != .draft {
+        // after export, must not be trusted just because it decodes cleanly. This
+        // check must use the RAW decode — the validator's returned package is
+        // already normalized to draft, so checking that copy would always pass.
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let rawCapability = try? decoder.decode(PluginPackage.self, from: data) else { return }
+        if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
         }
     }
@@ -215,21 +231,107 @@ struct WorkspacePackageService {
     /// guarantees (no connector credential values, blanked skill secrets, no
     /// OAuth tokens) — the exporter should never produce a match, but
     /// validation treats the exporter as untrusted too.
+    ///
+    /// A raw whole-file scan is wrong for the three file groups this format
+    /// *understands*, all of which legitimately contain forbidden substrings
+    /// as structure, not as secrets — `workspace-config.json` carries
+    /// credential key NAMES like "API_TOKEN" and the `googleOAuthAccountProfiles`
+    /// key itself (the issue explicitly requires key names/scopes to travel),
+    /// capability packages carry `oauthAccount` setup-requirement kinds and
+    /// env key names, and embedded `.astra-app` bundles run their own
+    /// identical scan inside `WorkspaceAppPackageService.validatePackage`.
+    /// Those are excluded here and covered instead by
+    /// `validateConfigFreeTextContent` (structural free-text scan),
+    /// `CapabilityPackageValidator` + the draft-governance check, and the app
+    /// service's own validation respectively. Everything else — unknown
+    /// files a tampered package might smuggle in — still gets the raw scan.
     private func validateNoForbiddenContent(
         checksums: [WorkspacePackageChecksum]?,
+        manifest: WorkspacePackageManifest?,
         packageURL: URL,
         issues: inout [PortablePackageValidationIssue]
     ) {
+        let structurallyValidatedPaths = Set(
+            ["workspace-config.json", "manifest.json"]
+                + (manifest?.capabilityEntries.map(\.relativePath) ?? [])
+        )
+        let appBundlePrefixes = (manifest?.appEntries.map { $0.relativeBundlePath + "/" }) ?? []
         let scannedPaths = (
             checksums?.map(\.path) ??
                 PortablePackageSafeFileReader.portableFilePaths(in: packageURL, intent: .explicitUserSelection)
         )
         .filter { $0.hasSuffix(".json") || $0.hasSuffix(".md") }
+        .filter { path in
+            !structurallyValidatedPaths.contains(path)
+                && !appBundlePrefixes.contains(where: path.hasPrefix)
+        }
         var reported = Set<String>()
         for path in scannedPaths {
             guard let data = try? PortablePackageSafeFileReader.readData(rootURL: packageURL, relativePath: path),
                   let text = String(data: data, encoding: .utf8) else { continue }
             appendForbiddenContentIssues(in: text, path: "/\(path)", reported: &reported, issues: &issues)
+        }
+    }
+
+    /// Structural free-text scan of the workspace config: only fields a human
+    /// or agent authored (where a secret could realistically be pasted) are
+    /// scanned, never key-name inventories (`credentialKeys`,
+    /// `environmentKeys`, `configKeys`) or structured account metadata, which
+    /// carry credential-adjacent *names* by design. Names of skills/
+    /// connectors/tools are also exempt — "GitHub Token Helper" is a
+    /// legitimate name, not a leak.
+    private func validateConfigFreeTextContent(
+        _ config: WorkspaceConfigManager.WorkspaceConfig,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var reported = Set<String>()
+        func scan(_ text: String?, _ field: String) {
+            guard let text, !text.isEmpty else { return }
+            appendForbiddenContentIssues(
+                in: text,
+                path: "/workspace-config.json/\(field)",
+                reported: &reported,
+                issues: &issues
+            )
+        }
+
+        scan(config.instructions, "instructions")
+        for (index, memory) in (config.memories ?? []).enumerated() {
+            scan(memory, "memories[\(index)]")
+        }
+        for (index, skill) in config.skills.enumerated() {
+            scan(skill.behaviorInstructions, "skills[\(index)].behaviorInstructions")
+            scan(skill.description, "skills[\(index)].description")
+            for (valueIndex, value) in skill.environmentValues.enumerated() {
+                scan(value, "skills[\(index)].environmentValues[\(valueIndex)]")
+            }
+        }
+        for (index, connector) in (config.connectors ?? []).enumerated() {
+            scan(connector.description, "connectors[\(index)].description")
+            scan(connector.notes, "connectors[\(index)].notes")
+            for (valueIndex, value) in connector.configValues.enumerated() {
+                scan(value, "connectors[\(index)].configValues[\(valueIndex)]")
+            }
+        }
+        for (index, tool) in (config.localTools ?? []).enumerated() {
+            scan(tool.description, "localTools[\(index)].description")
+            scan(tool.command, "localTools[\(index)].command")
+            scan(tool.arguments, "localTools[\(index)].arguments")
+        }
+        for (index, template) in (config.templates ?? []).enumerated() {
+            scan(template.description, "templates[\(index)].description")
+            scan(template.beforeGoal, "templates[\(index)].beforeGoal")
+            scan(template.mainGoal, "templates[\(index)].mainGoal")
+            scan(template.afterGoal, "templates[\(index)].afterGoal")
+            scan(template.variablesJSON, "templates[\(index)].variablesJSON")
+            scan(template.hooksJSON, "templates[\(index)].hooksJSON")
+        }
+        for (index, schedule) in (config.schedules ?? []).enumerated() {
+            scan(schedule.goal, "schedules[\(index)].goal")
+            scan(schedule.routineDescription, "schedules[\(index)].routineDescription")
+            scan(schedule.routineInstructions, "schedules[\(index)].routineInstructions")
+            scan(schedule.conversationContext, "schedules[\(index)].conversationContext")
+            scan(schedule.templateVariablesJSON, "schedules[\(index)].templateVariablesJSON")
         }
     }
 

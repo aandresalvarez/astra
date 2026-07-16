@@ -974,14 +974,18 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Workspace import discovery scans should use HostFileAccessBroker: \(matches)")
     }
 
-    @Test("Workspace package exporter goes through the file access broker")
-    func workspacePackageExporterGoesThroughFileAccessBroker() throws {
+    @Test("Workspace package subsystem goes through the file access broker")
+    func workspacePackageSubsystemGoesThroughFileAccessBroker() throws {
         let root = try repositoryRoot()
-        let relativePath = "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift"
-        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let relativePaths = [
+            "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageService.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"
+        ]
         // Raw FileManager-prefixed reads are forbidden; `broker.enumerator(`
-        // (routed through HostFileAccessBroker) is the sanctioned path and
-        // deliberately not in this list.
+        // (routed through HostFileAccessBroker) and the O_NOFOLLOW reads in
+        // PortablePackageSafeFileReader are the sanctioned paths.
         let forbiddenPatterns = [
             "Data(contentsOf:",
             "FileManager.default.enumerator(",
@@ -989,40 +993,16 @@ struct ArchitectureFitnessTests {
             "FileManager.default.contentsOfDirectory(",
             "fileManager.contentsOfDirectory("
         ]
-        let matches = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .enumerated()
-            .compactMap { index, line -> String? in
-                let value = String(line)
-                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
-                return "\(relativePath):\(index + 1)"
+        var matches: [String] = []
+        for relativePath in relativePaths {
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+                where forbiddenPatterns.contains(where: { String(line).contains($0) }) {
+                matches.append("\(relativePath):\(index + 1)")
             }
+        }
 
-        #expect(matches.isEmpty, "Workspace package export reads should use HostFileAccessBroker: \(matches)")
-    }
-
-    @Test("Workspace package service goes through the file access broker")
-    func workspacePackageServiceGoesThroughFileAccessBroker() throws {
-        let root = try repositoryRoot()
-        let relativePath = "Astra/Services/WorkspacePackage/WorkspacePackageService.swift"
-        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
-        let forbiddenPatterns = [
-            "Data(contentsOf:",
-            "FileManager.default.enumerator(",
-            "fileManager.enumerator(",
-            "FileManager.default.contentsOfDirectory(",
-            "fileManager.contentsOfDirectory("
-        ]
-        let matches = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .enumerated()
-            .compactMap { index, line -> String? in
-                let value = String(line)
-                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
-                return "\(relativePath):\(index + 1)"
-            }
-
-        #expect(matches.isEmpty, "Workspace package validation reads should use HostFileAccessBroker: \(matches)")
+        #expect(matches.isEmpty, "Workspace package reads should use HostFileAccessBroker: \(matches)")
     }
 
     @Test("Workspace recovery config loads keep implicit scan intent")
@@ -1854,9 +1834,11 @@ struct ArchitectureFitnessTests {
         [
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
-            // Budget raised for issue #322: wiring the zero-workspace titlebar
-            // command flag into an already-full file cost one irreducible line.
-            "Astra/Views/ContentView.swift": .init(4_855, .owner("Workspace shell composition")),
+            // Budget raised for issues #322/#323: the zero-workspace titlebar
+            // command flag plus the portable-package import surface (one
+            // @State, one sheet, URL partition in importWorkspace) — the
+            // review UI and import logic themselves live in their own files.
+            "Astra/Views/ContentView.swift": .init(4_870, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body

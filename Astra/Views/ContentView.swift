@@ -70,6 +70,7 @@ struct ContentView: View {
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
+    @State private var pendingPackageImport: WorkspacePackageImportRequest?
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
     @State private var renamingWorkspace: Workspace?
@@ -1060,6 +1061,14 @@ struct ContentView: View {
         .sheet(isPresented: $showingNewSchedule) {
             if let ws = effectiveWorkspace {
                 ScheduleEditorView(workspace: ws)
+            }
+        }
+        .sheet(item: $pendingPackageImport) { request in
+            WorkspacePackageImportReviewView(packageURL: request.url) { imported in
+                pendingPackageImport = nil
+                if let imported {
+                    applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(imported))
+                }
             }
         }
         .sheet(item: $editingSchedule) { schedule in
@@ -2291,8 +2300,16 @@ struct ContentView: View {
         let urls = WorkspaceImportPanel.selectedURLs()
         guard !urls.isEmpty else { return }
 
+        // .astra-share packages get the review-before-import flow; everything
+        // else stays on the legacy folder/JSON path unchanged.
+        let partition = WorkspacePackageImportRouting.partition(urls)
+        if let packageURL = partition.packageURLs.first {
+            pendingPackageImport = WorkspacePackageImportRequest(url: packageURL)
+        }
+        guard !partition.legacyURLs.isEmpty else { return }
+
         let result = workspaceActionCoordinator.importWorkspaces(
-            from: urls,
+            from: partition.legacyURLs,
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )

@@ -12,7 +12,7 @@ struct WorkspaceImportPanelConfiguration: Equatable {
         canChooseDirectories: true,
         canChooseFiles: true,
         allowsMultipleSelection: true,
-        message: "Select workspace folders, config files, or a parent Workspaces folder",
+        message: "Select workspace folders, config files, a .astra-share package, or a parent Workspaces folder",
         prompt: "Import"
     )
 
