@@ -8,8 +8,6 @@ import ASTRAModels
 /// Durable storage lives on `AgentTask`; transient visibility lives in
 /// `RightPanelPresentationModel`.
 struct WorkspaceCanvasItemPreference: Equatable {
-    static let closedRawValue = ""
-
     static func rawValue(for item: WorkspaceCanvasItem?) -> String? {
         item?.rawValue
     }
@@ -53,12 +51,12 @@ struct WorkspaceCanvasItemPreferenceService {
         self.persist = persist ?? { task, context in
             let workspace = task.workspace
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
-                workspace: task.workspace,
+                workspace: workspace,
                 modelContext: context,
                 taskID: task.id,
                 auditFields: ["operation": "remember_workspace_canvas_item"]
             )
-            if workspace != nil {
+            if let workspace {
                 WorkspacePersistenceCoordinator.scheduleAutoExport(
                     workspace: workspace,
                     modelContext: context

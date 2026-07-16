@@ -50,7 +50,7 @@ enum LegacyWorkspaceCanvasItemPreferenceMigration {
         var result = Result(sourceFound: true)
         guard let rawValue = source as? String,
               let data = rawValue.data(using: .utf8),
-              let entries = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let entries = decodedLegacyEntries(from: data) else {
             defaults.removeObject(forKey: legacyDefaultsKey)
             result.sourceRemoved = true
             log(result: result, stage: "malformed_source_removed", level: .warning)
@@ -125,6 +125,30 @@ enum LegacyWorkspaceCanvasItemPreferenceMigration {
         result.sourceRemoved = true
         log(result: result, stage: "completed", level: .info)
         return result
+    }
+
+    /// `WorkspaceCanvasItemPreference` has written a versioned
+    /// `{version, nextAccessOrdinal, entries}` envelope for the source key for
+    /// some time; only installs that never re-saved after that change still
+    /// hold the older flat `[conversationID: item]` map. Both must be
+    /// recognized here — treating the envelope's top-level keys as task IDs
+    /// yields zero matches, and the source is deleted regardless, silently
+    /// discarding every remembered shelf for the common case.
+    private struct LegacyStorageEnvelope: Decodable {
+        struct Entry: Decodable {
+            var itemRawValue: String
+        }
+
+        var version: Int
+        var entries: [String: Entry]
+    }
+
+    private static func decodedLegacyEntries(from data: Data) -> [String: Any]? {
+        if let envelope = try? JSONDecoder().decode(LegacyStorageEnvelope.self, from: data),
+           envelope.version == 2 {
+            return envelope.entries.mapValues { $0.itemRawValue }
+        }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     private static func taskPrecedes(_ lhs: AgentTask, _ rhs: AgentTask) -> Bool {

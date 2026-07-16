@@ -242,6 +242,53 @@ struct WorkspaceCanvasItemPreferenceTests {
         #expect(!second.sourceFound)
     }
 
+    @Test("Legacy migration decodes the versioned envelope actually written by pre-V14 builds")
+    func legacyMigrationDecodesV2Envelope() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let taskA = AgentTask(title: "A", goal: "Remember Files")
+        let taskB = AgentTask(title: "B", goal: "Remember Browser")
+        for task in [taskA, taskB] {
+            context.insert(task)
+        }
+        try context.save()
+
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // Mirrors the {version, nextAccessOrdinal, entries} shape that
+        // pre-V14 `WorkspaceCanvasItemPreference` actually persisted to
+        // UserDefaults, not the flat [taskID: item] map used by the other
+        // migration tests above. Treating the envelope's top-level keys as
+        // task IDs would silently migrate nothing.
+        let envelope: [String: Any] = [
+            "version": 2,
+            "nextAccessOrdinal": 3,
+            "entries": [
+                taskA.id.uuidString: ["itemRawValue": WorkspaceCanvasItem.markdown.rawValue, "accessOrdinal": 1],
+                taskB.id.uuidString: ["itemRawValue": WorkspaceCanvasItem.browser.rawValue, "accessOrdinal": 2]
+            ]
+        ]
+        let source = String(
+            decoding: try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys]),
+            as: UTF8.self
+        )
+        defaults.set(source, forKey: LegacyWorkspaceCanvasItemPreferenceMigration.legacyDefaultsKey)
+
+        let result = LegacyWorkspaceCanvasItemPreferenceMigration.migrate(
+            defaults: defaults,
+            modelContext: context,
+            persist: { _, context in try context.save() }
+        )
+
+        #expect(result.migratedCount == 2)
+        #expect(result.malformedIDCount == 0)
+        #expect(result.unsupportedValueCount == 0)
+        #expect(result.sourceRemoved)
+        #expect(taskA.rememberedWorkspaceCanvasItemRawValue == WorkspaceCanvasItem.markdown.rawValue)
+        #expect(taskB.rememberedWorkspaceCanvasItemRawValue == WorkspaceCanvasItem.browser.rawValue)
+    }
+
     @Test("Legacy migration tolerates malformed siblings and deterministically handles duplicate IDs")
     func legacyMigrationHandlesDuplicateIDsAndMixedValueTypes() throws {
         let container = try makeContainer()
