@@ -150,12 +150,8 @@ struct UIStressLayoutAndSearchTests {
             detailAreaWidth: 1_400,
             minimumDetailWidth: 480
         )
-        withKnownIssue(
-            "clampedShelfWidth and inspectorResizableColumnWidth clamp via min/max, and Swift's min/max return NaN when the NaN is the first argument — a NaN drag candidate escapes the clamp fully formed"
-        ) {
-            #expect(clamped.isFinite, "clampedShelfWidth returned \(clamped)")
-            #expect(resizable.isFinite, "inspectorResizableColumnWidth returned \(resizable)")
-        }
+        #expect(clamped.isFinite, "clampedShelfWidth returned \(clamped)")
+        #expect(resizable.isFinite, "inspectorResizableColumnWidth returned \(resizable)")
     }
 
     @Test("infinite widths produce either safe fallbacks or clamped values")
@@ -174,11 +170,7 @@ struct UIStressLayoutAndSearchTests {
         #expect(!PanelLayoutGeometry.shouldDismissShelfResize(proposedWidth: .infinity, shelfMinWidth: 320))
 
         let preview = PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: .infinity)
-        withKnownIssue(
-            "filesShelfPreviewWidth subtracts fixed chrome from the shelf width with no finiteness guard, so an infinite reading propagates into the preview pane width"
-        ) {
-            #expect(preview.isFinite, "filesShelfPreviewWidth returned \(preview)")
-        }
+        #expect(preview.isFinite, "filesShelfPreviewWidth returned \(preview)")
     }
 
     // MARK: - Chat scroll metrics extremes
@@ -250,10 +242,8 @@ struct UIStressLayoutAndSearchTests {
 
     @Test("workspace search results should be bounded like task results")
     func workspaceSearchResultsShouldBeBounded() {
-        // filteredWorkspaces has no prefix() bound, unlike the task variants:
-        // a broad query currently returns every matching workspace row. The
-        // desired contract is a task-style cap; the probe flips to passing
-        // once one lands (then remove the withKnownIssue wrapper).
+        // Workspace rows share the task-result cap so broad queries cannot
+        // produce an unbounded SwiftUI overlay.
         let (tasks, workspaces) = Self.searchFixture()
         let matches = SearchPanelOverlayResults.filteredWorkspaces(
             searchText: "workspace-",
@@ -261,10 +251,8 @@ struct UIStressLayoutAndSearchTests {
             taskCount: tasks.count
         )
         #expect(!matches.isEmpty)
-        withKnownIssue("filteredWorkspaces has no result cap; a broad query returns every row") {
-            #expect(matches.count <= 12,
-                    "overlay rows should be bounded like filteredTasks' prefix(12), got \(matches.count)")
-        }
+        #expect(matches.count <= 12,
+                "overlay rows should be bounded like filteredTasks' prefix(12), got \(matches.count)")
     }
 
     @Test("empty and whitespace queries fall back to bounded recents")

@@ -123,12 +123,13 @@ enum PanelLayoutGeometry {
         detailAreaWidth: CGFloat,
         minimumDetailWidth: CGFloat
     ) -> CGFloat {
+        let finiteCandidate = candidate.isFinite ? candidate : inspectorMinColumnWidth
         guard detailAreaWidth > 0 else {
-            return min(max(candidate, inspectorMinColumnWidth), inspectorMaxColumnWidth)
+            return min(max(finiteCandidate, inspectorMinColumnWidth), inspectorMaxColumnWidth)
         }
         let maximumUsableWidth = max(inspectorMinColumnWidth, detailAreaWidth - minimumDetailWidth)
         let maximumWidth = min(inspectorMaxColumnWidth, maximumUsableWidth)
-        return min(max(candidate, inspectorMinColumnWidth), maximumWidth)
+        return min(max(finiteCandidate, inspectorMinColumnWidth), maximumWidth)
     }
 
     /// Narrow detail areas should keep the main content full-width and present
@@ -176,9 +177,10 @@ enum PanelLayoutGeometry {
         minimumDetailWidth: CGFloat,
         availableWidth: CGFloat
     ) -> CGFloat {
+        let finiteCandidate = candidate.isFinite ? candidate : shelfMinWidth
         let maximumUsableWidth = max(shelfMinWidth, availableWidth - minimumDetailWidth)
         let maximumWidth = min(shelfMaxWidth, maximumUsableWidth)
-        return min(max(candidate, shelfMinWidth), maximumWidth)
+        return min(max(finiteCandidate, shelfMinWidth), maximumWidth)
     }
 
     static func shouldDismissShelfResize(
@@ -193,7 +195,8 @@ enum PanelLayoutGeometry {
         shelfWidth: CGFloat,
         navigatorWidth: CGFloat = filesShelfNavigatorDefaultWidth
     ) -> CGFloat {
-        max(0, shelfWidth - navigatorWidth - filesShelfResizeHandleWidth)
+        guard shelfWidth.isFinite, navigatorWidth.isFinite else { return 0 }
+        return max(0, shelfWidth - navigatorWidth - filesShelfResizeHandleWidth)
     }
 
     /// Computes the detail area width left over after the shelf takes its clamped

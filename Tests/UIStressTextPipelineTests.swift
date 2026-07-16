@@ -167,14 +167,10 @@ struct UIStressTextPipelineTests {
             .components(separatedBy: "\n")
             .dropFirst()
             .dropLast()
-        withKnownIssue(
-            "repairBlockBoundaries toggles fence state on any ```/~~~ prefix, so a ``` line inside a ```` fence drops it out of code mode and table repair inserts blank lines into fenced content"
-        ) {
-            #expect(
-                !interior.contains(""),
-                "blank lines were injected inside a fenced block: \(prepared)"
-            )
-        }
+        #expect(
+            !interior.contains(""),
+            "blank lines were injected inside a fenced block: \(prepared)"
+        )
     }
 
     @Test("an unterminated fence followed by table chunks keeps streaming stable")
@@ -251,21 +247,16 @@ struct UIStressTextPipelineTests {
         #expect(elapsed < .seconds(2), "reflow took \(elapsed) for \(line.utf8.count) bytes")
     }
 
-    @Test("numbered-list recovery currently stops at the two-digit heuristic ceiling")
+    @Test("numbered-list recovery continues beyond two digits")
     func gluedListReflowStopsAtTwoDigits() {
-        // listRunSplit's `\d{1,2}` marker pattern stops following the
-        // sequence at item 99, so a glued 150-step provider answer renders
-        // its tail as one long paragraph. Two-digit recovery is the hard
-        // contract; full recovery is the desired behavior, recorded as a
-        // known issue so a three-digit fix flips it rather than failing here.
+        // Provider answers can contain long generated procedures; recovery
+        // follows the numeric sequence rather than imposing a digit ceiling.
         let line = Self.gluedMarkerLine(items: 150)
         let prepared = MarkdownRenderPreparation.prepareForDisplay(line)
         let lines = prepared.components(separatedBy: "\n")
         #expect(lines.count >= 99, "splitting through item 99 must keep working, got \(lines.count) lines")
-        withKnownIssue("items beyond 99 stay glued to item 99's line") {
-            #expect(lines.count >= 150,
-                    "a fully recovered 150-item run should split one line per item, got \(lines.count)")
-        }
+        #expect(lines.count >= 150,
+                "a fully recovered 150-item run should split one line per item, got \(lines.count)")
     }
 
     @Test("glued bullet-run reflow on a long single line stays bounded")
@@ -317,12 +308,8 @@ struct UIStressTextPipelineTests {
         ].joined(separator: "\n")
 
         let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: raw)
-        withKnownIssue(
-            "normalizedVisibleText applies the ([.!?])([A-Z`#]) sentence-spacing regex to the whole payload before fence-aware preparation, so code like Foo.Bar() gains an interior space"
-        ) {
-            #expect(presentation.answerText.contains("Foo.Bar()"), "fenced code was rewritten: \(presentation.answerText)")
-            #expect(presentation.answerText.contains("mode:.Fast"))
-        }
+        #expect(presentation.answerText.contains("Foo.Bar()"), "fenced code was rewritten: \(presentation.answerText)")
+        #expect(presentation.answerText.contains("mode:.Fast"))
         // The prose seam outside the fence SHOULD gain its space.
         #expect(presentation.answerText.contains("fix. The code follows"))
     }
@@ -345,11 +332,7 @@ struct UIStressTextPipelineTests {
         let closingBraceLines = presentation.answerText
             .components(separatedBy: "\n")
             .filter { $0.trimmingCharacters(in: .whitespaces) == "}" }
-        withKnownIssue(
-            "dedupeAdjacentSegments keys on whitespace-collapsed lines, so consecutive closing braces at different indentation collapse into one"
-        ) {
-            #expect(closingBraceLines.count == 2, "expected both closing braces, got: \(presentation.answerText)")
-        }
+        #expect(closingBraceLines.count == 2, "expected both closing braces, got: \(presentation.answerText)")
     }
 
     @Test("identical adjacent paragraphs inside one fence are preserved")
@@ -361,11 +344,7 @@ struct UIStressTextPipelineTests {
         let raw = "Config follows:\n\n```yaml\nregion: us-west\n\n\(stanza)\n\n\(stanza)\n\nreplicas: 2\n```"
         let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: raw)
         let occurrences = presentation.answerText.components(separatedBy: "retries: 3").count - 1
-        withKnownIssue(
-            "paragraph-tier dedupe treats blank-line-separated identical stanzas inside a fence as duplicate segments and drops the second"
-        ) {
-            #expect(occurrences == 2, "expected both YAML stanzas, got: \(presentation.answerText)")
-        }
+        #expect(occurrences == 2, "expected both YAML stanzas, got: \(presentation.answerText)")
     }
 
     // MARK: - Answer presentation: pathological input battery

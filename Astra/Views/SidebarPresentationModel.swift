@@ -217,13 +217,10 @@ final class SidebarPresentationModel: ObservableObject {
             try? await Task.sleep(nanoseconds: SidebarRevealSettlingPolicy.fallbackDelayNanoseconds)
             guard !Task.isCancelled else { return }
             guard let self else { return }
-            // The timeout is only a cleanup path for abandoned/non-docked reveals.
-            // A docked reveal stays protected until the AppKit split subview
-            // itself reports a readable width; otherwise a delayed compressed
-            // frame can collapse the sidebar immediately after the timeout.
-            if mode != .docked || !isSidebarShown {
-                isSettling = false
-            }
+            // The AppKit probe normally ends settling earlier. This watchdog is
+            // the owning fallback when that observation never arrives; keeping
+            // the guard armed forever suppresses all later collapse proposals.
+            isSettling = false
             settleTask = nil
         }
     }

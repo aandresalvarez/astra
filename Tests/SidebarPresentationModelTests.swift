@@ -18,6 +18,19 @@ struct SidebarPresentationModelTests {
         return SidebarPresentationModel(defaults: defaults)
     }
 
+    private func waitUntil(
+        timeout: Duration,
+        condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     // MARK: - Mode derivation
 
     @Test("Docks when shown and the window is wide enough for sidebar + rail + detail")
@@ -222,6 +235,44 @@ struct SidebarPresentationModelTests {
         model.noteReadableSplitSubviewWidth(SidebarColumnLayout.expandedMinimumWidth)
 
         #expect(model.isSettling == false)
+    }
+
+    @Test("Reveal settle watchdog recovers when the AppKit width probe is missed")
+    func revealSettleWatchdogRecoversWithoutProbe() async throws {
+        let model = makeModel(shown: false)
+        model.setHasRightSidePanel(false)
+        model.setResponsiveWidth(1_400)
+
+        model.toggle()
+        #expect(model.isSettling)
+
+        let recovered = await waitUntil(timeout: .seconds(2)) { !model.isSettling }
+        #expect(recovered)
+        model.proposeCompressedCollapse()
+        #expect(model.mode == .collapsed)
+    }
+
+    @Test("AppKit guard ignores delayed narrow reveal frames until readability is confirmed")
+    func appKitGuardWaitsForReadableRevealFrame() async {
+        var readableWidths: [CGFloat] = []
+        var collapseCount = 0
+        let coordinator = SidebarSplitViewGuard.Coordinator(
+            minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
+            isRevealInProgress: true,
+            onReadableWidth: { readableWidths.append($0) },
+            onCollapse: { collapseCount += 1 }
+        )
+
+        coordinator.isRevealInProgress = false
+        coordinator.handleObservedSidebarWidth(120)
+        await Task.yield()
+        #expect(collapseCount == 0)
+
+        coordinator.handleObservedSidebarWidth(SidebarColumnLayout.expandedMinimumWidth)
+        #expect(readableWidths == [SidebarColumnLayout.expandedMinimumWidth])
+        coordinator.handleObservedSidebarWidth(120)
+        let collapsed = await waitUntil(timeout: .seconds(1)) { collapseCount == 1 }
+        #expect(collapsed)
     }
 
     @Test("Column width syncs the shared sidebar width, clamped to the readable range")

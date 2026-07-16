@@ -50,6 +50,8 @@ enum SearchPanelOverlayResults {
                     $0.primaryPath.localizedCaseInsensitiveContains(query)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .prefix(12)
+            .map { $0 }
         }
     }
 
