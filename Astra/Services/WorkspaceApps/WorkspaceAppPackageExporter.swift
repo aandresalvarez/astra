@@ -40,22 +40,40 @@ struct WorkspaceAppPackageExporter {
         app: WorkspaceApp,
         workspace: Workspace,
         version: String = "1.0.0",
+        minimumASTRAVersion: String = "0.1.0",
         mode: WorkspaceAppPackageExportMode = .templateOnly,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        to explicitPackageURL: URL? = nil
     ) throws -> WorkspaceAppPackageExportResult {
         guard !workspace.primaryPath.isEmpty else {
             throw WorkspaceAppPackageExportError.missingWorkspacePath
         }
-        try validateExportRoot(workspacePath: workspace.primaryPath)
+        // An explicit destination (e.g. a caller staging a larger portable
+        // package elsewhere) bypasses the managed-export-root check and
+        // filename-collision search below — both exist only to keep this
+        // app's own `.astra/apps/exports/` folder safe and tidy, which
+        // doesn't apply once the caller owns and validates the destination.
+        // Must still run before loadManifest when it does apply: a symlinked
+        // export root has to fail with .unsafeExportPath, not a confusing
+        // .missingManifest from trying to load through it first.
+        if explicitPackageURL == nil {
+            try validateExportRoot(workspacePath: workspace.primaryPath)
+        }
 
         let loaded = try loadManifest(app: app, workspace: workspace)
         let databaseURL = try exportDatabaseURL(for: loaded.location, workspacePath: workspace.primaryPath, mode: mode)
-        let packageURL = try nextPackageURL(appID: app.logicalID, workspacePath: workspace.primaryPath)
+        let packageURL: URL
+        if let explicitPackageURL {
+            packageURL = explicitPackageURL
+        } else {
+            packageURL = try nextPackageURL(appID: app.logicalID, workspacePath: workspace.primaryPath)
+        }
         _ = try packageService.exportPackage(
             manifest: loaded.manifest,
             to: packageURL,
             packageID: "\(Self.packageDirectoryStem(for: app.logicalID)).astra-app",
             version: version,
+            minimumASTRAVersion: minimumASTRAVersion,
             mode: mode,
             appStorageDatabaseURL: databaseURL,
             createdAt: createdAt

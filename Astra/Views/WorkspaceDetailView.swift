@@ -35,6 +35,7 @@ struct WorkspaceDetailView: View {
                 Menu {
                     Button("Export Config...") { exportConfig() }
                     Button("Export to Workspace Folder") { autoExportConfig() }
+                    Button("Export Portable Package...") { exportPortablePackage() }
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
@@ -471,6 +472,35 @@ struct WorkspaceDetailView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { exportMessage = "" }
+        }
+    }
+
+    // Unlike Export Config's NSSavePanel (which picks an existing file type,
+    // .json), this package is a directory bundle the exporter creates fresh —
+    // no allowedContentTypes restriction, the panel just needs a destination
+    // path that doesn't exist yet.
+    private func exportPortablePackage() {
+        let panel = NSSavePanel()
+        let slug = workspace.name.replacingOccurrences(of: " ", with: "-").lowercased()
+        panel.nameFieldStringValue = "\(slug).astra-share"
+        panel.message = "Export a portable workspace package"
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let result = try WorkspacePackageExporter().exportConfigurationPackage(
+                workspace: workspace,
+                modelContext: modelContext,
+                to: url
+            )
+            withAnimation {
+                exportMessage = "Exported \(result.manifest.appEntries.count) app(s), " +
+                    "\(result.manifest.capabilityEntries.count) capability(ies) to \(url.lastPathComponent)"
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                withAnimation { exportMessage = "" }
+            }
+        } catch {
+            exportMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 }

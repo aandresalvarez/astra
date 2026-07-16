@@ -38,7 +38,8 @@ struct ArchitectureFitnessTests {
             "Startup",
             "Tasks",
             "Validation",
-            "WorkspaceApps"
+            "WorkspaceApps",
+            "WorkspacePackage"
         ])
     }
 
@@ -973,6 +974,57 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Workspace import discovery scans should use HostFileAccessBroker: \(matches)")
     }
 
+    @Test("Workspace package exporter goes through the file access broker")
+    func workspacePackageExporterGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        // Raw FileManager-prefixed reads are forbidden; `broker.enumerator(`
+        // (routed through HostFileAccessBroker) is the sanctioned path and
+        // deliberately not in this list.
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator(",
+            "FileManager.default.contentsOfDirectory(",
+            "fileManager.contentsOfDirectory("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Workspace package export reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Workspace package service goes through the file access broker")
+    func workspacePackageServiceGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/WorkspacePackage/WorkspacePackageService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator(",
+            "FileManager.default.contentsOfDirectory(",
+            "fileManager.contentsOfDirectory("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Workspace package validation reads should use HostFileAccessBroker: \(matches)")
+    }
+
     @Test("Workspace recovery config loads keep implicit scan intent")
     func workspaceRecoveryConfigLoadsKeepImplicitScanIntent() throws {
         let root = try repositoryRoot()
@@ -1830,6 +1882,11 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
+            // Self-referential: this file crossed its own 2,000-line
+            // threshold from the file-access-broker tests added for issue
+            // #323's WorkspacePackage subsystem. It's a flat suite, not a
+            // companion of one production file, so it owns itself here.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_150, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
