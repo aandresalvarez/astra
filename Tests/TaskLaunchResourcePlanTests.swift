@@ -27,6 +27,40 @@ private final class SandboxApprovalFileManager: FileManager {
 
 @MainActor
 struct TaskLaunchResourcePlanTests {
+    @Test("Missing task inputs are launch-blocking read-only contract errors")
+    func missingTaskInputIsLaunchBlocking() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-missing-input")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
+
+        let missingInput = workspaceRoot.appendingPathComponent("removed-attachment.pdf")
+        let workspace = Workspace(name: "Resources", primaryPath: workspaceRoot.path)
+        let task = AgentTask(title: "Review attachment", goal: "Read the attachment", workspace: workspace)
+        task.inputs = [missingInput.path]
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: "Review the attachment",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        let diagnostic = try #require(plan.diagnostics.first { $0.code == "input_path_missing" })
+        #expect(diagnostic.severity == .error)
+        #expect(diagnostic.message.contains("required read-only boundary"))
+        #expect(plan.hostPathGrants.contains {
+            $0.path == missingInput.path
+                && $0.access == .read
+                && $0.source == .taskInput
+                && !$0.exists
+        })
+        #expect(plan.readOnlyResourceContract.isRequired)
+        #expect(!plan.readOnlyResourceContract.isValid)
+    }
+
     @Test("Resource resolver records user attachments and Git credential grants")
     func resolverRecordsAttachmentAndGitResources() throws {
         let fm = FileManager.default

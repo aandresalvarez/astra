@@ -229,13 +229,12 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var hostProtectedWriteDenyPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            guard grant.source == .remoteWorkspace,
-                  grant.access == .read,
-                  grant.path.contains("/.ssh/") else {
-                return nil
-            }
-            return grant.path
+            grant.access == .read ? grant.path : nil
         })
+    }
+
+    var readOnlyResourceContract: ReadOnlyResourceContract {
+        ReadOnlyResourceContract(grants: hostPathGrants)
     }
 
     var providerNativeCredentialReadablePaths: [String] {
@@ -249,12 +248,27 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         !providerNativeCredentialReadablePaths.isEmpty
     }
 
+    /// Directories forwarded to a provider's own `--add-dir`-style native
+    /// reachability grant (currently Codex only). This is intentionally
+    /// scoped to `ReadOnlyResourceContract`'s read-only *input* sources, not
+    /// every `.read` grant: Codex reads the filesystem ambiently regardless of
+    /// `--add-dir` (read access cannot be restricted in its sandbox), but
+    /// `--add-dir` grants that directory WRITE access. Forwarding a
+    /// non-input read grant (e.g. a `.connector` support directory) here
+    /// would make it Codex-writable without the read-only input boundary's
+    /// forced Seatbelt wrap to deny that write back out.
+    var providerNativeReadOnlyResourcePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            ReadOnlyResourceContract.isReadOnlyInputGrant(grant) ? grant.path : nil
+        })
+    }
+
+    /// User-selected inputs remain a useful presentation subset, but execution
+    /// enforcement is driven by `readOnlyResourceContract` above.
     var providerNativeReadOnlyInputPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
             guard grant.access == .read,
-                  grant.source == .taskInput || grant.source == .userAttachment else {
-                return nil
-            }
+                  grant.source == .taskInput || grant.source == .userAttachment else { return nil }
             return grant.path
         })
     }

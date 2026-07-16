@@ -282,6 +282,7 @@ enum DockerExecutionPlanner {
         environment: WorkspaceExecutionEnvironment,
         task: AgentTask,
         runID: UUID?,
+        additionalReadOnlyInputPaths: [String] = [],
         dockerExecutablePath: String = defaultDockerExecutable
     ) -> Result<AgentRuntimeProcessLaunchPlan, DockerExecutionPlanningError> {
         guard environment.isContainerized else { return .success(base) }
@@ -296,7 +297,12 @@ enum DockerExecutionPlanner {
         guard isSafeDockerImageReference(image) else {
             return .failure(.invalidImageReference(image))
         }
-        let mounts = mountPlan(base: base, environment: environment, task: task)
+        let mounts = mountPlan(
+            base: base,
+            environment: environment,
+            task: task,
+            additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
+        )
         for mount in mounts {
             let canonical = ExecutionSandbox.canonicalize(mount.hostPath) ?? mount.hostPath
             if isDockerSocketMount(rawPath: mount.hostPath, canonicalPath: canonical) {
@@ -418,6 +424,10 @@ enum DockerExecutionPlanner {
         mapper: ExecutionEnvironmentPathMapper
     ) -> AgentRuntimeProcessLaunchPlan {
         let containerEnv = credentialProjectionEnvironment(environment: environment)
+        var processEnvironment = base.environment
+        if processEnvironment["ASTRA_WORKSPACE_DOCKER_MOUNTS"] != nil {
+            processEnvironment["ASTRA_WORKSPACE_DOCKER_MOUNTS"] = DockerWorkspaceMCPProjection.mountsJSON(mounts)
+        }
         var commandFields = base.commandPlannedFields
         commandFields["execution_environment_kind"] = environment.kind.rawValue
         commandFields["execution_environment_id"] = environment.id
@@ -446,7 +456,7 @@ enum DockerExecutionPlanner {
             executablePath: base.executablePath,
             arguments: base.arguments,
             currentDirectory: base.currentDirectory,
-            environment: base.environment,
+            environment: processEnvironment,
             browserShimDirectory: base.browserShimDirectory,
             providerVersion: base.providerVersion,
             parsesJSONLines: base.parsesJSONLines,
@@ -496,15 +506,22 @@ enum DockerExecutionPlanner {
     static func mountPlan(
         base: AgentRuntimeProcessLaunchPlan,
         environment: WorkspaceExecutionEnvironment,
-        task: AgentTask
+        task: AgentTask,
+        additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
-        mountPlan(currentDirectory: base.currentDirectory, environment: environment, task: task)
+        mountPlan(
+            currentDirectory: base.currentDirectory,
+            environment: environment,
+            task: task,
+            additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
+        )
     }
 
     static func mountPlan(
         currentDirectory: String,
         environment: WorkspaceExecutionEnvironment,
-        task: AgentTask
+        task: AgentTask,
+        additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
         func appendMount(_ mount: ExecutionEnvironmentMount, avoidContainerCollision: Bool = false) {
@@ -532,6 +549,58 @@ enum DockerExecutionPlanner {
                 role: role
             ))
         }
+        func appendReadOnlyInput(_ rawHostPath: String, fallbackContainerPath: String) {
+            let hostPath = WorkspacePathPresentation.standardizedPath(rawHostPath)
+            guard !hostPath.isEmpty else { return }
+            let canonicalHostPath = ExecutionSandbox.canonicalize(hostPath) ?? hostPath
+
+            if let exactIndex = mounts.firstIndex(where: {
+                let existingPath = WorkspacePathPresentation.standardizedPath($0.hostPath)
+                let existingIdentity = ExecutionSandbox.canonicalize(existingPath) ?? existingPath
+                return existingIdentity == canonicalHostPath
+            }) {
+                let existing = mounts[exactIndex]
+                mounts[exactIndex] = ExecutionEnvironmentMount(
+                    hostPath: hostPath,
+                    containerPath: existing.containerPath,
+                    access: .readOnly,
+                    role: .additionalPath
+                )
+                return
+            }
+
+            // If the input lives under a writable mount, overlay it read-only at
+            // the same container path. Mounting it only at /mnt/astra/input-N
+            // would leave the writable parent spelling as a bypass.
+            let parentMount = mounts
+                .filter { mount in
+                    let visibleRoot = WorkspacePathPresentation.standardizedPath(mount.hostPath)
+                    let root = ExecutionSandbox.canonicalize(visibleRoot) ?? visibleRoot
+                    return mount.access == .readWrite
+                        && !root.isEmpty
+                        && canonicalHostPath.hasPrefix(root + "/")
+                }
+                .max { lhs, rhs in
+                    let lhsRoot = ExecutionSandbox.canonicalize(lhs.hostPath) ?? lhs.hostPath
+                    let rhsRoot = ExecutionSandbox.canonicalize(rhs.hostPath) ?? rhs.hostPath
+                    return lhsRoot.count < rhsRoot.count
+                }
+            let containerPath: String
+            if let parentMount {
+                let visibleRoot = WorkspacePathPresentation.standardizedPath(parentMount.hostPath)
+                let root = ExecutionSandbox.canonicalize(visibleRoot) ?? visibleRoot
+                let suffix = String(canonicalHostPath.dropFirst(root.count + 1))
+                containerPath = (parentMount.containerPath as NSString).appendingPathComponent(suffix)
+            } else {
+                containerPath = fallbackContainerPath
+            }
+            appendMount(ExecutionEnvironmentMount(
+                hostPath: hostPath,
+                containerPath: containerPath,
+                access: .readOnly,
+                role: .additionalPath
+            ))
+        }
 
         append(currentDirectory, environment.containerWorkingDirectory, .workspace)
         let taskAccess = TaskWorkspaceAccess(task: task)
@@ -547,8 +616,13 @@ enum DockerExecutionPlanner {
             index += 1
         }
         var inputIndex = 1
-        for path in taskAccess.runtimeReadOnlyInputPaths {
-            append(path, "/mnt/astra/input-\(inputIndex)", .additionalPath, access: .readOnly)
+        var seenInputs: Set<String> = []
+        for path in taskAccess.runtimeReadOnlyInputPaths + additionalReadOnlyInputPaths {
+            let standardized = WorkspacePathPresentation.standardizedPath(path)
+            guard !standardized.isEmpty else { continue }
+            let identity = ExecutionSandbox.canonicalize(standardized) ?? standardized
+            guard seenInputs.insert(identity).inserted else { continue }
+            appendReadOnlyInput(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
             inputIndex += 1
         }
         for projection in environment.effectiveCredentialProjections {
@@ -559,14 +633,16 @@ enum DockerExecutionPlanner {
 
     static func snapshotForRun(
         task: AgentTask,
-        currentDirectory: String
+        currentDirectory: String,
+        additionalReadOnlyInputPaths: [String] = []
     ) -> WorkspaceExecutionEnvironment {
         var environment = resolveEnvironment(for: task)
         guard environment.isContainerized else { return environment }
         environment.mounts = mountPlan(
             currentDirectory: currentDirectory,
             environment: environment,
-            task: task
+            task: task,
+            additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         return environment
     }
@@ -1037,7 +1113,7 @@ enum DockerWorkspaceMCPProjection {
         (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace")
     }
 
-    private static func mountsJSON(_ mounts: [ExecutionEnvironmentMount]) -> String {
+    static func mountsJSON(_ mounts: [ExecutionEnvironmentMount]) -> String {
         let payload = mounts.map {
             MountPayload(
                 hostPath: $0.hostPath,

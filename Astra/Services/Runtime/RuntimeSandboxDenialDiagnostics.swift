@@ -32,19 +32,24 @@ enum RuntimeSandboxDenialDiagnostics {
     static func fileDenial(in text: String) -> RuntimeSandboxFileDenial? {
         for line in denialCandidateLines(in: text) {
             let lower = line.lowercased()
-            guard lower.contains("operation not permitted") else { continue }
+            let failureMarker = lower.contains("read-only file system")
+                ? "read-only file system"
+                : "operation not permitted"
+            guard lower.contains(failureMarker) else { continue }
             guard isFatalDenialLine(lower) else { continue }
             // Shell-prefixed errors can contain both the shell and the actual
             // denied executable, e.g. `/bin/sh: /path/to/gcloud: Operation not
             // permitted`. The path nearest the failure text is the actionable
             // path ASTRA should project.
             let failurePrefix = line.range(
-                of: "operation not permitted",
+                of: failureMarker,
                 options: [.caseInsensitive]
             ).map { String(line[..<$0.lowerBound]) } ?? line
             guard let path = filesystemPaths(in: failurePrefix).last else { continue }
 
-            let operation = operationKind(text: lower, path: path)
+            let operation: RuntimeSandboxFileDenial.Operation = lower.contains("read-only file system")
+                ? .write
+                : operationKind(text: lower, path: path)
             return RuntimeSandboxFileDenial(
                 operation: operation,
                 path: path,

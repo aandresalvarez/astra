@@ -61,8 +61,19 @@ public enum WorkspaceRecoveryService {
     }
 
     public static var applicationSupportDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
+        resolvedApplicationSupportDirectory()
+    }
+
+    public static func resolvedApplicationSupportDirectory(
+        channel: AppChannel = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> URL {
+        AppChannelStoragePaths.applicationSupportDirectory(
+            for: channel,
+            environment: environment,
+            fileManager: fileManager
+        )
     }
 
     public static var storeGenerationDirectory: URL {
@@ -102,7 +113,7 @@ public enum WorkspaceRecoveryService {
 
     /// The original production-only, pre-channel store location.
     public static var legacyStoreURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        AppChannelStoragePaths.applicationSupportBaseDirectory(for: .current)
             .appendingPathComponent("default.store")
     }
 

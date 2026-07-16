@@ -131,7 +131,6 @@ final class AgentRuntimeProcessRunner {
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
-        var plan = adapter.makeProcessLaunchPlan(context: context)
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
@@ -146,7 +145,7 @@ final class AgentRuntimeProcessRunner {
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
-            runtime: plan.runtime,
+            runtime: adapter.id,
             phase: context.phase,
             prompt: context.prompt,
             contextText: context.contextText,
@@ -159,10 +158,35 @@ final class AgentRuntimeProcessRunner {
             },
             precomputedRuntimeRequirements: context.runtimeRequirements
         )
+        let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
+        var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
+            contract: launchResourcePlan.readOnlyResourceContract,
+            executionEnvironment: environment
+        )
+        if readOnlyInputBoundary.isRequired, !readOnlyInputBoundary.contract.isValid {
+            let reason = readOnlyInputBoundary.contract.failures
+                .map(\.description)
+                .joined(separator: ",")
+            let result = readOnlyInputBoundary.unavailableResult(
+                reason: reason.isEmpty ? "read_only_resource_contract_invalid" : reason
+            )
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": result.runtimeStopReason ?? "read_only_input_boundary_unavailable",
+                "contract_failure_count": String(readOnlyInputBoundary.contract.failures.count)
+            ], level: .error)
+            return .blocked(result)
+        }
         let gitCredentialContext = launchResourcePlan.gitCredentialSandboxContext
         plan = plan.addingSandboxReadablePaths(
             launchResourcePlan.hostReadablePaths,
-            plannedFields: launchResourcePlan.commandPlannedFields
+            plannedFields: launchResourcePlan.commandPlannedFields.merging([
+                "read_only_input_boundary_required": String(readOnlyInputBoundary.isRequired),
+                "read_only_input_boundary_mode": readOnlyInputBoundary.mode.rawValue,
+                "read_only_input_boundary_path_count": String(readOnlyInputBoundary.paths.count)
+            ]) { current, _ in current }
         )
         plan = plan.addingSandboxProtectedWriteDenyPaths(launchResourcePlan.hostProtectedWriteDenyPaths)
         if !gitCredentialContext.isEmpty {
@@ -182,7 +206,6 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             ))
         }
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         if let block = plan.unsupportedProviderNativeCredentialReadBlock(
             for: launchResourcePlan,
             permissionPolicy: effectivePermissionPolicy,
@@ -198,16 +221,14 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
             return .blocked(block)
         }
-        if let block = plan.unsupportedProviderNativeReadOnlyInputBlock(
-            for: launchResourcePlan,
+        if let block = plan.unsupportedProviderNativeReadOnlyFileBlock(
+            permissionPolicy: effectivePermissionPolicy,
             workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
         ) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
-                "reason": block.runtimeStopReason ?? "read_only_input_native_access_unavailable",
-                "provider_native_read_only_input_path_count": String(
-                    launchResourcePlan.providerNativeReadOnlyInputPaths.count
-                )
+                "reason": block.runtimeStopReason ?? "provider_native_file_read_unavailable",
+                "unreachable_file_count": plan.commandPlannedFields["provider_native_unreachable_read_only_file_count"] ?? "0"
             ], level: .error)
             return .blocked(block)
         }
@@ -240,7 +261,8 @@ final class AgentRuntimeProcessRunner {
             base: plan,
             environment: environment,
             task: context.task,
-            runID: context.runID
+            runID: context.runID,
+            additionalReadOnlyInputPaths: readOnlyInputBoundary.paths
         ) {
         case .success(let resolvedPlan):
             plan = resolvedPlan
@@ -258,6 +280,30 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopReason: "execution_environment_unavailable",
                 runtimeStopMessage: message
             ))
+        }
+        var appliedBoundarySurfaces: Set<ReadOnlyBoundarySurface> = []
+        if readOnlyInputBoundary.requiresContainerReadOnlyMounts {
+            let unprotectedPaths = readOnlyInputBoundary.unprotectedContainerPaths(
+                in: plan.executionEnvironment.mounts
+            )
+            guard unprotectedPaths.isEmpty else {
+                let result = readOnlyInputBoundary.unavailableResult(
+                    reason: "container_read_only_mount_missing"
+                )
+                AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                    "runtime": plan.runtime.rawValue,
+                    "reason": result.runtimeStopReason ?? "read_only_input_boundary_unavailable",
+                    "execution_environment": plan.executionEnvironment.kind.rawValue,
+                    "unprotected_path_count": String(unprotectedPaths.count)
+                ], level: .error)
+                return .blocked(result)
+            }
+            if readOnlyInputBoundary.requiredSurfaces.contains(.providerContainer) {
+                appliedBoundarySurfaces.insert(.providerContainer)
+            }
+            if readOnlyInputBoundary.requiredSurfaces.contains(.workspaceContainer) {
+                appliedBoundarySurfaces.insert(.workspaceContainer)
+            }
         }
         if let block = HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
@@ -280,19 +326,34 @@ final class AgentRuntimeProcessRunner {
         // wins over the base policy) so best-effort correctly escalates to strict
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
-        let settings = sandboxSettingsProvider(effectivePermissionPolicy)
+        let baseSettings = sandboxSettingsProvider(effectivePermissionPolicy)
+        let settings = readOnlyInputBoundary.enforcingHostBoundary(
+            in: baseSettings,
+            runtime: plan.runtime
+        )
         if plan.executionEnvironment.providerRunsInsideContainer {
             AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "container_environment_uses_docker_policy",
                 "execution_environment": plan.executionEnvironment.kind.rawValue,
-                "provider_placement": plan.executionEnvironment.effectiveProviderPlacement.rawValue
+                "provider_placement": plan.executionEnvironment.effectiveProviderPlacement.rawValue,
+                "read_only_input_boundary_mode": readOnlyInputBoundary.mode.rawValue,
+                "read_only_input_boundary_path_count": String(readOnlyInputBoundary.paths.count)
             ], level: .debug)
+            if readOnlyInputBoundary.isRequired {
+                guard let receipt = readOnlyInputBoundary.receipt(
+                    appliedSurfaces: appliedBoundarySurfaces,
+                    mounts: plan.executionEnvironment.mounts
+                ) else {
+                    return .blocked(readOnlyInputBoundary.unavailableResult(reason: "boundary_receipt_incomplete"))
+                }
+                plan.readOnlyBoundaryReceipt = receipt
+            }
             return .plan(plan)
         }
-        // Workspace roots are writable. Task inputs and message attachments come
-        // from the launch resource plan and remain read-only unless the user also
-        // configured the same directory as an additional workspace path.
+        // Workspace roots are writable. Exact task-input and message-attachment
+        // roots are carved back out below, so the read-only contract still wins
+        // when an attached file happens to live inside the workspace.
         let runtimeWritablePaths = Self.runtimeWritablePaths(for: context.task)
         let decision = ExecutionSandbox.decide(
             plan: plan,
@@ -337,11 +398,41 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
         }
 
+        if readOnlyInputBoundary.requiresHostSeatbelt {
+            let unavailableReason: String? = switch decision {
+            case .applied:
+                nil
+            case .skipped(let reason), .fallback(let reason), .failClosed(let reason):
+                reason
+            }
+            if let unavailableReason {
+                let result = readOnlyInputBoundary.unavailableResult(reason: unavailableReason)
+                AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                    "runtime": plan.runtime.rawValue,
+                    "reason": result.runtimeStopReason ?? "read_only_input_boundary_unavailable",
+                    "boundary_failure": unavailableReason,
+                    "read_only_input_boundary_path_count": String(readOnlyInputBoundary.paths.count)
+                ], level: .error)
+                return .blocked(result)
+            }
+            appliedBoundarySurfaces.insert(.hostSeatbelt)
+        }
+
         if case .applied(let wrappedPlan, _) = decision {
-            return .plan(wrappedPlan.addingSandboxReadablePaths(
+            var finalPlan = wrappedPlan.addingSandboxReadablePaths(
                 [],
                 plannedFields: ["astra_sandbox_applied": "true"]
-            ))
+            )
+            if readOnlyInputBoundary.isRequired {
+                guard let receipt = readOnlyInputBoundary.receipt(
+                    appliedSurfaces: appliedBoundarySurfaces,
+                    mounts: finalPlan.executionEnvironment.mounts
+                ) else {
+                    return .blocked(readOnlyInputBoundary.unavailableResult(reason: "boundary_receipt_incomplete"))
+                }
+                finalPlan.readOnlyBoundaryReceipt = receipt
+            }
+            return .plan(finalPlan)
         }
         return Self.sandboxOutcome(for: decision, originalPlan: plan)
     }
@@ -637,7 +728,8 @@ final class AgentRuntimeProcessRunner {
                     AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
                 },
                 liveApprovalsActive: plan.interactiveAsk != nil,
-                astraSandboxApplied: plan.commandPlannedFields["astra_sandbox_applied"] == "true"
+                astraSandboxApplied: plan.commandPlannedFields["astra_sandbox_applied"] == "true",
+                readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt
             )
 
             let handleLine: (String) -> Void = { line in
@@ -789,7 +881,8 @@ final class AgentRuntimeProcessRunner {
                     terminatedAfterTerminalProgress: monitor.terminatedAfterTerminalProgress,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
-                    maxTurnsExceeded: monitor.maxTurnsExceeded
+                    maxTurnsExceeded: monitor.maxTurnsExceeded,
+                    readOnlyBoundaryEvidence: plan.readOnlyBoundaryReceipt?.evidence
                 ))
             }
 
@@ -800,7 +893,8 @@ final class AgentRuntimeProcessRunner {
                 resumeOnce(AgentProcessResult(
                     exitCode: -1,
                     error: error.localizedDescription,
-                    providerVersion: plan.providerVersion
+                    providerVersion: plan.providerVersion,
+                    readOnlyBoundaryEvidence: plan.readOnlyBoundaryReceipt?.evidence
                 ))
                 return
             }

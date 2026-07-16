@@ -174,13 +174,18 @@ enum CopilotCLIRuntime {
         return nil
     }
 
-    static func channelHome() -> String {
-        let appSupport = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
-            .appendingPathComponent("Copilot", isDirectory: true)
-        return appSupport.path
+    static func channelHome(
+        channel: AppChannel = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> String {
+        AppChannelStoragePaths.applicationSupportDirectory(
+            for: channel,
+            environment: environment,
+            fileManager: fileManager
+        )
+        .appendingPathComponent("Copilot", isDirectory: true)
+        .path
     }
 
     static func buildCommand(

@@ -726,25 +726,25 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
-        let executionEnvironment = DockerExecutionPlanner.snapshotForRun(
-            task: task,
-            currentDirectory: executionPath
-        )
-        let executionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(executionEnvironment)
-        task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
-        run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
-
+        let approvedSandboxPaths = TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+            from: executionPolicy.permissionGrantsOverride ?? [],
+            homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
+        let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
+            task: task, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
+            approvedSandboxReadablePaths: approvedSandboxPaths)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.taskSnapshot)
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
         let basePrompt = promptOverride ?? buildPrompt(
             for: task,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
-        let prompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+        let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
             to: basePrompt,
             task: task,
             permissionPolicy: launchPermissionPolicy,
             contextText: providerLaunchContextText
-        )
+        ))
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -753,7 +753,7 @@ final class AgentRuntimeWorker {
             prompt: prompt,
             contextText: providerLaunchContextText,
             workspacePath: executionPath,
-            executionEnvironment: executionEnvironment,
+            executionEnvironment: runEnvironment.runSnapshot,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
@@ -824,7 +824,7 @@ final class AgentRuntimeWorker {
             for: task,
             manifest: manifest,
             contextText: providerLaunchContextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
@@ -1008,10 +1008,10 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
-
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
+        ReadOnlyBoundaryEvidenceRecorder.record(result.readOnlyBoundaryEvidence, task: task, run: run, in: modelContext)
         streamDebugCapture?.recordStderr(result.error)
         if let streamSnapshot {
             runtimeAdapter.logStreamTelemetry(
