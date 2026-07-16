@@ -517,7 +517,7 @@ struct TaskSidebarView: View {
                         pinnedSection(using: taskIndex)
                         unreadSection(using: taskIndex)
                         workspaceSection(using: taskIndex)
-                        schedulesSection
+                        if workspaceAvailability.showsRoutinesSection { schedulesSection }
                     }
                     .padding(.bottom, 12)
                 }
@@ -1150,9 +1150,11 @@ struct TaskSidebarView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(workspaceEmptyTitle)
                         .font(Stanford.body(14))
-                    Text(workspaceEmptySubtitle)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
+                    if let workspaceEmptySubtitle {
+                        Text(workspaceEmptySubtitle)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(Stanford.textSecondary)
+                    }
                 }
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
@@ -1205,44 +1207,45 @@ struct TaskSidebarView: View {
 
                 Spacer()
 
-                Menu {
-                    Picker("Sort workspaces", selection: workspaceSortModeBinding) {
-                        ForEach(WorkspaceSidebarSortMode.allCases) { mode in
-                            Label(mode.title, systemImage: mode.systemImage)
-                                .tag(mode)
+                if workspaceAvailability.showsListControls {
+                    Menu {
+                        Picker("Sort workspaces", selection: workspaceSortModeBinding) {
+                            ForEach(WorkspaceSidebarSortMode.allCases) { mode in
+                                Label(mode.title, systemImage: mode.systemImage)
+                                    .tag(mode)
+                            }
                         }
+                    } label: {
+                        SidebarWorkspaceSortIcon(
+                            mode: workspaceSortMode,
+                            isHovered: isWorkspacesSortHovered
+                        )
                     }
-                } label: {
-                    SidebarWorkspaceSortIcon(
-                        mode: workspaceSortMode,
-                        isHovered: isWorkspacesSortHovered
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .onHover { isWorkspacesSortHovered = $0 }
-                .help("Sort workspaces: \(workspaceSortMode.title)")
-                .accessibilityLabel("Sort workspaces, current: \(workspaceSortMode.title)")
-                .accessibilityHint("Choose name, recently used, or manual order.")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .onHover { isWorkspacesSortHovered = $0 }
+                    .help("Sort workspaces: \(workspaceSortMode.title)")
+                    .accessibilityLabel("Sort workspaces, current: \(workspaceSortMode.title)")
+                    .accessibilityHint("Choose name, recently used, or manual order.")
 
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        showStarredWorkspacesOnly.toggle()
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            showStarredWorkspacesOnly.toggle()
+                        }
+                    } label: {
+                        SidebarWorkspaceStarIcon(
+                            role: .filter(isEnabled: showStarredWorkspacesOnly),
+                            isHovered: isWorkspacesFilterHovered
+                        )
                     }
-                } label: {
-                    SidebarWorkspaceStarIcon(
-                        role: .filter(isEnabled: showStarredWorkspacesOnly),
-                        isHovered: isWorkspacesFilterHovered
-                    )
+                    .buttonStyle(.plain)
+                    .onHover { isWorkspacesFilterHovered = $0 }
+                    .help(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
+                    .accessibilityLabel(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
+                    .accessibilityHint(WorkspaceSidebarFilterPresentation.accessibilityHint)
+                    .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
                 }
-                .buttonStyle(.plain)
-                .onHover { isWorkspacesFilterHovered = $0 }
-                .help(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
-                .accessibilityLabel(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
-                .accessibilityHint(WorkspaceSidebarFilterPresentation.accessibilityHint)
-                .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
-
             }
             .padding(.horizontal, 10)
             // See Routines section — 20pt top creates visual rhythm
@@ -1481,14 +1484,18 @@ struct TaskSidebarView: View {
         WorkspaceSidebarOrderingStore.save(state)
     }
 
+    private var workspaceAvailability: WorkspaceAvailabilityPresentation { WorkspaceAvailabilityPresentation(workspaceCount: workspaces.count) }
+
     private var workspaceEmptyTitle: String {
+        if workspaces.isEmpty { return WorkspaceAvailabilityPresentation.sidebarEmptyPlaceholder }
         if showStarredWorkspacesOnly {
             return searchText.isEmpty ? "No starred workspaces" : "No starred matches"
         }
         return searchText.isEmpty ? "No workspaces yet" : "No workspace matches"
     }
 
-    private var workspaceEmptySubtitle: String {
+    private var workspaceEmptySubtitle: String? {
+        if workspaces.isEmpty { return nil }
         if showStarredWorkspacesOnly {
             return "Star a workspace or turn off the filter."
         }

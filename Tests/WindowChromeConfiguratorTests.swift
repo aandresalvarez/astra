@@ -12,13 +12,15 @@ struct WindowChromeConfiguratorTests {
             isSearchActive: false,
             isSidebarHidden: true,
             sidebarWidth: 320,
-            titleBarHeight: 36
+            titleBarHeight: 36,
+            showsNewWorkspaceCommand: true
         )
         let hoverOnlyUpdate = WindowChromeCommandBarState(
             isSearchActive: false,
             isSidebarHidden: true,
             sidebarWidth: 320,
-            titleBarHeight: 36
+            titleBarHeight: 36,
+            showsNewWorkspaceCommand: true
         )
 
         #expect(!WindowChromeCommandBarRefreshPolicy.shouldRefresh(
@@ -33,7 +35,8 @@ struct WindowChromeConfiguratorTests {
             isSearchActive: false,
             isSidebarHidden: true,
             sidebarWidth: 320,
-            titleBarHeight: 36
+            titleBarHeight: 36,
+            showsNewWorkspaceCommand: true
         )
 
         #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(
@@ -42,7 +45,8 @@ struct WindowChromeConfiguratorTests {
                 isSearchActive: true,
                 isSidebarHidden: true,
                 sidebarWidth: 320,
-                titleBarHeight: 36
+                titleBarHeight: 36,
+                showsNewWorkspaceCommand: true
             )
         ))
         #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(
@@ -51,7 +55,8 @@ struct WindowChromeConfiguratorTests {
                 isSearchActive: false,
                 isSidebarHidden: false,
                 sidebarWidth: 320,
-                titleBarHeight: 36
+                titleBarHeight: 36,
+                showsNewWorkspaceCommand: true
             )
         ))
         #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(
@@ -60,7 +65,18 @@ struct WindowChromeConfiguratorTests {
                 isSearchActive: false,
                 isSidebarHidden: true,
                 sidebarWidth: 320,
-                titleBarHeight: 42
+                titleBarHeight: 42,
+                showsNewWorkspaceCommand: true
+            )
+        ))
+        #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(
+            previous: current,
+            next: WindowChromeCommandBarState(
+                isSearchActive: false,
+                isSidebarHidden: true,
+                sidebarWidth: 320,
+                titleBarHeight: 36,
+                showsNewWorkspaceCommand: false
             )
         ))
     }
@@ -71,7 +87,8 @@ struct WindowChromeConfiguratorTests {
             isSearchActive: false,
             isSidebarHidden: false,
             sidebarWidth: 320,
-            titleBarHeight: 36
+            titleBarHeight: 36,
+            showsNewWorkspaceCommand: true
         )
 
         #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(

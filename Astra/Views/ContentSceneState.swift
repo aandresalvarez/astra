@@ -88,6 +88,12 @@ enum ContentDetailPresentation: Equatable {
     }
 }
 
+enum ScheduleCreationGate {
+    static func canPresent(effectiveWorkspace: Workspace?) -> Bool {
+        effectiveWorkspace != nil
+    }
+}
+
 struct ContentWorkspaceSelectionUpdate {
     enum WorkspaceAppSurfacePolicy {
         case clear

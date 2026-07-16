@@ -8,40 +8,42 @@ struct WorkspaceEmptyStateView: View {
         VStack(spacing: 24) {
             Image(systemName: "folder.badge.plus")
                 .font(Stanford.ui(48))
-                .foregroundStyle(Stanford.cardinalRed)
+                .foregroundStyle(Stanford.interactive)
 
             VStack(spacing: 8) {
-                Text("Pick a Workspace")
+                Text(WorkspaceAvailabilityPresentation.onboardingTitle)
                     .font(Stanford.heading(24))
                     .foregroundStyle(Stanford.black)
 
-                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
+                Text(WorkspaceAvailabilityPresentation.onboardingBody)
                     .font(Stanford.body(15))
                     .foregroundStyle(Stanford.coolGrey)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
+
+                Text(WorkspaceAvailabilityPresentation.onboardingFootnote)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.textTertiary)
             }
 
             HStack(spacing: 12) {
                 Button {
                     onCreateWorkspace()
                 } label: {
-                    Label("New Workspace", systemImage: "plus")
+                    Label("Create Workspace", systemImage: "plus")
                 }
                 .buttonStyle(StanfordButtonStyle())
                 .accessibilityIdentifier("OnboardingNewWorkspaceButton")
+                .accessibilityLabel("Create Workspace")
 
                 Button {
                     onImportWorkspace()
                 } label: {
-                    Label("Import Workspace", systemImage: "square.and.arrow.down")
+                    Label("Import Folder", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: false))
-
-                SettingsLink {
-                    Label("Settings", systemImage: "gear")
-                }
-                .buttonStyle(.plain)
+                .accessibilityIdentifier("OnboardingImportWorkspaceButton")
+                .accessibilityLabel("Import Folder")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

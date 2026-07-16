@@ -859,7 +859,8 @@ struct ContentView: View {
             sidebarCommands: sidebarTitlebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
             isSidebarHidden: presentation.isSidebarHidden,
-            sidebarWidth: presentation.sidebarWidth
+            sidebarWidth: presentation.sidebarWidth,
+            showsNewWorkspaceCommand: WorkspaceAvailabilityPresentation(workspaceCount: workspaces.count).showsTitlebarCreationCommand
         )
         .background(searchHotkey)
         .background(newWorkspaceAppHotkey)
@@ -1200,7 +1201,7 @@ struct ContentView: View {
     }
 
     private func showNewSchedule() {
-        showingNewSchedule = true
+        showingNewSchedule = ScheduleCreationGate.canPresent(effectiveWorkspace: effectiveWorkspace)
     }
 
     private func beginEditingSchedule(_ schedule: TaskSchedule) {
