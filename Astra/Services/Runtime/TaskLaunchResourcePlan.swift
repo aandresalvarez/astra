@@ -248,9 +248,18 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         !providerNativeCredentialReadablePaths.isEmpty
     }
 
+    /// Directories forwarded to a provider's own `--add-dir`-style native
+    /// reachability grant (currently Codex only). This is intentionally
+    /// scoped to `ReadOnlyResourceContract`'s read-only *input* sources, not
+    /// every `.read` grant: Codex reads the filesystem ambiently regardless of
+    /// `--add-dir` (read access cannot be restricted in its sandbox), but
+    /// `--add-dir` grants that directory WRITE access. Forwarding a
+    /// non-input read grant (e.g. a `.connector` support directory) here
+    /// would make it Codex-writable without the read-only input boundary's
+    /// forced Seatbelt wrap to deny that write back out.
     var providerNativeReadOnlyResourcePaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            grant.access == .read ? grant.path : nil
+            ReadOnlyResourceContract.isReadOnlyInputGrant(grant) ? grant.path : nil
         })
     }
 

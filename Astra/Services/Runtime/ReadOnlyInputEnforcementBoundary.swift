@@ -19,6 +19,7 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
         case missingPath(String)
         case multipleHardLinks(path: String, count: Int)
         case directoryScanFailed(String)
+        case directoryTooLarge(path: String, scanned: Int)
         case writableDescendant(readOnlyPath: String, writablePath: String)
 
         var description: String {
@@ -31,6 +32,8 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
                 "multiple_hard_links:\(path):\(count)"
             case .directoryScanFailed(let path):
                 "directory_scan_failed:\(path)"
+            case .directoryTooLarge(let path, let scanned):
+                "directory_too_large:\(path):\(scanned)"
             case .writableDescendant(let readOnlyPath, let writablePath):
                 "read_write_conflict:\(readOnlyPath):\(writablePath)"
             }
@@ -64,7 +67,8 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
 
     init(
         grants: [RuntimePathGrant],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        maxDirectoryEntries: Int = ReadOnlyResourceContract.maxDirectoryEntriesToValidate
     ) {
         let readGrants = grants.filter(Self.isReadOnlyInputGrant)
         requestedResourceCount = readGrants.count
@@ -95,7 +99,8 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
             if isDirectory.boolValue {
                 failures.append(contentsOf: Self.directoryValidationFailures(
                     at: requestedPath,
-                    fileManager: fileManager
+                    fileManager: fileManager,
+                    maxEntries: maxDirectoryEntries
                 ))
             } else if let attributes = try? fileManager.attributesOfItem(atPath: requestedPath),
                       let count = (attributes[.referenceCount] as? NSNumber)?.intValue,
@@ -150,9 +155,17 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
         }
     }
 
+    /// Upper bound on directory entries walked while validating one read-only
+    /// directory input. The scan is synchronous on the launch path, so an
+    /// unbounded walk of a huge attachment (dataset, checkout, node_modules,
+    /// home-adjacent folder) could stall the app before any boundary is applied.
+    /// A directory exceeding this budget fails the contract closed.
+    static let maxDirectoryEntriesToValidate = 100_000
+
     private static func directoryValidationFailures(
         at directoryPath: String,
-        fileManager: FileManager
+        fileManager: FileManager,
+        maxEntries: Int
     ) -> [ValidationFailure] {
         var failures: [ValidationFailure] = []
         let root = URL(fileURLWithPath: directoryPath, isDirectory: true)
@@ -170,7 +183,18 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
         ) else {
             return [.directoryScanFailed(directoryPath)]
         }
+        var scannedEntries = 0
         for case let url as URL in enumerator {
+            scannedEntries += 1
+            if scannedEntries > maxEntries {
+                // This scan runs synchronously on the launch path. A read-only
+                // directory larger than the budget cannot be integrity-checked
+                // (hard-link scan) in a bounded, main-thread-safe window, so fail
+                // closed rather than freeze the app or skip the scan and risk an
+                // unvalidated writable hard-link alias.
+                failures.append(.directoryTooLarge(path: directoryPath, scanned: scannedEntries - 1))
+                break
+            }
             do {
                 // Non-regular files (symlinks, sockets, FIFOs) are intentionally
                 // not integrity failures: writing *through* an in-directory

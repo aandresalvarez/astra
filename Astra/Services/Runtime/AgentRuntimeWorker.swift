@@ -726,11 +726,12 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
+        let approvedSandboxPaths = TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+            from: executionPolicy.permissionGrantsOverride ?? [],
+            homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
         let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
-            task: task,
-            currentDirectory: executionPath,
-            providerLaunchContextText: providerLaunchContextText
-        )
+            task: task, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
+            approvedSandboxReadablePaths: approvedSandboxPaths)
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.taskSnapshot)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
         let basePrompt = promptOverride ?? buildPrompt(

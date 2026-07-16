@@ -151,6 +151,73 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         #expect(!contract.failures.contains { if case .directoryScanFailed = $0 { true } else { false } })
     }
 
+    @Test("A directory input larger than the validation budget fails closed")
+    func directoryContractFailsClosedOverBudget() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("astra-read-budget-\(UUID().uuidString)")
+        let inputDirectory = root.appendingPathComponent("input", isDirectory: true)
+        try fm.createDirectory(at: inputDirectory, withIntermediateDirectories: true)
+        for index in 0..<5 {
+            try "x".write(to: inputDirectory.appendingPathComponent("f\(index).txt"), atomically: true, encoding: .utf8)
+        }
+        defer { try? fm.removeItem(at: root) }
+
+        // Budget of 2 entries with 5 files present: the scan must stop and fail
+        // closed rather than walk the whole tree on the launch path.
+        let contract = ReadOnlyResourceContract(grants: [
+            RuntimePathGrant(path: inputDirectory.path, access: .read, source: .taskInput, reason: "directory input", sensitivity: .normal, lifetime: .run, exists: true)
+        ], maxDirectoryEntries: 2)
+
+        #expect(!contract.isValid)
+        #expect(contract.failures.contains { if case .directoryTooLarge = $0 { true } else { false } })
+    }
+
+    @Test("A protected grant that is itself a symlink under a writable root gets its own unlink deny")
+    func protectedSymlinkGrantOwnEntryIsUnlinkDenied() throws {
+        // A symlinked grant (e.g. an attachment in the writable workspace
+        // pointing at protected content elsewhere): denying only the
+        // canonicalized TARGET's ancestor chain leaves the symlink's own
+        // directory entry free to be unlinked/renamed, silently disappearing
+        // the "protected" input without touching the target's bytes.
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("astra-symlink-root-\(UUID().uuidString)")
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        let target = elsewhere.appendingPathComponent("target.txt")
+        let link = workspace.appendingPathComponent("attached-link.txt")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try "protected".write(to: target, atomically: true, encoding: .utf8)
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        defer { try? fm.removeItem(at: root) }
+
+        let canonicalWorkspace = try #require(ExecutionSandbox.canonicalize(workspace.path))
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .claudeCode,
+            executablePath: "/usr/local/bin/claude",
+            arguments: [],
+            currentDirectory: workspace.path,
+            environment: [:],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: true,
+            directoriesToCreate: [],
+            sandboxReadablePaths: [],
+            sandboxProtectedWriteDenyPaths: [link.path],
+            providerDetectedFields: [:],
+            commandPlannedFields: [:],
+            pathMapper: nil,
+            executionEnvironment: .host
+        )
+        let ancestorDenyRoots = ExecutionSandbox.protectedWriteAncestorDenyRoots(
+            plan: plan, writableRoots: [canonicalWorkspace])
+
+        // `sandboxPathSpellings` always includes its input path verbatim as the
+        // first returned spelling, so the symlink's own standardized path must
+        // appear among the ancestor-deny roots if the fix ran.
+        #expect(ancestorDenyRoots.contains(link.standardizedFileURL.path))
+    }
+
     @Test("Container proof rejects writable aliases and mixed execution requires both surfaces")
     func containerAliasesAndMixedSurfacesAreVerified() throws {
         let fm = FileManager.default

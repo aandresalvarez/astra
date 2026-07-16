@@ -13,19 +13,38 @@ struct AgentRuntimeRunEnvironmentContext: Sendable, Equatable {
     static func prepare(
         task: AgentTask,
         currentDirectory: String,
-        providerLaunchContextText: String
+        providerLaunchContextText: String,
+        approvedSandboxReadablePaths: [String] = []
     ) -> AgentRuntimeRunEnvironmentContext {
         let taskSnapshot = DockerExecutionPlanner.snapshotForRun(
             task: task,
             currentDirectory: currentDirectory
         )
+        let attachmentPaths = AgentRuntimeAttachmentProjection.readablePaths(
+            for: task,
+            contextText: providerLaunchContextText
+        )
+        // Canonicalize, dedupe, and sort exactly how `ReadOnlyResourceContract.paths`
+        // orders the read-only *input* grants (task inputs, current-message
+        // attachments, and approved sandbox retries) it hands the real launch-time
+        // Docker mount call — this is a distinct computation from that contract, but
+        // matching its ordering keeps the advertised `/mnt/astra/input-N` mapping in
+        // this prompt guidance from drifting out of sync with what actually gets
+        // mounted, which would otherwise point the provider at the wrong file.
+        var seenCanonical: Set<String> = []
+        let additionalReadOnlyInputPaths = (attachmentPaths + approvedSandboxReadablePaths)
+            .compactMap { path -> String? in
+                guard let canonical = ExecutionSandbox.canonicalize(path),
+                      seenCanonical.insert(canonical).inserted else {
+                    return nil
+                }
+                return canonical
+            }
+            .sorted()
         let runSnapshot = DockerExecutionPlanner.snapshotForRun(
             task: task,
             currentDirectory: currentDirectory,
-            additionalReadOnlyInputPaths: AgentRuntimeAttachmentProjection.readablePaths(
-                for: task,
-                contextText: providerLaunchContextText
-            )
+            additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         return AgentRuntimeRunEnvironmentContext(
             taskSnapshot: taskSnapshot,

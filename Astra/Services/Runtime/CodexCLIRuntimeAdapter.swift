@@ -203,9 +203,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
-        // Codex exposes external paths through directory-only `--add-dir`
-        // roots. Project only explicitly granted directories; widening an
-        // exact-file grant to its parent would authorize sibling reads.
+        // `--add-dir` grants a directory WRITE access (Codex reads the host
+        // filesystem ambiently regardless — its sandbox cannot restrict reads).
+        // Project only explicitly granted directories; widening an exact-file
+        // grant to its parent would authorize sibling WRITES, and the input
+        // source scoping in `providerNativeReadOnlyResourcePaths` keeps
+        // non-input read grants (credentials, connector dirs) out of this
+        // writable projection entirely.
         let nativeReachability = Self.nativeReachabilityProjection(
             for: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [],
             alreadyReachableDirectories: [context.workspacePath]

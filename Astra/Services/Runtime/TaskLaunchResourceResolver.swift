@@ -167,13 +167,18 @@ enum TaskLaunchResourceResolver {
         )
     }
 
-    private static func appendRuntimePermissionGrants(
-        _ grants: [PermissionGrant],
-        homeDirectoryPath: String,
-        fileManager: FileManager,
-        to hostPathGrants: inout [RuntimePathGrant]
-    ) {
-        for grant in grants {
+    /// Canonical read-approved sandbox paths from a one-run approval retry
+    /// (`PermissionGrant.sandboxPath` with read access, validated the same way
+    /// `RuntimeSandboxPathGrantPolicy` gates an approval request). Shared with
+    /// `AgentRuntimeRunEnvironmentContext.prepare` so the prompt's read-only
+    /// mount guidance is built from the identical source the launch-time
+    /// contract uses — anything else risks the guidance advertising a
+    /// container path that doesn't match what actually gets mounted.
+    static func approvedSandboxReadablePaths(
+        from grants: [PermissionGrant],
+        homeDirectoryPath: String
+    ) -> [String] {
+        grants.compactMap { grant in
             guard case .sandboxPath(let path, let access) = grant,
                   access == "read",
                   case .eligible(let canonicalPath, _) = RuntimeSandboxPathGrantPolicy.evaluate(
@@ -181,8 +186,19 @@ enum TaskLaunchResourceResolver {
                     operation: .read,
                     homeDirectory: URL(fileURLWithPath: homeDirectoryPath, isDirectory: true)
                   ) else {
-                continue
+                return nil
             }
+            return canonicalPath
+        }
+    }
+
+    private static func appendRuntimePermissionGrants(
+        _ grants: [PermissionGrant],
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        to hostPathGrants: inout [RuntimePathGrant]
+    ) {
+        for canonicalPath in approvedSandboxReadablePaths(from: grants, homeDirectoryPath: homeDirectoryPath) {
             hostPathGrants.append(RuntimePathGrant(
                 path: canonicalPath,
                 access: .read,

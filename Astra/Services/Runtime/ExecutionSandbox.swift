@@ -1027,12 +1027,12 @@ enum ExecutionSandbox: Sendable {
         plan: AgentRuntimeProcessLaunchPlan,
         writableRoots: [String]
     ) -> [String] {
-        let protectedPaths = plan.sandboxProtectedWriteDenyPaths.compactMap(canonicalize)
-        guard !protectedPaths.isEmpty else { return [] }
+        guard !plan.sandboxProtectedWriteDenyPaths.isEmpty else { return [] }
 
         var seen: Set<String> = []
         var ancestors: [String] = []
-        for protectedPath in protectedPaths {
+        for rawPath in plan.sandboxProtectedWriteDenyPaths {
+            guard let protectedPath = canonicalize(rawPath) else { continue }
             var current = (protectedPath as NSString).deletingLastPathComponent
             while current != "/", !current.isEmpty {
                 guard writableRoots.contains(where: { isSameOrDescendant(current, of: $0) }) else {
@@ -1044,6 +1044,32 @@ enum ExecutionSandbox: Sendable {
                 let parent = (current as NSString).deletingLastPathComponent
                 guard parent != current else { break }
                 current = parent
+            }
+            // If the grant's own requested path is itself a symlink (its
+            // standardized spelling differs from its canonicalized target),
+            // canonicalizing it above loses that entry: the deny/subpath rules
+            // this function's sibling `protectedWriteDenyRoots` emits only cover
+            // the resolved target, so the symlink's own directory entry — when
+            // it sits under a writable root — is otherwise free to be unlinked
+            // or renamed without ever touching the target's protected content.
+            // Deny unlink of that exact entry (not its ancestors, which the
+            // walk above already covers via the canonical target's chain).
+            //
+            // The "under a writable root" check must use the CANONICAL form of
+            // the symlink's own parent directory — `writableRoots` is populated
+            // in canonical (e.g. `/private/tmp/...`) spelling throughout this
+            // file, so comparing it against the uncanonicalized standardized
+            // path (`/tmp/...`) would silently never match. The deny rule itself
+            // must still target the symlink's own (unresolved) path spellings,
+            // or the rule would just re-deny the already-covered target.
+            let standardizedRaw = WorkspacePathPresentation.standardizedPath(rawPath)
+            guard standardizedRaw != protectedPath,
+                  let canonicalParent = canonicalize((standardizedRaw as NSString).deletingLastPathComponent),
+                  writableRoots.contains(where: { isSameOrDescendant(canonicalParent, of: $0) }) else {
+                continue
+            }
+            for spelling in sandboxPathSpellings(standardizedRaw) where seen.insert(spelling).inserted {
+                ancestors.append(spelling)
             }
         }
         return ancestors

@@ -213,6 +213,52 @@ struct ExecutionEnvironmentTests {
         #expect(prompt.contains("host paths are not available inside the container"))
     }
 
+    @MainActor
+    @Test("Run environment advertises an approved sandbox-path retry as a Docker read-only mount")
+    func runEnvironmentAdvertisesApprovedSandboxPath() throws {
+        // A live OS-sandbox read approval retry mounts the approved path
+        // read-only in Docker (via the read-only input boundary), but until
+        // this fix the prompt guidance was built only from task inputs and
+        // current-message attachments — the provider would retry with the
+        // original host path, which doesn't exist inside the container.
+        let root = try makeTempDir("docker-sandbox-approval-prompt")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let approvedFile = (root as NSString).appendingPathComponent("approved.txt")
+        try FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+        try Data("approved".utf8).write(to: URL(fileURLWithPath: approvedFile))
+
+        let task = AgentTask(
+            title: "Approval retry",
+            goal: "Read the approved path",
+            workspace: Workspace(name: "Docker", primaryPath: workspace)
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest",
+            runtimeExecutablePath: "/bin/claude",
+            providerPlacement: .container
+        ))
+        let canonicalApproved = try #require(ExecutionSandbox.canonicalize(approvedFile))
+        let context = AgentRuntimeRunEnvironmentContext.prepare(
+            task: task,
+            currentDirectory: workspace,
+            providerLaunchContextText: "",
+            // `approvedSandboxReadablePaths` carries the canonical form here,
+            // matching what `TaskLaunchResourceResolver.approvedSandboxReadablePaths`
+            // actually returns at the real call site (RuntimeSandboxPathGrantPolicy's
+            // `.eligible` case yields a canonical path).
+            approvedSandboxReadablePaths: [canonicalApproved]
+        )
+
+        let mount = try #require(context.runSnapshot.mounts.first { $0.hostPath == approvedFile })
+        #expect(mount.access == .readOnly)
+        let prompt = context.appendingReadOnlyInputGuidance(to: "Use the approved path.")
+        #expect(prompt.contains("\(approvedFile) -> \(mount.containerPath) (read-only)"))
+    }
+
     @Test("Docker mount plan deduplicates firmlink spellings for one read-only input")
     func dockerMountPlanDeduplicatesFirmlinkInputSpellings() throws {
         let visibleRoot = "/tmp/astra-docker-input-alias-\(UUID().uuidString)"
