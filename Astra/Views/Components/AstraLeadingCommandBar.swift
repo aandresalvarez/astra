@@ -67,6 +67,11 @@ struct AstraLeadingCommandBar: View {
     let sidebarCommands: SidebarTitlebarCommandBridge
     @Binding var isSidebarToggleHovered: Bool
     let isSidebarHidden: Bool
+    /// Hidden at zero workspaces, where the main canvas already shows a full
+    /// labeled creation CTA (`WorkspaceEmptyStateView`) and this icon would
+    /// just duplicate it; shown once at least one workspace exists, its
+    /// normal state (see `WorkspaceAvailabilityPresentation`).
+    var showsNewWorkspaceCommand: Bool = true
     /// Height of the title bar the hosting accessory occupies, measured at runtime
     /// by `WindowChromeConfigurator`. The bar fills it and centers its content, so
     /// the icons sit on the traffic-light row at *any* title bar height (windowed,
@@ -84,12 +89,16 @@ struct AstraLeadingCommandBar: View {
         HStack(spacing: 0) {
             leadingCommands
             if isSidebarHidden {
-                newWorkspaceButton
-                    .padding(.trailing, AstraToolbarCommandMetrics.clusterHorizontalPadding)
+                if showsNewWorkspaceCommand {
+                    newWorkspaceButton
+                        .padding(.trailing, AstraToolbarCommandMetrics.clusterHorizontalPadding)
+                }
             } else {
                 Spacer(minLength: 0)
-                newWorkspaceButton
-                    .padding(.trailing, AstraLeadingCommandBarMetrics.expandedTrailingPadding)
+                if showsNewWorkspaceCommand {
+                    newWorkspaceButton
+                        .padding(.trailing, AstraLeadingCommandBarMetrics.expandedTrailingPadding)
+                }
             }
         }
         .padding(.leading, AstraLeadingCommandBarMetrics.leadingPadding)

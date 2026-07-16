@@ -67,6 +67,17 @@ struct WorkspaceAppDetailPresentationTests {
     }
 
     @MainActor
+    @Test("no effective workspace resolves to the no-workspace surface")
+    func noEffectiveWorkspaceResolvesToNoWorkspace() {
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: nil,
+            isComposingTask: false
+        )
+        #expect(presentation == .noWorkspace)
+    }
+
+    @MainActor
     @Test("a selected task takes precedence over a selected app")
     func taskTakesPrecedenceOverApp() {
         let workspace = Workspace(name: "WS", primaryPath: "/tmp/f7")

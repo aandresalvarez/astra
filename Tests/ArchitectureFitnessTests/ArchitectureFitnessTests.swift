@@ -1802,7 +1802,9 @@ struct ArchitectureFitnessTests {
         [
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
-            "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
+            // Budget raised for issue #322: wiring the zero-workspace titlebar
+            // command flag into an already-full file cost one irreducible line.
+            "Astra/Views/ContentView.swift": .init(4_855, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body
@@ -1828,7 +1830,10 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
-            "Astra/Views/TaskSidebarView.swift": .init(2_500, .owner("Task sidebar")),
+            // Budget raised for issue #322: the Routines section, sort/star-filter
+            // controls, and empty-state copy each need their own gate — three
+            // call sites, not one boundary to extract.
+            "Astra/Views/TaskSidebarView.swift": .init(2_510, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see

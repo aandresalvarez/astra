@@ -6,6 +6,7 @@ struct WindowChromeCommandBarState: Equatable {
     let isSidebarHidden: Bool
     let sidebarWidth: CGFloat
     let titleBarHeight: CGFloat?
+    let showsNewWorkspaceCommand: Bool
 }
 
 enum WindowChromeCommandBarRefreshPolicy {
@@ -43,6 +44,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     @Binding var isSidebarToggleHovered: Bool
     var isSidebarHidden: Bool
     var sidebarWidth: CGFloat
+    var showsNewWorkspaceCommand: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -69,6 +71,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             sidebarCommands: sidebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
             isSidebarHidden: isSidebarHidden,
+            showsNewWorkspaceCommand: showsNewWorkspaceCommand,
             titleBarHeight: titleBarHeight,
             commandBarWidth: commandBarWidth
         )
@@ -79,6 +82,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         let isSearchActive = isSearchActive
         let isSidebarHidden = isSidebarHidden
         let sidebarWidth = sidebarWidth
+        let showsNewWorkspaceCommand = showsNewWorkspaceCommand
         let coordinator = context.coordinator
         // Capture view/coordinator weakly: if the representable is torn down (or
         // the window closes) before these blocks run, bail out instead of keeping
@@ -91,7 +95,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 makeBar: makeBar,
                 isSearchActive: isSearchActive,
                 isSidebarHidden: isSidebarHidden,
-                sidebarWidth: sidebarWidth
+                sidebarWidth: sidebarWidth,
+                showsNewWorkspaceCommand: showsNewWorkspaceCommand
             )
 
             // SwiftUI can attach the toolbar after the representable first appears.
@@ -142,7 +147,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             makeBar: ((CGFloat?, CGFloat?) -> AstraLeadingCommandBar)? = nil,
             isSearchActive: Bool? = nil,
             isSidebarHidden: Bool? = nil,
-            sidebarWidth: CGFloat? = nil
+            sidebarWidth: CGFloat? = nil,
+            showsNewWorkspaceCommand: Bool? = nil
         ) {
             // Adopt a builder only when a fresh one is supplied. The delayed retry
             // (and the full-screen observer) pass nil and reuse the stored builder,
@@ -154,7 +160,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 for: window,
                 isSearchActive: isSearchActive,
                 isSidebarHidden: isSidebarHidden,
-                sidebarWidth: sidebarWidth
+                sidebarWidth: sidebarWidth,
+                showsNewWorkspaceCommand: showsNewWorkspaceCommand
             ) else { return }
 
             // Already installed in this same window → refresh only when visible
@@ -228,7 +235,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 for: window,
                 isSearchActive: lastCommandBarState.isSearchActive,
                 isSidebarHidden: lastCommandBarState.isSidebarHidden,
-                sidebarWidth: lastCommandBarState.sidebarWidth
+                sidebarWidth: lastCommandBarState.sidebarWidth,
+                showsNewWorkspaceCommand: lastCommandBarState.showsNewWorkspaceCommand
             ) else { return }
             refreshBarIfNeeded(state: state)
         }
@@ -254,17 +262,20 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             for window: NSWindow,
             isSearchActive: Bool?,
             isSidebarHidden: Bool?,
-            sidebarWidth: CGFloat?
+            sidebarWidth: CGFloat?,
+            showsNewWorkspaceCommand: Bool?
         ) -> WindowChromeCommandBarState? {
             let searchActive = isSearchActive ?? lastCommandBarState?.isSearchActive
             let sidebarHidden = isSidebarHidden ?? lastCommandBarState?.isSidebarHidden
             let resolvedSidebarWidth = sidebarWidth ?? lastCommandBarState?.sidebarWidth
-            guard let searchActive, let sidebarHidden, let resolvedSidebarWidth else { return nil }
+            let resolvedShowsNewWorkspaceCommand = showsNewWorkspaceCommand ?? lastCommandBarState?.showsNewWorkspaceCommand
+            guard let searchActive, let sidebarHidden, let resolvedSidebarWidth, let resolvedShowsNewWorkspaceCommand else { return nil }
             return WindowChromeCommandBarState(
                 isSearchActive: searchActive,
                 isSidebarHidden: sidebarHidden,
                 sidebarWidth: resolvedSidebarWidth,
-                titleBarHeight: titleBarHeight(of: window)
+                titleBarHeight: titleBarHeight(of: window),
+                showsNewWorkspaceCommand: resolvedShowsNewWorkspaceCommand
             )
         }
 
@@ -332,7 +343,8 @@ extension View {
         sidebarCommands: SidebarTitlebarCommandBridge,
         isSidebarToggleHovered: Binding<Bool>,
         isSidebarHidden: Bool,
-        sidebarWidth: CGFloat
+        sidebarWidth: CGFloat,
+        showsNewWorkspaceCommand: Bool
     ) -> some View {
         background {
             WindowChromeConfigurator(
@@ -340,7 +352,8 @@ extension View {
                 sidebarCommands: sidebarCommands,
                 isSidebarToggleHovered: isSidebarToggleHovered,
                 isSidebarHidden: isSidebarHidden,
-                sidebarWidth: sidebarWidth
+                sidebarWidth: sidebarWidth,
+                showsNewWorkspaceCommand: showsNewWorkspaceCommand
             )
             .frame(width: 0, height: 0)
         }
