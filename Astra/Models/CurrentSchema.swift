@@ -1,8 +1,8 @@
 import SwiftData
 
-/// V14 moves the remembered per-task canvas selection out of a global
-/// UserDefaults JSON dictionary and onto AgentTask. The optional scalar makes
-/// this an additive lightweight migration and ties deletion to the task row.
+/// Frozen V14 model list. TaskExternalOperation is intentionally absent, and
+/// its task ownership is represented by a scalar taskID so V14's live
+/// AgentTask declaration remains schema-identical when V15 is introduced.
 public enum ASTRASchemaV14: VersionedSchema {
     public static var versionIdentifier = Schema.Version(14, 0, 0)
 
@@ -30,12 +30,22 @@ public enum ASTRASchemaV14: VersionedSchema {
     }
 }
 
+/// V15 adds the task-owned external-operation control-plane entity without
+/// changing the historical AgentTask entity shape.
+public enum ASTRASchemaV15: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(15, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        ASTRASchemaV14.models + [TaskExternalOperation.self]
+    }
+}
+
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 14
+    public static let currentVersion = 15
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV14.self)
+        Schema(versionedSchema: ASTRASchemaV15.self)
     }
 }

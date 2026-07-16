@@ -1081,7 +1081,7 @@ enum DockerWorkspaceMCPProjection {
         }
     }
 
-    private static func jobRootHostPath(task: AgentTask) -> String {
+    static func jobRootHostPath(task: AgentTask) -> String {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !taskFolder.isEmpty else { return "" }
         return (taskFolder as NSString).appendingPathComponent("jobs")

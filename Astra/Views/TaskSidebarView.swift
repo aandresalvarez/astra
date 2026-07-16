@@ -201,7 +201,7 @@ enum SidebarThreadRowLayout {
 
     static func isActionableStatus(_ status: TaskStatus) -> Bool {
         switch status {
-        case .running, .pendingUser, .failed, .budgetExceeded:
+        case .running, .waitingExternal, .pendingUser, .failed, .budgetExceeded:
             return true
         case .draft, .queued, .completed, .cancelled:
             return false

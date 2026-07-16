@@ -12,7 +12,7 @@ import Foundation
 /// (that would recreate the cycle Track A2 broke).
 public enum TaskStatusPresentation {
     /// `statusRawValue` must be one of `TaskStatus`'s raw values ("draft",
-    /// "queued", "running", "pending_user", "completed", "failed",
+    /// "queued", "running", "waiting_external", "pending_user", "completed", "failed",
     /// "cancelled", "budget_exceeded"). Every real `TaskStatus` case is
     /// covered explicitly; the "gray" fallback for an unrecognized string
     /// should be unreachable in practice (mirrors `.queued`/`.cancelled`'s
@@ -22,6 +22,7 @@ public enum TaskStatusPresentation {
         case "draft": return "purple"
         case "queued": return "gray"
         case "running": return "blue"
+        case "waiting_external": return "blue"
         case "pending_user": return "orange"
         case "completed": return "green"
         case "failed": return "red"

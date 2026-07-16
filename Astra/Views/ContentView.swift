@@ -2204,6 +2204,7 @@ struct ContentView: View {
         }
 
         runtime.taskScheduler.stop()
+        runtime.stopExternalOperationMonitoring()
         for workspace in workspaces {
             WorkspacePersistenceCoordinator.flushPendingExport(
                 workspace: workspace,
@@ -2630,6 +2631,7 @@ struct ContentView: View {
         // after this frame is presented. Run-once-guarded inside.
         Task { @MainActor in
             ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
+            runtime.startExternalOperationMonitoring(modelContext: modelContext)
             refreshRunningTaskCount()
         }
     }

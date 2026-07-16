@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -903,24 +904,31 @@ struct WorkspaceToolSupportTests {
 
         let start = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"dbt build --select +death","timeout_seconds":3600,"label":"dbt death","progress_probe":"dbt"}}}"#)))
         let startText = try resultText(start)
-        #expect(startText.contains("job_id: job-1"))
-        #expect(startText.contains("status: running"))
+        let startResult = try JSONDecoder().decode(
+            WorkspaceManagedJobStructuredResult.self,
+            from: Data(startText.utf8)
+        )
+        #expect(startResult.jobID == "job-1")
+        #expect(startResult.status == .running)
+        #expect(startResult.schemaIdentifier == WorkspaceManagedJobStructuredResult.schemaIdentifier)
+        #expect(startResult.startReceipt?.invocationID == "4")
+        #expect(jobManager.startedInvocationIDs == ["4"])
         #expect(jobManager.startedCommands == ["dbt build --select +death"])
         #expect(jobManager.startedLabels == ["dbt death"])
         #expect(jobManager.startedProgressProbes == ["dbt"])
 
         let status = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workspace_job_status","arguments":{"job_id":"job-1"}}}"#)))
-        #expect(try resultText(status).contains("status: running"))
+        #expect(try structuredJobResult(status).status == .running)
 
         let tail = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workspace_job_tail","arguments":{"job_id":"job-1","stream":"stderr","lines":20}}}"#)))
         #expect(try resultText(tail).contains("stream: stderr"))
 
         let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":1}}}"#)))
-        #expect(try resultText(wait).contains("status: running"))
+        #expect(try structuredJobResult(wait).status == .running)
         #expect(jobManager.waitTimeouts == [1])
 
         let cancel = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workspace_job_cancel","arguments":{"job_id":"job-1"}}}"#)))
-        #expect(try resultText(cancel).contains("status: cancelled"))
+        #expect(try structuredJobResult(cancel).status == .cancelled)
     }
 
     @Test("Workspace job wait caps provider wait windows")
@@ -936,8 +944,68 @@ struct WorkspaceToolSupportTests {
 
         let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":3600}}}"#)))
 
-        #expect(try resultText(wait).contains("status: running"))
+        #expect(try structuredJobResult(wait).status == .running)
         #expect(jobManager.waitTimeouts == [30])
+    }
+
+    @Test("Provider cleanup preserves executor while a trusted managed job is active")
+    func providerCleanupPreservesExecutorForTrustedManagedJob() {
+        let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
+            command: "pwd",
+            exitCode: 0,
+            stdout: "",
+            stderr: ""
+        ))
+        let jobManager = RecordingWorkspaceJobManager()
+        jobManager.hasOwnedJob = true
+        let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
+
+        server.cleanup()
+        #expect(!executor.cleanedUp)
+
+        jobManager.hasOwnedJob = false
+        server.cleanup()
+        #expect(executor.cleanedUp)
+    }
+
+    @Test("Managed job result is invocation bound and excludes commands paths and messages")
+    func managedJobResultIsStrictAndSecretFree() throws {
+        let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
+            command: "pwd",
+            exitCode: 0,
+            stdout: "",
+            stderr: ""
+        ))
+        let jobManager = RecordingWorkspaceJobManager()
+        let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
+        let secret = "secret-token-that-must-not-escape"
+
+        let response = try parseJSON(try #require(server.handleLine(
+            #"{"jsonrpc":"2.0","id":"trusted-invocation","method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"printf '#(secret)'"}}}"#
+        )))
+        let text = try resultText(response)
+        let result = try #require(response["result"] as? [String: Any])
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        let structuredData = try JSONSerialization.data(withJSONObject: structuredContent, options: [.sortedKeys])
+        let textObject = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? NSDictionary)
+        let structuredObject = try #require(JSONSerialization.jsonObject(with: structuredData) as? NSDictionary)
+        let decoded = try structuredJobResult(response)
+
+        #expect(textObject == structuredObject)
+        #expect(decoded.startReceipt?.invocationID == "trusted-invocation")
+        #expect(!text.contains(secret))
+        #expect(!text.contains("printf"))
+        #expect(!text.contains("/tmp/job"))
+        #expect(!text.contains("message"))
+
+        var untrustedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        )
+        untrustedObject["command"] = "curl https://attacker.invalid"
+        let untrustedData = try JSONSerialization.data(withJSONObject: untrustedObject)
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(WorkspaceManagedJobStructuredResult.self, from: untrustedData)
+        }
     }
 
     @Test("Docker workspace job manager starts detached durable job")
@@ -972,8 +1040,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-2",
-            runID: "run-2",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -982,14 +1050,16 @@ struct WorkspaceToolSupportTests {
         )
         let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
         let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+        let server = WorkspaceMCPServer(executor: executor, jobManager: manager)
 
         let job = manager.start(
             command: "printf started && sleep 60",
             timeoutSeconds: 7200,
             label: "long validation",
-            progressProbe: "generic-log"
+            progressProbe: "generic-log",
+            invocationID: "start-detached-job"
         )
-        executor.cleanup()
+        server.cleanup()
 
         #expect(job.status == .running)
         let jobDirectory = jobRoot.appendingPathComponent(job.jobID, isDirectory: true)
@@ -997,6 +1067,7 @@ struct WorkspaceToolSupportTests {
         #expect(FileManager.default.fileExists(atPath: jobDirectory.appendingPathComponent("command.sh").path))
         #expect(try String(contentsOf: jobDirectory.appendingPathComponent("command.sh"), encoding: .utf8).contains("sleep 60"))
         let logLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(!logLines.contains("stop astra-test-job"))
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
@@ -1046,6 +1117,17 @@ struct WorkspaceToolSupportTests {
         #expect(completed.status == .succeeded)
         #expect(completed.exitCode == 0)
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
+        // The original provider/MCP process may already be gone. A fresh
+        // monitor-owned manager must be able to reclaim the now-idle local
+        // executor without relaunching the job.
+        let restartExecutor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let restartManager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: restartExecutor
+        )
+        #expect(restartManager.cleanupExecutorIfIdle())
+        let finalLogLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(finalLogLines.contains("stop astra-test-job"))
     }
 
     @Test("Docker workspace job cancel rejects non-canonical job ids before Docker exec")
@@ -1080,8 +1162,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-cancel",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-cancel",
-            runID: "run-cancel",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1095,7 +1177,8 @@ struct WorkspaceToolSupportTests {
             command: "printf started && sleep 60",
             timeoutSeconds: 7200,
             label: "long validation",
-            progressProbe: "generic-log"
+            progressProbe: "generic-log",
+            invocationID: "reject-noncanonical-cancel"
         )
         let logBeforeCancel = try String(contentsOf: log, encoding: .utf8)
 
@@ -1111,6 +1194,163 @@ struct WorkspaceToolSupportTests {
         #expect(manager.status(jobID: job.jobID).status == .running)
     }
 
+    @Test("Repeated invocation adopts the same durable job without relaunching")
+    func repeatedInvocationAdoptsSameDurableJob() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-idempotency-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-idempotency",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let first = manager.start(
+            command: "sleep 60",
+            timeoutSeconds: 7200,
+            label: "first",
+            progressProbe: nil,
+            invocationID: "stable-invocation"
+        )
+        let duplicate = manager.start(
+            command: "printf must-not-launch",
+            timeoutSeconds: nil,
+            label: "duplicate",
+            progressProbe: nil,
+            invocationID: "stable-invocation"
+        )
+
+        #expect(first.jobID == duplicate.jobID)
+        #expect(first.startReceipt == duplicate.startReceipt)
+        #expect(duplicate.command == "sleep 60")
+        #expect(try WorkspaceManagedJobStore(rootPath: jobRoot.path).listTrustedRecords().count == 1)
+        let logLines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+        #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
+        #expect(!logLines.contains { $0.contains("must-not-launch") })
+        executor.cleanup()
+    }
+
+    @Test("Queued receipt is reconciled without relaunch after an interrupted start")
+    func queuedReceiptIsReconciledWithoutRelaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-adopt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+        let queued = try store.create(
+            command: "sleep 60",
+            timeoutSeconds: 7200,
+            label: "interrupted start",
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            invocationID: "interrupted-invocation",
+            containerName: "astra-test-job-adopt"
+        )
+        try #"{"status":"running","timestamp":"2026-07-16T12:00:00Z"}"#
+            .write(to: URL(fileURLWithPath: queued.heartbeatPath), atomically: true, encoding: .utf8)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(log.path)'
+        exit 99
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-adopt",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            mounts: [WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let adopted = manager.start(
+            command: "printf must-not-launch",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "interrupted-invocation"
+        )
+
+        #expect(adopted.jobID == queued.jobID)
+        #expect(adopted.status == .running)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+        #expect(try store.listTrustedRecords().count == 1)
+    }
+
+    @Test("Trusted listing rejects duplicate receipts and malformed owner identifiers")
+    func trustedListingRejectsDuplicateReceiptsAndMalformedOwners() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-owner-validation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        _ = try createManagedJob(in: store, command: "true", timeoutSeconds: nil, label: nil, progressProbe: nil, runtime: "docker", invocationID: "duplicate")
+        _ = try createManagedJob(in: store, command: "true", timeoutSeconds: nil, label: nil, progressProbe: nil, runtime: "docker", invocationID: "duplicate")
+
+        #expect(throws: (any Error).self) {
+            _ = try store.listTrustedRecords()
+        }
+        #expect(throws: WorkspaceManagedJobContractError.self) {
+            _ = try WorkspaceManagedJobStartReceipt.make(
+                taskID: "../task",
+                runID: managedJobTestRunID,
+                invocationID: "invocation",
+                containerName: "astra-test-job",
+                jobID: "job-1"
+            )
+        }
+        #expect(throws: WorkspaceManagedJobContractError.self) {
+            _ = try WorkspaceManagedJobStartReceipt.make(
+                taskID: managedJobTestTaskID,
+                runID: managedJobTestRunID,
+                invocationID: "bad\ninvocation",
+                containerName: "../../container",
+                jobID: "../job"
+            )
+        }
+    }
+
     @Test("Workspace managed job store canonicalizes uppercase job ids")
     func workspaceManagedJobStoreCanonicalizesUppercaseJobIDs() throws {
         let root = FileManager.default.temporaryDirectory
@@ -1118,7 +1358,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "echo ok",
             timeoutSeconds: nil,
             label: nil,
@@ -1175,7 +1415,7 @@ struct WorkspaceToolSupportTests {
 
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
         let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
-        var record = try store.create(
+        var record = try createManagedJob(in: store,
             command: "printf safe",
             timeoutSeconds: nil,
             label: nil,
@@ -1306,8 +1546,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-root",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-root",
-            runID: "run-root",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1319,7 +1559,13 @@ struct WorkspaceToolSupportTests {
             executor: DockerWorkspaceCommandExecutor(configuration: configuration)
         )
 
-        let job = manager.start(command: "printf should-not-run", timeoutSeconds: nil, label: nil, progressProbe: nil)
+        let job = manager.start(
+            command: "printf should-not-run",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "reject-symlinked-root"
+        )
 
         #expect(job.status == .failed)
         #expect(job.message?.contains("Workspace job file is unsafe or unreadable") == true)
@@ -1350,7 +1596,7 @@ struct WorkspaceToolSupportTests {
             let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
 
             #expect(throws: (any Error).self) {
-                _ = try store.create(
+                _ = try createManagedJob(in: store,
                     command: "printf should-not-write",
                     timeoutSeconds: nil,
                     label: nil,
@@ -1378,7 +1624,7 @@ struct WorkspaceToolSupportTests {
         let jobRoot = importedWorkspace.appendingPathComponent(".astra/tasks/task-safe/jobs", isDirectory: true)
         let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
 
-        let record = try store.create(
+        let record = try createManagedJob(in: store,
             command: "printf safe",
             timeoutSeconds: nil,
             label: nil,
@@ -1463,7 +1709,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "printf large-log",
             timeoutSeconds: nil,
             label: nil,
@@ -1489,7 +1735,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "printf invalid-log-bytes",
             timeoutSeconds: nil,
             label: nil,
@@ -1514,7 +1760,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "printf long-final-line",
             timeoutSeconds: nil,
             label: nil,
@@ -1539,7 +1785,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "printf boundary-log",
             timeoutSeconds: nil,
             label: nil,
@@ -1576,7 +1822,7 @@ struct WorkspaceToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = WorkspaceManagedJobStore(rootPath: root.path)
-        let job = try store.create(
+        let job = try createManagedJob(in: store,
             command: "printf newline-log",
             timeoutSeconds: nil,
             label: nil,
@@ -1623,8 +1869,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-cancel",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-cancel",
-            runID: "run-cancel",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1634,7 +1880,13 @@ struct WorkspaceToolSupportTests {
         let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
         let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
 
-        let job = manager.start(command: "sleep 60", timeoutSeconds: 7200, label: nil, progressProbe: nil)
+        let job = manager.start(
+            command: "sleep 60",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "cancel-process-group"
+        )
         _ = manager.cancel(jobID: job.jobID)
         executor.cleanup()
 
@@ -1740,8 +1992,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-map",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-3",
-            runID: "run-3",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1755,7 +2007,8 @@ struct WorkspaceToolSupportTests {
             command: "cd \(hostWorkspace.path) && dbt build",
             timeoutSeconds: 3600,
             label: "dbt",
-            progressProbe: "dbt"
+            progressProbe: "dbt",
+            invocationID: "map-host-workspace"
         )
         executor.cleanup()
 
@@ -1808,8 +2061,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-mixed",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-4",
-            runID: "run-4",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1832,9 +2085,12 @@ struct WorkspaceToolSupportTests {
         {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"cd \(root.path) && dbt build --select +death","timeout_seconds":7200,"label":"dbt death","progress_probe":"dbt"}}}
         """
         let start = try parseJSON(try #require(server.handleLine(startLine)))
+        let startResult = try structuredJobResult(start)
+        #expect(startResult.status == .running)
+        #expect(startResult.startReceipt?.invocationID == "2")
         let startText = try resultText(start)
-        #expect(startText.contains("status: running"))
-        #expect(startText.contains("command: cd /workspace && dbt build --select +death"))
+        #expect(!startText.contains("dbt build"))
+        #expect(!startText.contains(root.path))
         executor.cleanup()
 
         let logText = try String(contentsOf: log, encoding: .utf8)
@@ -1849,12 +2105,12 @@ struct WorkspaceToolSupportTests {
             .split(separator: "\n")
             .map { line -> [String: Any] in
                 try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
-            }
+        }
         #expect(records.contains { $0["toolName"] as? String == "workspace_shell" })
-        #expect(records.contains {
-            $0["toolName"] as? String == "workspace_job_start" &&
-                $0["mappedCommand"] as? String == "cd /workspace && dbt build --select +death"
-        })
+        let startRecords = records.filter { $0["toolName"] as? String == "workspace_job_start" }
+        #expect(startRecords.count == 1)
+        #expect(startRecords.allSatisfy { $0["mappedCommand"] == nil })
+        #expect(!activity.contains("dbt build --select +death"))
     }
 
     @Test("Docker workspace executor revalidates a started container before each command")
@@ -1952,6 +2208,16 @@ struct WorkspaceToolSupportTests {
         return try #require(content.first?["text"] as? String)
     }
 
+    private func structuredJobResult(_ object: [String: Any]) throws -> WorkspaceManagedJobStructuredResult {
+        let text = try resultText(object)
+        let decoded = try JSONDecoder().decode(
+            WorkspaceManagedJobStructuredResult.self,
+            from: Data(text.utf8)
+        )
+        try decoded.validate()
+        return decoded
+    }
+
     private func dockerConfiguration(docker: URL, root: URL) -> WorkspaceToolConfiguration {
         WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -1993,19 +2259,23 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
     private(set) var startedCommands: [String] = []
     private(set) var startedLabels: [String?] = []
     private(set) var startedProgressProbes: [String?] = []
+    private(set) var startedInvocationIDs: [String] = []
     private(set) var waitTimeouts: [TimeInterval] = []
     private var cancelled = false
+    var hasOwnedJob = false
 
     func start(
         command: String,
         timeoutSeconds _: TimeInterval?,
         label: String?,
-        progressProbe: String?
+        progressProbe: String?,
+        invocationID: String
     ) -> WorkspaceManagedJobRecord {
         startedCommands.append(command)
         startedLabels.append(label)
         startedProgressProbes.append(progressProbe)
-        return record(status: .running)
+        startedInvocationIDs.append(invocationID)
+        return record(status: .running, invocationID: invocationID)
     }
 
     func status(jobID _: String) -> WorkspaceManagedJobRecord {
@@ -2026,8 +2296,22 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
         return record(status: cancelled ? .cancelled : .running)
     }
 
-    private func record(status: WorkspaceManagedJobStatus) -> WorkspaceManagedJobRecord {
+    func hasTrustedNonterminalOwnedJob() -> Bool {
+        hasOwnedJob
+    }
+
+    private func record(
+        status: WorkspaceManagedJobStatus,
+        invocationID: String = "workspace-test-invocation"
+    ) -> WorkspaceManagedJobRecord {
         let now = Date(timeIntervalSince1970: 1_782_300_000)
+        let receipt = try! WorkspaceManagedJobStartReceipt.make(
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            invocationID: invocationID,
+            containerName: "astra-test-job",
+            jobID: "job-1"
+        )
         return WorkspaceManagedJobRecord(
             jobID: "job-1",
             command: "dbt build --select +death",
@@ -2041,7 +2325,33 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
             stdoutLogPath: "/tmp/job/stdout.log",
             stderrLogPath: "/tmp/job/stderr.log",
             heartbeatPath: "/tmp/job/heartbeat.json",
-            resultPath: "/tmp/job/result.json"
+            resultPath: "/tmp/job/result.json",
+            startReceipt: receipt
         )
     }
+}
+
+private let managedJobTestTaskID = "11111111-1111-4111-8111-111111111111"
+private let managedJobTestRunID = "22222222-2222-4222-8222-222222222222"
+
+private func createManagedJob(
+    in store: WorkspaceManagedJobStore,
+    command: String,
+    timeoutSeconds: TimeInterval?,
+    label: String?,
+    progressProbe: String?,
+    runtime: String,
+    invocationID: String = UUID().uuidString
+) throws -> WorkspaceManagedJobRecord {
+    try store.create(
+        command: command,
+        timeoutSeconds: timeoutSeconds,
+        label: label,
+        progressProbe: progressProbe,
+        runtime: runtime,
+        taskID: managedJobTestTaskID,
+        runID: managedJobTestRunID,
+        invocationID: invocationID,
+        containerName: "astra-test-job"
+    )
 }

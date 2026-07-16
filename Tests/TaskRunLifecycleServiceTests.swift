@@ -686,6 +686,71 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == TaskEventTypes.Task.interrupted.rawValue })
     }
 
+    @Test("Startup recovery preserves waiting external task and operation registration")
+    func startupRecoveryPreservesWaitingExternalOperation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-waiting-external-restart-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let taskID: UUID
+        let runID: UUID
+        let operationID: UUID
+
+        do {
+            let container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = container.mainContext
+            let task = AgentTask(title: "External", goal: "Wait for the managed job")
+            task.status = .waitingExternal
+            let run = TaskRun(task: task)
+            run.status = .completed
+            run.completedAt = Date(timeIntervalSince1970: 4_000)
+            run.typedStopReason = .externalOutcomePending
+            let operation = TaskExternalOperation(
+                taskID: task.id,
+                externalIdentity: "docker:\(task.id.uuidString):job-restart",
+                originatingRunID: run.id,
+                backendKindRaw: "workspace_managed_job",
+                backendJobID: "job-restart",
+                nextCheckAt: Date(timeIntervalSince1970: 4_100)
+            )
+            context.insert(task)
+            context.insert(run)
+            context.insert(operation)
+            try context.save()
+            taskID = task.id
+            runID = run.id
+            operationID = operation.id
+        }
+
+        let reopened = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = reopened.mainContext
+        let summary = TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: context)
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let operation = try #require(try context.fetch(FetchDescriptor<TaskExternalOperation>()).first)
+
+        #expect(!summary.hasChanges)
+        #expect(task.id == taskID)
+        #expect(task.status == .waitingExternal)
+        #expect(task.completedAt == nil)
+        #expect(task.runs.first?.id == runID)
+        #expect(task.runs.first?.status == .completed)
+        #expect(task.runs.first?.typedStopReason == .externalOutcomePending)
+        #expect(operation.id == operationID)
+        #expect(operation.taskID == taskID)
+        #expect(operation.monitoringState == .active)
+        #expect(operation.nextCheckAt == Date(timeIntervalSince1970: 4_100))
+        #expect(!task.events.contains { $0.type == TaskEventTypes.Task.interrupted.rawValue })
+    }
+
     @Test("Startup recovery can skip workspace auto-export")
     func startupRecoveryCanSkipWorkspaceAutoExport() throws {
         let root = FileManager.default.temporaryDirectory

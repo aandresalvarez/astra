@@ -3,10 +3,15 @@ import Foundation
 public struct MCPToolCall {
     public var name: String
     public var arguments: [String: Any]
+    /// The exact JSON-RPC request id rendered as a stable string. Tool
+    /// handlers use it to bind durable side effects to the invocation that
+    /// requested them instead of trusting provider-authored result text.
+    public var invocationID: String
 
-    public init(name: String, arguments: [String: Any]) {
+    public init(name: String, arguments: [String: Any], invocationID: String = "") {
         self.name = name
         self.arguments = arguments
+        self.invocationID = invocationID
     }
 }
 
@@ -90,7 +95,11 @@ public final class MCPServer {
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         diagnostics(.toolCall(toolName))
-        switch handleToolCall(MCPToolCall(name: toolName, arguments: arguments)) {
+        switch handleToolCall(MCPToolCall(
+            name: toolName,
+            arguments: arguments,
+            invocationID: stableInvocationID(id)
+        )) {
         case .result(let result):
             return encodeResult(id: id, result: result)
         case .error(let code, let message):
@@ -116,6 +125,17 @@ public final class MCPServer {
         case let value as NSNumber: return value
         case .none: return NSNull()
         default: return NSNull()
+        }
+    }
+
+    private func stableInvocationID(_ id: Any?) -> String {
+        switch id {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        default:
+            return ""
         }
     }
 

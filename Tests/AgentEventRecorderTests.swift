@@ -17,6 +17,45 @@ private func makeAgentEventRecorderContainer() throws -> ModelContainer {
 @Suite("Agent Event Recorder")
 @MainActor
 struct AgentEventRecorderTests {
+    @Test("Managed job start results never persist commands or secrets in task events")
+    func managedJobResultEventsAreRedacted() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Durable work", goal: "Run an external operation")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let recordingState = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeEvent(
+            .toolUse(
+                name: "workspace_job_start",
+                id: "managed-start",
+                inputSummary: "command=printf super-secret-value"
+            ),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        AgentEventRecorder.recordClaudeEvent(
+            .toolResult(
+                id: "managed-start",
+                content: #"{"secret":"super-secret-value","command":"printf private"}"#,
+                isError: false
+            ),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+
+        let persistedPayloads = task.events.map(\.payload).joined(separator: "|")
+        #expect(!persistedPayloads.contains("super-secret-value"))
+        #expect(!persistedPayloads.contains("printf private"))
+        #expect(persistedPayloads.contains("Managed external operation start result received."))
+    }
+
     @Test("Failed tool results are stored separately from successful output")
     func failedToolResultIsStructured() throws {
         let container = try makeAgentEventRecorderContainer()

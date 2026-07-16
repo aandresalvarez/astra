@@ -49,7 +49,7 @@ let package = Package(
         ),
         .target(
             name: "WorkspaceToolSupport",
-            dependencies: ["MCPServerKit"],
+            dependencies: ["ASTRACore", "MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
@@ -120,6 +120,7 @@ let package = Package(
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                "WorkspaceToolSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")

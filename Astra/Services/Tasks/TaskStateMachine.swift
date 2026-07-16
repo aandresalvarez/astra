@@ -509,6 +509,30 @@ enum TaskStateMachine {
         )
     }
 
+    /// Ends the provider-owned portion of a run while leaving the task open for
+    /// deterministic monitoring of a separately-owned external operation.
+    /// Git publication review intentionally continues to use `pendingUser` via
+    /// `pauseForExternalOutcome`; this transition is only for registered jobs.
+    @discardableResult
+    static func pauseForMonitoredExternalOperation(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        at date: Date = Date(),
+        savePolicy: SavePolicy = .none
+    ) -> TransitionResult {
+        apply(
+            task,
+            to: .waitingExternal,
+            intent: "external_operation_monitoring",
+            allowedFrom: [.running, .waitingExternal],
+            completedAt: .clear,
+            readState: .read,
+            modelContext: modelContext,
+            at: date,
+            savePolicy: savePolicy
+        )
+    }
+
     @discardableResult
     static func pauseForRuntimeReview(
         _ task: AgentTask,
@@ -733,7 +757,7 @@ enum TaskStateMachine {
 
     private static func completedAtRule(for status: TaskStatus, at date: Date) -> CompletedAtRule {
         switch status {
-        case .draft, .queued, .running, .pendingUser:
+        case .draft, .queued, .running, .waitingExternal, .pendingUser:
             return .clear
         case .completed, .failed, .cancelled, .budgetExceeded:
             return .set(date)
@@ -742,7 +766,7 @@ enum TaskStateMachine {
 
     private static func readState(for status: TaskStatus) -> ReadState {
         switch status {
-        case .draft, .queued, .running, .cancelled:
+        case .draft, .queued, .running, .waitingExternal, .cancelled:
             return .read
         case .pendingUser, .completed, .failed, .budgetExceeded:
             return .unread

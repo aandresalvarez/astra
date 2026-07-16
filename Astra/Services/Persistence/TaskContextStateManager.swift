@@ -1881,6 +1881,8 @@ public enum TaskContextStateManager {
             return "Review the result, approve it, or ask a follow-up."
         case .queued, .running:
             return "Continue the current run."
+        case .waitingExternal:
+            return "Continue monitoring the registered external operation."
         case .draft:
             return "Define or approve the goal before execution."
         case .cancelled:

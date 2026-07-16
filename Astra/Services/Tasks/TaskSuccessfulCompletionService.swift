@@ -13,6 +13,63 @@ enum TaskSuccessfulCompletionService {
         successPayload: String,
         permissionPolicy: PermissionPolicy
     ) -> Bool {
+        // Registration is normally created at the exact typed tool-result
+        // boundary. Reconciliation here closes the process-crash window where
+        // the backend record was committed but the provider/app exited before
+        // SwiftData registration.
+        TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+            task: task,
+            modelContext: modelContext
+        )
+
+        let operations = TaskExternalOperationRegistrationService.operations(
+            taskID: task.id,
+            modelContext: modelContext
+        )
+        if let validation = operations.first(where: {
+            $0.monitoringState == .validating && $0.originatingRunID != run.id
+        }) {
+            // A successful fresh provider run is the validation boundary.
+            // Process exit 0 only moved the operation to `validating`; it did
+            // not complete the task by itself.
+            validation.monitoringState = .completed
+            validation.updatedAt = Date()
+            validation.nextCheckAt = nil
+        } else if let operation = operations.first(where: {
+            $0.originatingRunID == run.id && $0.monitoringState == .active
+        }) {
+            pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
+            return false
+        } else if let operation = operations.first(where: { $0.monitoringState == .active }) {
+            // An ambiguity/reasoning wake does not supersede the still-running
+            // external operation. A successful explanatory provider turn
+            // returns the task to durable monitoring.
+            pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
+            return false
+        } else if let operation = operations.first(where: {
+            $0.monitoringState == .completed
+                && $0.executionState.isTerminalObservation
+                && $0.executionState != .processCompleted
+                && $0.originatingRunID != run.id
+        }) {
+            // A reasoning wake may explain cancellation/failure/interruption,
+            // but successful narration is not successful external work.
+            let completedAt = run.completedAt ?? Date()
+            run.completedAt = completedAt
+            run.recordExternalOutcomePending()
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: completedAt)
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "externalOperation.review.required",
+                payload: TaskEvent.payloadString([
+                    "execution_state": operation.executionState.rawValue,
+                    "operation_id": operation.id.uuidString
+                ]),
+                run: run
+            ))
+            return false
+        }
+
         if permissionPolicy != .autonomous {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,
@@ -43,6 +100,38 @@ enum TaskSuccessfulCompletionService {
             run: run
         ))
         return true
+    }
+
+    @MainActor
+    private static func pauseForMonitoring(
+        operation: TaskExternalOperation,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        let completedAt = run.completedAt ?? Date()
+        run.completedAt = completedAt
+        run.recordExternalOutcomePending()
+        TaskStateMachine.pauseForMonitoredExternalOperation(
+            task,
+            modelContext: modelContext,
+            at: completedAt
+        )
+        let alreadyRecorded = task.events.contains {
+            $0.run?.id == run.id && $0.type == "externalOperation.monitoring.started"
+        }
+        if !alreadyRecorded {
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "externalOperation.monitoring.started",
+                payload: TaskEvent.payloadString([
+                    "backend": operation.backendKindRaw,
+                    "external_identity": operation.externalIdentity,
+                    "originating_run_id": operation.originatingRunID.uuidString
+                ]),
+                run: run
+            ))
+        }
     }
 
     /// Re-runs non-publication completion gates after a durable external

@@ -169,6 +169,8 @@ struct MissionControlPresentation: Equatable {
         switch task.status {
         case .running:
             return ("Running", "Worker is active", .running)
+        case .waitingExternal:
+            return ("Monitoring", "External operation is registered", .running)
         case .completed:
             return ("Completed", "No validation contract recorded", .attention)
         case .pendingUser, .failed, .budgetExceeded:

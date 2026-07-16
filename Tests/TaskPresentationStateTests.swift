@@ -46,6 +46,16 @@ struct TaskPresentationStateTests {
         #expect(presentation.composerLabel == "Needs input")
     }
 
+    @Test("waiting external is monitored without claiming provider execution")
+    func waitingExternalIsMonitoringState() {
+        let presentation = TaskPresentationState.reviewPresentation(status: .waitingExternal, isClosed: false)
+
+        #expect(presentation.runOutcomeLabel == "Waiting for external operation")
+        #expect(presentation.reviewLabel == "Monitoring")
+        #expect(presentation.composerLabel == "External work monitored")
+        #expect(presentation.decisionTitle == "External work registered")
+    }
+
     @Test("quiet statuses do not show composer review labels",
           arguments: [
             TaskStatus.draft,

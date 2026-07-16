@@ -72,6 +72,14 @@ extension StatusPill {
         size: Size = .regular
     ) -> StatusPill? {
         switch status {
+        case .waitingExternal:
+            return StatusPill(
+                icon: "clock.arrow.circlepath",
+                label: "Monitoring",
+                color: Stanford.running,
+                help: "ASTRA is monitoring registered external work. No provider session is currently running.",
+                size: size
+            )
         case .pendingUser:
             return StatusPill(
                 icon: "hand.raised.circle.fill",

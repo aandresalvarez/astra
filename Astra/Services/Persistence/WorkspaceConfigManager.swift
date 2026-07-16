@@ -9,12 +9,12 @@ import ASTRAModels
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v10 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v11 configs remain importable through optional fields and legacy name fallback.
 public enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v11)
+    // MARK: - Config Schema (v12)
 
-    public static let currentVersion = 11
+    public static let currentVersion = 12
 
     private struct WorkspaceAppRunMirrorSnapshot {
         public var runs: [WorkspaceAppRun]
@@ -530,7 +530,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct TaskConfig: Codable, Sendable {
-        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil, externalOperations: [ExternalOperationConfig]? = nil) {
             self.id = id
             self.title = title
             self.goal = goal
@@ -578,6 +578,7 @@ public enum WorkspaceConfigManager {
             self.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
             self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
             self.rememberedWorkspaceCanvasItemRawValue = rememberedWorkspaceCanvasItemRawValue
+            self.externalOperations = externalOperations
         }
 
         public var id: String?
@@ -627,6 +628,25 @@ public enum WorkspaceConfigManager {
         public var runtimePermissionOpenRequestsJSON: String?
         public var runtimePermissionGrantsJSON: String?
         public var rememberedWorkspaceCanvasItemRawValue: String?
+        public var externalOperations: [ExternalOperationConfig]?
+    }
+
+    /// Safe workspace-mirror projection. Deliberately excludes commands,
+    /// process ids, paths, output, lease ownership, and backend messages.
+    public struct ExternalOperationConfig: Codable, Sendable {
+        public var id: String?
+        public var externalIdentity: String
+        public var originatingRunID: String
+        public var backendKind: String
+        public var backendJobID: String
+        public var originatingContextRevision: String?
+        public var executionState: String
+        public var observationHealth: String
+        public var monitoringState: String
+        public var nextCheckAt: Date?
+        public var generation: Int
+        public var createdAt: Date
+        public var updatedAt: Date
     }
 
     public struct WorkspaceAppConfig: Codable, Sendable {
@@ -959,7 +979,10 @@ public enum WorkspaceConfigManager {
         let templateConfigs = workspace.templates.map(templateConfig)
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
-        let taskConfigs = workspace.tasks.map(taskConfig)
+        let operationConfigsByTaskID = externalOperationConfigsForExport(workspace: workspace)
+        let taskConfigs = workspace.tasks.map { task in
+            taskConfig(task, externalOperations: operationConfigsByTaskID[task.id] ?? [])
+        }
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
         let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
         let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
@@ -1872,7 +1895,10 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func taskConfig(_ task: AgentTask) -> TaskConfig {
+    private static func taskConfig(
+        _ task: AgentTask,
+        externalOperations: [ExternalOperationConfig] = []
+    ) -> TaskConfig {
         let sortedRuns = task.runs.sorted {
             if $0.startedAt == $1.startedAt {
                 return $0.id.uuidString < $1.id.uuidString
@@ -1980,7 +2006,8 @@ public enum WorkspaceConfigManager {
             executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true),
             runtimePermissionOpenRequestsJSON: task.runtimePermissionOpenRequestsJSON == "[]" ? nil : task.runtimePermissionOpenRequestsJSON,
             runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON,
-            rememberedWorkspaceCanvasItemRawValue: task.rememberedWorkspaceCanvasItemRawValue
+            rememberedWorkspaceCanvasItemRawValue: task.rememberedWorkspaceCanvasItemRawValue,
+            externalOperations: externalOperations.isEmpty ? nil : externalOperations
         )
     }
 
@@ -2538,6 +2565,13 @@ public enum WorkspaceConfigManager {
             modelContext.insert(run)
             importedRuns.append(run)
         }
+
+        importQuarantinedExternalOperations(
+            config.externalOperations ?? [],
+            task: task,
+            importedRuns: importedRuns,
+            modelContext: modelContext
+        )
 
         for ec in config.events {
             let run = ec.runIndex.flatMap { index in

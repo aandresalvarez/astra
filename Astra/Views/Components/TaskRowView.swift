@@ -10,6 +10,7 @@ struct TaskRowView: View {
     private var statusLabel: String? {
         switch task.status {
         case .running: return "Running"
+        case .waitingExternal: return "Monitoring"
         case .pendingUser: return "Needs input"
         case .failed: return "Needs retry"
         case .budgetExceeded: return "Budget hit"
@@ -65,6 +66,7 @@ struct TaskRowView: View {
     private var statusColor: Color {
         switch task.status {
         case .running: return Stanford.lagunita
+        case .waitingExternal: return Stanford.lagunita
         case .pendingUser: return Stanford.pendingUser
         case .failed: return Stanford.failed
         case .budgetExceeded: return Stanford.poppy
@@ -87,6 +89,10 @@ struct TaskRowView: View {
             Circle()
                 .fill(Stanford.pendingUser)
                 .frame(width: 7, height: 7)
+        case .waitingExternal:
+            Image(systemName: "clock.arrow.circlepath")
+                .font(Stanford.ui(9, weight: .semibold))
+                .foregroundStyle(Stanford.running)
         case .failed:
             Circle()
                 .fill(Stanford.failed)

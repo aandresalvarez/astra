@@ -9,6 +9,7 @@ final class AppRuntimeController {
     let taskScheduler: TaskScheduler
     let pluginCatalog: PluginCatalog
     let preflightCache: PreflightCache
+    var externalOperationMonitor: TaskExternalOperationMonitorService?
 
     private var hasStartedThreadTitleBackfill = false
     private var hasRunStoreMaintenance = false
@@ -24,6 +25,7 @@ final class AppRuntimeController {
         self.taskScheduler = taskScheduler ?? TaskScheduler()
         self.pluginCatalog = pluginCatalog ?? PluginCatalog()
         self.preflightCache = preflightCache ?? PreflightCache()
+        self.externalOperationMonitor = nil
     }
 
     func applySettings(

@@ -91,7 +91,7 @@ enum PromptContextPreviewPresentation {
         switch status {
         case .pendingUser, .completed, .failed, .budgetExceeded, .cancelled:
             return true
-        case .draft, .queued, .running:
+        case .draft, .queued, .running, .waitingExternal:
             return false
         }
     }

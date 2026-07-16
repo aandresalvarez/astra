@@ -19,6 +19,7 @@ struct StatusPillTests {
     @Test("Each non-quiet status produces a pill with stable label")
     func labelsArePinned() {
         let expected: [(TaskStatus, String)] = [
+            (.waitingExternal, "Monitoring"),
             (.completed,      "Run finished"),
             (.failed,         "Run failed"),
             (.cancelled,      "Cancelled"),
@@ -33,7 +34,7 @@ struct StatusPillTests {
 
     @Test("Each pill carries help text suitable for the AX hint slot")
     func helpTextPresent() {
-        for status: TaskStatus in [.completed, .failed, .cancelled, .pendingUser, .budgetExceeded] {
+        for status: TaskStatus in [.waitingExternal, .completed, .failed, .cancelled, .pendingUser, .budgetExceeded] {
             let pill = StatusPill.forStatus(status)
             #expect(pill?.help != nil, "\(status) missing help")
             #expect((pill?.help?.count ?? 0) > 20,

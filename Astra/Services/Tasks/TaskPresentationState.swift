@@ -97,6 +97,17 @@ enum TaskPresentationState {
                 decisionTitle: "Run in progress",
                 decisionDetail: "The agent is currently working on this task."
             )
+        case .waitingExternal:
+            return TaskReviewPresentation(
+                runOutcomeLabel: outcome,
+                reviewLabel: "Monitoring",
+                composerLabel: "External work monitored",
+                composerIcon: "clock.arrow.circlepath",
+                composerHelp: "The provider run ended and ASTRA is monitoring registered external work.",
+                tone: .quiet,
+                decisionTitle: "External work registered",
+                decisionDetail: "ASTRA will update this task when the registered operation meaningfully changes."
+            )
         case .pendingUser:
             return TaskReviewPresentation(
                 runOutcomeLabel: outcome,
@@ -247,6 +258,7 @@ enum TaskPresentationState {
         case .draft: return "Draft"
         case .queued: return "Queued"
         case .running: return "Run in progress"
+        case .waitingExternal: return "Waiting for external operation"
         case .pendingUser: return "Waiting for input"
         case .completed: return "Run finished"
         case .failed: return "Run failed"

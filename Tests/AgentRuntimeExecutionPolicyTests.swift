@@ -56,6 +56,13 @@ struct AgentRuntimeAdapterRegistryTests {
 
 @Suite("Agent Runtime Execution Policy")
 struct AgentRuntimeExecutionPolicyTests {
+    @Test("External operation wake always requires a fresh provider session")
+    func externalOperationWakeRequiresFreshProviderSession() {
+        let policy = AgentRuntimeExecutionPolicy.externalOperationWake
+
+        #expect(policy.allowsNativeContinuation == false)
+    }
+
     @Test("Approved plan policy carries approved tools for every runtime")
     func approvedPlanPolicyCarriesApprovedToolsForEveryRuntime() {
         let approvedTools = ["Read", "Write"]

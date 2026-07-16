@@ -4207,6 +4207,7 @@ struct TaskMainView: View {
     private var composerPlaceholder: String {
         switch task.status {
         case .queued: return "Type to refine this task (moves back to draft)..."
+        case .waitingExternal: return "Send a message while external work is monitored..."
         case .completed: return "Ask a follow-up question..."
         case .pendingUser: return "Send a message to continue..."
         default: return "Send a message..."

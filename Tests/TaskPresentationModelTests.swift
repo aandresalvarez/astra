@@ -102,6 +102,13 @@ struct KanbanCategoryTests {
         #expect(KanbanCategory.review.includes(status: .running, isDone: false) == false)
     }
 
+    @Test("Waiting-external work stays open but is not provider-running")
+    func waitingExternalTasksAreOpenAndNotRunning() {
+        #expect(KanbanCategory.review.includes(status: .waitingExternal, isDone: false))
+        #expect(KanbanCategory.running.includes(status: .waitingExternal, isDone: false) == false)
+        #expect(KanbanCategory.done.includes(status: .waitingExternal, isDone: false) == false)
+    }
+
     @Test("Review sort surfaces pending-user tasks above terminal outcomes")
     func reviewSortPromotesPendingUser() {
         // Two terminal tasks with newer timestamps than the pending-user task:
@@ -123,9 +130,9 @@ struct KanbanCategoryTests {
         #expect(sorted.last?.status != .pendingUser)
     }
 
-    @Test("Review covers pending-user and all four terminal statuses")
+    @Test("Review covers monitored, pending-user, and terminal statuses")
     func reviewCoverageAcrossStatuses() {
-        for status in [TaskStatus.pendingUser, .completed, .failed, .cancelled, .budgetExceeded] {
+        for status in [TaskStatus.waitingExternal, .pendingUser, .completed, .failed, .cancelled, .budgetExceeded] {
             #expect(KanbanCategory.review.includes(status: status, isDone: false),
                     "Review should include status \(status)")
         }

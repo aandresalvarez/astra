@@ -481,6 +481,7 @@ final class TaskLifecycleCoordinator {
     func deleteTask(_ task: AgentTask) -> Workspace? {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
+        deleteExternalOperationRegistrations(taskIDs: Set([task.id]))
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         return workspace
@@ -545,6 +546,8 @@ final class TaskLifecycleCoordinator {
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
         removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
+        deleteExternalOperationRegistrations(taskIDs: Set(ws.tasks.map(\.id)))
+
         for connector in ws.connectors {
             connector.cleanupKeychain()
         }
@@ -559,6 +562,17 @@ final class TaskLifecycleCoordinator {
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
         return next
+    }
+
+    /// Deleting task-owned registration state is intentionally metadata-only.
+    /// External cancellation is available exclusively through the explicit
+    /// monitor/canceller action and is never a delete cascade side effect.
+    private func deleteExternalOperationRegistrations(taskIDs: Set<UUID>) {
+        guard !taskIDs.isEmpty else { return }
+        let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+        for operation in operations where taskIDs.contains(operation.taskID) {
+            modelContext.delete(operation)
+        }
     }
 
     private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {

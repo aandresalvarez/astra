@@ -156,6 +156,10 @@ struct TaskDetailView: View {
                         .buttonStyle(StanfordButtonStyle(isPrimary: false))
                 }
             }
+        case .waitingExternal:
+            Text("Monitoring external work")
+                .font(Stanford.ui(12, weight: .medium))
+                .foregroundStyle(Stanford.running)
 
         case .failed, .budgetExceeded:
             if let onRetry = onRetryTask {
@@ -178,6 +182,7 @@ struct StatusBadge: View {
         case .draft: return Stanford.driftwood
         case .queued: return Stanford.queued
         case .running: return Stanford.running
+        case .waitingExternal: return Stanford.running
         case .pendingUser: return Stanford.pendingUser
         case .completed: return Stanford.completed
         case .failed, .budgetExceeded: return Stanford.failed

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 @testable import HostControlToolSupport
 @testable import WorkspaceToolSupport
 
@@ -856,20 +857,22 @@ struct HostControlToolSupportTests {
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
 
-        let jobRoot = root.appendingPathComponent(".astra/tasks/task-5/jobs", isDirectory: true)
+        let workspaceTaskID = "11111111-1111-4111-8111-111111111111"
+        let workspaceRunID = "22222222-2222-4222-8222-222222222222"
+        let jobRoot = root.appendingPathComponent(".astra/tasks/\(workspaceTaskID)/jobs", isDirectory: true)
         let workspaceConfiguration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
             image: "astra/workspace:latest",
             containerName: "astra-mixed",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-5",
-            runID: "run-5",
+            taskID: workspaceTaskID,
+            runID: workspaceRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
             jobRootHostPath: jobRoot.path,
-            jobRootContainerPath: "/workspace/.astra/tasks/task-5/jobs",
+            jobRootContainerPath: "/workspace/.astra/tasks/\(workspaceTaskID)/jobs",
             diagnosticsHostPath: hostDiagnostics.path
         )
         let executor = DockerWorkspaceCommandExecutor(configuration: workspaceConfiguration)
@@ -888,8 +891,13 @@ struct HostControlToolSupportTests {
             "label": "dbt death",
             "progress_probe": "dbt"
         ])
-        #expect(try resultText(start).contains("command: cd /workspace && dbt build --select +death"))
-        executor.cleanup()
+        let startResult = try JSONDecoder().decode(
+            WorkspaceManagedJobStructuredResult.self,
+            from: Data(try resultText(start).utf8)
+        )
+        #expect(startResult.status == .running)
+        #expect(startResult.startReceipt?.taskID.uuidString == workspaceTaskID)
+        workspaceServer.cleanup()
 
         let hostLogText = try String(contentsOf: hostLog, encoding: .utf8)
         #expect(hostLogText.contains("gh pr view 123 --comments"))
@@ -900,6 +908,7 @@ struct HostControlToolSupportTests {
         let dockerLogText = try String(contentsOf: dockerLog, encoding: .utf8)
         #expect(dockerLogText.contains("exec -i --workdir /workspace astra-mixed sh -c command -v sqlfmt && sqlfmt --version"))
         #expect(dockerLogText.contains("exec -d --workdir /workspace astra-mixed sh -c"))
+        #expect(!dockerLogText.split(separator: "\n").contains("stop astra-mixed"))
         #expect(!dockerLogText.contains("gh pr"))
         #expect(!dockerLogText.contains("gcloud compute"))
         #expect(!dockerLogText.contains("ssh -o BatchMode=yes"))
@@ -919,10 +928,12 @@ struct HostControlToolSupportTests {
             .map { line -> [String: Any] in
                 try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
             }
-        #expect(workspaceRecords.contains {
+        let jobStartRecord = try #require(workspaceRecords.first {
             $0["toolName"] as? String == "workspace_job_start"
-                && $0["mappedCommand"] as? String == "cd /workspace && dbt build --select +death"
         })
+        #expect(jobStartRecord["command"] == nil)
+        #expect(jobStartRecord["mappedCommand"] == nil)
+        #expect(!workspaceActivity.contains("dbt build --select +death"))
     }
 
     @Test("Host control process tools clamp provider-selected timeouts")

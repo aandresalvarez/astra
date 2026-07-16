@@ -142,6 +142,7 @@ struct SidebarThreadRow: View {
         if showsUnreadDot { return "Unread result" }
         switch task.status {
         case .running:        return "Running"
+        case .waitingExternal: return "Monitoring"
         case .pendingUser:    return "Needs input"
         case .failed:         return "Needs retry"
         case .budgetExceeded: return "Budget hit"
@@ -314,6 +315,10 @@ struct SidebarThreadRow: View {
             Image(systemName: "person.crop.circle")
                 .font(Stanford.ui(12))
                 .foregroundStyle(Stanford.pendingUser)
+        case .waitingExternal:
+            Image(systemName: "clock.arrow.circlepath")
+                .font(Stanford.ui(12))
+                .foregroundStyle(Stanford.running)
         case .failed:
             Image(systemName: "exclamationmark.triangle")
                 .font(Stanford.ui(12))

@@ -171,6 +171,8 @@ struct TaskDecisionDockPresentation: Equatable {
         case .running:
             guard context.canCancel else { return passivePresentation(context, title: "Task running") }
             return runningPresentation(context)
+        case .waitingExternal:
+            return passivePresentation(context, title: "Monitoring external work")
         case .pendingUser:
             guard !context.pendingReviewState.isDismissed || context.pendingReviewState.dismissalReason != nil else {
                 return passivePresentation(context, title: "Review dismissed")
@@ -839,6 +841,7 @@ struct TaskDecisionDockPresentation: Equatable {
         case .draft: "square.and.pencil"
         case .queued: "play.circle"
         case .running: "dot.radiowaves.left.and.right"
+        case .waitingExternal: "clock.arrow.circlepath"
         case .pendingUser: "person.crop.circle.badge.questionmark"
         case .completed: "checkmark.circle"
         case .failed, .budgetExceeded: "exclamationmark.triangle"
@@ -849,7 +852,7 @@ struct TaskDecisionDockPresentation: Equatable {
     private static func taskStatusTone(_ context: Context) -> TaskDecisionDockTone {
         if context.isClosed { return .closed }
         return switch context.status {
-        case .running, .queued: .running
+        case .running, .waitingExternal, .queued: .running
         case .pendingUser, .completed, .cancelled: .attention
         case .failed, .budgetExceeded: .failed
         case .draft: .neutral

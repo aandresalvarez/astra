@@ -6,6 +6,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     var allowedToolsOverride: [String]?
     var permissionGrantsOverride: [PermissionGrant]?
     var providerRenderOverride: ProviderPolicyRender?
+    /// External-operation observations must be evaluated by a fresh provider
+    /// process. The Context Capsule remains authoritative, so native provider
+    /// continuation is an optimization that callers may explicitly disable.
+    var allowsNativeContinuation: Bool
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -13,12 +17,14 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         permissionPolicyOverride: PermissionPolicy? = nil,
         allowedToolsOverride: [String]? = nil,
         permissionGrantsOverride: [PermissionGrant]? = nil,
-        providerRenderOverride: ProviderPolicyRender? = nil
+        providerRenderOverride: ProviderPolicyRender? = nil,
+        allowsNativeContinuation: Bool = true
     ) {
         self.permissionPolicyOverride = permissionPolicyOverride
         self.allowedToolsOverride = allowedToolsOverride
         self.permissionGrantsOverride = permissionGrantsOverride
         self.providerRenderOverride = providerRenderOverride
+        self.allowsNativeContinuation = allowsNativeContinuation
     }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
@@ -34,9 +40,14 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             permissionPolicyOverride: PermissionPolicy(providerMode: render.permissionMode),
             allowedToolsOverride: render.allowedTools,
             permissionGrantsOverride: permissionGrantsOverride,
-            providerRenderOverride: render
+            providerRenderOverride: render,
+            allowsNativeContinuation: allowsNativeContinuation
         )
     }
+
+    static let externalOperationWake = AgentRuntimeExecutionPolicy(
+        allowsNativeContinuation: false
+    )
 
     static func approvedPlan(
         runtime _: AgentRuntimeID,

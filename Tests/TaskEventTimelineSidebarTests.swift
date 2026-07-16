@@ -624,6 +624,7 @@ struct SidebarGroupingTests {
         )
         #expect(!SidebarThreadRowLayout.isActionableStatus(.completed))
         #expect(SidebarThreadRowLayout.isActionableStatus(.running))
+        #expect(SidebarThreadRowLayout.isActionableStatus(.waitingExternal))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: false) == false)
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: true, isHovered: false, isSelected: false))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: true, isSelected: false))
@@ -987,10 +988,11 @@ struct EnumTests {
     @Test("TaskStatus has all expected cases")
     func taskStatusCases() {
         let all = TaskStatus.allCases
-        #expect(all.count == 8)
+        #expect(all.count == 9)
         #expect(all.contains(.draft))
         #expect(all.contains(.queued))
         #expect(all.contains(.running))
+        #expect(all.contains(.waitingExternal))
         #expect(all.contains(.pendingUser))
         #expect(all.contains(.completed))
         #expect(all.contains(.failed))

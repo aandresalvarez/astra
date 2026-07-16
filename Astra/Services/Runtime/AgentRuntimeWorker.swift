@@ -831,6 +831,7 @@ final class AgentRuntimeWorker {
             currentRun: run,
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
+            allowsNativeContinuation: executionPolicy.allowsNativeContinuation,
             currentLaunchSignature: launchSignature,
             grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest)
         )
@@ -1787,9 +1788,14 @@ final class AgentRuntimeWorker {
         currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: RunPhase,
+        allowsNativeContinuation: Bool,
         currentLaunchSignature: ProviderLaunchSignaturePayload,
         grantNeutralizingStrings: Set<String> = []
     ) -> NativeContinuationDecision {
+        guard allowsNativeContinuation else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "caller_requires_fresh_session", signatureMatched: false)
+        }
+
         guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)

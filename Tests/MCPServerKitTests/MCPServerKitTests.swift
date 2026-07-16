@@ -49,6 +49,7 @@ struct MCPServerKitTests {
         #expect(callResult["isError"] as? Bool == false)
         #expect(calls.map(\.name) == ["example.echo"])
         #expect(calls.first?.arguments["message"] as? String == "hello")
+        #expect(calls.first?.invocationID == "2")
 
         #expect(server.handleLine(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#) == nil)
         #expect(server.handleLine("   ") == nil)

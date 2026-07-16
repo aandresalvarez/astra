@@ -59,7 +59,7 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
         case .running:
             return !isDone && status == .running
         case .review:
-            return !isDone && [.pendingUser, .completed, .failed, .cancelled, .budgetExceeded].contains(status)
+            return !isDone && [.waitingExternal, .pendingUser, .completed, .failed, .cancelled, .budgetExceeded].contains(status)
         case .done:
             return isDone
         }
@@ -1687,6 +1687,11 @@ struct KanbanTaskCardView: View {
         guard let label = Self.outcomeLabel(for: task.status) else { return nil }
 
         switch task.status {
+        case .waitingExternal:
+            return OutcomeState(
+                label: label,
+                color: Stanford.running
+            )
         case .pendingUser:
             return OutcomeState(
                 label: label,
@@ -1803,6 +1808,8 @@ struct KanbanTaskCardView: View {
 
     static func outcomeLabel(for status: TaskStatus) -> String? {
         switch status {
+        case .waitingExternal:
+            return "Monitoring"
         case .pendingUser:
             return "Needs input"
         case .completed:

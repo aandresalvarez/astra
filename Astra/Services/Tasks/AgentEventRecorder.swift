@@ -15,6 +15,7 @@ final class AgentEventRecordingState {
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
+    private var toolUseNameByRunAndID: [String: String] = [:]
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -66,14 +67,21 @@ final class AgentEventRecordingState {
         }
     }
 
-    func recordToolUse(id: String, evidence: String, run: TaskRun) {
+    func recordToolUse(id: String, name: String, evidence: String, run: TaskRun) {
         guard !id.isEmpty else { return }
-        toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
+        let key = "\(run.id.uuidString)#\(id)"
+        toolUseEvidenceByRunAndID[key] = evidence
+        toolUseNameByRunAndID[key] = name
     }
 
     func toolUseEvidence(id: String, run: TaskRun) -> String? {
         guard !id.isEmpty else { return nil }
         return toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"]
+    }
+
+    func toolUseName(id: String, run: TaskRun) -> String? {
+        guard !id.isEmpty else { return nil }
+        return toolUseNameByRunAndID["\(run.id.uuidString)#\(id)"]
     }
 
     private func conversationKey(eventType: TaskEventType, run: TaskRun) -> String {
@@ -528,22 +536,50 @@ enum AgentEventRecorder {
 
         case .toolUse(let name, let id, let inputSummary):
             recordingState?.breakConversationCoalescing(for: run)
-            let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
+            let isManagedJobStart = DockerWorkspaceMCPProjection.canonicalToolName(
+                fromObservedToolName: name,
+                runtime: task.resolvedRuntimeID
+            ) == "workspace_job_start"
+            // A managed job command may contain credentials or private paths.
+            // The authoritative backend record owns it; task events keep only
+            // the invocation identity needed for audit correlation.
+            let suffix = isManagedJobStart ? "" : (inputSummary.map { ": \($0.prefix(300))" } ?? "")
             let payload = "Using tool: \(name)\(suffix)"
-            recordingState?.recordToolUse(id: id, evidence: payload, run: run)
+            recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run)
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
+            let toolName = recordingState?.toolUseName(id: toolID, run: run)
+            let isManagedJobStart = toolName.map {
+                DockerWorkspaceMCPProjection.canonicalToolName(
+                    fromObservedToolName: $0,
+                    runtime: task.resolvedRuntimeID
+                ) == "workspace_job_start"
+            } ?? false
+            if !isError, let toolName {
+                _ = TaskExternalOperationRegistrationService.registerStructuredStartResult(
+                    content,
+                    toolResultID: toolID,
+                    observedToolName: toolName,
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+            }
             if !content.isEmpty {
                 let eventType = isError ? TaskEventTypes.Tool.resultFailed : TaskEventTypes.Tool.result
                 let payload = isError
                     ? TaskEvent.payloadString(ToolResultFailurePayload(
                         toolID: toolID,
-                        message: String(content.prefix(10_000)),
+                        message: isManagedJobStart
+                            ? "Managed external operation start failed."
+                            : String(content.prefix(10_000)),
                         toolUseEvidence: recordingState?.toolUseEvidence(id: toolID, run: run)
                     ))
-                    : String(content.prefix(10_000))
+                    : (isManagedJobStart
+                        ? "Managed external operation start result received."
+                        : String(content.prefix(10_000)))
                 modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))
             }
 

@@ -6,6 +6,7 @@ public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case draft
     case queued
     case running
+    case waitingExternal = "waiting_external"
     case pendingUser = "pending_user"
     case completed
     case failed

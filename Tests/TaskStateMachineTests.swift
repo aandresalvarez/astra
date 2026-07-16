@@ -66,7 +66,7 @@ struct TaskStateMachineTests {
     func runtimeSessionStartOnlyConfirmsAdmittedRunningTask() throws {
         let container = try makeTaskStateMachineContainer()
         let context = container.mainContext
-        let rejectedStatuses: [TaskStatus] = [.draft, .queued, .pendingUser]
+        let rejectedStatuses: [TaskStatus] = [.draft, .queued, .waitingExternal, .pendingUser]
 
         for status in rejectedStatuses {
             let task = AgentTask(title: "Not admitted", goal: "Run me")
@@ -149,6 +149,34 @@ struct TaskStateMachineTests {
         #expect(task.updatedAt == now)
         #expect(task.completedAt == now)
         #expect(task.unreadAt == now)
+    }
+
+    @Test("Provider completion pauses an open task for external monitoring")
+    func providerCompletionPausesForExternalMonitoring() throws {
+        let container = try makeTaskStateMachineContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Monitor", goal: "Wait for the managed job")
+        task.status = .running
+        task.completedAt = Date(timeIntervalSince1970: 900)
+        task.unreadAt = Date(timeIntervalSince1970: 950)
+        context.insert(task)
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        let result = TaskStateMachine.pauseForMonitoredExternalOperation(
+            task,
+            modelContext: context,
+            at: now
+        )
+
+        #expect(result.changed)
+        #expect(result.from == .running)
+        #expect(result.to == .waitingExternal)
+        #expect(result.rejection == nil)
+        #expect(task.status == .waitingExternal)
+        #expect(task.updatedAt == now)
+        #expect(task.completedAt == nil)
+        #expect(task.unreadAt == nil)
+        #expect(!task.isTerminal)
     }
 
     @Test("Continuation admission failure restores previous terminal status")

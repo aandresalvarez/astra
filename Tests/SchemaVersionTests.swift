@@ -213,6 +213,43 @@ struct SchemaVersionTests {
         #expect(run.providerLaunchSignatureJSON == nil)
     }
 
+    @MainActor
+    @Test("SchemaV15 adds the external operation control plane without changing V14")
+    func v15AddsExternalOperationEntity() throws {
+        #expect(ASTRASchemaV14.models.count == 18)
+        #expect(!ASTRASchemaV14.models.contains { $0 == TaskExternalOperation.self })
+        #expect(ASTRASchemaV15.models.count == 19)
+        #expect(ASTRASchemaV15.models.contains { $0 == TaskExternalOperation.self })
+
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Wait for a durable job")
+        let run = TaskRun(task: task)
+        let operation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker:\(task.id.uuidString):job-1",
+            originatingRunID: run.id,
+            backendKindRaw: "workspace_managed_job",
+            backendJobID: "job-1"
+        )
+        context.insert(task)
+        context.insert(run)
+        context.insert(operation)
+        try context.save()
+
+        let stored = try #require(try context.fetch(FetchDescriptor<TaskExternalOperation>()).first)
+        #expect(stored.taskID == task.id)
+        #expect(stored.originatingRunID == run.id)
+        #expect(stored.executionState == .registered)
+        #expect(stored.observationHealth == .unknown)
+        #expect(stored.monitoringState == .active)
+    }
+
     @Test("SchemaV12 version identifier is 12.0.0")
     func v12VersionIdentifier() {
         #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
@@ -228,28 +265,33 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(14, 0, 0))
     }
 
+    @Test("SchemaV15 version identifier is 15.0.0")
+    func v15VersionIdentifier() {
+        #expect(ASTRASchemaV15.versionIdentifier == Schema.Version(15, 0, 0))
+    }
+
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 14)
-        #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 15)
+        #expect(ASTRASchemaV15.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV14")
+    @Test("Migration plan lists SchemaV1 through SchemaV15")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 14)
+        #expect(ASTRAMigrationPlan.schemas.count == 15)
     }
 
-    @Test("Migration plan has V1 to V14 lightweight stages")
+    @Test("Migration plan has V1 to V15 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 13)
+        #expect(ASTRAMigrationPlan.stages.count == 14)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 3)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 2)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 3)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 2)
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 4)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 3)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 4)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 3)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -268,7 +310,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 18)
+        #expect(container.schema.entities.count == 19)
     }
 
     @MainActor
@@ -395,6 +437,44 @@ struct SchemaVersionTests {
         #expect(task.workspace?.id == workspaceID)
         #expect(task.runs.count == 1)
         #expect(task.rememberedWorkspaceCanvasItemRawValue == nil)
+    }
+
+    @MainActor
+    @Test("Populated SchemaV14 store migrates to V15 with no invented operations")
+    func v14StoreMigratesToExternalOperationSchema() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v14-operation-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let taskID: UUID
+
+        do {
+            let oldContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV14.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = oldContainer.mainContext
+            let task = AgentTask(title: "V14 Task", goal: "Preserve task history")
+            let run = TaskRun(task: task)
+            run.status = .completed
+            run.completedAt = Date(timeIntervalSince1970: 1_000)
+            context.insert(task)
+            context.insert(run)
+            try context.save()
+            taskID = task.id
+        }
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(task.id == taskID)
+        #expect(task.runs.count == 1)
+        #expect(try context.fetchCount(FetchDescriptor<TaskExternalOperation>()) == 0)
     }
 
     private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {

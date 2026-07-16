@@ -57,6 +57,19 @@ struct PromptContextPreviewPresentationTests {
         #expect(request.followUpMessage == nil)
     }
 
+    @Test("Waiting external tasks do not imply a provider prompt")
+    func waitingExternalHasNoPendingProviderPrompt() {
+        let request = PromptContextPreviewPresentation.request(
+            taskStatus: .waitingExternal,
+            hasProviderSession: false,
+            messageText: "",
+            attachedFiles: []
+        )
+
+        #expect(request.kind == .unavailable)
+        #expect(request.followUpMessage == nil)
+    }
+
     @Test("Stopped tasks with provider session preview resume follow-up")
     func stoppedTasksWithProviderSessionPreviewResumeFollowUp() {
         let request = PromptContextPreviewPresentation.request(
