@@ -6,28 +6,38 @@ struct MarkdownFenceTracker {
     private var openFence: (character: Character, length: Int)?
 
     mutating func protects(_ line: String) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard let descriptor = Self.fenceDescriptor(for: trimmed) else {
+        guard let descriptor = Self.fenceDescriptor(for: line) else {
             return openFence != nil
         }
 
         if let openFence {
             if descriptor.character == openFence.character,
-               descriptor.length >= openFence.length {
+               descriptor.length >= openFence.length,
+               descriptor.hasWhitespaceOnlySuffix {
                 self.openFence = nil
             }
         } else {
-            openFence = descriptor
+            openFence = (descriptor.character, descriptor.length)
         }
         return true
     }
 
-    private static func fenceDescriptor(for line: String) -> (character: Character, length: Int)? {
-        guard let character = line.first, character == "`" || character == "~" else {
+    private static func fenceDescriptor(
+        for line: String
+    ) -> (character: Character, length: Int, hasWhitespaceOnlySuffix: Bool)? {
+        let leadingSpaces = line.prefix(while: { $0 == " " }).count
+        guard leadingSpaces <= 3 else { return nil }
+        let candidate = line.dropFirst(leadingSpaces)
+        guard let character = candidate.first, character == "`" || character == "~" else {
             return nil
         }
-        let length = line.prefix(while: { $0 == character }).count
+        let length = candidate.prefix(while: { $0 == character }).count
         guard length >= 3 else { return nil }
-        return (character, length)
+        let suffix = candidate.dropFirst(length)
+        return (
+            character,
+            length,
+            suffix.allSatisfy { $0 == " " || $0 == "\t" }
+        )
     }
 }

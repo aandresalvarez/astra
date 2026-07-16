@@ -495,6 +495,23 @@ struct MarkdownTextViewTests {
         #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
     }
 
+    @Test("Fence tracking requires a whitespace-only closing suffix")
+    func fenceTrackingRejectsClosingRunsWithCodeSuffixes() {
+        let source = "````\n````not a close\nFoo.Bar(mode:.Fast)\n````"
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: source)
+
+        #expect(presentation.answerText == source)
+    }
+
+    @Test("Indented code-block fence text cannot open a fenced block")
+    func indentedFenceTextDoesNotOpenFence() {
+        let source = "Example:\n    ```\nFix.It now."
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: source)
+
+        #expect(presentation.answerText.contains("    ```"))
+        #expect(presentation.answerText.contains("Fix. It now."))
+    }
+
     @Test("Display preparation recovers numbered runs beyond two digits")
     func displayPreparationRecoversThreeDigitNumberedRuns() {
         let source = (1...150).map { "\($0). item \($0) has substantial content" }.joined(separator: " ")

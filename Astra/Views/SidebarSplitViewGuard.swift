@@ -49,7 +49,13 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
     final class Coordinator {
         var minimumExpandedWidth: CGFloat
-        var isRevealInProgress: Bool
+        var isRevealInProgress: Bool {
+            didSet {
+                if isRevealInProgress {
+                    isAwaitingReadableRevealWidth = true
+                }
+            }
+        }
         var onReadableWidth: (CGFloat) -> Void
         var onCollapse: () -> Void
 
@@ -58,6 +64,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
         private var observations: [NSObjectProtocol] = []
         private var isCollapsing = false
         private var didApplyHoldingPriority = false
+        private var isAwaitingReadableRevealWidth: Bool
 
         init(
             minimumExpandedWidth: CGFloat,
@@ -67,6 +74,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
         ) {
             self.minimumExpandedWidth = minimumExpandedWidth
             self.isRevealInProgress = isRevealInProgress
+            self.isAwaitingReadableRevealWidth = isRevealInProgress
             self.onReadableWidth = onReadableWidth
             self.onCollapse = onCollapse
         }
@@ -157,14 +165,24 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
         private func enforceReadableSidebarWidth() {
             guard let sidebarWidth = observedSidebarSubview?.frame.width else { return }
+            handleObservedSidebarWidth(sidebarWidth)
+        }
+
+        /// Keeps AppKit's delayed narrow reveal frames from being interpreted as
+        /// a user collapse after the model's liveness watchdog expires. Only a
+        /// real readable frame retires this guard; the model remains independently
+        /// responsive to explicit user intent and its other width input.
+        func handleObservedSidebarWidth(_ sidebarWidth: CGFloat) {
             guard sidebarWidth.isFinite else { return }
             if SidebarColumnLayout.shouldCompleteSidebarReveal(
                 width: sidebarWidth,
                 minimumExpandedWidth: minimumExpandedWidth
             ) {
+                isAwaitingReadableRevealWidth = false
                 onReadableWidth(sidebarWidth)
                 return
             }
+            guard !isAwaitingReadableRevealWidth else { return }
             guard SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
                 sidebarWidth,
                 minimumExpandedWidth: minimumExpandedWidth,
