@@ -1560,9 +1560,7 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     private static var defaultProfilePath: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support")
-            .appendingPathComponent(AppChannel.current.appSupportDirectoryName)
+        AppChannelStoragePaths.applicationSupportDirectory(for: .current)
             .appendingPathComponent("ControlledBrowser")
             .appendingPathComponent("Default")
             .path

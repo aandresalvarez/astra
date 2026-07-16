@@ -217,20 +217,26 @@ struct CodexCLIRuntimeTests {
         #expect(plan.parsesJSONLines)
     }
 
-    @Test("Codex adapter keeps read-only task inputs out of writable --add-dir roots")
+    @Test("Codex adapter exposes read-only inputs only from the typed boundary contract")
     @MainActor
-    func codexAdapterKeepsReadOnlyTaskInputsOutOfAddDirScope() throws {
+    func codexAdapterUsesTypedReadOnlyInputBoundaryContract() throws {
         let fileManager = FileManager.default
         let workspaceRoot = fileManager.temporaryDirectory
             .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
         let inputDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("astra-codex-input-\(UUID().uuidString)", isDirectory: true)
+        let inputFileDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-file-input-\(UUID().uuidString)", isDirectory: true)
+        let inputFile = inputFileDirectory.appendingPathComponent("attached.pdf")
         defer {
             try? fileManager.removeItem(at: workspaceRoot)
             try? fileManager.removeItem(at: inputDirectory)
+            try? fileManager.removeItem(at: inputFileDirectory)
         }
         try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: inputDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: inputFileDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: inputFile)
 
         let workspace = Workspace(name: "Codex Workspace", primaryPath: workspaceRoot.path)
         let task = AgentTask(
@@ -258,6 +264,130 @@ struct CodexCLIRuntimeTests {
             .filter { plan.arguments[$0] == "--add-dir" }
             .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
         #expect(!addDirValues.contains(inputDirectory.standardizedFileURL.path))
+
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: task.id,
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: workspaceRoot.path,
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: inputDirectory.path,
+                    access: .read,
+                    source: .taskInput,
+                    reason: "Task input selected by the user.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                ),
+                RuntimePathGrant(
+                    path: inputFile.path,
+                    access: .read,
+                    source: .userAttachment,
+                    reason: "File attached by the user.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                )
+            ]
+        )
+        let boundaryPlan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(
+            context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspaceRoot.path,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                launchResourcePlan: launchResourcePlan
+            )
+        )
+        let boundaryAddDirValues = boundaryPlan.arguments.indices
+            .filter { boundaryPlan.arguments[$0] == "--add-dir" }
+            .compactMap { boundaryPlan.arguments.indices.contains($0 + 1) ? boundaryPlan.arguments[$0 + 1] : nil }
+        #expect(boundaryAddDirValues.contains(inputDirectory.standardizedFileURL.path))
+        #expect(!boundaryAddDirValues.contains(inputFileDirectory.standardizedFileURL.path))
+        #expect(!boundaryAddDirValues.contains(inputFile.standardizedFileURL.path))
+        #expect(boundaryPlan.commandPlannedFields["provider_native_read_only_directory_count"] == "1")
+        #expect(boundaryPlan.commandPlannedFields["provider_native_unreachable_read_only_file_count"] == "1")
+    }
+
+    @Test("Codex --add-dir never receives a non-input read grant (write-access regression)")
+    @MainActor
+    func codexAddDirExcludesNonInputReadGrants() throws {
+        // `--add-dir` grants WRITE access in Codex's own sandbox (Codex reads
+        // the host filesystem ambiently regardless of --add-dir). A read-only,
+        // non-input grant (e.g. a connector support directory) must never be
+        // forwarded there, or a connector-only run makes it Codex-writable
+        // without the read-only input boundary forcing a Seatbelt wrap to deny
+        // that write back out.
+        let fileManager = FileManager.default
+        let workspaceRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
+        let connectorDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-connector-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceRoot)
+            try? fileManager.removeItem(at: connectorDirectory)
+        }
+        try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: connectorDirectory, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Codex Workspace", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Codex",
+            goal: "Use the gcloud connector",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: task.id,
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: workspaceRoot.path,
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: connectorDirectory.path,
+                    access: .read,
+                    source: .connector,
+                    reason: "gcloud SDK support directory.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                )
+            ]
+        )
+        let plan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(
+            context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspaceRoot.path,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                launchResourcePlan: launchResourcePlan
+            )
+        )
+        let addDirValues = plan.arguments.indices
+            .filter { plan.arguments[$0] == "--add-dir" }
+            .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
+        #expect(!addDirValues.contains(connectorDirectory.standardizedFileURL.path))
     }
 
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")

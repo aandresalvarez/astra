@@ -757,6 +757,9 @@ public struct ASTRAApp: App {
             ])
         }
         if startupBlocker == nil {
+            if !isUITesting {
+                LegacyWorkspaceCanvasItemPreferenceMigration.migrate(modelContainer: modelContainer)
+            }
             StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
         }
     }

@@ -633,6 +633,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// can't be reduced to a replayable scoped grant. Hard denies still stop.
     let liveApprovalsActive: Bool
     let astraSandboxApplied: Bool
+    let readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
 
     private let lock = NSLock()
 
@@ -709,7 +710,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
         liveApprovalsActive: Bool = false,
-        astraSandboxApplied: Bool = false
+        astraSandboxApplied: Bool = false,
+        readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -725,6 +727,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.policyGuard = policyGuard
         self.liveApprovalsActive = liveApprovalsActive
         self.astraSandboxApplied = astraSandboxApplied
+        self.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -795,7 +798,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             )
         }
 
-        if case .toolResult(let toolID, let content, _) = parsed {
+        if case .toolResult(let toolID, let content, let isError) = parsed {
             if !toolID.isEmpty {
                 activeToolUseIDs.remove(toolID)
             }
@@ -815,7 +818,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 )
             }
             if let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: content) {
-                return recordOSSandboxFileDenial(denial, toolID: toolID, process: process)
+                return recordOSSandboxFileDenial(denial, toolID: toolID, toolResultWasError: isError, process: process)
             }
             let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
             if isKnownBrowserTool {
@@ -1681,27 +1684,27 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private func recordOSSandboxFileDenial(
         _ denial: RuntimeSandboxFileDenial,
         toolID: String?,
+        toolResultWasError: Bool,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        guard astraSandboxApplied,
-              !_policyViolation,
-              !_policyApprovalRequired,
-              _runtimeStopReason == nil else { return false }
+        // Trust a receipt-protected write-denial as terminal only from a FAILED tool
+        // result: the marker can be content the agent read from a protected input.
+        guard astraSandboxApplied
+                || (toolResultWasError && denial.operation == .write && readOnlyBoundaryReceipt?.protects(denial.path) == true),
+              !_policyViolation, !_policyApprovalRequired, _runtimeStopReason == nil else { return false }
         let context = toolContext(for: toolID)
         let toolName = Self.nonEmpty(context?.name) ?? "Tool"
-        let requestText = context?.summary
-            .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
-            ?? ""
+        let requestText = RuntimeSandboxDenialApproval.requestText(for: context?.summary)
         let decision = RuntimeSandboxDenialApproval.resolve(
-            denial: denial,
-            toolName: toolName,
-            requestText: requestText,
+            denial: denial, toolName: toolName, requestText: requestText,
             approvalWasApplied: policyGuard?.hasAppliedApprovalGrants([
                 .sandboxPath(path: ExecutionSandbox.canonicalize(denial.path) ?? denial.path, access: "read")
-            ]) == true
+            ]) == true,
+            readOnlyBoundaryReceipt: readOnlyBoundaryReceipt, denialReflectsToolFailure: toolResultWasError
         )
         guard case .request(let request, let grants) = decision else {
             guard case .terminal(let reason, let message) = decision else { return false }
+            RuntimeSandboxDenialAudit.recordTerminal(reason: reason, denial: denial, toolName: toolName, taskID: taskID)
             _runtimeStopReason = reason
             _runtimeStopMessage = message
             process?.terminate()

@@ -210,6 +210,7 @@ struct WorkspacePersistenceTests {
             decoding: try JSONEncoder().encode([grantPayload]),
             as: UTF8.self
         )
+        sourceTask.rememberedWorkspaceCanvasItemRawValue = "markdown"
         sourceRun.providerLaunchSignatureJSON = #"{"runtime":"claudeCode","model":"claude-sonnet-4-6"}"#
         try context.save()
 
@@ -237,6 +238,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.updatedAt == historicalTaskUpdatedAt)
         #expect(config.tasks?.first?.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
         #expect(config.tasks?.first?.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(config.tasks?.first?.rememberedWorkspaceCanvasItemRawValue == "markdown")
         #expect(config.tasks?.first?.runs.first?.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
         #expect(config.enabledPackIDs == ["astra.pack.devops"])
@@ -288,6 +290,7 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.artifacts.first?.id == workspace.tasks.first?.artifacts.first?.id)
         #expect(importedTask.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
         #expect(importedTask.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(importedTask.rememberedWorkspaceCanvasItemRawValue == "markdown")
         #expect(importedRun.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: importedTask))
         #expect(TaskRuntimePermissionGrants.approvedGrants(for: importedTask) == [approvalGrant])

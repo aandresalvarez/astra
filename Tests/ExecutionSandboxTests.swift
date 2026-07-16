@@ -755,6 +755,7 @@ struct ExecutionSandboxTests {
         let profile = ExecutionSandbox.makeProfile(
             writableRootCount: 1,
             protectedWriteDenyRootCount: 2,
+            protectedWriteAncestorDenyRootCount: 1,
             allowNetwork: true,
             readScope: .enforce
         )
@@ -762,6 +763,7 @@ struct ExecutionSandboxTests {
             profile: profile,
             writableRoots: ["/tmp/copilot-home"],
             protectedWriteDenyRoots: ["/tmp/copilot-home/config.json", "/tmp/copilot-home/mcp-config.json"],
+            protectedWriteAncestorDenyRoots: ["/tmp/copilot-home"],
             executablePath: "/bin/echo",
             arguments: ["hi"]
         )
@@ -771,12 +773,15 @@ struct ExecutionSandboxTests {
         let denyRange = profile.range(of: "(deny file-write*\n    (literal (param \"PROTECTED_WRITE_DENY_ROOT_0\"))")
         let allowRange = profile.range(of: "(allow file-write*")
         #expect(denyRange != nil)
+        #expect(profile.contains("(subpath (param \"PROTECTED_WRITE_DENY_ROOT_0\"))"))
+        #expect(profile.contains("(deny file-write-unlink\n    (literal (param \"PROTECTED_WRITE_ANCESTOR_DENY_ROOT_0\"))"))
         #expect(allowRange != nil)
         if let denyRange, let allowRange {
             #expect(allowRange.lowerBound < denyRange.lowerBound)
         }
         #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_0=/tmp/copilot-home/config.json"))
         #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_1=/tmp/copilot-home/mcp-config.json"))
+        #expect(args.contains("PROTECTED_WRITE_ANCESTOR_DENY_ROOT_0=/tmp/copilot-home"))
     }
 
     @Test("Codex launch roots enter strict readable and writable allowlists")

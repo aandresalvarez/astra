@@ -208,11 +208,16 @@ enum IsolationService {
 
     // MARK: - Copy
 
-    static func copyScratchRoot(fileManager: FileManager = .default) -> URL {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return appSupport
-            .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
+    static func copyScratchRoot(
+        channel: AppChannel = .current,
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        AppChannelStoragePaths.applicationSupportDirectory(
+            for: channel,
+            environment: environment,
+            fileManager: fileManager
+        )
             .appendingPathComponent("WorkspaceCopies", isDirectory: true)
     }
 

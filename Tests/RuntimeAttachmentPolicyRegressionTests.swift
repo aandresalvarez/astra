@@ -21,6 +21,10 @@ private final class AttachmentPolicyMockProcess: AgentRuntimeProcessControl {
 struct RuntimeAttachmentPolicyRegressionTests {
     @Test("Preflight projects user inputs and approved sandbox retries without exposing git-credential paths")
     func manifestProjectsOnlyUserSelectedReadPaths() throws {
+        let suiteName = "astra-read-only-input-boundary-\(UUID().uuidString)"
+        let sandboxDefaults = UserDefaults(suiteName: suiteName)!
+        sandboxDefaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+        defer { sandboxDefaults.removePersistentDomain(forName: suiteName) }
         let fileManager = FileManager.default
         let workspaceRoot = fileManager.temporaryDirectory
             .appendingPathComponent("astra-policy-workspace-\(UUID().uuidString)", isDirectory: true)
@@ -97,6 +101,7 @@ struct RuntimeAttachmentPolicyRegressionTests {
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
             launchResourcePlan: plan,
+            sandboxSettingsDefaults: sandboxDefaults,
             modelContext: context
         )
         let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest)
@@ -107,6 +112,11 @@ struct RuntimeAttachmentPolicyRegressionTests {
         ]))
         #expect(!manifest.additionalReadOnlyPaths.contains(providerDependency.standardizedFileURL.path))
         #expect(!manifest.additionalPaths.contains { contains(attachment.path, root: $0) })
+        #expect(manifest.sandboxEvidence?.storedEnforcement == ExecutionSandboxEnforcement.off.rawValue)
+        #expect(manifest.sandboxEvidence?.effectiveEnforcement == ExecutionSandboxEnforcement.strict.rawValue)
+        #expect(manifest.sandboxEvidence?.effectiveReadScope == ExecutionSandboxReadScope.open.rawValue)
+        #expect(manifest.sandboxEvidence?.resolutionReason == ExecutionSandboxResolutionReason.readOnlyInputBoundary.rawValue)
+        #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
         #expect(manifest.providerRender.allowedTools.contains("Read"))
         #expect(manifest.providerRender.askFirstTools.contains("Write"))
         #expect(guardUnderTest.violation(for: .toolUse(
@@ -190,24 +200,31 @@ struct RuntimeAttachmentPolicyRegressionTests {
         #expect(broadViolation.violationCategory == "read_only_input_mutation")
         #expect(!broadViolation.requiresApproval)
 
-        // Broad/Auto mode skips normal per-tool validation for every tool
-        // except Write/Edit/MultiEdit. A shell command that plainly deletes
-        // or overwrites the same read-only attachment must still be caught -
-        // provider file tools are stopped above, so a bare `rm`/redirect
-        // shouldn't be the silent bypass.
+        // Shell intent is no longer inferred from command text. The mandatory
+        // launch boundary is the authority and denies the actual syscall; the
+        // policy guard retains deterministic structured-tool diagnostics only.
         let broadGuard = AgentRuntimePolicyGuard(manifest: broadManifest)
-        let shellRemoveViolation = try #require(broadGuard.violation(for: .toolUse(
+        #expect(broadGuard.violation(for: .toolUse(
             name: "Bash", id: "bash-rm", input: ["command": "rm \(attachment.path)"]
-        )))
-        #expect(shellRemoveViolation.violationCategory == "read_only_input_mutation")
-        #expect(shellRemoveViolation.detail == attachment.path)
+        )) == nil)
         #expect(broadGuard.violation(for: .toolUse(
             name: "Bash", id: "bash-cat", input: ["command": "cat \(attachment.path)"]
         )) == nil)
+
+        // Exact PR #315 regression: cleaning unrelated scratch space must not
+        // make a later archive read look like an attachment mutation.
+        let inspectArchive = """
+        cd /tmp && rm -rf dcq_inspect && mkdir dcq_inspect && cd dcq_inspect && unzip -q \(attachment.path)
+        """
+        #expect(broadGuard.violation(for: .toolUse(
+            name: "Bash",
+            id: "bash-inspect-archive",
+            input: ["command": inspectArchive]
+        )) == nil)
     }
 
-    @Test("Docker broad shell guard translates container paths before checking read-only inputs")
-    func dockerBroadShellGuardTranslatesReadOnlyInputPaths() throws {
+    @Test("Docker shell text remains non-authoritative for read-only inputs")
+    func dockerShellTextDoesNotReintroduceMutationParsing() throws {
         let workspacePath = "/tmp/astra-policy-guard"
         let hostInputPath = "\(workspacePath)/attached.md"
         let manifest = makeManifest(
@@ -227,13 +244,11 @@ struct RuntimeAttachmentPolicyRegressionTests {
         ])
         let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest, pathMapper: mapper)
 
-        let violation = try #require(guardUnderTest.violation(for: .toolUse(
+        #expect(guardUnderTest.violation(for: .toolUse(
             name: "Bash",
             id: "docker-rm",
             input: ["command": "rm /workspace/attached.md"]
-        )))
-        #expect(violation.violationCategory == "read_only_input_mutation")
-        #expect(violation.detail == hostInputPath)
+        )) == nil)
         #expect(guardUnderTest.violation(for: .toolUse(
             name: "Bash",
             id: "docker-cat",

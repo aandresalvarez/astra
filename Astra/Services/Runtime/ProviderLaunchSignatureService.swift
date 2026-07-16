@@ -30,6 +30,10 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
     let browserAdapters: [String]
     let promptSchemaVersion: String
     let executionEnvironmentFingerprint: String?
+    /// A provider-native continuation is only safe while its launch-time
+    /// filesystem reachability contract is unchanged. Optional preserves
+    /// decoding of signatures recorded before this field existed.
+    let readOnlyResourceContractDigest: String?
 
     var signatureValue: String {
         [
@@ -58,7 +62,8 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
             "mcp=\(mcpServerIDs.joined(separator: ","))",
             "browserAdapters=\(browserAdapters.joined(separator: ","))",
             "prompt=\(promptSchemaVersion)",
-            "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
+            "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)",
+            "readOnlyResources=\(readOnlyResourceContractDigest ?? "none")"
         ].joined(separator: "\u{1f}")
     }
 }
@@ -71,7 +76,8 @@ enum ProviderLaunchSignatureService {
         for task: AgentTask,
         manifest: RunPermissionManifest,
         contextText: String,
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot,
+        launchResourcePlan: TaskLaunchResourcePlan
     ) -> ProviderLaunchSignaturePayload {
         let scope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
@@ -95,6 +101,10 @@ enum ProviderLaunchSignatureService {
             guard !command.isEmpty else { return nil }
             return command
         }
+        // Build the read-only contract once: it can run a recursive directory
+        // stat-walk, and accessing `.isRequired` then `.digest` separately would
+        // do that work twice for the same launch.
+        let readOnlyResourceContract = launchResourcePlan.readOnlyResourceContract
         return ProviderLaunchSignaturePayload(
             version: 1,
             runtimeID: manifest.providerID.rawValue,
@@ -121,7 +131,10 @@ enum ProviderLaunchSignatureService {
             mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
             browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
             promptSchemaVersion: "context_capsule_v2",
-            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
+            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint,
+            readOnlyResourceContractDigest: readOnlyResourceContract.isRequired
+                ? readOnlyResourceContract.digest
+                : nil
         )
     }
 

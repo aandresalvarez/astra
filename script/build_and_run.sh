@@ -172,9 +172,9 @@ APP_VERSION="${ASTRA_VERSION:-$(default_app_version)}"
 APP_BUILD="${ASTRA_BUILD:-$(default_app_build "$APP_VERSION")}"
 ASTRA_GIT_COMMIT="${ASTRA_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
 ASTRA_BUILD_DATE="${ASTRA_BUILD_DATE:-$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')}"
-ASTRA_SCHEMA_VERSION="$(/usr/bin/sed -n 's/.*public static let currentVersion = \([0-9][0-9]*\).*/\1/p' "$ROOT_DIR/Astra/Models/SchemaVersions.swift" | /usr/bin/tail -n 1)"
+ASTRA_SCHEMA_VERSION="$(/usr/bin/sed -n 's/.*public static let currentVersion = \([0-9][0-9]*\).*/\1/p' "$ROOT_DIR/Astra/Models/CurrentSchema.swift" | /usr/bin/tail -n 1)"
 if [[ ! "$ASTRA_SCHEMA_VERSION" =~ ^[0-9]+$ ]]; then
-  echo "Unable to derive ASTRA schema version from SchemaVersions.swift." >&2
+  echo "Unable to derive ASTRA schema version from CurrentSchema.swift." >&2
   exit 2
 fi
 

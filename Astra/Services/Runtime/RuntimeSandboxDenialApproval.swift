@@ -11,8 +11,23 @@ enum RuntimeSandboxDenialApproval {
         denial: RuntimeSandboxFileDenial,
         toolName: String,
         requestText: String,
-        approvalWasApplied: Bool
+        approvalWasApplied: Bool,
+        readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil,
+        denialReflectsToolFailure: Bool = true
     ) -> Decision {
+        // Only treat a receipt-protected write-denial as terminal when it came
+        // from a tool invocation that actually FAILED. The same "Read-only file
+        // system" text can appear as ordinary content the agent read out of a
+        // protected input (e.g. an attached build log), and reading it must
+        // never self-terminate the run.
+        if denialReflectsToolFailure,
+           denial.operation == .write,
+           readOnlyBoundaryReceipt?.protects(denial.path) == true {
+            return .terminal(
+                reason: "read_only_resource_write_denied",
+                message: "ASTRA's read-only resource boundary denied \(toolName) write access to \(denial.path). Read-only grants cannot be expanded to writable access.\(requestText)"
+            )
+        }
         if approvalWasApplied {
             return .terminal(
                 reason: "os_sandbox_denied_after_approval",
@@ -44,5 +59,9 @@ enum RuntimeSandboxDenialApproval {
             )
         }
         return .request(request, grants)
+    }
+
+    static func requestText(for summary: String?) -> String {
+        summary.map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" } ?? ""
     }
 }

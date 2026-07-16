@@ -49,7 +49,7 @@ struct ProviderLaunchCapabilityScopeTests {
                 for: task,
                 manifest: manifest,
                 contextText: providerLaunchContextText,
-                capabilityResolutionSnapshot: capabilityResolutionSnapshot
+                capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
             )
             """
         ))

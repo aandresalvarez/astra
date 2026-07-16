@@ -180,6 +180,8 @@ public enum TaskEventTypes {
     }
 
     public enum System {
+        public static let readOnlyBoundaryApplied: TaskEventType = "astra.read_only_boundary.applied"
+        public static let readOnlyBoundaryUnavailable: TaskEventType = "astra.read_only_boundary.unavailable"
         public static let info: TaskEventType = "system.info"
         public static let error: TaskEventType = "error"
         public static let skillActive: TaskEventType = "skill.active"

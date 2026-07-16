@@ -32,11 +32,16 @@ struct CapabilityLibrary {
         self.fileManager = fileManager
     }
 
-    static func capabilitiesDirectory(for channel: AppChannel = .current) -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return appSupport
-            .appendingPathComponent(channel.appSupportDirectoryName, isDirectory: true)
+    static func capabilitiesDirectory(
+        for channel: AppChannel = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> URL {
+        AppChannelStoragePaths.applicationSupportDirectory(
+            for: channel,
+            environment: environment,
+            fileManager: fileManager
+        )
             .appendingPathComponent("Capabilities", isDirectory: true)
     }
 

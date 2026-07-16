@@ -85,6 +85,10 @@ public final class AgentTask {
     /// JSON-encoded task-scoped runtime permission grants approved for reuse.
     /// Events remain the audit trail; this field owns replay decisions.
     public var runtimePermissionGrantsJSON: String?
+    /// Stable raw value for the last shelf the user explicitly chose for this
+    /// task. This is task-owned durable state; transient panel visibility stays
+    /// in the presentation model. Nil means no shelf should be restored.
+    public var rememberedWorkspaceCanvasItemRawValue: String?
     public var createdAt: Date
     public var updatedAt: Date
     public var completedAt: Date?
@@ -149,6 +153,7 @@ public final class AgentTask {
         )
         self.runtimePermissionOpenRequestsJSON = "[]"
         self.runtimePermissionGrantsJSON = "[]"
+        self.rememberedWorkspaceCanvasItemRawValue = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }

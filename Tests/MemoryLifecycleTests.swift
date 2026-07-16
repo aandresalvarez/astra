@@ -14,7 +14,7 @@ struct MemoryLifecycleTests {
 
         do {
             let model = RightPanelPresentationModel(defaults: defaults)
-            model.presentCanvas(.markdown, conversationID: "conversation")
+            model.presentCanvas(.markdown)
             releasedModel = model
         }
 
