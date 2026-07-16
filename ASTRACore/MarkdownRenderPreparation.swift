@@ -64,22 +64,22 @@ public enum MarkdownRenderPreparation {
         let lines = text.components(separatedBy: "\n")
         var output: [String] = []
         var index = 0
-        var isInsideFence = false
+        var fenceTracker = MarkdownFenceTracker()
         var isInsideTable = false
 
         while index < lines.count {
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
+            let isProtectedByFence = fenceTracker.protects(line)
             if isFenceLine(trimmed) {
                 appendBlankIfNeeded(afterTable: &isInsideTable, output: &output)
                 output.append(line)
-                isInsideFence.toggle()
                 index += 1
                 continue
             }
 
-            if isInsideFence {
+            if isProtectedByFence {
                 output.append(line)
                 index += 1
                 continue
@@ -136,28 +136,10 @@ public enum MarkdownRenderPreparation {
     /// colon-introduced numbered sequences. Fenced code is never touched.
     static func reflowInlineBlockMarkers(in text: String) -> String {
         var output: [String] = []
-        // A fence only closes on a matching fence (CommonMark): same
-        // character AND a run at least as long as the opener. A "~~~" line
-        // inside a backtick block is content, and a "```" line inside a
-        // "````" block is content too — neither may drop the following code
-        // lines out of code mode.
-        var openFence: (character: Character, length: Int)?
+        var fenceTracker = MarkdownFenceTracker()
 
         for line in text.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if isFenceLine(trimmed), let fenceCharacter = trimmed.first {
-                let runLength = trimmed.prefix(while: { $0 == fenceCharacter }).count
-                if let fence = openFence {
-                    if fence.character == fenceCharacter, runLength >= fence.length {
-                        openFence = nil
-                    }
-                } else {
-                    openFence = (fenceCharacter, runLength)
-                }
-                output.append(line)
-                continue
-            }
-            if openFence != nil {
+            if fenceTracker.protects(line) {
                 output.append(line)
                 continue
             }
@@ -283,7 +265,7 @@ public enum MarkdownRenderPreparation {
             return splitMarkerRun(
                 chunk,
                 codeSpans: codeSpans,
-                markerPattern: #"\s\d{1,2}[.)]\s+"#,
+                markerPattern: #"\s\d+[.)]\s+"#,
                 searchStart: numberTrigger.location + 1,
                 firstExpectedNumber: 1
             )
@@ -292,7 +274,7 @@ public enum MarkdownRenderPreparation {
             return splitMarkerRun(
                 chunk,
                 codeSpans: codeSpans,
-                markerPattern: #"\s\d{1,2}[.)]\s+"#,
+                markerPattern: #"\s\d+[.)]\s+"#,
                 searchStart: leadingNumber.location + leadingNumber.length - 1,
                 firstExpectedNumber: 2
             )

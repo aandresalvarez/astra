@@ -19,6 +19,23 @@ import ASTRAModels
 @Suite("PanelLayoutGeometry")
 struct PanelLayoutGeometryTests {
 
+    @Test("Layout-bound widths contain non-finite geometry readings")
+    func layoutWidthsContainNonFiniteReadings() {
+        #expect(PanelLayoutGeometry.clampedShelfWidth(
+            .nan,
+            shelfMinWidth: 320,
+            shelfMaxWidth: 560,
+            minimumDetailWidth: 480,
+            availableWidth: 1_400
+        ).isFinite)
+        #expect(PanelLayoutGeometry.inspectorResizableColumnWidth(
+            .nan,
+            detailAreaWidth: 1_400,
+            minimumDetailWidth: 480
+        ).isFinite)
+        #expect(PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: .infinity) == 0)
+    }
+
     @Test("Docked shelves commit final geometry without animating transcript width")
     func dockedShelvesDoNotAnimateLayout() {
         let mode = WorkspaceRightPanelTransitionMode.resolve(usesInspectorOverlay: false)

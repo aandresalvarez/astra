@@ -488,6 +488,22 @@ struct MarkdownTextViewTests {
         #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
     }
 
+    @Test("Display preparation keeps table-like content inside nested fence runs untouched")
+    func displayPreparationKeepsNestedFenceTableContentUntouched() {
+        let source = "````\n```\n| left | right |\n| --- | --- |\n| a | b |\n````"
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation recovers numbered runs beyond two digits")
+    func displayPreparationRecoversThreeDigitNumberedRuns() {
+        let source = (1...150).map { "\($0). item \($0) has substantial content" }.joined(separator: " ")
+
+        let prepared = MarkdownRenderPreparation.prepareForDisplay(source)
+
+        #expect(prepared.components(separatedBy: "\n").count == 150)
+    }
+
     @Test("Display preparation ignores list triggers inside inline code spans")
     func displayPreparationIgnoresListTriggersInsideInlineCodeSpans() {
         let source = "Use `pattern: - x` and state - of - the - art prose."
@@ -514,6 +530,19 @@ struct MarkdownTextViewTests {
         let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
 
         #expect(presentation.answerText.contains("    return 1"))
+    }
+
+    @Test("Answer presentation never normalizes or deduplicates fenced code")
+    func answerPresentationPreservesFencedCodeBytes() {
+        let stanza = "server:\n  retries: 3\n  timeout: 30"
+        let rawText = "Fix.It now.\n\n```swift\nlet value = Foo.Bar(mode:.Fast)\nif ready {\n    run()\n    }\n}\n```\n\n```yaml\n\(stanza)\n\n\(stanza)\n```"
+
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
+
+        #expect(presentation.answerText.contains("Fix. It now."))
+        #expect(presentation.answerText.contains("Foo.Bar(mode:.Fast)"))
+        #expect(presentation.answerText.components(separatedBy: "retries: 3").count - 1 == 2)
+        #expect(presentation.answerText.components(separatedBy: "\n}\n").count >= 2)
     }
 
     @Test("Recovered headings keep hyphen and numbered title punctuation")

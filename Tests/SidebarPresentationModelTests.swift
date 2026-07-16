@@ -224,6 +224,22 @@ struct SidebarPresentationModelTests {
         #expect(model.isSettling == false)
     }
 
+    @Test("Reveal settle watchdog recovers when the AppKit width probe is missed")
+    func revealSettleWatchdogRecoversWithoutProbe() async throws {
+        let model = makeModel(shown: false)
+        model.setHasRightSidePanel(false)
+        model.setResponsiveWidth(1_400)
+
+        model.toggle()
+        #expect(model.isSettling)
+
+        try await Task.sleep(for: .milliseconds(600))
+
+        #expect(!model.isSettling)
+        model.proposeCompressedCollapse()
+        #expect(model.mode == .collapsed)
+    }
+
     @Test("Column width syncs the shared sidebar width, clamped to the readable range")
     func noteColumnWidthSyncsClampedWidth() {
         let model = makeModel(shown: true)
