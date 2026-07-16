@@ -204,7 +204,7 @@ struct TaskGitPullRequestPublishCoordinatorTests {
 
     @Test("A failed proposal save removes the event and fails before approval is exposed")
     func proposalPersistenceFailureFailsClosed() throws {
-        let schema = Schema(versionedSchema: ASTRASchemaV13.self)
+        let schema = Schema(versionedSchema: ASTRASchemaV14.self)
         let container = try ModelContainer(
             for: schema,
             migrationPlan: ASTRAMigrationPlan.self,

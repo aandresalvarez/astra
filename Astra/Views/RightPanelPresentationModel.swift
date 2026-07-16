@@ -10,8 +10,9 @@ import SwiftUI
 /// writers" shape `SidebarPresentationModel` was built to kill for the sidebar.
 /// This model consolidates all of them: the durable "rail wanted" intent
 /// (`isRailShown`, persisted) and the transient active canvas item
-/// (`activeCanvasItem`, remembered per-conversation) both live here, and every
-/// mutation funnels through one of the methods below. `ContentView` only reads
+/// (`activeCanvasItem`) both live here, and every presentation mutation funnels
+/// through one of the methods below. Task-owned remembered canvas state is
+/// handled separately by `WorkspaceCanvasItemPreferenceService`. `ContentView` only reads
 /// the two published properties (via read-only forwarding computed
 /// properties) and calls these methods — it never writes either property
 /// directly.
@@ -29,16 +30,8 @@ final class RightPanelPresentationModel: ObservableObject {
     @Published private(set) var isRailShown: Bool
 
     /// The transient active shelf item (plan / markdown / browser / query /
-    /// app preview). Not persisted directly; the per-conversation remembered
-    /// item is tracked separately in `rememberedItemsRawValue` and only
-    /// consulted by `restoreRememberedItemIfAvailable`.
+    /// app preview). It is never persisted by this presentation owner.
     @Published private(set) var activeCanvasItem: WorkspaceCanvasItem?
-
-    /// Per-conversation remembered shelf item storage, round-tripped through
-    /// `WorkspaceCanvasItemPreference`'s encoding. Kept here (rather than as a
-    /// second independent `ContentView` `@State`) so the remember/restore
-    /// lifecycle is entirely owned by this model.
-    private(set) var rememberedItemsRawValue: String
 
     private let defaults: UserDefaults
     private static let railShownDefaultsKey = "isWorkspaceRightRailVisible"
@@ -46,14 +39,6 @@ final class RightPanelPresentationModel: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.isRailShown = (defaults.object(forKey: Self.railShownDefaultsKey) as? Bool) ?? true
-        let loadedItems = WorkspaceCanvasItemPreferenceStore.load(defaults: defaults)
-        let normalizedItems = WorkspaceCanvasItemPreference.normalizedStorageRawValue(loadedItems)
-        self.rememberedItemsRawValue = normalizedItems
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: loadedItems,
-            updatedRawValue: normalizedItems,
-            defaults: defaults
-        )
     }
 
     // MARK: - Derived presentation
@@ -67,13 +52,9 @@ final class RightPanelPresentationModel: ObservableObject {
 
     // MARK: - Rail intent
 
-    /// Show the workspace context rail, clearing any active canvas item.
-    /// `rememberShelfState` controls whether the cleared canvas item is kept
-    /// as the per-conversation remembered item (so it can be restored later).
-    /// `conversationID` must be threaded through for that remembering to
-    /// actually happen — `setActiveCanvasItem` is a no-op without one.
-    func presentRail(rememberShelfState: Bool = true, conversationID: String? = nil) {
-        setActiveCanvasItem(nil, remember: rememberShelfState, conversationID: conversationID)
+    /// Show the workspace context rail, clearing any transient canvas item.
+    func presentRail() {
+        setActiveCanvasItem(nil)
         isRailShown = true
         persistRailShown()
     }
@@ -86,9 +67,9 @@ final class RightPanelPresentationModel: ObservableObject {
 
     /// Binding-style setter mirroring the former `setRightRailPresented`: show
     /// routes through `presentRail`, hide just clears the rail flag.
-    func setRailPresented(_ isPresented: Bool, conversationID: String? = nil) {
+    func setRailPresented(_ isPresented: Bool) {
         if isPresented {
-            presentRail(conversationID: conversationID)
+            presentRail()
         } else {
             dismissRail()
         }
@@ -96,56 +77,16 @@ final class RightPanelPresentationModel: ObservableObject {
 
     // MARK: - Canvas item intent
 
-    /// Present a shelf item, dismissing the rail (mirrors the former
-    /// `presentCanvas`). `conversationID` must be threaded through so the
-    /// item is remembered per-conversation, exactly as the pre-model call
-    /// site did via `selectedWorkspaceCanvasConversationID`.
-    func presentCanvas(_ item: WorkspaceCanvasItem, conversationID: String? = nil) {
+    /// Present a transient shelf item, dismissing the rail.
+    func presentCanvas(_ item: WorkspaceCanvasItem) {
         isRailShown = false
         persistRailShown()
-        setActiveCanvasItem(item, remember: true, conversationID: conversationID)
+        setActiveCanvasItem(item)
     }
 
-    /// The single place `activeCanvasItem` (and its per-conversation memory)
-    /// is written. All call sites — including this model's own `presentRail`
-    /// / `presentCanvas` — route through here.
-    func setActiveCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool, conversationID: String? = nil) {
+    /// The single place transient `activeCanvasItem` is written.
+    func setActiveCanvasItem(_ item: WorkspaceCanvasItem?) {
         activeCanvasItem = item
-        guard let conversationID else { return }
-        let updated = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: rememberedItemsRawValue,
-            conversationID: conversationID,
-            item: item,
-            remember: remember
-        )
-        guard updated != rememberedItemsRawValue else { return }
-        let previousRawValue = rememberedItemsRawValue
-        rememberedItemsRawValue = updated
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: previousRawValue,
-            updatedRawValue: updated,
-            defaults: defaults
-        )
-    }
-
-    /// Forget the shelf item for a deleted conversation in both the live
-    /// model and durable storage. Callers must route cleanup through this
-    /// owner so a later preference write cannot resurrect stale state.
-    func removeRememberedItem(conversationID: String) {
-        let updated = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: rememberedItemsRawValue,
-            conversationID: conversationID,
-            item: nil,
-            remember: true
-        )
-        guard updated != rememberedItemsRawValue else { return }
-        let previousRawValue = rememberedItemsRawValue
-        rememberedItemsRawValue = updated
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: previousRawValue,
-            updatedRawValue: updated,
-            defaults: defaults
-        )
     }
 
     /// Hide the rail without touching the active canvas item or the
@@ -160,43 +101,25 @@ final class RightPanelPresentationModel: ObservableObject {
         persistRailShown()
     }
 
-    /// If a remembered shelf item exists for `conversationID` and nothing is
-    /// currently presented, restore it and hide the rail. Mirrors the former
-    /// `restoreRememberedWorkspaceCanvasItemIfAvailable`.
+    /// If the task-owned remembered item can be shown and nothing is currently
+    /// presented, restore it without writing durable state.
     func restoreRememberedItemIfAvailable(
-        conversationID: String?,
+        rememberedItem: WorkspaceCanvasItem?,
         canPresent: (WorkspaceCanvasItem) -> Bool
     ) -> WorkspaceCanvasItem? {
-        let remembered = WorkspaceCanvasItemPreference.item(in: rememberedItemsRawValue, for: conversationID)
         guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
             activeItem: activeCanvasItem,
             isRightRailVisible: isRailShown,
-            rememberedItem: remembered,
-            canPresentRememberedItem: remembered.map(canPresent) ?? false
-        ), let item = remembered else {
+            rememberedItem: rememberedItem,
+            canPresentRememberedItem: rememberedItem.map(canPresent) ?? false
+        ), let item = rememberedItem else {
             return nil
         }
 
         isRailShown = false
         persistRailShown()
-        touchRememberedItem(conversationID: conversationID)
-        setActiveCanvasItem(item, remember: false, conversationID: conversationID)
+        setActiveCanvasItem(item)
         return item
-    }
-
-    private func touchRememberedItem(conversationID: String?) {
-        let updated = WorkspaceCanvasItemPreference.touchingStorageRawValue(
-            rememberedItemsRawValue,
-            conversationID: conversationID
-        )
-        guard updated != rememberedItemsRawValue else { return }
-        let previousRawValue = rememberedItemsRawValue
-        rememberedItemsRawValue = updated
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: previousRawValue,
-            updatedRawValue: updated,
-            defaults: defaults
-        )
     }
 
     private func persistRailShown() {

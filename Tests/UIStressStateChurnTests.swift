@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import SwiftUI
+import SwiftData
 import ASTRAModels
 @testable import ASTRA
 import ASTRACore
@@ -325,32 +326,46 @@ struct UIStressStateChurnTests {
         #expect(recoveries == 1, "token guard must collapse 500 armed timers into one recovery")
     }
 
-    // MARK: - Right panel: per-conversation canvas memory growth
+    // MARK: - Right panel: task-owned canvas memory
 
-    @Test("2k-conversation canvas memory stays functional and bounded")
+    @Test("2k-task canvas memory follows live task rows without a global blob")
     func canvasMemoryShouldStayBoundedAcrossConversations() throws {
-        let model = RightPanelPresentationModel(defaults: try scratchDefaults())
-        let conversations = 2_000
-
-        let elapsed = ContinuousClock().measure {
-            for index in 0..<conversations {
-                model.presentCanvas(.markdown, conversationID: "conversation-\(index)")
-            }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        var persistedTaskIDs: [UUID] = []
+        let preferences = WorkspaceCanvasItemPreferenceService(modelContext: context) { task, _ in
+            persistedTaskIDs.append(task.id)
         }
+        let tasks = (0..<2_000).map { index in
+            let task = AgentTask(title: "Conversation \(index)", goal: "Remember Files")
+            context.insert(task)
+            #expect(preferences.apply(.explicitUserChoice, item: .markdown, for: task))
+            return task
+        }
+        try context.save()
 
-        #expect(
-            WorkspaceCanvasItemPreference.entryCount(in: model.rememberedItemsRawValue)
-                == WorkspaceCanvasItemPreference.maximumEntryCount
-        )
-        #expect(elapsed < .seconds(10), "2k canvas ops took \(elapsed)")
+        #expect(tasks.allSatisfy { $0.rememberedWorkspaceCanvasItemRawValue == "markdown" })
+        #expect(persistedTaskIDs.count == tasks.count)
+        #expect(Set(persistedTaskIDs).count == tasks.count)
 
-        model.setActiveCanvasItem(nil, remember: false, conversationID: nil)
-        model.dismissRail()
-        let restored = model.restoreRememberedItemIfAvailable(
-            conversationID: "conversation-1999",
-            canPresent: { _ in true }
-        )
-        #expect(restored == .markdown, "storm must preserve recently used conversation memory")
+        #expect(preferences.apply(.explicitUserChoice, item: .browser, for: tasks[42]))
+        #expect(persistedTaskIDs.last == tasks[42].id)
+        #expect(persistedTaskIDs.count == tasks.count + 1)
+        #expect(tasks[42].rememberedWorkspaceCanvasItemRawValue == "browser")
+        #expect(tasks[41].rememberedWorkspaceCanvasItemRawValue == "markdown")
+        #expect(tasks[43].rememberedWorkspaceCanvasItemRawValue == "markdown")
+
+        for task in tasks.dropFirst() {
+            context.delete(task)
+        }
+        try context.save()
+        let survivingTasks = try context.fetch(FetchDescriptor<AgentTask>())
+        #expect(survivingTasks.count == 1)
+        #expect(survivingTasks.first?.rememberedWorkspaceCanvasItemRawValue == "markdown")
     }
 
     // MARK: - Scene selection churn

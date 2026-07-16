@@ -103,7 +103,7 @@ struct OrphanedV12StoreMigratorTests {
 
     let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
       type: .sqlite, at: destinationURL)
-    #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == 13)
+    #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == ASTRASchema.currentVersion)
 
     let migratedContainer = try ModelContainer(
       for: ASTRASchema.current,
@@ -130,7 +130,7 @@ struct OrphanedV12StoreMigratorTests {
     )
     #expect(migrationRecord.sourceSchemaVersion == 12)
     #expect(migrationRecord.sourceShapeRaw == "runtime_selection_only_v12")
-    #expect(migrationRecord.destinationSchemaVersion == 13)
+    #expect(migrationRecord.destinationSchemaVersion == ASTRASchema.currentVersion)
   }
 
   @MainActor
@@ -170,7 +170,7 @@ struct OrphanedV12StoreMigratorTests {
       type: .sqlite,
       at: destinationURL
     )
-    #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == 13)
+    #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == ASTRASchema.currentVersion)
 
     let migratedContainer = try ModelContainer(
       for: ASTRASchema.current,

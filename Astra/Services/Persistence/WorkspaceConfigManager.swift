@@ -530,7 +530,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct TaskConfig: Codable, Sendable {
-        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil) {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
             self.id = id
             self.title = title
             self.goal = goal
@@ -577,6 +577,7 @@ public enum WorkspaceConfigManager {
             self.executionEnvironmentSnapshotJSON = executionEnvironmentSnapshotJSON
             self.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
             self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
+            self.rememberedWorkspaceCanvasItemRawValue = rememberedWorkspaceCanvasItemRawValue
         }
 
         public var id: String?
@@ -625,6 +626,7 @@ public enum WorkspaceConfigManager {
         public var executionEnvironmentSnapshotJSON: String?
         public var runtimePermissionOpenRequestsJSON: String?
         public var runtimePermissionGrantsJSON: String?
+        public var rememberedWorkspaceCanvasItemRawValue: String?
     }
 
     public struct WorkspaceAppConfig: Codable, Sendable {
@@ -1977,7 +1979,8 @@ public enum WorkspaceConfigManager {
             skillSnapshots: snapshots,
             executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true),
             runtimePermissionOpenRequestsJSON: task.runtimePermissionOpenRequestsJSON == "[]" ? nil : task.runtimePermissionOpenRequestsJSON,
-            runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON
+            runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON,
+            rememberedWorkspaceCanvasItemRawValue: task.rememberedWorkspaceCanvasItemRawValue
         )
     }
 
@@ -2486,6 +2489,7 @@ public enum WorkspaceConfigManager {
         // keep an actually-resolved request closed.
         task.runtimePermissionOpenRequestsJSON = config.runtimePermissionOpenRequestsJSON
         task.runtimePermissionGrantsJSON = config.runtimePermissionGrantsJSON ?? "[]"
+        task.rememberedWorkspaceCanvasItemRawValue = config.rememberedWorkspaceCanvasItemRawValue
         modelContext.insert(task)
 
         linkSkills(
