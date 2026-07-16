@@ -61,6 +61,29 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
+    func unsupportedProviderNativeReadOnlyFileBlock(
+        permissionPolicy: PermissionPolicy,
+        workspaceCommandsRunInsideManagedExecutor: Bool
+    ) -> AgentProcessResult? {
+        let count = Int(commandPlannedFields["provider_native_unreachable_read_only_file_count"] ?? "0") ?? 0
+        guard count > 0,
+              permissionPolicy != .autonomous,
+              runtime == .codexCLI,
+              !workspaceCommandsRunInsideManagedExecutor else {
+            return nil
+        }
+
+        let message = """
+        ASTRA blocked this Codex run because it needs an exact external file, but Codex restricted mode accepts only directory-level native grants. Granting the parent directory would expose sibling files that were never authorized. Attach the containing folder if every file in it is intended to be readable, use a Docker execution environment with the advertised container path, or switch to a runtime that supports exact-file reads.
+        """
+        return AgentProcessResult(
+            exitCode: -1,
+            error: message,
+            runtimeStopReason: "provider_native_file_read_unavailable",
+            runtimeStopMessage: message
+        )
+    }
+
     private static func uniqueNonEmpty(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { value in

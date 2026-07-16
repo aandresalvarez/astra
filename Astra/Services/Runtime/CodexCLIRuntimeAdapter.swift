@@ -203,17 +203,16 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
-        // Codex exposes external paths only through writable `--add-dir` roots,
-        // and that flag accepts directories rather than individual files.
-        // The typed launch-resource contract lets us grant that native
-        // directory reachability while AgentRuntimeProcessRunner's mandatory
-        // outer Seatbelt boundary keeps the exact resources read-only. Never
-        // infer these paths from prompt text or mutable presentation state.
-        let providerReadOnlyDirectories = Self.nativeReachabilityDirectories(
-            for: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? []
+        // Codex exposes external paths through directory-only `--add-dir`
+        // roots. Project only explicitly granted directories; widening an
+        // exact-file grant to its parent would authorize sibling reads.
+        let nativeReachability = Self.nativeReachabilityProjection(
+            for: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [],
+            alreadyReachableDirectories: [context.workspacePath]
+                + AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         )
         let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
-            + providerReadOnlyDirectories
+            + nativeReachability.additionalDirectories
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty
@@ -289,6 +288,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "parses_json_lines": String(plan.parsesJSONLines),
                 "additional_paths_count": String(additionalPaths.count),
+                "provider_native_read_only_directory_count": String(nativeReachability.additionalDirectories.count),
+                "provider_native_unreachable_read_only_file_count": String(nativeReachability.unreachableFiles.count),
                 "task_env_count": String(taskEnv.count),
                 "uses_json": String(plan.arguments.contains("--json")),
                 "uses_cd": String(plan.arguments.contains("--cd")),
@@ -313,29 +314,54 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    /// Projects a typed resource contract onto Codex's directory-only
-    /// `--add-dir` interface. Integrity remains owned by ASTRA's exact outer
-    /// read-only boundary; this projection provides provider reachability only.
-    static func nativeReachabilityDirectories(
+    struct NativeReachabilityProjection: Equatable {
+        let additionalDirectories: [String]
+        let unreachableFiles: [String]
+    }
+
+    private static func isSameOrDescendant(_ path: String, of root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
+    }
+
+    /// Projects only directory-granularity authority onto Codex's `--add-dir`
+    /// interface. Exact files are either already inside an authorized root or
+    /// are reported as unreachable so the runner can fail closed.
+    static func nativeReachabilityProjection(
         for resourcePaths: [String],
+        alreadyReachableDirectories: [String],
         fileManager: FileManager = .default
-    ) -> [String] {
-        var seen: Set<String> = []
-        return resourcePaths.compactMap { rawPath in
+    ) -> NativeReachabilityProjection {
+        var reachableIdentities = alreadyReachableDirectories.compactMap(ExecutionSandbox.canonicalize)
+        var seenDirectories = Set(reachableIdentities)
+        var additionalDirectories: [String] = []
+        var files: [(path: String, identity: String)] = []
+        for rawPath in resourcePaths {
             let path = WorkspacePathPresentation.standardizedPath(rawPath)
-            guard !path.isEmpty else { return nil }
+            guard !path.isEmpty else { continue }
             var isDirectory = ObjCBool(false)
             guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
-                return nil
+                continue
             }
-            let directory = isDirectory.boolValue
-                ? path
-                : (path as NSString).deletingLastPathComponent
-            guard !directory.isEmpty else { return nil }
-            let identity = ExecutionSandbox.canonicalize(directory) ?? directory
-            guard seen.insert(identity).inserted else { return nil }
-            return directory
+            let identity = ExecutionSandbox.canonicalize(path) ?? path
+            if isDirectory.boolValue {
+                if !reachableIdentities.contains(where: { isSameOrDescendant(identity, of: $0) }),
+                   seenDirectories.insert(identity).inserted {
+                    additionalDirectories.append(path)
+                    reachableIdentities.append(identity)
+                }
+            } else {
+                files.append((path, identity))
+            }
         }
+        let unreachableFiles = files.compactMap { file in
+            reachableIdentities.contains(where: { isSameOrDescendant(file.identity, of: $0) })
+                ? nil
+                : file.path
+        }
+        return NativeReachabilityProjection(
+            additionalDirectories: additionalDirectories,
+            unreachableFiles: unreachableFiles
+        )
     }
 
     func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {

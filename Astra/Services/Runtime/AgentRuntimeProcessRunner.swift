@@ -131,7 +131,6 @@ final class AgentRuntimeProcessRunner {
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
-        var plan = adapter.makeProcessLaunchPlan(context: context)
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
@@ -146,7 +145,7 @@ final class AgentRuntimeProcessRunner {
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
-            runtime: plan.runtime,
+            runtime: adapter.id,
             phase: context.phase,
             prompt: context.prompt,
             contextText: context.contextText,
@@ -159,6 +158,8 @@ final class AgentRuntimeProcessRunner {
             },
             precomputedRuntimeRequirements: context.runtimeRequirements
         )
+        let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
+        var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
             contract: launchResourcePlan.readOnlyResourceContract,
@@ -217,6 +218,17 @@ final class AgentRuntimeProcessRunner {
                 "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
                 "git_credential_transports": gitCredentialContext.transports.map(\.rawValue).joined(separator: ","),
                 "provider_native_credential_read_path_count": String(launchResourcePlan.providerNativeCredentialReadablePaths.count)
+            ], level: .error)
+            return .blocked(block)
+        }
+        if let block = plan.unsupportedProviderNativeReadOnlyFileBlock(
+            permissionPolicy: effectivePermissionPolicy,
+            workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? "provider_native_file_read_unavailable",
+                "unreachable_file_count": plan.commandPlannedFields["provider_native_unreachable_read_only_file_count"] ?? "0"
             ], level: .error)
             return .blocked(block)
         }

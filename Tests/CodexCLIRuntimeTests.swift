@@ -313,8 +313,10 @@ struct CodexCLIRuntimeTests {
             .filter { boundaryPlan.arguments[$0] == "--add-dir" }
             .compactMap { boundaryPlan.arguments.indices.contains($0 + 1) ? boundaryPlan.arguments[$0 + 1] : nil }
         #expect(boundaryAddDirValues.contains(inputDirectory.standardizedFileURL.path))
-        #expect(boundaryAddDirValues.contains(inputFileDirectory.standardizedFileURL.path))
+        #expect(!boundaryAddDirValues.contains(inputFileDirectory.standardizedFileURL.path))
         #expect(!boundaryAddDirValues.contains(inputFile.standardizedFileURL.path))
+        #expect(boundaryPlan.commandPlannedFields["provider_native_read_only_directory_count"] == "1")
+        #expect(boundaryPlan.commandPlannedFields["provider_native_unreachable_read_only_file_count"] == "1")
     }
 
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")

@@ -9,9 +9,15 @@ struct AppChannelStoragePathsTests {
     private let overrideKey =
         AppChannelStoragePaths.developmentApplicationSupportOverrideEnvironmentKey
 
+    private var isolatedAppSupport: String {
+        AppChannelStoragePaths.applicationSupportBaseDirectory(for: .production)
+            .appendingPathComponent("ASTRA Isolated Tests", isDirectory: true)
+            .appendingPathComponent("AstraDev", isDirectory: true)
+            .path
+    }
+
     @Test("Development override isolates ASTRA state without replacing provider identity home")
     func developmentOverridePreservesProviderIdentityHome() {
-        let isolatedAppSupport = "/tmp/astra-profile/Library/Application Support/AstraDev"
         let environment = [overrideKey: isolatedAppSupport]
         let userHome = "/Users/example"
 
@@ -44,7 +50,6 @@ struct AppChannelStoragePathsTests {
 
     @Test("Every ASTRA-owned Application Support consumer shares the development override")
     func consumersShareDevelopmentOverride() {
-        let isolatedAppSupport = "/tmp/astra-profile/Library/Application Support/AstraDev"
         let environment = [overrideKey: isolatedAppSupport]
 
         #expect(CapabilityApprovalStore.approvalsDirectory(
@@ -67,7 +72,6 @@ struct AppChannelStoragePathsTests {
 
     @Test("Production and beta ignore the development override")
     func nonDevelopmentChannelsIgnoreOverride() {
-        let isolatedAppSupport = "/tmp/astra-profile/Library/Application Support/AstraDev"
         let environment = [overrideKey: isolatedAppSupport]
 
         let production = AppChannelStoragePaths.applicationSupportDirectory(
@@ -98,6 +102,10 @@ struct AppChannelStoragePathsTests {
         #expect(AppChannelStoragePaths.developmentApplicationSupportOverride(
             for: .development,
             environment: [overrideKey: "/tmp/Astra"]
+        ) == nil)
+        #expect(AppChannelStoragePaths.developmentApplicationSupportOverride(
+            for: .development,
+            environment: [overrideKey: "/tmp/astra-profile/Library/Application Support/AstraDev"]
         ) == nil)
     }
 }

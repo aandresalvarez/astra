@@ -6,7 +6,9 @@ import Foundation
 /// schema or an in-progress branch. Redirecting `HOME`/`CFFIXED_USER_HOME` is
 /// too broad because provider CLIs also use the user home for authentication.
 /// `ASTRA_DEV_APP_SUPPORT_DIR` therefore redirects only ASTRA's development
-/// Application Support directory. Production and beta builds always ignore it.
+/// Application Support directory, and only within the user's Application
+/// Support root where provider temp/workspace write grants cannot reach it.
+/// Production and beta builds always ignore it.
 public enum AppChannelStoragePaths {
     public static let developmentApplicationSupportOverrideEnvironmentKey =
         "ASTRA_DEV_APP_SUPPORT_DIR"
@@ -18,7 +20,8 @@ public enum AppChannelStoragePaths {
     ) -> URL {
         if let override = developmentApplicationSupportOverride(
             for: channel,
-            environment: environment
+            environment: environment,
+            fileManager: fileManager
         ) {
             return override
         }
@@ -37,7 +40,8 @@ public enum AppChannelStoragePaths {
     ) -> URL {
         if let override = developmentApplicationSupportOverride(
             for: channel,
-            environment: environment
+            environment: environment,
+            fileManager: fileManager
         ) {
             return override.deletingLastPathComponent()
         }
@@ -51,7 +55,8 @@ public enum AppChannelStoragePaths {
     /// such as `/tmp` or the user's home directory.
     public static func developmentApplicationSupportOverride(
         for channel: AppChannel,
-        environment: [String: String]
+        environment: [String: String],
+        fileManager: FileManager = .default
     ) -> URL? {
         guard channel == .development,
               let rawValue = environment[developmentApplicationSupportOverrideEnvironmentKey]?
@@ -60,10 +65,24 @@ public enum AppChannelStoragePaths {
               NSString(string: rawValue).isAbsolutePath else {
             return nil
         }
-        let url = URL(fileURLWithPath: rawValue, isDirectory: true).standardizedFileURL
-        guard url.lastPathComponent == channel.appSupportDirectoryName else {
+        let url = URL(fileURLWithPath: rawValue, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let trustedRoot = defaultApplicationSupportBaseDirectory(fileManager: fileManager)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard url.lastPathComponent == channel.appSupportDirectoryName,
+              url.path.hasPrefix(trustedRoot.path + "/") else {
             return nil
         }
         return url
+    }
+
+    private static func defaultApplicationSupportBaseDirectory(
+        fileManager: FileManager
+    ) -> URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support", isDirectory: true)
     }
 }

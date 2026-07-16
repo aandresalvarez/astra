@@ -475,6 +475,92 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan blocks restricted host Codex instead of widening an exact file grant")
+    func sandboxedPlanBlocksRestrictedCodexExactExternalFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-codex-exact-file-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        let attachmentDirectory = root.appendingPathComponent("private-inputs", isDirectory: true)
+        let attachment = attachmentDirectory.appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+        try Data("input".utf8).write(to: attachment)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let task = AgentTask(
+            title: "Exact file",
+            goal: "Read one attachment",
+            workspace: Workspace(name: "Codex", primaryPath: workspace.path),
+            runtime: .codexCLI
+        )
+        task.inputs = [attachment.path]
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider).sandboxedPlan(
+                adapter: CodexCLIRuntimeAdapter(),
+                context: AgentRuntimeProcessLaunchContext(
+                    prompt: "Read the attachment",
+                    task: task,
+                    workspacePath: workspace.path,
+                    executablePath: "/bin/codex-not-present",
+                    providerHomeDirectory: "",
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 1
+                )
+            )
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected exact-file authority to fail closed for restricted host Codex")
+                return
+            }
+            #expect(result.runtimeStopReason == "provider_native_file_read_unavailable")
+            #expect(result.runtimeStopMessage?.contains("expose sibling files") == true)
+        }
+    }
+
+    @Test("sandboxedPlan resolves fallback resources before building the Codex command")
+    func sandboxedPlanResolvesFallbackResourcesBeforeCodexCommand() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-codex-fallback-resource-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        let inputDirectory = root.appendingPathComponent("approved-inputs", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: inputDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let task = AgentTask(
+            title: "Fallback directory",
+            goal: "Read the approved directory",
+            workspace: Workspace(name: "Codex", primaryPath: workspace.path),
+            runtime: .codexCLI
+        )
+        task.inputs = [inputDirectory.path]
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider).sandboxedPlan(
+                adapter: CodexCLIRuntimeAdapter(),
+                context: AgentRuntimeProcessLaunchContext(
+                    prompt: "Read the directory",
+                    task: task,
+                    workspacePath: workspace.path,
+                    executablePath: "/bin/codex-not-present",
+                    providerHomeDirectory: "",
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 1
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected fallback resource resolution to produce a Codex launch plan")
+                return
+            }
+            let addDirValues = plan.arguments.indices
+                .filter { plan.arguments[$0] == "--add-dir" }
+                .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
+            #expect(addDirValues.contains(inputDirectory.path))
+        }
+    }
+
     @Test("sandboxedPlan issues a verified receipt for a container provider")
     func sandboxedPlanIssuesContainerProviderReceipt() throws {
         let fm = FileManager.default

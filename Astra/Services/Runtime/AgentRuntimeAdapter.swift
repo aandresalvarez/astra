@@ -731,6 +731,30 @@ struct AgentRuntimeProcessLaunchContext {
         )
         self.runtimeRequirements = runtimeRequirements
     }
+
+    func replacingLaunchResourcePlan(
+        _ launchResourcePlan: TaskLaunchResourcePlan
+    ) -> AgentRuntimeProcessLaunchContext {
+        AgentRuntimeProcessLaunchContext(
+            prompt: prompt,
+            task: task,
+            workspacePath: workspacePath,
+            executablePath: executablePath,
+            providerHomeDirectory: providerHomeDirectory,
+            permissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy,
+            permissionManifest: permissionManifest,
+            timeoutSeconds: timeoutSeconds,
+            phase: phase,
+            contextText: contextText,
+            nativeContinuationSessionID: nativeContinuationSessionID,
+            runID: runID,
+            liveApprovalsEnabled: liveApprovalsEnabled,
+            launchResourcePlan: launchResourcePlan,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: runtimeRequirements
+        )
+    }
 }
 
 struct AgentRuntimeLaunchSettings {
