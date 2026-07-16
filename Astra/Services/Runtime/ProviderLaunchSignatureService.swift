@@ -101,6 +101,10 @@ enum ProviderLaunchSignatureService {
             guard !command.isEmpty else { return nil }
             return command
         }
+        // Build the read-only contract once: it can run a recursive directory
+        // stat-walk, and accessing `.isRequired` then `.digest` separately would
+        // do that work twice for the same launch.
+        let readOnlyResourceContract = launchResourcePlan.readOnlyResourceContract
         return ProviderLaunchSignaturePayload(
             version: 1,
             runtimeID: manifest.providerID.rawValue,
@@ -128,8 +132,8 @@ enum ProviderLaunchSignatureService {
             browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
             promptSchemaVersion: "context_capsule_v2",
             executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint,
-            readOnlyResourceContractDigest: launchResourcePlan.readOnlyResourceContract.isRequired
-                ? launchResourcePlan.readOnlyResourceContract.digest
+            readOnlyResourceContractDigest: readOnlyResourceContract.isRequired
+                ? readOnlyResourceContract.digest
                 : nil
         )
     }

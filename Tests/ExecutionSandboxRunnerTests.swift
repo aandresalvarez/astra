@@ -284,7 +284,12 @@ struct ExecutionSandboxRunnerTests {
             }
             #expect(plan.sandboxReadablePaths.contains(gitConfig.path))
             #expect(plan.sandboxReadablePaths.contains(knownHosts.path))
-            #expect(plan.readOnlyBoundaryReceipt?.protects(gitConfig.path) == true)
+            // Git credentials are readable and host write-protected, but they are
+            // not read-only *inputs*: they must not create an input-boundary
+            // receipt (which would force them into agent-readable container
+            // input mounts). Host write protection is retained independently.
+            #expect(plan.readOnlyBoundaryReceipt == nil)
+            #expect(plan.sandboxProtectedWriteDenyPaths.contains(gitConfig.path))
             #expect(plan.commandPlannedFields["git_credential_context"] == "true")
             #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "2")
             #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "1")
@@ -727,7 +732,11 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(plan.sandboxReadablePaths.contains(gitConfig.path))
-            #expect(plan.readOnlyBoundaryReceipt?.protects(gitConfig.path) == true)
+            // Git config is a credential, not a read-only input: it is readable
+            // and host write-protected, but never enters the input-boundary
+            // receipt (which would force it into agent-readable container mounts).
+            #expect(plan.readOnlyBoundaryReceipt == nil)
+            #expect(plan.sandboxProtectedWriteDenyPaths.contains(gitConfig.path))
             #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
             #expect(plan.commandPlannedFields["git_credential_transports"] == "")
         }
@@ -986,9 +995,17 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.sandboxReadablePaths.contains(gitConfig.path))
             #expect(plan.executionEnvironment.workspaceCommandsRunInsideContainer)
             #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
-            #expect(plan.readOnlyBoundaryReceipt?.surfaces == [.hostSeatbelt, .workspaceContainer])
-            #expect(plan.readOnlyBoundaryReceipt?.protects(gitConfig.path) == true)
-            #expect(plan.readOnlyBoundaryReceipt?.protects("/mnt/astra/input-1") == true)
+            // Git credentials compose with Docker workspace execution WITHOUT
+            // being flattened into the read-only input contract. With no task
+            // inputs present the input boundary is not required, and the
+            // credential is never bind-mounted at an agent-readable
+            // /mnt/astra/input-N path inside the workspace container. Host write
+            // protection is still retained through the deny paths.
+            #expect(plan.readOnlyBoundaryReceipt == nil)
+            #expect(plan.sandboxProtectedWriteDenyPaths.contains(gitConfig.path))
+            #expect(plan.executionEnvironment.mounts.allSatisfy { mount in
+                !mount.containerPath.hasPrefix("/mnt/astra/input-")
+            })
         }
     }
 

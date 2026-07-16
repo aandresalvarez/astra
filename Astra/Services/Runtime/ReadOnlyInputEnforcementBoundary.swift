@@ -42,11 +42,31 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
     let requestedResourceCount: Int
     private let requestDescriptors: [String]
 
+    /// The read-only *input* boundary governs user-selected task inputs and
+    /// attachments only — the same source subset `brokeredReadOnlyPaths` uses.
+    /// Credential-bearing read grants (git config / SSH identity files via
+    /// `.gitCredential`, docker credentials) reach a container solely through
+    /// their curated `effectiveCredentialProjections` mount; they must never be
+    /// flattened into this contract, or the container-mount proof below would
+    /// force them to be bind-mounted read-only at an agent-readable
+    /// `/mnt/astra/input-N` path. Host write-protection for those paths is
+    /// retained independently through `TaskLaunchResourcePlan.hostProtectedWriteDenyPaths`.
+    static func isReadOnlyInputGrant(_ grant: RuntimePathGrant) -> Bool {
+        guard grant.access == .read else { return false }
+        switch grant.source {
+        case .taskInput, .userAttachment, .sandboxApproval:
+            return true
+        case .workspace, .remoteWorkspace, .gitCredential, .dockerEnvironment,
+             .dockerCredential, .controlPlane, .connector, .browser, .provider:
+            return false
+        }
+    }
+
     init(
         grants: [RuntimePathGrant],
         fileManager: FileManager = .default
     ) {
-        let readGrants = grants.filter { $0.access == .read }
+        let readGrants = grants.filter(Self.isReadOnlyInputGrant)
         requestedResourceCount = readGrants.count
         requestDescriptors = readGrants.map { grant in
             "\(WorkspacePathPresentation.standardizedPath(grant.path))|\(grant.source.rawValue)|\(grant.exists)"
@@ -136,19 +156,28 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
     ) -> [ValidationFailure] {
         var failures: [ValidationFailure] = []
         let root = URL(fileURLWithPath: directoryPath, isDirectory: true)
+        // Continue enumerating past a single unreadable entry (return `true`)
+        // instead of aborting the whole scan. A subdirectory ASTRA cannot enter
+        // is one the same-UID provider cannot enter either, so it is not a
+        // mutation vector, and the read-only path deny/mount still covers the
+        // entire declared root regardless of what the scan can see. Only a total
+        // failure to create the enumerator is fatal.
         guard let enumerator = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [],
-            errorHandler: { url, _ in
-                failures.append(.directoryScanFailed(url.path))
-                return false
-            }
+            errorHandler: { _, _ in true }
         ) else {
             return [.directoryScanFailed(directoryPath)]
         }
         for case let url as URL in enumerator {
             do {
+                // Non-regular files (symlinks, sockets, FIFOs) are intentionally
+                // not integrity failures: writing *through* an in-directory
+                // symlink mutates its target — which lives outside this read-only
+                // root and is either already writable or external — never the
+                // read-only input itself, which stays covered by the path-based
+                // deny/mount.
                 guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
                     continue
                 }
@@ -158,7 +187,11 @@ struct ReadOnlyResourceContract: Sendable, Equatable {
                     failures.append(.multipleHardLinks(path: url.path, count: count))
                 }
             } catch {
-                failures.append(.directoryScanFailed(url.path))
+                // A single file we cannot stat is not a mutation risk (the same
+                // reasoning as the enumerator error handler); skip it rather than
+                // failing the entire contract closed on a transient/permission
+                // error.
+                continue
             }
         }
         return failures

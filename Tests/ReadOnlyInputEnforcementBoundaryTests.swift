@@ -28,9 +28,14 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         let contract = ReadOnlyResourceContract(grants: grants)
 
         #expect(contract.isValid)
-        #expect(Set(contract.paths) == Set([input.path, approvedRead.path, credentialRead.path].compactMap(ExecutionSandbox.canonicalize)))
+        // Credential-bearing read grants (`.gitCredential`) are NOT read-only
+        // inputs: they must be excluded from the contract so they can never be
+        // forced into agent-readable container input mounts. Task inputs and
+        // sandbox approvals remain.
+        #expect(Set(contract.paths) == Set([input.path, approvedRead.path].compactMap(ExecutionSandbox.canonicalize)))
+        #expect(contract.resources.flatMap(\.sources).contains(.taskInput))
         #expect(contract.resources.flatMap(\.sources).contains(.sandboxApproval))
-        #expect(contract.resources.flatMap(\.sources).contains(.gitCredential))
+        #expect(!contract.resources.flatMap(\.sources).contains(.gitCredential))
 
         let hardLinkAlias = root.appendingPathComponent("hard-link-alias.txt")
         try fm.linkItem(at: input, to: hardLinkAlias)
@@ -52,6 +57,41 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         ])
         #expect(!conflict.isValid)
         #expect(conflict.failures.contains { if case .writableDescendant = $0 { true } else { false } })
+    }
+
+    @Test("Credential and non-input read grants never enter the read-only input contract")
+    func contractExcludesCredentialAndNonInputGrants() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("astra-read-contract-excl-\(UUID().uuidString)")
+        let input = root.appendingPathComponent("input.txt")
+        let sshKey = root.appendingPathComponent("id_ed25519")
+        let gitConfig = root.appendingPathComponent("gitconfig")
+        let remoteRoot = root.appendingPathComponent("remote", isDirectory: true)
+        let connectorFile = root.appendingPathComponent("connector.json")
+        try fm.createDirectory(at: remoteRoot, withIntermediateDirectories: true)
+        try "input".write(to: input, atomically: true, encoding: .utf8)
+        try "key".write(to: sshKey, atomically: true, encoding: .utf8)
+        try "config".write(to: gitConfig, atomically: true, encoding: .utf8)
+        try "connector".write(to: connectorFile, atomically: true, encoding: .utf8)
+        defer { try? fm.removeItem(at: root) }
+
+        let contract = ReadOnlyResourceContract(grants: [
+            RuntimePathGrant(path: input.path, access: .read, source: .taskInput, reason: "input", sensitivity: .normal, lifetime: .run, exists: true),
+            RuntimePathGrant(path: sshKey.path, access: .read, source: .gitCredential, reason: "ssh identity", sensitivity: .credential, lifetime: .run, exists: true),
+            RuntimePathGrant(path: gitConfig.path, access: .read, source: .gitCredential, reason: "git config", sensitivity: .credential, lifetime: .run, exists: true),
+            RuntimePathGrant(path: remoteRoot.path, access: .read, source: .remoteWorkspace, reason: "remote", sensitivity: .normal, lifetime: .run, exists: true),
+            RuntimePathGrant(path: connectorFile.path, access: .read, source: .connector, reason: "connector", sensitivity: .normal, lifetime: .run, exists: true)
+        ])
+
+        // Only the user-selected task input is a read-only input; credential,
+        // remote-workspace, and connector read grants must be absent so they are
+        // never passed as `additionalReadOnlyInputPaths` to container mounting.
+        #expect(Set(contract.paths) == Set([input.path].compactMap(ExecutionSandbox.canonicalize)))
+        let sources = Set(contract.resources.flatMap(\.sources))
+        #expect(sources == [.taskInput])
+        #expect(!sources.contains(.gitCredential))
+        #expect(!sources.contains(.remoteWorkspace))
+        #expect(!sources.contains(.connector))
     }
 
     @Test("Directory contracts reject descendant files with writable hard-link aliases")
@@ -80,6 +120,35 @@ struct ReadOnlyInputEnforcementBoundaryTests {
             }
             return false
         })
+    }
+
+    @Test("A single unreadable entry does not fail the directory contract closed")
+    func directoryContractSkipsUnreadableEntries() throws {
+        // Root bypasses POSIX permission checks, so this scenario cannot be
+        // constructed as root; skip rather than assert a false result.
+        try #require(getuid() != 0, "requires a non-root user to enforce 0o000 perms")
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("astra-read-unreadable-\(UUID().uuidString)")
+        let inputDirectory = root.appendingPathComponent("input", isDirectory: true)
+        let readable = inputDirectory.appendingPathComponent("readable.txt")
+        let locked = inputDirectory.appendingPathComponent("locked", isDirectory: true)
+        try fm.createDirectory(at: locked, withIntermediateDirectories: true)
+        try "readable".write(to: readable, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+            try? fm.removeItem(at: root)
+        }
+
+        let contract = ReadOnlyResourceContract(grants: [
+            RuntimePathGrant(path: inputDirectory.path, access: .read, source: .taskInput, reason: "directory input", sensitivity: .normal, lifetime: .run, exists: true)
+        ])
+
+        // The unreadable subdirectory must not abort the scan or invalidate the
+        // contract: the read-only enforcement covers the whole declared root
+        // regardless of what the scan could descend into.
+        #expect(contract.isValid)
+        #expect(!contract.failures.contains { if case .directoryScanFailed = $0 { true } else { false } })
     }
 
     @Test("Container proof rejects writable aliases and mixed execution requires both surfaces")

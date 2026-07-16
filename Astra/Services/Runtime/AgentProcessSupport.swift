@@ -798,7 +798,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             )
         }
 
-        if case .toolResult(let toolID, let content, _) = parsed {
+        if case .toolResult(let toolID, let content, let isError) = parsed {
             if !toolID.isEmpty {
                 activeToolUseIDs.remove(toolID)
             }
@@ -818,7 +818,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 )
             }
             if let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: content) {
-                return recordOSSandboxFileDenial(denial, toolID: toolID, process: process)
+                return recordOSSandboxFileDenial(denial, toolID: toolID, toolResultWasError: isError, process: process)
             }
             let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
             if isKnownBrowserTool {
@@ -1684,23 +1684,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private func recordOSSandboxFileDenial(
         _ denial: RuntimeSandboxFileDenial,
         toolID: String?,
+        toolResultWasError: Bool,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        guard astraSandboxApplied || (denial.operation == .write && readOnlyBoundaryReceipt?.protects(denial.path) == true),
-              !_policyViolation,
-              !_policyApprovalRequired,
-              _runtimeStopReason == nil else { return false }
+        // Trust a receipt-protected write-denial as terminal only from a FAILED tool
+        // result: the marker can be content the agent read from a protected input.
+        guard astraSandboxApplied
+                || (toolResultWasError && denial.operation == .write && readOnlyBoundaryReceipt?.protects(denial.path) == true),
+              !_policyViolation, !_policyApprovalRequired, _runtimeStopReason == nil else { return false }
         let context = toolContext(for: toolID)
         let toolName = Self.nonEmpty(context?.name) ?? "Tool"
         let requestText = RuntimeSandboxDenialApproval.requestText(for: context?.summary)
         let decision = RuntimeSandboxDenialApproval.resolve(
-            denial: denial,
-            toolName: toolName,
-            requestText: requestText,
+            denial: denial, toolName: toolName, requestText: requestText,
             approvalWasApplied: policyGuard?.hasAppliedApprovalGrants([
                 .sandboxPath(path: ExecutionSandbox.canonicalize(denial.path) ?? denial.path, access: "read")
             ]) == true,
-            readOnlyBoundaryReceipt: readOnlyBoundaryReceipt
+            readOnlyBoundaryReceipt: readOnlyBoundaryReceipt, denialReflectsToolFailure: toolResultWasError
         )
         guard case .request(let request, let grants) = decision else {
             guard case .terminal(let reason, let message) = decision else { return false }
