@@ -42,13 +42,13 @@ struct AppBundlePackagingTests {
         let resourceCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/""#
         let toolCopy = #"cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product""#
         let invalidRootCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_BUNDLE/""#
-        let signingCommand = #"/usr/bin/codesign --force --deep"#
+        let metadataFinalization = #"finalize_run_broker_payload_metadata"#
 
         #expect(script.contains(resourceCopy))
         #expect(script.contains(toolCopy))
         #expect(!script.contains(invalidRootCopy))
-        #expect(try index(of: resourceCopy, in: script) < index(of: signingCommand, in: script))
-        #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
+        #expect(try index(of: resourceCopy, in: script) < index(of: metadataFinalization, in: script))
+        #expect(try index(of: toolCopy, in: script) < index(of: metadataFinalization, in: script))
     }
 
     @Test("provider crash harness is built for regression tests but never staged in the app")
@@ -184,8 +184,8 @@ struct AppBundlePackagingTests {
     func developerIdBuildsSignInsideOutWithoutDeepEntitlementSmear() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
 
-        let signTools = #"sign_bundled_tools_for_notarization"#
-        let signSparkle = #"sign_sparkle_framework_for_notarization"#
+        let signTools = #"sign_bundled_tools_with sign_developer_id"#
+        let signSparkle = #"sign_sparkle_framework_with sign_developer_id"#
         let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
 
         #expect(script.contains(signTools))
@@ -199,6 +199,37 @@ struct AppBundlePackagingTests {
         // services and helper app, invalidating their own signatures.
         let deepDistributedSign = #"/usr/bin/codesign --force --deep --timestamp --options runtime"#
         #expect(!script.contains(deepDistributedSign))
+    }
+
+    @Test("RunBroker metadata hashes the final signed nested payload before outer app signing")
+    func runBrokerMetadataSealsFinalSignedPayloadBytes() throws {
+        let script = try String(
+            contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"),
+            encoding: .utf8
+        )
+        let nestedSign = #"sign_bundled_tools_with sign_developer_id"#
+        let finalizeCall = "\nfinalize_run_broker_payload_metadata\n"
+        let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
+        let nestedVerification = #"/usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE""#
+        let digest = #"/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE""#
+        let immutableVersion = #"payload_version="${APP_VERSION}-${APP_BUILD}-${digest:0:32}""#
+        let liveDigestAssertion = #""$metadata_sha" != "$actual_broker_sha""#
+
+        for key in [
+            "ASTRARunBrokerPayloadSchemaVersion",
+            "ASTRARunBrokerPayloadVersion",
+            "ASTRARunBrokerPayloadSHA256",
+            "ASTRARunBrokerPayloadExecutable"
+        ] {
+            #expect(script.contains(key))
+        }
+        #expect(script.contains(nestedVerification))
+        #expect(script.contains(digest))
+        #expect(script.contains(immutableVersion))
+        #expect(script.contains(liveDigestAssertion))
+        #expect(try index(of: nestedSign, in: script) < index(of: finalizeCall, in: script))
+        #expect(try index(of: finalizeCall, in: script) < index(of: outerSign, in: script))
+        #expect(!script.contains(#"--deep --entitlements "$ENTITLEMENTS" --sign"#))
     }
 
     @Test("release script validates the quarantined Sparkle zip before building the human DMG")

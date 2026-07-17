@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         .executable(name: "astra-run-supervisor", targets: ["AstraRunSupervisor"]),
+        .executable(name: "astra-run-broker", targets: ["AstraRunBrokerTool"]),
         // Test-only: gives `swift test` an independently killable owner
         // process for parent-death regressions. The app bundle uses the
         // explicit TOOL_PRODUCTS allowlist and never stages this executable.
@@ -61,6 +62,11 @@ let package = Package(
             path: "RunSupervisorSupport"
         ),
         .target(
+            name: "RunBrokerKit",
+            dependencies: ["ASTRACore"],
+            path: "RunBrokerKit"
+        ),
+        .target(
             name: "MailToolSupport",
             dependencies: ["ASTRACore"],
             path: "Tools/MailToolSupport"
@@ -98,6 +104,11 @@ let package = Package(
             name: "AstraHostControlTool",
             dependencies: ["HostControlToolSupport"],
             path: "Tools/AstraHostControlTool"
+        ),
+        .executableTarget(
+            name: "AstraRunBrokerTool",
+            dependencies: ["RunBrokerKit"],
+            path: "Tools/AstraRunBrokerTool"
         ),
         .executableTarget(
             name: "AstraWorkspaceTool",
@@ -219,7 +230,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(
@@ -242,6 +253,11 @@ let package = Package(
             name: "RunSupervisorSupportTests",
             dependencies: ["RunSupervisorSupport", "ASTRACore"],
             path: "Tests/RunSupervisorSupportTests"
+        ),
+        .testTarget(
+            name: "RunBrokerKitTests",
+            dependencies: ["RunBrokerKit"],
+            path: "Tests/RunBrokerKitTests"
         )
     ]
 )
