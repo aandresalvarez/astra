@@ -1,10 +1,7 @@
 import Foundation
 
-// Provider-neutral wire contracts for external-operation control admission.
-
-/// Stable backend kind used at the broker/control boundary. Known kinds are
-/// constants, while a syntactically valid future kind remains representable so
-/// old clients can fail closed with an explicit `unsupported_backend` reason.
+/// Stable backend kind used at the broker/control boundary. A syntactically
+/// valid future kind remains representable so older clients can fail closed.
 public struct ExternalOperationBackendKindID: RawRepresentable, Codable, Hashable, Sendable {
     public let rawValue: String
 
@@ -51,48 +48,180 @@ public struct ExternalOperationBackendKindID: RawRepresentable, Codable, Hashabl
     public static let opaqueOperation = Self(staticRawValue: "opaque_operation")
 }
 
-public enum ExternalOperationControlContractError: Error, Equatable, Sendable {
-    case invalidBackendInstanceID
+/// Policy-level capabilities are exact operations, not a generic cancellation
+/// bit. Immediate termination never satisfies a graceful request.
+public struct ExternalOperationControlCapabilities: OptionSet, Hashable, Sendable {
+    public let rawValue: UInt8
+
+    public init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    public static let observe = Self(rawValue: 1 << 0)
+    public static let gracefulCancellation = Self(rawValue: 1 << 1)
+    public static let immediateTermination = Self(rawValue: 1 << 2)
+    public static let monitoringOnly: Self = [.observe]
+
+    public var canObserve: Bool { contains(.observe) }
+    public var canGracefullyCancel: Bool { contains(.gracefulCancellation) }
+    public var canImmediatelyTerminate: Bool { contains(.immediateTermination) }
+    public var declaresDestructiveControl: Bool {
+        canGracefullyCancel || canImmediatelyTerminate
+    }
 }
 
-/// Exact backend identity. It deliberately contains no process identifier:
-/// reusable PIDs are diagnostics, never execution authority.
-public struct ExternalOperationBackendIdentity: Codable, Hashable, Sendable {
-    public let kind: ExternalOperationBackendKindID
-    public let instanceID: String
+public enum ExternalOperationControlContractError: Error, Equatable, Sendable {
+    case invalidBackendInstanceID
+    case supervisorIdentityRequired
+    case supervisorIdentityForbidden
+    case invalidSupervisorAuthorityEpoch
+}
+
+/// Full identity authenticated by RunSupervisor discovery/control. Every field
+/// participates in cancellation authorization; no display alias or PID can
+/// stand in for installation, store, execution, and fenced authority.
+public struct ExternalOperationSupervisorIdentity: Codable, Hashable, Sendable {
+    public let installationID: RunBrokerInstallationID
+    public let storeID: RunBrokerStoreID
+    public let executionID: RunBrokerExecutionID
+    public let authority: RunBrokerAuthority
 
     public init(
-        kind: ExternalOperationBackendKindID,
+        installationID: RunBrokerInstallationID,
+        storeID: RunBrokerStoreID,
+        executionID: RunBrokerExecutionID,
+        authority: RunBrokerAuthority
+    ) throws {
+        guard authority.epoch.rawValue > 0 else {
+            throw ExternalOperationControlContractError.invalidSupervisorAuthorityEpoch
+        }
+        self.installationID = installationID
+        self.storeID = storeID
+        self.executionID = executionID
+        self.authority = authority
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case installationID
+        case storeID
+        case executionID
+        case authorityID
+        case authorityEpoch
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownExternalControlKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            try self.init(
+                installationID: RunBrokerInstallationID(
+                    rawValue: try container.decode(UUID.self, forKey: .installationID)
+                ),
+                storeID: RunBrokerStoreID(
+                    rawValue: try container.decode(UUID.self, forKey: .storeID)
+                ),
+                executionID: RunBrokerExecutionID(
+                    rawValue: try container.decode(UUID.self, forKey: .executionID)
+                ),
+                authority: RunBrokerAuthority(
+                    id: RunBrokerAuthorityID(
+                        rawValue: try container.decode(UUID.self, forKey: .authorityID)
+                    ),
+                    epoch: RunBrokerAuthorityEpoch(
+                        rawValue: try container.decode(UInt64.self, forKey: .authorityEpoch)
+                    )
+                )
+            )
+        } catch ExternalOperationControlContractError.invalidSupervisorAuthorityEpoch {
+            throw DecodingError.dataCorruptedError(
+                forKey: .authorityEpoch,
+                in: container,
+                debugDescription: "Supervisor authority epoch must be positive"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(installationID.rawValue, forKey: .installationID)
+        try container.encode(storeID.rawValue, forKey: .storeID)
+        try container.encode(executionID.rawValue, forKey: .executionID)
+        try container.encode(authority.id.rawValue, forKey: .authorityID)
+        try container.encode(authority.epoch.rawValue, forKey: .authorityEpoch)
+    }
+}
+
+/// Backend descriptor carried by IPC and durable records. It is untrusted
+/// metadata, never ownership proof. Supervisor cancellation requires the full
+/// typed supervisor identity; monitoring-only backends retain an opaque ID.
+public struct ExternalOperationBackendIdentity: Codable, Hashable, Sendable {
+    public let kind: ExternalOperationBackendKindID
+    public let instanceID: String?
+    public let supervisorIdentity: ExternalOperationSupervisorIdentity?
+
+    public init(supervisorIdentity: ExternalOperationSupervisorIdentity) {
+        self.kind = .localRunSupervisor
+        self.instanceID = nil
+        self.supervisorIdentity = supervisorIdentity
+    }
+
+    public init(
+        monitoringKind kind: ExternalOperationBackendKindID,
         instanceID: String
     ) throws {
+        guard kind != .localRunSupervisor else {
+            throw ExternalOperationControlContractError.supervisorIdentityRequired
+        }
         guard Self.isValidInstanceID(instanceID) else {
             throw ExternalOperationControlContractError.invalidBackendInstanceID
         }
         self.kind = kind
         self.instanceID = instanceID
+        self.supervisorIdentity = nil
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case instanceID
+        case supervisorIdentity
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownExternalControlKeys(
-            decoder,
-            allowed: CodingKeys.allCases.map(\.rawValue)
-        )
+        try rejectUnknownExternalControlKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(ExternalOperationBackendKindID.self, forKey: .kind)
-        let instanceID = try container.decode(String.self, forKey: .instanceID)
-        do {
-            try self.init(kind: kind, instanceID: instanceID)
-        } catch {
-            throw DecodingError.dataCorruptedError(
-                forKey: .instanceID,
-                in: container,
-                debugDescription: "Backend instance ID must be canonical, bounded, and nonempty"
-            )
+        let instanceID = try container.decodeIfPresent(String.self, forKey: .instanceID)
+        let supervisorIdentity = try container.decodeIfPresent(
+            ExternalOperationSupervisorIdentity.self,
+            forKey: .supervisorIdentity
+        )
+
+        if kind == .localRunSupervisor {
+            guard instanceID == nil, let supervisorIdentity else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .supervisorIdentity,
+                    in: container,
+                    debugDescription: "Local supervisor requires its full typed identity and no alias"
+                )
+            }
+            self.init(supervisorIdentity: supervisorIdentity)
+        } else {
+            guard supervisorIdentity == nil, let instanceID else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .instanceID,
+                    in: container,
+                    debugDescription: "Monitoring backend requires one opaque instance ID"
+                )
+            }
+            do {
+                try self.init(monitoringKind: kind, instanceID: instanceID)
+            } catch {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .instanceID,
+                    in: container,
+                    debugDescription: "Backend instance ID must be canonical, bounded, and nonempty"
+                )
+            }
         }
     }
 
@@ -109,17 +238,8 @@ public struct ExternalOperationBackendIdentity: Codable, Hashable, Sendable {
     }
 }
 
-/// Evidence about how ASTRA obtained a backend handle. This is assigned only
-/// after the owning adapter authenticates its execution-scoped capability; it
-/// is not inferred from a PID, peer UID, backend name, or imported metadata.
-public enum ExternalOperationControlOwnership: String, Codable, Hashable, Sendable {
-    case authenticatedExecutionScoped = "authenticated_execution_scoped"
-    case imported
-    case opaque
-}
-
-/// Durable binding produced by a trusted backend adapter. The wire shape is
-/// versioned and strict because it crosses app/broker/service boundaries.
+/// Untrusted durable/IPC declaration. Authentication evidence is deliberately
+/// absent and cannot be deserialized into this value.
 public struct ExternalOperationControlBinding: Codable, Hashable, Sendable {
     public static let schemaIdentifier = "com.coral.astra.external-operation-control-binding"
     public static let currentSchemaVersion = 1
@@ -129,22 +249,19 @@ public struct ExternalOperationControlBinding: Codable, Hashable, Sendable {
     public let executionID: RunBrokerExecutionID
     public let authority: RunBrokerAuthority
     public let backendIdentity: ExternalOperationBackendIdentity
-    public let ownership: ExternalOperationControlOwnership
-    public let declaredCapabilities: ExternalOperationBackendCapabilities
+    public let declaredCapabilities: ExternalOperationControlCapabilities
 
     public init(
         executionID: RunBrokerExecutionID,
         authority: RunBrokerAuthority,
         backendIdentity: ExternalOperationBackendIdentity,
-        ownership: ExternalOperationControlOwnership,
-        declaredCapabilities: ExternalOperationBackendCapabilities
+        declaredCapabilities: ExternalOperationControlCapabilities
     ) {
         self.schemaIdentifier = Self.schemaIdentifier
         self.schemaVersion = Self.currentSchemaVersion
         self.executionID = executionID
         self.authority = authority
         self.backendIdentity = backendIdentity
-        self.ownership = ownership
         self.declaredCapabilities = declaredCapabilities
     }
 
@@ -154,17 +271,12 @@ public struct ExternalOperationControlBinding: Codable, Hashable, Sendable {
         case executionID
         case authorityID
         case authorityEpoch
-        case backendKind
-        case backendInstanceID
-        case ownership
+        case backendIdentity
         case declaredCapabilitiesRawValue
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownExternalControlKeys(
-            decoder,
-            allowed: CodingKeys.allCases.map(\.rawValue)
-        )
+        try rejectUnknownExternalControlKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let schemaIdentifier = try container.decode(String.self, forKey: .schemaIdentifier)
         let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
@@ -188,28 +300,11 @@ public struct ExternalOperationControlBinding: Codable, Hashable, Sendable {
                 rawValue: try container.decode(UInt64.self, forKey: .authorityEpoch)
             )
         )
-        let backendKind = try container.decode(
-            ExternalOperationBackendKindID.self,
-            forKey: .backendKind
+        self.backendIdentity = try container.decode(
+            ExternalOperationBackendIdentity.self,
+            forKey: .backendIdentity
         )
-        let backendInstanceID = try container.decode(String.self, forKey: .backendInstanceID)
-        do {
-            self.backendIdentity = try ExternalOperationBackendIdentity(
-                kind: backendKind,
-                instanceID: backendInstanceID
-            )
-        } catch {
-            throw DecodingError.dataCorruptedError(
-                forKey: .backendInstanceID,
-                in: container,
-                debugDescription: "Backend instance ID must be canonical, bounded, and nonempty"
-            )
-        }
-        self.ownership = try container.decode(
-            ExternalOperationControlOwnership.self,
-            forKey: .ownership
-        )
-        self.declaredCapabilities = ExternalOperationBackendCapabilities(
+        self.declaredCapabilities = ExternalOperationControlCapabilities(
             rawValue: try container.decode(UInt8.self, forKey: .declaredCapabilitiesRawValue)
         )
     }
@@ -221,9 +316,7 @@ public struct ExternalOperationControlBinding: Codable, Hashable, Sendable {
         try container.encode(executionID.rawValue, forKey: .executionID)
         try container.encode(authority.id.rawValue, forKey: .authorityID)
         try container.encode(authority.epoch.rawValue, forKey: .authorityEpoch)
-        try container.encode(backendIdentity.kind, forKey: .backendKind)
-        try container.encode(backendIdentity.instanceID, forKey: .backendInstanceID)
-        try container.encode(ownership, forKey: .ownership)
+        try container.encode(backendIdentity, forKey: .backendIdentity)
         try container.encode(
             declaredCapabilities.rawValue,
             forKey: .declaredCapabilitiesRawValue
@@ -261,15 +354,11 @@ public struct ExternalOperationControlTarget: Codable, Hashable, Sendable {
         case executionID
         case authorityID
         case authorityEpoch
-        case backendKind
-        case backendInstanceID
+        case backendIdentity
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownExternalControlKeys(
-            decoder,
-            allowed: CodingKeys.allCases.map(\.rawValue)
-        )
+        try rejectUnknownExternalControlKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let schemaIdentifier = try container.decode(String.self, forKey: .schemaIdentifier)
         let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
@@ -293,23 +382,10 @@ public struct ExternalOperationControlTarget: Codable, Hashable, Sendable {
                 rawValue: try container.decode(UInt64.self, forKey: .authorityEpoch)
             )
         )
-        let backendKind = try container.decode(
-            ExternalOperationBackendKindID.self,
-            forKey: .backendKind
+        self.backendIdentity = try container.decode(
+            ExternalOperationBackendIdentity.self,
+            forKey: .backendIdentity
         )
-        let backendInstanceID = try container.decode(String.self, forKey: .backendInstanceID)
-        do {
-            self.backendIdentity = try ExternalOperationBackendIdentity(
-                kind: backendKind,
-                instanceID: backendInstanceID
-            )
-        } catch {
-            throw DecodingError.dataCorruptedError(
-                forKey: .backendInstanceID,
-                in: container,
-                debugDescription: "Backend instance ID must be canonical, bounded, and nonempty"
-            )
-        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -319,60 +395,7 @@ public struct ExternalOperationControlTarget: Codable, Hashable, Sendable {
         try container.encode(executionID.rawValue, forKey: .executionID)
         try container.encode(authority.id.rawValue, forKey: .authorityID)
         try container.encode(authority.epoch.rawValue, forKey: .authorityEpoch)
-        try container.encode(backendIdentity.kind, forKey: .backendKind)
-        try container.encode(backendIdentity.instanceID, forKey: .backendInstanceID)
-    }
-}
-
-public enum ExternalOperationControlDecisionKind: String, Codable, Equatable, Sendable {
-    case allowed
-    case monitoringOnly = "monitoring_only"
-    case blocked
-}
-
-public enum ExternalOperationControlDecisionReason: String, Codable, Equatable, Sendable {
-    case observationCapabilityVerified = "observation_capability_verified"
-    case authenticatedCancellationHandleVerified = "authenticated_cancellation_handle_verified"
-    case sshRequiresReviewedRemoteHelper = "ssh_requires_reviewed_remote_helper"
-    case importedOperationIsMonitoringOnly = "imported_operation_is_monitoring_only"
-    case opaqueOperationIsMonitoringOnly = "opaque_operation_is_monitoring_only"
-    case staleExecution = "stale_execution"
-    case staleAuthority = "stale_authority"
-    case staleBackendIdentity = "stale_backend_identity"
-    case unsupportedCapabilityDeclaration = "unsupported_capability_declaration"
-    case observationCapabilityMissing = "observation_capability_missing"
-    case cancellationCapabilityMissing = "cancellation_capability_missing"
-    case authenticatedOwnershipMissing = "authenticated_ownership_missing"
-    case cancellationCapabilityOverclaim = "cancellation_capability_overclaim"
-    case unsupportedBackend = "unsupported_backend"
-}
-
-public struct ExternalOperationControlDecision: Codable, Equatable, Sendable {
-    public let kind: ExternalOperationControlDecisionKind
-    public let reason: ExternalOperationControlDecisionReason
-
-    public init(
-        kind: ExternalOperationControlDecisionKind,
-        reason: ExternalOperationControlDecisionReason
-    ) {
-        self.kind = kind
-        self.reason = reason
-    }
-}
-
-/// Observation and cancellation are evaluated separately. A backend may be
-/// observable without being cancellable, or cancellable without exposing an
-/// observation API. Neither capability is inferred from the other.
-public struct ExternalOperationControlAssessment: Codable, Equatable, Sendable {
-    public let observation: ExternalOperationControlDecision
-    public let cancellation: ExternalOperationControlDecision
-
-    public init(
-        observation: ExternalOperationControlDecision,
-        cancellation: ExternalOperationControlDecision
-    ) {
-        self.observation = observation
-        self.cancellation = cancellation
+        try container.encode(backendIdentity, forKey: .backendIdentity)
     }
 }
 
