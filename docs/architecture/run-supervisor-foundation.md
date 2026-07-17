@@ -95,9 +95,10 @@ its exit status and is not mislabeled as cancelled.
 
 Whether a caller may reach this supervisor cancellation path is decided by the
 provider-neutral [external operation control policy](external-operation-control-policy.md).
-It requires the exact execution, fenced authority, backend identity, declared
-capability, and authenticated execution-scoped ownership; a diagnostic PID is
-never sufficient.
+It requires the full typed supervisor identity, exact execution and fenced
+authority, the specifically requested graceful/immediate capability, and
+non-Codable evidence from the trusted authenticator. A decoded ownership claim,
+display alias, or diagnostic PID is never sufficient.
 
 Standard input is deliberately transient. `stdin_accepted` and `stdin_closed`
 mean the local provider pipe operation succeeded; a missing process, EPIPE, or
