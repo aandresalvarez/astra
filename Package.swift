@@ -9,6 +9,9 @@ let package = Package(
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
+        // Regression harness for abrupt HostControl-parent termination. It is
+        // built by SwiftPM tests but is not copied into either ASTRA app.
+        .executable(name: "astra-host-control-crash-harness", targets: ["HostControlCrashHarness"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
@@ -73,6 +76,11 @@ let package = Package(
             name: "AstraHostControlTool",
             dependencies: ["HostControlToolSupport"],
             path: "Tools/AstraHostControlTool"
+        ),
+        .executableTarget(
+            name: "HostControlCrashHarness",
+            dependencies: ["HostControlToolSupport"],
+            path: "Tests/HostControlCrashHarness"
         ),
         .executableTarget(
             name: "AstraWorkspaceTool",
@@ -177,7 +185,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
+            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "HostControlCrashHarness", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(

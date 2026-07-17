@@ -78,6 +78,7 @@ struct EventCategoryTests {
         #expect(TaskEventTypes.Validation.contractFailed.rawValue == "validation.contract.failed")
 
         #expect(TaskEventTypes.Task.completed.category == .lifecycle)
+        #expect(TaskEventTypes.Objective.assessmentChanged.category == .lifecycle)
         #expect(TaskEventTypes.Conversation.userMessage.category == .conversation)
         #expect(TaskEventTypes.Tool.use.category == .tool)
         #expect(TaskEventTypes.Budget.warning.category == .system)

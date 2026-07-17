@@ -248,6 +248,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
 
     private static func eventType(_ event: ParsedEvent) -> String {
         switch event {
+        case .control(let type): "control:\(type)"
         case .systemInit: "system_init"
         case .thinking: "thinking"
         case .text: "text"

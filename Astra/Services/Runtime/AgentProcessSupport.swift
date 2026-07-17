@@ -950,8 +950,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             _estimatedTokens += 50
         case .permissionDenied:
             _estimatedTokens += 50
-        case .astraProtocol:
-            break
+        case .control, .astraProtocol: break
         case .systemInit, .unknown:
             _estimatedTokens += 20
         case .result:
@@ -2021,8 +2020,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {
         switch parsed {
-        case .systemInit:
-            return .lifecycleMetadata
+        case .control: return .providerLiveness
+        case .systemInit: return .lifecycleMetadata
         case .unknown:
             return .diagnostic
         case .usage:
@@ -2075,7 +2074,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return nonEmpty(content).map { textSignature(prefix: "team.msg:\(from)->\(to)", text: $0) }
         case .permissionDenied(let tool, let reason):
             return "perm.denied:\(tool):\(textSignature(prefix: "reason", text: reason))"
-        case .usage, .result, .systemInit, .astraProtocol, .unknown:
+        case .control, .usage, .result, .systemInit, .astraProtocol, .unknown:
             return nil
         }
     }
@@ -2095,6 +2094,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     static func eventSignature(_ parsed: ParsedEvent) -> String {
         switch parsed {
+        case .control(let type): return "control:\(type)"
         case .text(let t): return textSignature(prefix: "text", text: t)
         case .thinking(let t): return textSignature(prefix: "think", text: t)
         case .toolUse(let name, let id, let input):
