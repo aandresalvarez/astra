@@ -366,3 +366,158 @@ struct WorkspacePackageImportTests {
         )
     }
 }
+
+// MARK: - Review sheet state
+
+/// Regression tests for the review sheet's state handling (live-QA findings):
+/// a failed import's error must not outlive a destination change, and a new
+/// import request must never be swallowed by a still-presented sheet.
+@Suite("Workspace Package Import Review State")
+struct WorkspacePackageImportReviewStateTests {
+
+    @Test("choosing a new destination clears a stale import error")
+    func destinationChangeClearsStaleImportError() {
+        var state = WorkspacePackageImportReviewState()
+        state.importFinished(.failure(WorkspacePackageImportError.destinationAlreadyExists("/tmp/taken")))
+        #expect(!state.statusMessage.isEmpty)
+
+        state.destinationChosen(URL(fileURLWithPath: "/tmp/elsewhere"))
+
+        #expect(state.statusMessage.isEmpty)
+        #expect(state.destinationParentURL?.path == "/tmp/elsewhere")
+    }
+
+    @Test("an unreadable package reports a status message")
+    func unreadablePackageReportsStatus() {
+        var state = WorkspacePackageImportReviewState()
+        state.planLoaded(nil)
+        #expect(!state.statusMessage.isEmpty)
+        #expect(!state.canImport)
+    }
+}
+
+@Suite("Workspace Package Import Sheet Presentation")
+struct WorkspacePackageImportSheetPresentationTests {
+
+    private func request(_ name: String) -> WorkspacePackageImportRequest {
+        WorkspacePackageImportRequest(url: URL(fileURLWithPath: "/tmp/\(name).astra-share"))
+    }
+
+    @Test("a request while idle presents immediately")
+    func requestWhileIdlePresentsImmediately() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        let first = request("first")
+        sheet.request(first)
+        #expect(sheet.presented?.id == first.id)
+        #expect(sheet.queued.isEmpty)
+    }
+
+    @Test("a request while a sheet is presented dismisses it and re-presents the new package")
+    func requestWhilePresentedReplacesAfterDismissal() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        sheet.request(request("first"))
+
+        // File > Import Workspace… again while the first sheet (for example
+        // its completed-import summary) is still on screen.
+        let second = request("second")
+        sheet.request(second)
+
+        // The presented sheet is dismissed rather than mutated in place…
+        #expect(sheet.presented == nil)
+
+        // …and the new request presents once the dismissal settles.
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == second.id)
+        #expect(sheet.queued.isEmpty)
+    }
+
+    @Test("dismissal with nothing queued stays dismissed")
+    func plainDismissalStaysDismissed() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        sheet.request(request("only"))
+        sheet.presented = nil
+        sheet.sheetDismissed()
+        #expect(sheet.presented == nil)
+    }
+
+    @Test("a newer request during an in-flight dismissal jumps ahead without losing what was already queued")
+    func newerRequestDuringDismissalWins() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        sheet.request(request("first"))
+        let second = request("second")
+        sheet.request(second)
+        let third = request("third")
+        sheet.request(third)
+
+        // "third" jumps ahead of "second" — it's the request the user just
+        // made — but "second" is not dropped; it simply waits its turn.
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == third.id)
+        #expect(sheet.queued.map(\.id) == [second.id])
+
+        sheet.presented = nil
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == second.id)
+        #expect(sheet.queued.isEmpty)
+    }
+
+    @Test("a multi-package selection presents the first and drains the rest in order")
+    func multiSelectionDrainsInOrder() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        let batch = ["a", "b", "c"].map(request)
+        sheet.request(batch)
+
+        #expect(sheet.presented?.id == batch[0].id)
+        #expect(sheet.queued.map(\.id) == [batch[1].id, batch[2].id])
+
+        sheet.presented = nil
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == batch[1].id)
+        #expect(sheet.queued.map(\.id) == [batch[2].id])
+
+        sheet.presented = nil
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == batch[2].id)
+        #expect(sheet.queued.isEmpty)
+    }
+
+    @Test("a fresh request during a multi-package drain jumps the remaining queue")
+    func freshRequestDuringDrainJumpsQueue() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        let firstBatch = ["a", "b"].map(request)
+        sheet.request(firstBatch)
+        #expect(sheet.presented?.id == firstBatch[0].id)
+
+        // Import Workspace… invoked again mid-drain (reviewing "a", "b" still queued).
+        let interrupting = request("z")
+        sheet.request(interrupting)
+        #expect(sheet.presented == nil)
+
+        // The just-requested package wins the interruption…
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == interrupting.id)
+        // …and the earlier batch's remainder still finishes afterward.
+        #expect(sheet.queued.map(\.id) == [firstBatch[1].id])
+
+        sheet.presented = nil
+        sheet.sheetDismissed()
+        #expect(sheet.presented?.id == firstBatch[1].id)
+    }
+
+    @Test("ContentView routes package imports through the presentation queue")
+    func contentViewRoutesThroughPresentationQueue() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "packageImportPresentation.request(partition.packageURLs.map(WorkspacePackageImportRequest.init(url:)))"
+        ))
+        #expect(source.contains("onDismiss: { packageImportPresentation.sheetDismissed() }"))
+        // The raw sheet item must not be assigned outside the queue, or a
+        // request arriving while a sheet is up gets silently dropped again.
+        #expect(!source.contains("pendingPackageImport"))
+    }
+}

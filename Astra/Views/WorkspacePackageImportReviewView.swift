@@ -9,6 +9,90 @@ struct WorkspacePackageImportRequest: Identifiable {
     let url: URL
 }
 
+/// Serializes `.sheet(item:)` presentation across a queue of `.astra-share`
+/// packages — from a multi-file selection, and/or a later "Import Workspace…"
+/// invoked again while a sheet (including a completed-import summary the user
+/// left open) is still on screen.
+///
+/// Swapping the sheet item in place while a sheet is already presented does
+/// not reliably replace the presented content, and the sheet view's `@State`
+/// (e.g. a completed-import summary) survives regardless — so any new
+/// request dismisses whatever is currently shown and is re-presented from
+/// the sheet's `onDismiss`, promoted ahead of anything left over from an
+/// earlier batch. The request the user just made always wins the
+/// interruption; older queued items simply resume after it.
+struct WorkspacePackageImportSheetPresentation {
+    /// Drives `.sheet(item:)`.
+    var presented: WorkspacePackageImportRequest?
+    /// Requests waiting to be shown, in presentation order.
+    private(set) var queued: [WorkspacePackageImportRequest] = []
+
+    init() {}
+
+    /// Enqueues one or more requests (e.g. every `.astra-share` file from a
+    /// single selection). Presents immediately when idle; otherwise
+    /// dismisses the current sheet and promotes this batch ahead of the
+    /// existing queue, re-presenting once `sheetDismissed()` fires.
+    mutating func request(_ requests: [WorkspacePackageImportRequest]) {
+        guard !requests.isEmpty else { return }
+        if presented == nil, queued.isEmpty {
+            presented = requests[0]
+            queued = Array(requests.dropFirst())
+        } else {
+            queued = requests + queued
+            presented = nil
+        }
+    }
+
+    mutating func request(_ request: WorkspacePackageImportRequest) {
+        self.request([request])
+    }
+
+    /// Call from the sheet's `onDismiss`; promotes the next queued request
+    /// into a fresh presentation, if any.
+    mutating func sheetDismissed() {
+        guard !queued.isEmpty else { return }
+        presented = queued.removeFirst()
+    }
+}
+
+/// Review-flow state for `WorkspacePackageImportReviewView`, extracted so the
+/// transitions are testable without SwiftUI.
+struct WorkspacePackageImportReviewState {
+    private(set) var plan: WorkspacePackageImportPlan?
+    private(set) var outcome: WorkspacePackageImportOutcome?
+    private(set) var destinationParentURL: URL?
+    private(set) var statusMessage = ""
+
+    init() {}
+
+    var canImport: Bool { plan?.canImport == true && destinationParentURL != nil }
+
+    mutating func planLoaded(_ plan: WorkspacePackageImportPlan?) {
+        self.plan = plan
+        if plan == nil {
+            statusMessage = "This does not look like a valid workspace package."
+        }
+    }
+
+    /// A failed import's error (for example "destination already exists")
+    /// describes the previous inputs; changing the destination invalidates it.
+    mutating func destinationChosen(_ url: URL) {
+        destinationParentURL = url
+        statusMessage = ""
+    }
+
+    mutating func importFinished(_ result: Result<WorkspacePackageImportOutcome, any Error>) {
+        switch result {
+        case .success(let outcome):
+            self.outcome = outcome
+            statusMessage = ""
+        case .failure(let error):
+            statusMessage = error.localizedDescription
+        }
+    }
+}
+
 /// Review-before-import for a `.astra-share` portable workspace package:
 /// validates the package, shows the readiness plan (what's ready, what needs
 /// approval/authentication/setup, what stays disabled), requires an explicit
@@ -19,10 +103,7 @@ struct WorkspacePackageImportReviewView: View {
     var onComplete: (Workspace?) -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @State private var plan: WorkspacePackageImportPlan?
-    @State private var outcome: WorkspacePackageImportOutcome?
-    @State private var destinationParentURL: URL?
-    @State private var statusMessage = ""
+    @State private var state = WorkspacePackageImportReviewState()
     @State private var didLoad = false
     @State private var accessingURL: URL?
 
@@ -31,9 +112,9 @@ struct WorkspacePackageImportReviewView: View {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if let outcome {
+                    if let outcome = state.outcome {
                         outcomeBody(outcome)
-                    } else if let plan {
+                    } else if let plan = state.plan {
                         planBody(plan)
                     } else {
                         Text("Reading package…")
@@ -53,10 +134,7 @@ struct WorkspacePackageImportReviewView: View {
             didLoad = true
             accessingURL = packageURL.startAccessingSecurityScopedResource() ? packageURL : nil
             let report = WorkspacePackageService().validatePackage(at: packageURL)
-            plan = WorkspacePackageImportPlanner().plan(from: report)
-            if plan == nil {
-                statusMessage = "This does not look like a valid workspace package."
-            }
+            state.planLoaded(WorkspacePackageImportPlanner().plan(from: report))
         }
         .onDisappear {
             accessingURL?.stopAccessingSecurityScopedResource()
@@ -72,18 +150,18 @@ struct WorkspacePackageImportReviewView: View {
                 .font(Stanford.ui(20, weight: .semibold))
                 .foregroundStyle(Stanford.interactive)
             VStack(alignment: .leading, spacing: 2) {
-                Text(outcome == nil ? "Import Workspace Package" : "Workspace Imported")
+                Text(state.outcome == nil ? "Import Workspace Package" : "Workspace Imported")
                     .font(Stanford.heading(20))
                     .foregroundStyle(.primary)
-                Text(plan?.workspaceName ?? packageURL.lastPathComponent)
+                Text(state.plan?.workspaceName ?? packageURL.lastPathComponent)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if !statusMessage.isEmpty {
-                Text(statusMessage).font(Stanford.caption(12)).foregroundStyle(.secondary)
+            if !state.statusMessage.isEmpty {
+                Text(state.statusMessage).font(Stanford.caption(12)).foregroundStyle(.secondary)
             }
-            if let outcome {
+            if let outcome = state.outcome {
                 Button(action: { onComplete(outcome.workspace) }) {
                     Label("Open Workspace", systemImage: "arrow.right.circle")
                 }
@@ -96,7 +174,7 @@ struct WorkspacePackageImportReviewView: View {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(plan?.canImport != true || destinationParentURL == nil)
+                .disabled(!state.canImport)
                 .help(importHelp)
                 .accessibilityIdentifier("PackageImportConfirmButton")
             }
@@ -107,8 +185,8 @@ struct WorkspacePackageImportReviewView: View {
     }
 
     private var importHelp: String {
-        if plan?.canImport != true { return "Resolve the package blockers first." }
-        if destinationParentURL == nil { return "Choose a destination folder first." }
+        if state.plan?.canImport != true { return "Resolve the package blockers first." }
+        if state.destinationParentURL == nil { return "Choose a destination folder first." }
         return "Create the workspace and import the package."
     }
 
@@ -121,7 +199,7 @@ struct WorkspacePackageImportReviewView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(destinationSummary(plan))
                         .font(Stanford.caption(12))
-                        .foregroundStyle(destinationParentURL == nil ? Stanford.textSecondary : .primary)
+                        .foregroundStyle(state.destinationParentURL == nil ? Stanford.textSecondary : .primary)
                     Text("The workspace is created inside the folder you choose — never where the package file happens to sit.")
                         .font(Stanford.caption(11))
                         .foregroundStyle(Stanford.textTertiary)
@@ -226,27 +304,24 @@ struct WorkspacePackageImportReviewView: View {
         panel.allowsMultipleSelection = false
         panel.message = "Choose the folder the imported workspace will be created in."
         panel.prompt = "Choose"
-        if panel.runModal() == .OK {
-            destinationParentURL = panel.url
+        if panel.runModal() == .OK, let url = panel.url {
+            state.destinationChosen(url)
         }
     }
 
     private func runImport() {
-        guard let destinationParentURL else { return }
-        do {
-            outcome = try WorkspacePackageImportCoordinator().importPackage(
+        guard let destinationParentURL = state.destinationParentURL else { return }
+        state.importFinished(Result {
+            try WorkspacePackageImportCoordinator().importPackage(
                 at: packageURL,
                 intoDestinationFolder: destinationParentURL,
                 modelContext: modelContext
             )
-            statusMessage = ""
-        } catch {
-            statusMessage = error.localizedDescription
-        }
+        })
     }
 
     private func destinationSummary(_ plan: WorkspacePackageImportPlan) -> String {
-        guard let destinationParentURL else { return "No destination chosen yet." }
+        guard let destinationParentURL = state.destinationParentURL else { return "No destination chosen yet." }
         let root = destinationParentURL.appendingPathComponent(
             WorkspacePackageImportCoordinator.directoryName(for: plan.workspaceName)
         )

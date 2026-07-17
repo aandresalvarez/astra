@@ -70,10 +70,7 @@ struct ContentView: View {
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
-    @State private var pendingPackageImport: WorkspacePackageImportRequest?
-    /// Remaining `.astra-share` packages from a multi-selection, drained one
-    /// modal review sheet at a time as each completes.
-    @State private var queuedPackageImportURLs: [URL] = []
+    @State private var packageImportPresentation = WorkspacePackageImportSheetPresentation()
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
     @State private var renamingWorkspace: Workspace?
@@ -1066,14 +1063,14 @@ struct ContentView: View {
                 ScheduleEditorView(workspace: ws)
             }
         }
-        .sheet(item: $pendingPackageImport) { request in
+        .sheet(item: $packageImportPresentation.presented, onDismiss: { packageImportPresentation.sheetDismissed() }) { request in
             WorkspacePackageImportReviewView(packageURL: request.url) { imported in
-                pendingPackageImport = nil
+                packageImportPresentation.presented = nil
                 if let imported {
                     applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(imported))
                 }
-                presentNextQueuedPackageImport()
             }
+            .id(request.id)
         }
         .sheet(item: $editingSchedule) { schedule in
             if let ws = schedule.workspace ?? effectiveWorkspace {
@@ -2308,8 +2305,7 @@ struct ContentView: View {
         // one reviewed in turn); everything else stays on the legacy path.
         let partition = WorkspacePackageImportRouting.partition(urls)
         if !partition.packageURLs.isEmpty {
-            queuedPackageImportURLs = partition.packageURLs
-            presentNextQueuedPackageImport()
+            packageImportPresentation.request(partition.packageURLs.map(WorkspacePackageImportRequest.init(url:)))
         }
         guard !partition.legacyURLs.isEmpty else { return }
 
@@ -2321,13 +2317,6 @@ struct ContentView: View {
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
     }
 
-    /// Presents the next queued `.astra-share` package. Deferred a tick so it
-    /// re-presents after the prior sheet cleared `pendingPackageImport`.
-    private func presentNextQueuedPackageImport() {
-        guard pendingPackageImport == nil, !queuedPackageImportURLs.isEmpty else { return }
-        let next = queuedPackageImportURLs.removeFirst()
-        DispatchQueue.main.async { pendingPackageImport = WorkspacePackageImportRequest(url: next) }
-    }
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {
