@@ -47,6 +47,9 @@ struct ObjectiveAssessmentServiceTests {
         #expect(state.objectiveAssessment?.verdict == "superseded")
         #expect(state.objectiveAssessment?.currentObjective == "Actually fix the CSV export instead")
         #expect(state.objectiveAssessment?.assessedAtTurn == fixture.turnCountBeforeAssessment)
+        #expect(fixture.task.events.filter {
+            $0.type == TaskEventTypes.Objective.assessmentChanged.rawValue
+        }.count == 1)
     }
 
     // MARK: - Fail-safe: malformed JSON
@@ -280,6 +283,21 @@ struct ObjectiveAssessmentServiceTests {
 
         let reloaded = try #require(TaskContextStateManager.load(taskFolder: folder))
         #expect(reloaded.objectiveAssessment == nil)
+        #expect(task.events.filter {
+            $0.type == TaskEventTypes.Objective.assessmentChanged.rawValue
+        }.count == 2)
+
+        // The clear is a durable tombstone, not just a capsule edit. Losing
+        // both derived files must therefore keep the opted-out assessment off.
+        try FileManager.default.removeItem(
+            at: URL(fileURLWithPath: folder).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        )
+        try FileManager.default.removeItem(
+            at: URL(fileURLWithPath: folder).appendingPathComponent(TaskContextStateManager.markdownFileName)
+        )
+        TaskContextStateManager.refresh(task: task)
+        let rebuilt = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(rebuilt.objectiveAssessment == nil)
     }
 
     // MARK: - Race safety: out-of-order writes don't clobber a newer verdict

@@ -457,7 +457,9 @@ public enum TaskContextStateManager {
     public static func recordTurn(task: AgentTask, run: TaskRun, message: String) {
         guard let folder = ensureTaskFolder(for: task) else { return }
         var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
+        TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
         updateDerivedFields(&state, task: task, latestRun: run)
+        reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: message)
 
         let turn = makeTurn(
             number: nextTurnNumber(in: state, taskFolder: folder),
@@ -477,12 +479,29 @@ public enum TaskContextStateManager {
         guard let folder = ensureTaskFolder(for: task) else { return }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
         var state = existing ?? initialState(for: task)
+        TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
-        reconcileActiveObjectiveWithAssessmentPivot(&state, task: task, followUpMessage: followUpMessage)
+        reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return }
         state.updatedAt = timestamp(Date())
         save(state, taskFolder: folder, taskID: task.id)
+    }
+
+    @MainActor
+    private static func reconcileObjectiveAssessmentProjection(
+        _ state: inout TaskContextState,
+        task: AgentTask,
+        followUpMessage: String
+    ) {
+        let assessmentBeforeTier1Reconciliation = state.objectiveAssessment
+        reconcileActiveObjectiveWithAssessmentPivot(&state, task: task, followUpMessage: followUpMessage)
+        if assessmentBeforeTier1Reconciliation != nil, state.objectiveAssessment == nil {
+            _ = TaskObjectiveAssessmentEventStore.clear(
+                task: task,
+                reason: "tier1_objective_reconciliation"
+            )
+        }
     }
 
     @MainActor
