@@ -1,52 +1,20 @@
 import Foundation
 
-public enum RuntimeSwitchContractError: Error, Equatable, Sendable {
-    case emptyCheckpointID
-    case emptyForceReasonCode
-}
-
-public struct RuntimeSwitchRequestID: RawRepresentable, Codable, Hashable, Sendable {
-    public let rawValue: UUID
-
-    public init(rawValue: UUID) {
-        self.rawValue = rawValue
-    }
-
-    public init() {
-        self.init(rawValue: UUID())
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        self.init(rawValue: try container.decode(UUID.self))
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
-}
-
-public struct RuntimeSwitchCheckpointID: Codable, Hashable, Sendable {
+public struct RuntimeSwitchCheckpointID: Codable, Equatable, Hashable, Sendable {
     public let rawValue: String
 
     public init(rawValue: String) throws {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { throw RuntimeSwitchContractError.emptyCheckpointID }
-        self.rawValue = normalized
+        self.rawValue = try RuntimeSwitchBounds.canonical(rawValue, field: "checkpoint ID", limit: 256)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        let encoded = try container.decode(String.self)
+        let value = try container.decode(String.self)
         do {
-            try self.init(rawValue: encoded)
-            guard rawValue == encoded else { throw RuntimeSwitchContractError.emptyCheckpointID }
+            try self.init(rawValue: value)
+            guard rawValue == value else { throw RuntimeSwitchContractError.emptyValue("checkpoint ID") }
         } catch {
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Runtime switch checkpoint ID must be nonempty and canonically trimmed"
-            )
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Checkpoint ID must be bounded and canonical")
         }
     }
 
@@ -56,141 +24,217 @@ public struct RuntimeSwitchCheckpointID: Codable, Hashable, Sendable {
     }
 }
 
-/// Capability must be affirmatively declared by both the provider adapter and
-/// detached supervisor. Absence is not treated as support.
-public enum RuntimeContinuationCapabilityDeclaration: String, Codable, Equatable, Sendable {
-    case notDeclared = "not_declared"
-    case unsupported
-    case supported
+public struct RuntimeSwitchEffectID: RawRepresentable, Codable, Equatable, Hashable, Sendable {
+    public let rawValue: UUID
+    public init(rawValue: UUID) { self.rawValue = rawValue }
 }
 
-public enum RuntimeSwitchExecutionLifecycle: String, Codable, Equatable, Sendable {
-    case active
+public struct RuntimeSwitchEvidenceID: RawRepresentable, Codable, Equatable, Hashable, Sendable {
+    public let rawValue: UUID
+    public init(rawValue: UUID) { self.rawValue = rawValue }
+}
+
+public enum RuntimeSwitchExecutionLifecycle: String, Codable, Equatable, Hashable, Sendable {
+    case registered
+    case starting
+    case running
+    case cancellationPending = "cancellation_pending"
+    case terminating
+    case offline
+    case inDoubt = "in_doubt"
     case terminal
+
+    public var acceptsNewControlIntent: Bool {
+        self == .registered || self == .starting || self == .running
+    }
 }
 
-public struct RuntimeSwitchCheckpointEvidence: Codable, Equatable, Sendable {
+public struct RuntimeSwitchProtocolIdentity: Codable, Equatable, Hashable, Sendable {
     public static let currentSchemaVersion = 1
 
-    public let checkpointID: RuntimeSwitchCheckpointID?
-    public let inFlightEffectCount: UInt
-    public let inFlightToolOperationCount: UInt
-    public let providerContinuation: RuntimeContinuationCapabilityDeclaration
-    public let supervisorContinuation: RuntimeContinuationCapabilityDeclaration
+    public let adapterID: String
+    public let protocolVersion: UInt32
+
+    public init(adapterID: String, protocolVersion: UInt32) throws {
+        self.adapterID = try RuntimeSwitchBounds.canonical(adapterID, field: "adapter ID", limit: 128)
+        guard protocolVersion > 0 else { throw RuntimeSwitchContractError.emptyValue("adapter protocol version") }
+        self.protocolVersion = protocolVersion
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schemaVersion, adapterID, protocolVersion }
+
+    public init(from decoder: Decoder) throws {
+        try RuntimeSwitchStrictCoding.rejectUnknownKeys(
+            in: decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+            typeName: "runtime switch protocol identity"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try RuntimeSwitchStrictCoding.requireSchemaVersion(
+            Self.currentSchemaVersion,
+            in: container,
+            key: .schemaVersion,
+            typeName: "runtime switch protocol identity"
+        )
+        try self.init(
+            adapterID: container.decode(String.self, forKey: .adapterID),
+            protocolVersion: container.decode(UInt32.self, forKey: .protocolVersion)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(adapterID, forKey: .adapterID)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+    }
+}
+
+public struct RuntimeSwitchSupervisorFence: Codable, Equatable, Hashable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let installationID: RunBrokerInstallationID
+    public let storeID: RunBrokerStoreID
+    public let executionID: RunBrokerExecutionID
+    public let authority: RunBrokerAuthority
+    public let cohortID: String
+    public let protocolIdentity: RuntimeSwitchProtocolIdentity
 
     public init(
-        checkpointID: RuntimeSwitchCheckpointID?,
-        inFlightEffectCount: UInt,
-        inFlightToolOperationCount: UInt,
-        providerContinuation: RuntimeContinuationCapabilityDeclaration,
-        supervisorContinuation: RuntimeContinuationCapabilityDeclaration
+        installationID: RunBrokerInstallationID,
+        storeID: RunBrokerStoreID,
+        executionID: RunBrokerExecutionID,
+        authority: RunBrokerAuthority,
+        cohortID: String,
+        protocolIdentity: RuntimeSwitchProtocolIdentity
+    ) throws {
+        self.installationID = installationID
+        self.storeID = storeID
+        self.executionID = executionID
+        self.authority = authority
+        self.cohortID = try RuntimeSwitchBounds.canonical(cohortID, field: "supervisor cohort ID", limit: 256)
+        self.protocolIdentity = protocolIdentity
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, installationID, storeID, executionID, authority, cohortID, protocolIdentity
+    }
+
+    public init(from decoder: Decoder) throws {
+        try RuntimeSwitchStrictCoding.rejectUnknownKeys(
+            in: decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+            typeName: "runtime switch supervisor fence"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try RuntimeSwitchStrictCoding.requireSchemaVersion(
+            Self.currentSchemaVersion,
+            in: container,
+            key: .schemaVersion,
+            typeName: "runtime switch supervisor fence"
+        )
+        try self.init(
+            installationID: container.decode(RunBrokerInstallationID.self, forKey: .installationID),
+            storeID: container.decode(RunBrokerStoreID.self, forKey: .storeID),
+            executionID: container.decode(RunBrokerExecutionID.self, forKey: .executionID),
+            authority: container.decode(RunBrokerAuthority.self, forKey: .authority),
+            cohortID: container.decode(String.self, forKey: .cohortID),
+            protocolIdentity: container.decode(RuntimeSwitchProtocolIdentity.self, forKey: .protocolIdentity)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(installationID, forKey: .installationID)
+        try container.encode(storeID, forKey: .storeID)
+        try container.encode(executionID, forKey: .executionID)
+        try container.encode(authority, forKey: .authority)
+        try container.encode(cohortID, forKey: .cohortID)
+        try container.encode(protocolIdentity, forKey: .protocolIdentity)
+    }
+}
+
+/// Exact fence captured at the authenticated safe checkpoint. Counts are not
+/// persisted because only zero is valid; the watermarks and generation make a
+/// later dispatch-time zero-count observation comparable without ambiguity.
+public struct RuntimeSwitchCheckpointFence: Codable, Equatable, Hashable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let checkpointID: RuntimeSwitchCheckpointID
+    public let checkpointGeneration: UInt64
+    public let ledgerSequence: UInt64
+    public let effectWatermark: UInt64
+    public let toolOperationWatermark: UInt64
+    public let source: RuntimeSwitchSourceFence
+    public let targetManifestSHA256: ExecutionLaunchArgumentsSHA256
+    public let providerContinuation: RuntimeSwitchProtocolIdentity
+    public let supervisor: RuntimeSwitchSupervisorFence
+
+    package init(
+        checkpointID: RuntimeSwitchCheckpointID,
+        checkpointGeneration: UInt64,
+        ledgerSequence: UInt64,
+        effectWatermark: UInt64,
+        toolOperationWatermark: UInt64,
+        source: RuntimeSwitchSourceFence,
+        targetManifestSHA256: ExecutionLaunchArgumentsSHA256,
+        providerContinuation: RuntimeSwitchProtocolIdentity,
+        supervisor: RuntimeSwitchSupervisorFence
     ) {
         self.checkpointID = checkpointID
-        self.inFlightEffectCount = inFlightEffectCount
-        self.inFlightToolOperationCount = inFlightToolOperationCount
+        self.checkpointGeneration = checkpointGeneration
+        self.ledgerSequence = ledgerSequence
+        self.effectWatermark = effectWatermark
+        self.toolOperationWatermark = toolOperationWatermark
+        self.source = source
+        self.targetManifestSHA256 = targetManifestSHA256
         self.providerContinuation = providerContinuation
-        self.supervisorContinuation = supervisorContinuation
+        self.supervisor = supervisor
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion
-        case checkpointID
-        case inFlightEffectCount
-        case inFlightToolOperationCount
-        case providerContinuation
-        case supervisorContinuation
+        case schemaVersion, checkpointID, checkpointGeneration, ledgerSequence, effectWatermark
+        case toolOperationWatermark, source, targetManifestSHA256, providerContinuation, supervisor
     }
 
     public init(from decoder: Decoder) throws {
         try RuntimeSwitchStrictCoding.rejectUnknownKeys(
             in: decoder,
             allowed: Set(CodingKeys.allCases.map(\.rawValue)),
-            typeName: "runtime switch checkpoint evidence"
+            typeName: "runtime switch checkpoint fence"
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try RuntimeSwitchStrictCoding.requireSchemaVersion(
             Self.currentSchemaVersion,
             in: container,
             key: .schemaVersion,
-            typeName: "runtime switch checkpoint evidence"
+            typeName: "runtime switch checkpoint fence"
         )
         self.init(
-            checkpointID: try container.decodeIfPresent(RuntimeSwitchCheckpointID.self, forKey: .checkpointID),
-            inFlightEffectCount: try container.decode(UInt.self, forKey: .inFlightEffectCount),
-            inFlightToolOperationCount: try container.decode(UInt.self, forKey: .inFlightToolOperationCount),
-            providerContinuation: try container.decode(
-                RuntimeContinuationCapabilityDeclaration.self,
-                forKey: .providerContinuation
-            ),
-            supervisorContinuation: try container.decode(
-                RuntimeContinuationCapabilityDeclaration.self,
-                forKey: .supervisorContinuation
-            )
+            checkpointID: try container.decode(RuntimeSwitchCheckpointID.self, forKey: .checkpointID),
+            checkpointGeneration: try container.decode(UInt64.self, forKey: .checkpointGeneration),
+            ledgerSequence: try container.decode(UInt64.self, forKey: .ledgerSequence),
+            effectWatermark: try container.decode(UInt64.self, forKey: .effectWatermark),
+            toolOperationWatermark: try container.decode(UInt64.self, forKey: .toolOperationWatermark),
+            source: try container.decode(RuntimeSwitchSourceFence.self, forKey: .source),
+            targetManifestSHA256: try container.decode(ExecutionLaunchArgumentsSHA256.self, forKey: .targetManifestSHA256),
+            providerContinuation: try container.decode(RuntimeSwitchProtocolIdentity.self, forKey: .providerContinuation),
+            supervisor: try container.decode(RuntimeSwitchSupervisorFence.self, forKey: .supervisor)
         )
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
-        try container.encodeIfPresent(checkpointID, forKey: .checkpointID)
-        try container.encode(inFlightEffectCount, forKey: .inFlightEffectCount)
-        try container.encode(inFlightToolOperationCount, forKey: .inFlightToolOperationCount)
+        try container.encode(checkpointID, forKey: .checkpointID)
+        try container.encode(checkpointGeneration, forKey: .checkpointGeneration)
+        try container.encode(ledgerSequence, forKey: .ledgerSequence)
+        try container.encode(effectWatermark, forKey: .effectWatermark)
+        try container.encode(toolOperationWatermark, forKey: .toolOperationWatermark)
+        try container.encode(source, forKey: .source)
+        try container.encode(targetManifestSHA256, forKey: .targetManifestSHA256)
         try container.encode(providerContinuation, forKey: .providerContinuation)
-        try container.encode(supervisorContinuation, forKey: .supervisorContinuation)
-    }
-}
-
-/// Current broker-owned facts used by the pure switch policy. PIDs and local
-/// process handles are deliberately absent from this authority boundary.
-public struct ActiveRuntimeSwitchContext: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
-
-    public let identity: ActiveRuntimeConfigurationIdentity
-    public let lifecycle: RuntimeSwitchExecutionLifecycle
-    public let checkpoint: RuntimeSwitchCheckpointEvidence
-
-    public init(
-        identity: ActiveRuntimeConfigurationIdentity,
-        lifecycle: RuntimeSwitchExecutionLifecycle = .active,
-        checkpoint: RuntimeSwitchCheckpointEvidence
-    ) {
-        self.identity = identity
-        self.lifecycle = lifecycle
-        self.checkpoint = checkpoint
-    }
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion
-        case identity
-        case lifecycle
-        case checkpoint
-    }
-
-    public init(from decoder: Decoder) throws {
-        try RuntimeSwitchStrictCoding.rejectUnknownKeys(
-            in: decoder,
-            allowed: Set(CodingKeys.allCases.map(\.rawValue)),
-            typeName: "active runtime switch context"
-        )
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        try RuntimeSwitchStrictCoding.requireSchemaVersion(
-            Self.currentSchemaVersion,
-            in: container,
-            key: .schemaVersion,
-            typeName: "active runtime switch context"
-        )
-        self.init(
-            identity: try container.decode(ActiveRuntimeConfigurationIdentity.self, forKey: .identity),
-            lifecycle: try container.decode(RuntimeSwitchExecutionLifecycle.self, forKey: .lifecycle),
-            checkpoint: try container.decode(RuntimeSwitchCheckpointEvidence.self, forKey: .checkpoint)
-        )
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
-        try container.encode(identity, forKey: .identity)
-        try container.encode(lifecycle, forKey: .lifecycle)
-        try container.encode(checkpoint, forKey: .checkpoint)
+        try container.encode(supervisor, forKey: .supervisor)
     }
 }

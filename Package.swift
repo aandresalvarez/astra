@@ -42,6 +42,13 @@ let package = Package(
             dependencies: ["ASTRALogging"],
             path: "ASTRACore"
         ),
+        // Broker-only policy and verified evidence. Application, UI, model,
+        // persistence, and general tool targets must not depend on this target.
+        .target(
+            name: "RunBrokerPolicy",
+            dependencies: ["ASTRACore"],
+            path: "RunBrokerPolicy"
+        ),
         .target(
             name: "ASTRALogging",
             path: "ASTRALogging"
@@ -241,8 +248,13 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunBrokerPolicyTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
+        ),
+        .testTarget(
+            name: "RunBrokerPolicyTests",
+            dependencies: ["ASTRACore", "RunBrokerPolicy"],
+            path: "Tests/RunBrokerPolicyTests"
         ),
         .testTarget(
             name: "ASTRARunLedgerTests",

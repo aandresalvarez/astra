@@ -1,22 +1,22 @@
 import Foundation
 
-struct RuntimeSwitchDynamicCodingKey: CodingKey {
-    let stringValue: String
-    let intValue: Int?
+package struct RuntimeSwitchDynamicCodingKey: CodingKey {
+    package let stringValue: String
+    package let intValue: Int?
 
-    init?(stringValue: String) {
+    package init?(stringValue: String) {
         self.stringValue = stringValue
         self.intValue = nil
     }
 
-    init?(intValue: Int) {
+    package init?(intValue: Int) {
         self.stringValue = String(intValue)
         self.intValue = intValue
     }
 }
 
-enum RuntimeSwitchStrictCoding {
-    static func rejectUnknownKeys(
+package enum RuntimeSwitchStrictCoding {
+    package static func rejectUnknownKeys(
         in decoder: Decoder,
         allowed: Set<String>,
         typeName: String
@@ -34,7 +34,7 @@ enum RuntimeSwitchStrictCoding {
         }
     }
 
-    static func requireSchemaVersion<Key: CodingKey>(
+    package static func requireSchemaVersion<Key: CodingKey>(
         _ expected: Int,
         in container: KeyedDecodingContainer<Key>,
         key: Key,
