@@ -355,6 +355,41 @@ struct RunSupervisorEventSpoolTests {
         }
     }
 
+    @Test("released ownership is irreversible and cannot rewrite durable spool state")
+    func releasedOwnershipFailsClosed() throws {
+        let fixture = try makeFixture()
+        let spool = try RunSupervisorEventSpool(
+            directory: fixture.directory,
+            capability: fixture.capability
+        )
+        let event = try spool.appendCritical(.supervisorReady)
+        spool.releaseOwnership()
+        spool.releaseOwnership()
+
+        #expect(spool.lastSequence == 0)
+        #expect(spool.lastAcknowledgedSequence == 0)
+        #expect(!spool.waitForOutputCapacity(deadline: .distantFuture))
+        #expect(throws: RunSupervisorError.alreadyRunningOrInDoubt) {
+            try spool.appendOutput(.standardOutput, data: Data("late".utf8))
+        }
+        #expect(throws: RunSupervisorError.alreadyRunningOrInDoubt) {
+            try spool.appendCritical(.standardInputClosed)
+        }
+        #expect(throws: RunSupervisorError.alreadyRunningOrInDoubt) {
+            try spool.replay(after: 0)
+        }
+        #expect(throws: RunSupervisorError.alreadyRunningOrInDoubt) {
+            try spool.acknowledge(through: event.sequence)
+        }
+
+        let recovered = try RunSupervisorEventSpool(
+            directory: fixture.directory,
+            capability: fixture.capability
+        )
+        #expect(try recovered.replay(after: 0) == [event])
+        #expect(recovered.lastAcknowledgedSequence == 0)
+    }
+
     @Test("acknowledgement HMAC rejects same-uid durable tampering")
     func acknowledgementTamperingFailsClosed() throws {
         let fixture = try makeFixture()

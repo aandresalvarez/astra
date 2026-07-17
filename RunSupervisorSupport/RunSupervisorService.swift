@@ -75,6 +75,9 @@ public final class RunSupervisorService: @unchecked Sendable {
             clock: clock
         )
         stateLock.lock(); self.spool = spool; stateLock.unlock()
+        // This defer is registered before the socket defer below. Swift's LIFO
+        // ordering therefore guarantees socket quiescence before ownership is
+        // released on every success and error path.
         defer {
             stateLock.lock(); self.spool = nil; stateLock.unlock()
             spool.releaseOwnership()
@@ -92,10 +95,7 @@ public final class RunSupervisorService: @unchecked Sendable {
             }
             return try self.handle(action)
         }
-        var shouldStopServer = true
-        defer {
-            if shouldStopServer { server.stop() }
-        }
+        defer { server.stop() }
 
         let discovery = RunSupervisorDiscoveryRecord(
             identity: payload.expectedIdentity,
@@ -207,7 +207,6 @@ public final class RunSupervisorService: @unchecked Sendable {
             throw error
         }
         server.stop()
-        shouldStopServer = false
         if let error = outputPersistenceError.value { throw error }
         return .launched(exitCode: termination.exitCode)
     }
