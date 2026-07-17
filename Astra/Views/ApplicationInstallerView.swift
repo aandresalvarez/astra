@@ -6,6 +6,7 @@ struct ApplicationInstallerPresentation: Equatable, Sendable {
     let message: String
     let statusTitle: String
     let statusDetail: String
+    let statusSystemImageName: String
     let primaryActionTitle: String
     let footer: String
 
@@ -17,6 +18,7 @@ struct ApplicationInstallerPresentation: Equatable, Sendable {
 
         if plan.replacesExistingCopy {
             statusTitle = "Existing copy found"
+            statusSystemImageName = "doc.on.doc"
             if let existingVersion = plan.existingVersion {
                 statusDetail = "Version \(existingVersion) will be replaced by \(plan.sourceMetadata.version)."
             } else {
@@ -24,6 +26,7 @@ struct ApplicationInstallerPresentation: Equatable, Sendable {
             }
         } else {
             statusTitle = "Ready to install"
+            statusSystemImageName = "folder.badge.plus"
             statusDetail = "Version \(plan.sourceMetadata.version) will be installed in Applications."
         }
     }
@@ -197,7 +200,7 @@ struct ApplicationInstallerView: View {
             Divider()
 
             HStack(spacing: 16) {
-                Image(systemName: model.presentation.statusTitle == "Existing copy found" ? "doc.on.doc" : "folder.badge.plus")
+                Image(systemName: model.presentation.statusSystemImageName)
                     .font(.system(size: 24, weight: .regular))
                     .foregroundStyle(Stanford.textSecondary)
                     .frame(width: 52, height: 52)

@@ -36,8 +36,8 @@ struct ApplicationsFolderMoverTests {
 
     private func writableEmptyFileManager() -> InstallerFakeFileManager {
         let fileManager = InstallerFakeFileManager()
-        fileManager.directoryPaths = ["/Applications", "/Users/test/Applications"]
-        fileManager.writableDirectoryPaths = ["/Applications", "/Users/test/Applications"]
+        fileManager.directoryPaths = ["/Applications", "/Users/test", "/Users/test/Applications"]
+        fileManager.writableDirectoryPaths = ["/Applications", "/Users/test", "/Users/test/Applications"]
         return fileManager
     }
 
@@ -98,6 +98,7 @@ struct ApplicationsFolderMoverTests {
         #expect(plan.destination.path == "/Applications/ASTRA.app")
         #expect(plan.replacesExistingCopy == false)
         #expect(plan.existingVersion == nil)
+        #expect(!plan.createsDestinationDirectory)
     }
 
     @Test("an existing system copy becomes an explicit replacement instead of a second user-level install")
@@ -150,6 +151,87 @@ struct ApplicationsFolderMoverTests {
         #expect(plan.destination.path == "/Users/test/Applications/ASTRA.app")
     }
 
+    @Test("an unwritable existing system copy falls back to a user installation")
+    func nonWritableExistingSystemCopyFallsBackToUserApplications() {
+        let fileManager = writableEmptyFileManager()
+        fileManager.existingFilePaths.insert("/Applications/ASTRA.app")
+        fileManager.writableDirectoryPaths.remove("/Applications")
+
+        let decision = ApplicationInstallationPlanner.decide(
+            channel: .production,
+            currentBundleURL: source,
+            sourceMetadata: metadata,
+            applicationsDirectories: [systemApplications, userApplications],
+            fileManager: fileManager,
+            metadataReader: { _ in
+                ApplicationBundleMetadata(
+                    displayName: "ASTRA",
+                    version: "0.1.28",
+                    bundleIdentifier: "com.coral.ASTRA"
+                )
+            }
+        )
+
+        guard case .present(let plan) = decision else {
+            Issue.record("Expected a user Applications installation plan")
+            return
+        }
+        #expect(plan.destination.path == "/Users/test/Applications/ASTRA.app")
+        #expect(!plan.replacesExistingCopy)
+    }
+
+    @Test("an application with a different identity is never selected for replacement")
+    func foreignSystemApplicationFallsBackToUserApplications() {
+        let fileManager = writableEmptyFileManager()
+        fileManager.existingFilePaths.insert("/Applications/ASTRA.app")
+
+        let decision = ApplicationInstallationPlanner.decide(
+            channel: .production,
+            currentBundleURL: source,
+            sourceMetadata: metadata,
+            applicationsDirectories: [systemApplications, userApplications],
+            fileManager: fileManager,
+            metadataReader: { _ in
+                ApplicationBundleMetadata(
+                    displayName: "Not ASTRA",
+                    version: "9.9.9",
+                    bundleIdentifier: "example.foreign"
+                )
+            }
+        )
+
+        guard case .present(let plan) = decision else {
+            Issue.record("Expected a safe user Applications fallback")
+            return
+        }
+        #expect(plan.destination.path == "/Users/test/Applications/ASTRA.app")
+        #expect(!plan.replacesExistingCopy)
+    }
+
+    @Test("a missing user Applications directory is planned for creation")
+    func missingUserApplicationsDirectoryCanBeCreated() {
+        let fileManager = writableEmptyFileManager()
+        fileManager.directoryPaths.remove("/Users/test/Applications")
+        fileManager.writableDirectoryPaths.remove("/Users/test/Applications")
+        fileManager.writableDirectoryPaths.remove("/Applications")
+
+        let decision = ApplicationInstallationPlanner.decide(
+            channel: .production,
+            currentBundleURL: source,
+            sourceMetadata: metadata,
+            applicationsDirectories: [systemApplications, userApplications],
+            creatableApplicationsDirectories: [userApplications],
+            fileManager: fileManager
+        )
+
+        guard case .present(let plan) = decision else {
+            Issue.record("Expected a creatable user Applications installation plan")
+            return
+        }
+        #expect(plan.destination.path == "/Users/test/Applications/ASTRA.app")
+        #expect(plan.createsDestinationDirectory)
+    }
+
     @Test("no writable Applications directory is surfaced as unavailable")
     func noWritableDestinationIsUnavailable() {
         let fileManager = writableEmptyFileManager()
@@ -173,7 +255,8 @@ struct ApplicationsFolderMoverTests {
             destination: URL(fileURLWithPath: "/Applications/ASTRA.app"),
             sourceMetadata: metadata,
             replacesExistingCopy: true,
-            existingVersion: "0.1.28"
+            existingVersion: "0.1.28",
+            createsDestinationDirectory: false
         )
 
         let presentation = ApplicationInstallerPresentation(plan: plan)
@@ -181,7 +264,35 @@ struct ApplicationsFolderMoverTests {
         #expect(presentation.title == "Install ASTRA")
         #expect(presentation.statusTitle == "Existing copy found")
         #expect(presentation.statusDetail == "Version 0.1.28 will be replaced by 0.1.29.")
+        #expect(presentation.statusSystemImageName == "doc.on.doc")
         #expect(presentation.primaryActionTitle == "Install and Open ASTRA")
+    }
+
+    @Test("first-install presentation uses its explicit status icon and omits replacement audit data")
+    func firstInstallPresentationAndAuditAreUnambiguous() {
+        let plan = ApplicationInstallationPlan(
+            source: source,
+            destination: URL(fileURLWithPath: "/Applications/ASTRA.app"),
+            sourceMetadata: metadata,
+            replacesExistingCopy: false,
+            existingVersion: nil,
+            createsDestinationDirectory: false
+        )
+
+        let presentation = ApplicationInstallerPresentation(plan: plan)
+        let auditFields = ApplicationInstallationAuditFields.presented(plan: plan)
+
+        #expect(presentation.statusSystemImageName == "folder.badge.plus")
+        #expect(auditFields["existing_version"] == nil)
+        #expect(auditFields["replaces_existing"] == "false")
+    }
+
+    @Test("installer-only launch takes precedence over every normal scene root")
+    func installerLaunchNeverConstructsNormalContent() {
+        #expect(ApplicationLaunchRoot.resolve(isInstallerOnlyLaunch: true, hasStartupBlocker: false) == .installerPlaceholder)
+        #expect(ApplicationLaunchRoot.resolve(isInstallerOnlyLaunch: true, hasStartupBlocker: true) == .installerPlaceholder)
+        #expect(ApplicationLaunchRoot.resolve(isInstallerOnlyLaunch: false, hasStartupBlocker: true) == .startupBlocked)
+        #expect(ApplicationLaunchRoot.resolve(isInstallerOnlyLaunch: false, hasStartupBlocker: false) == .main)
     }
 
     @Test("the installer window cannot close while the application copy is in progress")
@@ -206,7 +317,8 @@ struct ApplicationsFolderMoverTests {
             destination: destination,
             sourceMetadata: metadata,
             replacesExistingCopy: false,
-            existingVersion: nil
+            existingVersion: nil,
+            createsDestinationDirectory: false
         )
 
         try ApplicationInstallationService.install(plan, stagingIdentifier: "new-install")
@@ -230,7 +342,8 @@ struct ApplicationsFolderMoverTests {
             destination: destination,
             sourceMetadata: metadata,
             replacesExistingCopy: true,
-            existingVersion: "0.1.28"
+            existingVersion: "0.1.28",
+            createsDestinationDirectory: false
         )
 
         try ApplicationInstallationService.install(plan, stagingIdentifier: "replacement")
@@ -252,7 +365,8 @@ struct ApplicationsFolderMoverTests {
             destination: destination,
             sourceMetadata: metadata,
             replacesExistingCopy: true,
-            existingVersion: "0.1.28"
+            existingVersion: "0.1.28",
+            createsDestinationDirectory: false
         )
 
         #expect(throws: (any Error).self) {
@@ -260,6 +374,64 @@ struct ApplicationsFolderMoverTests {
         }
         #expect(try ApplicationBundleMetadata.read(from: destination).version == "0.1.28")
         #expect(try marker(at: destination) == "old")
+    }
+
+    @Test("installation creates a planned user Applications directory")
+    func installationCreatesMissingDestinationDirectory() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Install ASTRA.app", isDirectory: true)
+        let destination = root.appendingPathComponent("User/Applications/ASTRA.app", isDirectory: true)
+        try writeApplication(at: source, version: "0.1.29", marker: "new")
+        let metadata = try ApplicationBundleMetadata.read(from: source)
+        let plan = ApplicationInstallationPlan(
+            source: source,
+            destination: destination,
+            sourceMetadata: metadata,
+            replacesExistingCopy: false,
+            existingVersion: nil,
+            createsDestinationDirectory: true
+        )
+
+        try ApplicationInstallationService.install(plan, stagingIdentifier: "create-user-applications")
+
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try marker(at: destination) == "new")
+    }
+
+    @Test("installation revalidates identity before replacing an occupied destination")
+    func installationRefusesToReplaceForeignApplication() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Install ASTRA.app", isDirectory: true)
+        let destination = root.appendingPathComponent("Applications/ASTRA.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try writeApplication(at: source, version: "0.1.29", marker: "new")
+        try writeApplication(
+            at: destination,
+            version: "9.9.9",
+            marker: "foreign",
+            bundleIdentifier: "example.foreign"
+        )
+        let metadata = try ApplicationBundleMetadata.read(from: source)
+        let plan = ApplicationInstallationPlan(
+            source: source,
+            destination: destination,
+            sourceMetadata: metadata,
+            replacesExistingCopy: true,
+            existingVersion: "9.9.9",
+            createsDestinationDirectory: false
+        )
+
+        do {
+            try ApplicationInstallationService.install(plan, stagingIdentifier: "foreign-replacement")
+            Issue.record("Expected the foreign application replacement to be rejected")
+        } catch ApplicationInstallationError.destinationContainsDifferentApplication(let url) {
+            #expect(url.standardizedFileURL == destination.standardizedFileURL)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(try marker(at: destination) == "foreign")
     }
 
     @Test("relaunch waits for the installer process to exit before opening the installed app")
@@ -281,14 +453,19 @@ struct ApplicationsFolderMoverTests {
         return root
     }
 
-    private func writeApplication(at url: URL, version: String, marker: String) throws {
+    private func writeApplication(
+        at url: URL,
+        version: String,
+        marker: String,
+        bundleIdentifier: String = "com.coral.ASTRA"
+    ) throws {
         let contents = url.appendingPathComponent("Contents", isDirectory: true)
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
         let plist: [String: Any] = [
             "CFBundleDisplayName": "ASTRA",
             "CFBundleName": "ASTRA",
             "CFBundleShortVersionString": version,
-            "CFBundleIdentifier": "com.coral.ASTRA"
+            "CFBundleIdentifier": bundleIdentifier
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: contents.appendingPathComponent("Info.plist"), options: .atomic)

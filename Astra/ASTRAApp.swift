@@ -962,12 +962,23 @@ public struct ASTRAApp: App {
 
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName, id: AppWindowIDs.main) {
-            if let startupBlocker {
-                StoreStartupBlockedView(
-                    blocker: startupBlocker,
-                    appUpdateController: appUpdateController
-                )
-            } else {
+            switch ApplicationLaunchRoot.resolve(
+                isInstallerOnlyLaunch: ApplicationInstallationCoordinator.isInstallerOnlyLaunch,
+                hasStartupBlocker: startupBlocker != nil
+            ) {
+            case .installerPlaceholder:
+                // Never construct ContentView during a disk-image installer
+                // launch: its appearance work loads catalogs and repairs
+                // application state. The app delegate owns the only active UI.
+                ApplicationInstallerLaunchPlaceholder()
+            case .startupBlocked:
+                if let startupBlocker {
+                    StoreStartupBlockedView(
+                        blocker: startupBlocker,
+                        appUpdateController: appUpdateController
+                    )
+                }
+            case .main:
                 ContentView(appUpdateController: appUpdateController, runtime: runtime)
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                     .environmentObject(appSettings)

@@ -43,6 +43,7 @@ struct ApplicationInstallationPlan: Equatable, Sendable {
     let sourceMetadata: ApplicationBundleMetadata
     let replacesExistingCopy: Bool
     let existingVersion: String?
+    let createsDestinationDirectory: Bool
 }
 
 enum ApplicationInstallationDecision: Equatable, Sendable {
@@ -79,6 +80,7 @@ enum ApplicationInstallationPlanner {
         currentBundleURL: URL,
         sourceMetadata: ApplicationBundleMetadata,
         applicationsDirectories: [URL],
+        creatableApplicationsDirectories: Set<URL> = [],
         fileManager: FileManager,
         metadataReader: MetadataReader = { try? ApplicationBundleMetadata.read(from: $0) }
     ) -> ApplicationInstallationDecision {
@@ -93,27 +95,19 @@ enum ApplicationInstallationPlanner {
             $0.appendingPathComponent(bundleName, isDirectory: true).standardizedFileURL
         }
 
-        // Existing installed copies take precedence over every empty fallback.
-        // Installing a second copy into ~/Applications is exactly what made the
-        // old workflow appear unfinished and later triggered a Finder "Replace?"
-        // loop. Replacement is now a first-class, visible plan.
-        if let existingDestination = destinations.first(where: { fileManager.fileExists(atPath: $0.path) }) {
-            return .present(
-                ApplicationInstallationPlan(
-                    source: currentBundleURL,
-                    destination: existingDestination,
-                    sourceMetadata: sourceMetadata,
-                    replacesExistingCopy: true,
-                    existingVersion: metadataReader(existingDestination)?.version
-                )
-            )
-        }
+        let normalizedCreatableDirectories = Set(
+            creatableApplicationsDirectories.map(\.standardizedFileURL)
+        )
 
+        // Replace only a verified copy of this application in a directory that
+        // is writable now. An unreadable or differently identified bundle is
+        // never treated as ASTRA, and an unwritable system copy must not block a
+        // safe user-level installation.
         for (directory, destination) in zip(applicationsDirectories, destinations) {
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue,
-                  fileManager.isWritableFile(atPath: directory.path) else {
+            guard fileManager.fileExists(atPath: destination.path),
+                  isWritableDirectory(directory, fileManager: fileManager),
+                  let existingMetadata = metadataReader(destination),
+                  existingMetadata.bundleIdentifier == sourceMetadata.bundleIdentifier else {
                 continue
             }
 
@@ -122,13 +116,48 @@ enum ApplicationInstallationPlanner {
                     source: currentBundleURL,
                     destination: destination,
                     sourceMetadata: sourceMetadata,
+                    replacesExistingCopy: true,
+                    existingVersion: existingMetadata.version,
+                    createsDestinationDirectory: false
+                )
+            )
+        }
+
+        for (directory, destination) in zip(applicationsDirectories, destinations) {
+            // A foreign or malformed bundle at this path is an occupied
+            // destination, never an implicit replacement candidate.
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+
+            let usesExistingDirectory = isWritableDirectory(directory, fileManager: fileManager)
+            let createsDirectory = normalizedCreatableDirectories.contains(directory.standardizedFileURL)
+                && canCreateDirectory(directory, fileManager: fileManager)
+            guard usesExistingDirectory || createsDirectory else { continue }
+
+            return .present(
+                ApplicationInstallationPlan(
+                    source: currentBundleURL,
+                    destination: destination,
+                    sourceMetadata: sourceMetadata,
                     replacesExistingCopy: false,
-                    existingVersion: nil
+                    existingVersion: nil,
+                    createsDestinationDirectory: createsDirectory
                 )
             )
         }
 
         return .unavailable
+    }
+
+    private static func isWritableDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+            && fileManager.isWritableFile(atPath: url.path)
+    }
+
+    private static func canCreateDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        guard !fileManager.fileExists(atPath: url.path) else { return false }
+        return isWritableDirectory(url.deletingLastPathComponent(), fileManager: fileManager)
     }
 }
 
@@ -136,6 +165,8 @@ enum ApplicationInstallationError: LocalizedError {
     case invalidBundle(URL)
     case sourceAndDestinationMatch
     case destinationNotWritable(URL)
+    case destinationAlreadyExists(URL)
+    case destinationContainsDifferentApplication(URL)
     case copiedBundleDoesNotMatch
     case installedBundleDoesNotMatch
 
@@ -147,6 +178,10 @@ enum ApplicationInstallationError: LocalizedError {
             return "ASTRA is already running from the Applications folder."
         case .destinationNotWritable(let url):
             return "ASTRA could not write to \(url.path)."
+        case .destinationAlreadyExists(let url):
+            return "Another item appeared at \(url.path) before ASTRA could be installed."
+        case .destinationContainsDifferentApplication(let url):
+            return "ASTRA will not replace the application at \(url.path) because its identity could not be verified."
         case .copiedBundleDoesNotMatch:
             return "The copied application did not match the ASTRA release being installed."
         case .installedBundleDoesNotMatch:
@@ -167,15 +202,35 @@ enum ApplicationInstallationService {
             throw ApplicationInstallationError.sourceAndDestinationMatch
         }
 
-        let destinationDirectory = destination.deletingLastPathComponent()
-        guard fileManager.isWritableFile(atPath: destinationDirectory.path) else {
-            throw ApplicationInstallationError.destinationNotWritable(destinationDirectory)
-        }
-
         let actualSourceMetadata = try ApplicationBundleMetadata.read(from: source)
         guard actualSourceMetadata.bundleIdentifier == plan.sourceMetadata.bundleIdentifier,
               actualSourceMetadata.version == plan.sourceMetadata.version else {
             throw ApplicationInstallationError.copiedBundleDoesNotMatch
+        }
+
+        let destinationDirectory = destination.deletingLastPathComponent()
+        if plan.createsDestinationDirectory,
+           !fileManager.fileExists(atPath: destinationDirectory.path) {
+            try fileManager.createDirectory(
+                at: destinationDirectory,
+                withIntermediateDirectories: true
+            )
+        }
+        var destinationIsDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: destinationDirectory.path, isDirectory: &destinationIsDirectory),
+              destinationIsDirectory.boolValue,
+              fileManager.isWritableFile(atPath: destinationDirectory.path) else {
+            throw ApplicationInstallationError.destinationNotWritable(destinationDirectory)
+        }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            guard plan.replacesExistingCopy else {
+                throw ApplicationInstallationError.destinationAlreadyExists(destination)
+            }
+            guard let existingMetadata = try? ApplicationBundleMetadata.read(from: destination),
+                  existingMetadata.bundleIdentifier == plan.sourceMetadata.bundleIdentifier else {
+                throw ApplicationInstallationError.destinationContainsDifferentApplication(destination)
+            }
         }
 
         let stagingURL = destinationDirectory.appendingPathComponent(

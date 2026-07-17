@@ -6,12 +6,16 @@ import ASTRACore
 /// live in `ApplicationInstallationService.swift`; this type is intentionally
 /// limited to AppKit lifecycle and presentation concerns.
 enum ApplicationInstallationCoordinator {
+    static var userApplicationsDirectory: URL? {
+        FileManager.default.urls(for: .applicationDirectory, in: .userDomainMask).first
+    }
+
     static var defaultApplicationsDirectories: [URL] {
         var directories: [URL] = []
         if let systemApplications = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first {
             directories.append(systemApplications)
         }
-        if let userApplications = FileManager.default.urls(for: .applicationDirectory, in: .userDomainMask).first {
+        if let userApplications = userApplicationsDirectory {
             directories.append(userApplications)
         }
         return directories
@@ -54,6 +58,7 @@ enum ApplicationInstallationCoordinator {
             currentBundleURL: source,
             sourceMetadata: sourceMetadata,
             applicationsDirectories: defaultApplicationsDirectories,
+            creatableApplicationsDirectories: Set([userApplicationsDirectory].compactMap { $0 }),
             fileManager: .default
         )
 
@@ -79,12 +84,7 @@ enum ApplicationInstallationCoordinator {
         AppLogger.audit(
             .appInstallationPresented,
             category: "App",
-            fields: [
-                "destination": plan.destination.path,
-                "replaces_existing": String(plan.replacesExistingCopy),
-                "source_version": plan.sourceMetadata.version,
-                "existing_version": plan.existingVersion ?? "unknown"
-            ]
+            fields: ApplicationInstallationAuditFields.presented(plan: plan)
         )
 
         let appIcon = loadAppIcon()
@@ -123,6 +123,11 @@ enum ApplicationInstallationCoordinator {
                 )
             }
         )
+
+        // The SwiftUI scene exists only to satisfy the App protocol during an
+        // installer-only launch. Keep that inert window out of sight before
+        // presenting the single guided-install surface.
+        NSApp.windows.forEach { $0.orderOut(nil) }
 
         let rootView = ApplicationInstallerView(model: viewModel, appIcon: appIcon)
         let window = NSWindow(
@@ -189,6 +194,40 @@ enum ApplicationInstallationCoordinator {
             return image
         }
         return NSApp.applicationIconImage
+    }
+}
+
+enum ApplicationInstallationAuditFields {
+    static func presented(plan: ApplicationInstallationPlan) -> [String: String] {
+        var fields = [
+            "destination": plan.destination.path,
+            "replaces_existing": String(plan.replacesExistingCopy),
+            "source_version": plan.sourceMetadata.version
+        ]
+        if let existingVersion = plan.existingVersion {
+            fields["existing_version"] = existingVersion
+        }
+        return fields
+    }
+}
+
+enum ApplicationLaunchRoot: Equatable, Sendable {
+    case installerPlaceholder
+    case startupBlocked
+    case main
+
+    static func resolve(isInstallerOnlyLaunch: Bool, hasStartupBlocker: Bool) -> ApplicationLaunchRoot {
+        if isInstallerOnlyLaunch { return .installerPlaceholder }
+        if hasStartupBlocker { return .startupBlocked }
+        return .main
+    }
+}
+
+struct ApplicationInstallerLaunchPlaceholder: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityHidden(true)
     }
 }
 
