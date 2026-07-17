@@ -93,6 +93,12 @@ actually issued termination and wait status supplies authoritative signal
 evidence. If a natural exit wins the race, the run is completed or failed from
 its exit status and is not mislabeled as cancelled.
 
+Whether a caller may reach this supervisor cancellation path is decided by the
+provider-neutral [external operation control policy](external-operation-control-policy.md).
+It requires the exact execution, fenced authority, backend identity, declared
+capability, and authenticated execution-scoped ownership; a diagnostic PID is
+never sufficient.
+
 Standard input is deliberately transient. `stdin_accepted` and `stdin_closed`
 mean the local provider pipe operation succeeded; a missing process, EPIPE, or
 close failure is returned as indeterminate/error and never receives durable
