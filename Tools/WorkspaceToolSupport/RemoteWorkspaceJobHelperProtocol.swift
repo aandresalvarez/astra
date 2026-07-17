@@ -36,7 +36,6 @@ public enum RemoteWorkspaceJobHelperProtocol {
     public static let responseKeys: Set<String> = [
         "protocolVersion",
         "operationID",
-        "helperSHA256",
         "outcome",
         "job",
         "tail",
@@ -91,13 +90,18 @@ public enum RemoteWorkspaceJobHelperProtocol {
     public static func validate(
         response: RemoteWorkspaceJobHelperResponse,
         for request: RemoteWorkspaceJobHelperRequest,
-        expectedHelperSHA256: String
+        deployment: RemoteWorkspaceJobHelperDeploymentManifest,
+        launchAttestation: RemoteWorkspaceJobHelperLaunchAttestation
     ) throws {
         try request.validate()
         try response.validate()
-        try validateSHA256(expectedHelperSHA256)
-        guard response.operationID == request.operationID,
-              response.helperSHA256 == expectedHelperSHA256 else {
+        try deployment.validate()
+        try launchAttestation.validate()
+        guard launchAttestation.operationID == request.operationID,
+              launchAttestation.verifiedHelperSHA256 == deployment.helperSHA256 else {
+            throw RemoteWorkspaceJobHelperProtocolError.launchAttestationMismatch
+        }
+        guard response.operationID == request.operationID else {
             throw RemoteWorkspaceJobHelperProtocolError.responseBindingMismatch
         }
         guard response.outcome == .accepted else { return }
@@ -404,7 +408,10 @@ public struct RemoteWorkspaceJobSnapshot: Codable, Equatable, Sendable {
         } else if let process {
             try process.validate()
         }
-        guard observedAt >= acceptedAt else {
+        let boundedObservations = [startedAt, completedAt, lastHeartbeatAt, lastOutputAt].compactMap { $0 }
+        guard observedAt >= acceptedAt,
+              boundedObservations.allSatisfy({ $0 >= acceptedAt && $0 <= observedAt }),
+              startedAt.map({ start in completedAt.map({ start <= $0 }) ?? true }) ?? true else {
             throw RemoteWorkspaceJobHelperProtocolError.invalidTimestamps
         }
         if status == .queued || status == .running {
@@ -435,7 +442,6 @@ public struct RemoteWorkspaceJobHelperFailure: Codable, Equatable, Sendable {
 public struct RemoteWorkspaceJobHelperResponse: Codable, Equatable, Sendable {
     public let protocolVersion: Int
     public let operationID: UUID
-    public let helperSHA256: String
     public let outcome: RemoteWorkspaceJobHelperOutcome
     public let job: RemoteWorkspaceJobSnapshot?
     public let tail: RemoteWorkspaceJobTailPayload?
@@ -444,7 +450,6 @@ public struct RemoteWorkspaceJobHelperResponse: Codable, Equatable, Sendable {
     public init(
         protocolVersion: Int = RemoteWorkspaceJobHelperProtocol.version,
         operationID: UUID,
-        helperSHA256: String,
         outcome: RemoteWorkspaceJobHelperOutcome,
         job: RemoteWorkspaceJobSnapshot? = nil,
         tail: RemoteWorkspaceJobTailPayload? = nil,
@@ -452,7 +457,6 @@ public struct RemoteWorkspaceJobHelperResponse: Codable, Equatable, Sendable {
     ) {
         self.protocolVersion = protocolVersion
         self.operationID = operationID
-        self.helperSHA256 = helperSHA256
         self.outcome = outcome
         self.job = job
         self.tail = tail
@@ -463,7 +467,6 @@ public struct RemoteWorkspaceJobHelperResponse: Codable, Equatable, Sendable {
         guard protocolVersion == RemoteWorkspaceJobHelperProtocol.version else {
             throw RemoteWorkspaceJobHelperProtocolError.unsupportedVersion(protocolVersion)
         }
-        try RemoteWorkspaceJobHelperProtocol.validateSHA256(helperSHA256)
         switch outcome {
         case .accepted:
             guard error == nil else {
@@ -476,6 +479,43 @@ public struct RemoteWorkspaceJobHelperResponse: Codable, Equatable, Sendable {
                   !error.code.isEmpty, !error.message.isEmpty else {
                 throw RemoteWorkspaceJobHelperProtocolError.invalidOutcome
             }
+        }
+    }
+}
+
+/// Evidence produced outside the helper's response channel by ASTRA's trusted
+/// launcher after it atomically verifies and executes the pinned helper bytes.
+///
+/// This value is intentionally not `Codable`: a helper cannot attest to its own
+/// identity. The launcher must be protected from the staged job's write
+/// authority and must hash and execute the same opened executable (rather than
+/// performing a path-based check followed by a vulnerable second lookup).
+public struct RemoteWorkspaceJobHelperLaunchAttestation: Equatable, Sendable {
+    public enum VerificationMethod: Equatable, Sendable {
+        case pinnedExecutableDescriptorV1
+    }
+
+    public let operationID: UUID
+    public let verifiedHelperSHA256: String
+    public let verificationMethod: VerificationMethod
+
+    /// Package-scoped so only an ASTRA-owned launcher implementation can mint
+    /// trust evidence; provider modules and decoded wire data cannot.
+    package init(
+        operationID: UUID,
+        verifiedHelperSHA256: String,
+        verificationMethod: VerificationMethod = .pinnedExecutableDescriptorV1
+    ) throws {
+        self.operationID = operationID
+        self.verifiedHelperSHA256 = verifiedHelperSHA256
+        self.verificationMethod = verificationMethod
+        try validate()
+    }
+
+    public func validate() throws {
+        try RemoteWorkspaceJobHelperProtocol.validateSHA256(verifiedHelperSHA256)
+        guard verificationMethod == .pinnedExecutableDescriptorV1 else {
+            throw RemoteWorkspaceJobHelperProtocolError.invalidLaunchAttestation
         }
     }
 }
@@ -543,6 +583,8 @@ public enum RemoteWorkspaceJobHelperProtocolError: LocalizedError, Equatable, Se
     case invalidOutcome
     case invalidFileLayout
     case invalidDeploymentManifest
+    case invalidLaunchAttestation
+    case launchAttestationMismatch
     case tailTooLarge
     case tailTooManyLines
     case responseBindingMismatch
@@ -561,14 +603,16 @@ public enum RemoteWorkspaceJobHelperProtocolError: LocalizedError, Equatable, Se
         case .missingOrUnexpectedFields(let operation): "Remote job helper operation \(operation) has an invalid field set."
         case .invalidProcessIdentity: "Remote job process identity is not safe for later cancellation."
         case .missingProcessIdentity: "A running remote job must include restart-safe process identity evidence."
-        case .invalidTimestamps: "Remote job observation predates launch acceptance."
+        case .invalidTimestamps: "Remote job lifecycle timestamps are outside acceptance and observation bounds."
         case .invalidTerminalState: "Remote job status and completion timestamp disagree."
         case .invalidOutcome: "Remote job helper response outcome and payload disagree."
         case .invalidFileLayout: "Remote job helper response attempted to override the fixed durable file layout."
         case .invalidDeploymentManifest: "Remote job helper deployment manifest does not match the security-owned configuration."
+        case .invalidLaunchAttestation: "Remote job helper launch attestation is invalid."
+        case .launchAttestationMismatch: "Trusted launch evidence does not match the request or pinned deployment."
         case .tailTooLarge: "Remote job helper tail exceeded the bounded response size."
         case .tailTooManyLines: "Remote job helper tail exceeded the requested line limit."
-        case .responseBindingMismatch: "Remote job helper response does not match the signed request or installed helper."
+        case .responseBindingMismatch: "Remote job helper response does not match the request."
         }
     }
 }

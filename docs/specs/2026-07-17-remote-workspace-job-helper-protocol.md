@@ -49,19 +49,21 @@ The helper owns a fixed file layout below an ASTRA-private job root:
   process.json
 ```
 
-Responses cannot override those names. The future installer must create the helper and state roots outside the workspace repository, owned by the remote user, mode `0700`, and must reject symlinks throughout the helper and job directory chains. Command and metadata files are owner-only.
+Responses cannot override those names. The future installer must create the helper and state roots outside the workspace repository, mode `0700`, and must reject symlinks throughout the helper and job directory chains. Command and metadata files are owner-only. The trusted launcher itself must be outside the staged job's write authority; user ownership and mode bits alone are not an integrity boundary when job commands run as that same user.
 
 ## Crash-safety evidence
 
 A `start` response is not sufficient merely because the transport exited zero. Before ASTRA may persist the job as running, the response must bind to:
 
 - the exact request operation ID;
-- the expected installed-helper SHA-256;
+- out-of-band launch evidence binding the operation to the pinned helper SHA-256;
 - the requested job ID and generation;
 - a process-group leader PID;
 - the remote boot ID;
 - the kernel process start marker;
 - a durable acceptance timestamp and fixed file set.
+
+The helper response deliberately contains no helper digest because an executable cannot authenticate itself by echoing a public value. Before accepting any response, ASTRA must require non-wire launch evidence from a trusted launcher that atomically hashes and executes the same opened helper executable and is protected from job-command writes. A path-based hash followed by a second executable lookup is insufficient because it creates a replacement race.
 
 The process identity prevents a later cancellation from signaling an unrelated process after PID reuse or reboot. A future helper implementation must atomically persist that identity before acknowledging `running`.
 
@@ -78,7 +80,9 @@ The process identity prevents a later cancellation from signaling an unrelated p
 - Non-finite, zero, negative, or over-30-day timeouts are rejected.
 - Running snapshots without reboot-safe process identity are rejected.
 - Terminal states without completion timestamps are rejected.
-- Response operation IDs, helper digests, job IDs, and generations must match the request; status and tail cannot cross job generations.
+- Response operation IDs, job IDs, and generations must match the request; status and tail cannot cross job generations.
+- Trusted launch evidence must bind the request operation ID to the digest pinned by the deployment manifest and cannot arrive through the helper response channel.
+- Start, completion, heartbeat, and output timestamps must fall between acceptance and observation; start cannot follow completion.
 - Cancellation requires the durable generation and will later require the helper to verify its stored process identity before signaling the process group.
 - Decoded deployment manifests must exactly match the security-owned version, digest rules, install paths, modes, and symlink policy.
 
@@ -98,7 +102,7 @@ These exclusions are intentional. A later PR must implement and independently re
 ## Review sequence
 
 1. V1 protocol and validation (this PR).
-2. Helper artifact plus atomic digest-pinned installer and crash/adversarial tests.
+2. Helper artifact plus a write-isolated launcher, atomic same-descriptor digest verification and execution, and crash/adversarial tests.
 3. Narrow SSH workspace capability using the installed helper; no raw provider commands.
 4. Durable ASTRA `BackgroundJob` ownership, task/run/context revision links, manual check, and handoff assembly.
 5. Scheduler, leases, restart reconciliation, completion validation, and notifications.

@@ -172,32 +172,40 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         }
     }
 
-    @Test("Helper responses bind operation, helper digest, job, and generation")
+    @Test("Helper responses bind operation, trusted launch, job, and generation")
     func responseBindingRejectsCrossTalk() throws {
         let request = startRequest()
         let response = RemoteWorkspaceJobHelperResponse(
             operationID: operationID,
-            helperSHA256: helperDigest,
             outcome: .accepted,
             job: snapshot(process: validProcess())
         )
         try RemoteWorkspaceJobHelperProtocol.validate(
             response: response,
             for: request,
-            expectedHelperSHA256: helperDigest
+            deployment: deployment(),
+            launchAttestation: attestation()
         )
 
-        #expect(throws: RemoteWorkspaceJobHelperProtocolError.self) {
+        #expect(throws: RemoteWorkspaceJobHelperProtocolError.launchAttestationMismatch) {
             try RemoteWorkspaceJobHelperProtocol.validate(
                 response: response,
                 for: request,
-                expectedHelperSHA256: String(repeating: "c", count: 64)
+                deployment: deployment(),
+                launchAttestation: attestation(digest: String(repeating: "c", count: 64))
+            )
+        }
+        #expect(throws: RemoteWorkspaceJobHelperProtocolError.launchAttestationMismatch) {
+            try RemoteWorkspaceJobHelperProtocol.validate(
+                response: response,
+                for: request,
+                deployment: deployment(),
+                launchAttestation: attestation(operationID: UUID())
             )
         }
 
         let otherOperationResponse = RemoteWorkspaceJobHelperResponse(
             operationID: UUID(),
-            helperSHA256: helperDigest,
             outcome: .accepted,
             job: snapshot(process: validProcess())
         )
@@ -205,8 +213,31 @@ struct RemoteWorkspaceJobHelperProtocolTests {
             try RemoteWorkspaceJobHelperProtocol.validate(
                 response: otherOperationResponse,
                 for: request,
-                expectedHelperSHA256: helperDigest
+                deployment: deployment(),
+                launchAttestation: attestation()
             )
+        }
+    }
+
+    @Test("Helper wire responses cannot self-attest executable identity")
+    func responseCannotSelfAttestHelperIdentity() throws {
+        let response = RemoteWorkspaceJobHelperResponse(
+            operationID: operationID,
+            outcome: .accepted,
+            job: snapshot(process: validProcess())
+        )
+
+        let encoded = try RemoteWorkspaceJobHelperProtocol.encodeResponse(response)
+        let text = try #require(String(data: encoded, encoding: .utf8))
+
+        #expect(!text.contains("helperSHA256"))
+        #expect(!text.contains(helperDigest))
+
+        var object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["helperSHA256"] = helperDigest
+        let selfAttested = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: RemoteWorkspaceJobHelperProtocolError.unknownFields(["helperSHA256"])) {
+            try RemoteWorkspaceJobHelperProtocol.decodeResponse(selfAttested)
         }
     }
 
@@ -251,7 +282,6 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         )
         let accepted = RemoteWorkspaceJobHelperResponse(
             operationID: operationID,
-            helperSHA256: helperDigest,
             outcome: .accepted,
             job: snapshot(process: validProcess()),
             tail: .init(stream: .stdout, text: "first\nsecond\n", truncated: true)
@@ -259,12 +289,12 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         try RemoteWorkspaceJobHelperProtocol.validate(
             response: accepted,
             for: request,
-            expectedHelperSHA256: helperDigest
+            deployment: deployment(),
+            launchAttestation: attestation()
         )
 
         let excessive = RemoteWorkspaceJobHelperResponse(
             operationID: operationID,
-            helperSHA256: helperDigest,
             outcome: .accepted,
             job: snapshot(process: validProcess()),
             tail: .init(stream: .stdout, text: "first\nsecond\nthird\n", truncated: false)
@@ -273,7 +303,8 @@ struct RemoteWorkspaceJobHelperProtocolTests {
             try RemoteWorkspaceJobHelperProtocol.validate(
                 response: excessive,
                 for: request,
-                expectedHelperSHA256: helperDigest
+                deployment: deployment(),
+                launchAttestation: attestation()
             )
         }
     }
@@ -284,7 +315,6 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         let fractionalObservedAt = Date(timeIntervalSince1970: 1_700_000_100.456_789)
         let response = RemoteWorkspaceJobHelperResponse(
             operationID: operationID,
-            helperSHA256: helperDigest,
             outcome: .accepted,
             job: RemoteWorkspaceJobSnapshot(
                 jobID: "job-1",
@@ -302,6 +332,27 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         let decoded = try RemoteWorkspaceJobHelperProtocol.decodeResponse(encoded)
 
         #expect(decoded == response)
+    }
+
+    @Test("Lifecycle timestamps stay between acceptance and observation")
+    func lifecycleTimestampsAreOrdered() {
+        let invalidSnapshots = [
+            snapshot(startedAt: acceptedAt.addingTimeInterval(-1)),
+            snapshot(completedAt: acceptedAt.addingTimeInterval(-1)),
+            snapshot(completedAt: observedAt.addingTimeInterval(1)),
+            snapshot(
+                startedAt: acceptedAt.addingTimeInterval(50),
+                completedAt: acceptedAt.addingTimeInterval(49)
+            ),
+            snapshot(lastHeartbeatAt: acceptedAt.addingTimeInterval(-1)),
+            snapshot(lastOutputAt: observedAt.addingTimeInterval(1))
+        ]
+
+        for invalid in invalidSnapshots {
+            #expect(throws: RemoteWorkspaceJobHelperProtocolError.invalidTimestamps) {
+                try invalid.validate()
+            }
+        }
     }
 
     @Test("Deployment manifest pins integrity, private paths, modes, and symlink policy")
@@ -365,6 +416,39 @@ struct RemoteWorkspaceJobHelperProtocolTests {
             startedAt: acceptedAt,
             lastHeartbeatAt: observedAt,
             process: process
+        )
+    }
+
+    private func snapshot(
+        startedAt: Date? = nil,
+        completedAt: Date? = nil,
+        lastHeartbeatAt: Date? = nil,
+        lastOutputAt: Date? = nil
+    ) -> RemoteWorkspaceJobSnapshot {
+        RemoteWorkspaceJobSnapshot(
+            jobID: "job-1",
+            generation: generation,
+            status: .failed,
+            observedAt: observedAt,
+            acceptedAt: acceptedAt,
+            startedAt: startedAt,
+            completedAt: completedAt ?? acceptedAt,
+            lastHeartbeatAt: lastHeartbeatAt,
+            lastOutputAt: lastOutputAt
+        )
+    }
+
+    private func deployment() throws -> RemoteWorkspaceJobHelperDeploymentManifest {
+        try RemoteWorkspaceJobHelperDeploymentManifest(helperSHA256: helperDigest)
+    }
+
+    private func attestation(
+        operationID: UUID? = nil,
+        digest: String? = nil
+    ) throws -> RemoteWorkspaceJobHelperLaunchAttestation {
+        try RemoteWorkspaceJobHelperLaunchAttestation(
+            operationID: operationID ?? self.operationID,
+            verifiedHelperSHA256: digest ?? helperDigest
         )
     }
 
