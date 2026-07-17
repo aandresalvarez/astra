@@ -96,8 +96,8 @@ struct CopilotStreamEventParserTests {
         }
     }
 
-    @Test("Known control events without content are ignored")
-    func knownControlEventsWithoutContent() {
+    @Test("Known events without content remain transient controls")
+    func knownEventsWithoutContentRemainTransientControls() {
         let lines = [
             #"{"type":"session.mcp_servers_loaded"}"#,
             #"{"type":"user.message"}"#,
@@ -107,7 +107,13 @@ struct CopilotStreamEventParserTests {
             #"{"type":"abort","data":{"reason":"user_initiated"}}"#
         ]
         for line in lines {
-            #expect(CopilotStreamEventParser.parseAgentEvents(line: line).isEmpty)
+            let events = CopilotStreamEventParser.parseAgentEvents(line: line)
+            #expect(events.count == 1)
+            if case .control = events.first {
+                // Expected transient provider metadata.
+            } else {
+                Issue.record("Expected known content-free event to map to control")
+            }
         }
     }
 

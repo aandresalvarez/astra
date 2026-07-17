@@ -419,10 +419,12 @@ struct StreamParserTests {
         {"type":"user","message":{"content":[{"type":"tool_result","text":"File contents here..."}]}}
         """
         let parsed = StreamEventParser.parse(line: json)
-        guard case .toolResult = parsed else {
+        guard case .toolResult(_, let content, let isError) = parsed else {
             Issue.record("Expected .toolResult, got \(String(describing: parsed))")
             return
         }
+        #expect(content == "File contents here...")
+        #expect(!isError)
     }
 
     @Test("Permission denied with 'not allowed' keyword")

@@ -4,6 +4,7 @@ enum RunActivityLayout {
     static let disclosureMinimumHitHeight: CGFloat = 40
     static let disclosureIconHitFrame: CGFloat = 28
     static let tabMinimumHitHeight: CGFloat = 34
+    static let progressMessageLineLimit = 4
 }
 
 struct RunActivityDetailSection<Content: View>: View {
@@ -101,8 +102,8 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
     let isRunning: Bool
     let presentation: RunActivityPresentation
     let planItems: [TaskProtocolTodoItem]
-    let showsAllUpdates: Bool
-    let onToggleHistory: () -> Void
+    let updateHistoryAnchorID: UUID?
+    let onSelectUpdateHistoryAnchor: (UUID?) -> Void
     let onOpenFiles: () -> Void
     private let toolsContent: () -> ToolsContent
     private let policyContent: () -> PolicyContent
@@ -113,8 +114,8 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
         isRunning: Bool,
         presentation: RunActivityPresentation,
         planItems: [TaskProtocolTodoItem],
-        showsAllUpdates: Bool,
-        onToggleHistory: @escaping () -> Void,
+        updateHistoryAnchorID: UUID?,
+        onSelectUpdateHistoryAnchor: @escaping (UUID?) -> Void,
         onOpenFiles: @escaping () -> Void,
         @ViewBuilder toolsContent: @escaping () -> ToolsContent,
         @ViewBuilder policyContent: @escaping () -> PolicyContent,
@@ -124,8 +125,8 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
         self.isRunning = isRunning
         self.presentation = presentation
         self.planItems = planItems
-        self.showsAllUpdates = showsAllUpdates
-        self.onToggleHistory = onToggleHistory
+        self.updateHistoryAnchorID = updateHistoryAnchorID
+        self.onSelectUpdateHistoryAnchor = onSelectUpdateHistoryAnchor
         self.onOpenFiles = onOpenFiles
         self.toolsContent = toolsContent
         self.policyContent = policyContent
@@ -140,10 +141,10 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
                 presentation: RunActivityProgressTimelinePresentation(
                     messages: presentation.progressMessages,
                     planItems: planItems,
-                    showsAllMessages: showsAllUpdates
+                    historyAnchorID: updateHistoryAnchorID
                 ),
                 isRunning: isRunning,
-                onToggleHistory: onToggleHistory
+                onSelectHistoryAnchor: onSelectUpdateHistoryAnchor
             )
         case .tools:
             toolsContent()
@@ -174,7 +175,7 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
 struct RunActivityProgressTimelineView: View {
     let presentation: RunActivityProgressTimelinePresentation
     let isRunning: Bool
-    let onToggleHistory: () -> Void
+    let onSelectHistoryAnchor: (UUID?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -184,21 +185,7 @@ struct RunActivityProgressTimelineView: View {
                 phaseTimeline
             }
 
-            if canToggleHistory {
-                Button(action: onToggleHistory) {
-                    HStack(spacing: 6) {
-                        Text(historyButtonTitle)
-                            .font(Stanford.chatMeta(12))
-                        Image(systemName: presentation.showsAllMessages ? "chevron.up" : "chevron.right")
-                            .font(Stanford.ui(9))
-                    }
-                    .foregroundStyle(Stanford.lagunita)
-                    .padding(.vertical, 7)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint(presentation.showsAllMessages ? "Collapses older updates" : "Shows older updates")
-            }
+            historyControls
         }
     }
 
@@ -270,7 +257,7 @@ struct RunActivityProgressTimelineView: View {
                     Text(message.text)
                         .font(Stanford.chatSection())
                         .foregroundStyle(isCurrent ? Stanford.readingText : Stanford.textSecondary)
-                        .lineLimit(presentation.showsAllMessages ? nil : 3)
+                        .lineLimit(RunActivityLayout.progressMessageLineLimit)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,20 +270,52 @@ struct RunActivityProgressTimelineView: View {
         }
     }
 
-    private var totalMessageCount: Int {
-        presentation.visibleMessages.count + presentation.hiddenMessageCount
-    }
-
-    private var canToggleHistory: Bool {
-        presentation.hiddenMessageCount > 0 ||
-            (presentation.showsAllMessages && totalMessageCount > RunActivityProgressTimelinePresentation.compactMessageLimit)
-    }
-
-    private var historyButtonTitle: String {
-        if presentation.showsAllMessages {
-            return "Show recent updates"
+    @ViewBuilder
+    private var historyControls: some View {
+        if presentation.isBrowsingHistory {
+            HStack(spacing: 14) {
+                if let olderAnchorID = presentation.olderPageAnchorID {
+                    historyButton(
+                        "Older (\(presentation.olderMessageCount))",
+                        systemImage: "chevron.left",
+                        anchorID: olderAnchorID
+                    )
+                }
+                if let newerAnchorID = presentation.newerPageAnchorID {
+                    historyButton(
+                        "Newer (\(presentation.newerMessageCount))",
+                        systemImage: "chevron.right",
+                        anchorID: newerAnchorID
+                    )
+                }
+                Button("Recent only") {
+                    onSelectHistoryAnchor(nil)
+                }
+                .font(Stanford.chatMeta(12))
+                .buttonStyle(.plain)
+                .foregroundStyle(Stanford.lagunita)
+            }
+            .padding(.vertical, 7)
+        } else if presentation.totalMessageCount > RunActivityProgressTimelinePresentation.compactMessageLimit,
+                  let latestAnchorID = presentation.latestPageAnchorID {
+            historyButton(
+                "Browse all (\(presentation.totalMessageCount))",
+                systemImage: "chevron.right",
+                anchorID: latestAnchorID
+            )
+            .padding(.vertical, 7)
         }
-        return "Show all (\(totalMessageCount))"
+    }
+
+    private func historyButton(_ title: String, systemImage: String, anchorID: UUID) -> some View {
+        Button {
+            onSelectHistoryAnchor(anchorID)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(Stanford.chatMeta(12))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Stanford.lagunita)
     }
 
     private func phaseIcon(_ status: RunActivityProgressPhaseStatus) -> String {
