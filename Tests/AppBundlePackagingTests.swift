@@ -254,12 +254,14 @@ struct AppBundlePackagingTests {
 
         let notes = #"RELEASE_DOWNLOAD_NOTES=$'## Download ASTRA\n\n'"#
         let firstInstall = #"For a first install, download **ASTRA.dmg**"#
+        let guidedInstaller = #"double-click **Install ASTRA**"#
         let zipWarning = #"Do not use \`ASTRA-${VERSION}.zip\` for a first install."#
         let notesFlag = #"--notes "$RELEASE_DOWNLOAD_NOTES""#
         let generatedNotesFlag = #"--generate-notes"#
 
         #expect(workflow.contains(notes))
         #expect(workflow.contains(firstInstall))
+        #expect(workflow.contains(guidedInstaller))
         #expect(workflow.contains(zipWarning))
         #expect(workflow.contains(notesFlag))
         #expect(workflow.contains(generatedNotesFlag))
