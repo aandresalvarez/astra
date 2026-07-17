@@ -17,9 +17,10 @@ public enum AppStorageKeys {
     // intended self-healing behavior; gating skips it on unchanged launches.
     public static let completedLegacyStoreRepairBuild = "astra.startup.completedLegacyStoreRepairBuild.v1"
     public static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
-    // Set when the user dismisses the first-launch "move to Applications"
-    // prompt without moving. Prevents re-asking on every subsequent launch;
-    // see ApplicationsFolderMover.
+    // Legacy key retained so older preferences remain readable. The guided
+    // installer intentionally does not honor a permanent decline: production
+    // copies outside Applications now install or quit instead of silently
+    // running from a disk image without working updates.
     public static let declinedMoveToApplications = "astra.install.declinedMoveToApplications.v1"
     public static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
     public static let workspaceSidebarSortMode = "astra.sidebar.workspaceSortMode.v1"

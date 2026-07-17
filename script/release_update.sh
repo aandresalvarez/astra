@@ -123,19 +123,14 @@ if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
   verify_first_launch_experience "$FINAL_ZIP"
 fi
 
-# The zip above is Sparkle's update food, not what a human should click first
-# -- Mac users expect the double-click-mount-drag-to-Applications convention.
-# Deliberately NOT using Finder/AppleScript to lay out a custom background
-# image and hand-placed icon positions (the common "create-dmg"-style
-# approach): that path is a well-known source of flakiness on headless CI
-# runners, since it depends on Finder actually rendering and scripting a
-# window. hdiutil can build a compressed, signed DMG in one step with no
-# GUI dependency -- a plain icon-view window with the app and an
-# Applications symlink side by side still gives users the same
-# drag-to-install affordance, just without custom artwork. The inner .app is
-# a `ditto` copy of the already-signed-and-notarized-and-stapled bundle
-# above, so its own signature/staple is untouched; only the DMG container
-# gets its own (separate) Developer ID signature.
+# The zip above is Sparkle's update payload, not what a human should click
+# first. The DMG contains one unambiguous action: "Install ASTRA.app". Opening
+# that signed app presents ASTRA's guided installer, which owns destination
+# detection, explicit replacement, progress, verification, and relaunch.
+# Renaming only the outer bundle directory does not alter the signed contents;
+# the guided installer copies itself to the canonical /Applications/ASTRA.app
+# destination. This also stays deterministic on headless CI: no Finder or
+# AppleScript layout step is required.
 #
 # Built outside $RELEASE_DIR and only moved in after generate_appcast runs
 # below: generate_appcast treats every update archive it finds in its target
@@ -148,8 +143,7 @@ FINAL_DMG="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg"
 DMG_BUILD_PATH="$DIST_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg"
 DMG_STAGING="$(mktemp -d)"
 trap 'rm -rf "$DMG_STAGING"' EXIT
-ditto "$APP_BUNDLE" "$DMG_STAGING/$APP_NAME.app"
-ln -s /Applications "$DMG_STAGING/Applications"
+ditto "$APP_BUNDLE" "$DMG_STAGING/Install $APP_NAME.app"
 rm -f "$DMG_BUILD_PATH"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -format UDZO -ov "$DMG_BUILD_PATH" >/dev/null
 
