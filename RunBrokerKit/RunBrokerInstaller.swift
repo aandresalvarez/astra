@@ -12,6 +12,10 @@ public enum RunBrokerInstallationError: Error, Equatable, Sendable {
     case unsafeExternalDirectory
     case currentSelectorIsUnsafe
     case invalidCurrentSelector
+    case unsafeInstallerLock
+    case unorderablePayloadVersion(String)
+    case payloadDowngradeRejected(current: String, requested: String)
+    case payloadBuildCollision(current: String, requested: String)
     case launchAgentSerializationFailed
     case healthCheckFailed
     case launchctlFailed(arguments: [String], status: Int32)
@@ -65,12 +69,34 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         payload: RunBrokerPayload,
         identity: RunBrokerChannelIdentity
     ) throws -> RunBrokerInstallationResult {
+        try secureStore.ensurePrivateDirectory(identity.supportDirectory)
+        let transactionLock: RunBrokerInstallationTransactionLock
+        do {
+            transactionLock = try .acquire(
+                at: identity.installerLockURL,
+                expectedUserID: userID
+            )
+        } catch {
+            diagnostics.record(.installerLockFailed, error: error)
+            throw error
+        }
+        defer { transactionLock.release() }
+        return try installWhileLocked(payload: payload, identity: identity)
+    }
+
+    private func installWhileLocked(
+        payload: RunBrokerPayload,
+        identity: RunBrokerChannelIdentity
+    ) throws -> RunBrokerInstallationResult {
         try validateSource(payload)
         let secrets = try secureStore.loadOrCreate(identity: identity)
         try secureStore.ensurePrivateDirectory(identity.versionsDirectory)
         try secureStore.ensurePrivateDirectory(identity.socketDirectory)
         try createPrivateDirectory(identity.standardOutputURL.deletingLastPathComponent())
         try ensureExternalDirectory(identity.launchAgentPlistURL.deletingLastPathComponent())
+
+        let previousSelector = try currentSelectorTarget(identity.currentPayloadURL)
+        try rejectDowngrade(requested: payload.version, previousSelector: previousSelector)
 
         let destinationDirectory = identity.versionsDirectory
             .appendingPathComponent(payload.version.rawValue, isDirectory: true)
@@ -82,7 +108,6 @@ public struct RunBrokerInstaller: @unchecked Sendable {
             destinationExecutable: destinationExecutable
         )
 
-        let previousSelector = try currentSelectorTarget(identity.currentPayloadURL)
         let previousPlist = try readExistingPlist(identity.launchAgentPlistURL)
         let hadPriorService = previousSelector != nil && previousPlist != nil
         let agent = RunBrokerLaunchAgent(
@@ -142,5 +167,39 @@ public struct RunBrokerInstaller: @unchecked Sendable {
             installedVersion: payload.version,
             executableURL: destinationExecutable
         )
+    }
+
+    private func rejectDowngrade(
+        requested: RunBrokerPayloadVersion,
+        previousSelector: String?
+    ) throws {
+        // A first install has no competing precedence to order. This keeps
+        // pre-release and test payloads usable while requiring every real
+        // upgrade decision to be deterministic.
+        guard let previousSelector else { return }
+        let currentRaw = String(previousSelector.dropFirst("Versions/".count))
+        let current = try RunBrokerPayloadVersion(rawValue: currentRaw)
+        // An exact version identity is an idempotent reinstall. The staging
+        // integrity check still requires its full SHA-256 digest to match the
+        // already installed executable.
+        if requested == current { return }
+        guard let requestedBuild = requested.monotonicBuild else {
+            throw RunBrokerInstallationError.unorderablePayloadVersion(requested.rawValue)
+        }
+        guard let currentBuild = current.monotonicBuild else {
+            throw RunBrokerInstallationError.unorderablePayloadVersion(current.rawValue)
+        }
+        guard requestedBuild >= currentBuild else {
+            throw RunBrokerInstallationError.payloadDowngradeRejected(
+                current: current.rawValue,
+                requested: requested.rawValue
+            )
+        }
+        guard requestedBuild != currentBuild else {
+            throw RunBrokerInstallationError.payloadBuildCollision(
+                current: current.rawValue,
+                requested: requested.rawValue
+            )
+        }
     }
 }

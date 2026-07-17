@@ -3,6 +3,7 @@ import Foundation
 public enum RunBrokerDiagnosticEvent: String, Sendable {
     case launchAgentBootoutFailed = "launch_agent_bootout_failed"
     case installFailed = "install_failed"
+    case installerLockFailed = "installer_lock_failed"
     case rollbackSelectorFailed = "rollback_selector_failed"
     case rollbackPlistFailed = "rollback_plist_failed"
     case rollbackLaunchStateFailed = "rollback_launch_state_failed"

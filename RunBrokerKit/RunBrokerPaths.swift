@@ -6,6 +6,7 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
     public let launchAgentLabel: String
     public let channelApplicationSupportDirectory: URL
     public let supportDirectory: URL
+    public let installerLockURL: URL
     public let versionsDirectory: URL
     public let currentPayloadURL: URL
     public let currentExecutableURL: URL
@@ -37,6 +38,7 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
             .appendingPathComponent("RunBroker", isDirectory: true)
             .standardizedFileURL
         self.supportDirectory = support
+        self.installerLockURL = support.appendingPathComponent("installer.lock", isDirectory: false)
         self.versionsDirectory = support.appendingPathComponent("Versions", isDirectory: true)
         self.currentPayloadURL = support.appendingPathComponent("Current", isDirectory: true)
         self.currentExecutableURL = currentPayloadURL
@@ -98,6 +100,22 @@ public struct RunBrokerPayloadVersion: Codable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         try self.init(rawValue: container.decode(String.self))
+    }
+
+    /// Numeric release precedence encoded by packaging as
+    /// `<app-version>-<build>-<digest-prefix>`. Bare numeric revisions remain
+    /// accepted for installer fixtures and pre-release development payloads.
+    var monotonicBuild: UInt64? {
+        if let direct = UInt64(rawValue) { return direct }
+        let components = rawValue.split(separator: "-", omittingEmptySubsequences: false)
+        guard components.count >= 3,
+              let digest = components.last,
+              digest.count >= 16,
+              digest.allSatisfy({ $0.isHexDigit }),
+              let build = UInt64(components[components.count - 2]) else {
+            return nil
+        }
+        return build
     }
 
     public func encode(to encoder: Encoder) throws {
