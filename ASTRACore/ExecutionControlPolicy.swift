@@ -203,18 +203,22 @@ public enum ExecutionControlReducer {
             )
         }
 
-        // Repeating a request must not erase stronger backend evidence such as
-        // acceptance or termination already being in progress.
-        if state.desiredCancellation == intent {
+        let isEscalation = cancellationStrength(intent) > cancellationStrength(state.desiredCancellation)
+        let observedCancellation: ExecutionCancellationObservedState
+        if isEscalation {
+            // A graceful -> immediate escalation is a distinct backend
+            // command. Evidence for the weaker request cannot acknowledge it.
+            observedCancellation = backendCapabilities.canCancel ? .requestPending : .unsupported
+        } else {
+            observedCancellation = observedCancellationAfterSameIntentRetry(
+                state,
+                backendCapabilities: backendCapabilities
+            )
+        }
+        if state.desiredCancellation == intent,
+           state.observedCancellation == observedCancellation {
             return idempotent(state)
         }
-
-        // A graceful -> immediate escalation is a new backend command. Prior
-        // acceptance/termination evidence belongs to the weaker command, so
-        // the stronger request returns to pending until separately observed.
-        let observedCancellation: ExecutionCancellationObservedState = backendCapabilities.canCancel
-            ? .requestPending
-            : .unsupported
         return applied(
             state,
             desiredExecution: .cancelled,
@@ -228,6 +232,24 @@ public enum ExecutionControlReducer {
         case .none: 0
         case .graceful: 1
         case .immediate: 2
+        }
+    }
+
+    private static func observedCancellationAfterSameIntentRetry(
+        _ state: ExecutionControlState,
+        backendCapabilities: ExternalOperationBackendCapabilities
+    ) -> ExecutionCancellationObservedState {
+        guard backendCapabilities.canCancel else { return .unsupported }
+
+        // Acceptance and termination are authoritative for an in-flight
+        // request, so an exact replay remains idempotent. Rejected,
+        // unsupported, and indeterminate attempts are retryable: a new durable
+        // command returns to pending so the backend actually receives it.
+        switch state.observedCancellation {
+        case .accepted, .terminating, .cancelled, .completedBeforeCancel:
+            return state.observedCancellation
+        case .notRequested, .requestPending, .rejected, .unsupported, .inDoubt:
+            return .requestPending
         }
     }
 

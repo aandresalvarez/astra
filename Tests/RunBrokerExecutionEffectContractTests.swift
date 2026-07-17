@@ -679,6 +679,64 @@ struct ExecutionCancellationContractTests {
         }
     }
 
+    @Test("Rejected unsupported and indeterminate cancellation attempts can be retried")
+    func cancellationAttemptCanBeRetriedWithoutChangingIntent() {
+        let cancellable: ExternalOperationBackendCapabilities = [.observe, .cancel]
+        let monitoringOnly: ExternalOperationBackendCapabilities = .monitoringOnly
+        let running = ExecutionControlState(observedExecution: .running)
+
+        let requested = ExecutionControlReducer.reduce(
+            running,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: cancellable
+        ).state
+        let duplicatePending = ExecutionControlReducer.reduce(
+            requested,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: cancellable
+        )
+        #expect(duplicatePending.disposition == .idempotent)
+
+        let rejected = ExecutionControlReducer.reduce(
+            requested,
+            event: .backendRejectedCancellation,
+            backendCapabilities: cancellable
+        ).state
+        let retriedAfterRejection = ExecutionControlReducer.reduce(
+            rejected,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: cancellable
+        )
+        #expect(retriedAfterRejection.disposition == .applied)
+        #expect(retriedAfterRejection.state.observedCancellation == .requestPending)
+
+        let unsupported = ExecutionControlReducer.reduce(
+            running,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: monitoringOnly
+        ).state
+        let retriedAfterCapabilityUpgrade = ExecutionControlReducer.reduce(
+            unsupported,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: cancellable
+        )
+        #expect(retriedAfterCapabilityUpgrade.disposition == .applied)
+        #expect(retriedAfterCapabilityUpgrade.state.observedCancellation == .requestPending)
+
+        let inDoubt = ExecutionControlReducer.reduce(
+            requested,
+            event: .observationBecameIndeterminate,
+            backendCapabilities: cancellable
+        ).state
+        let retriedAfterIndeterminate = ExecutionControlReducer.reduce(
+            inDoubt,
+            event: .requestCancellation(.graceful),
+            backendCapabilities: cancellable
+        )
+        #expect(retriedAfterIndeterminate.disposition == .applied)
+        #expect(retriedAfterIndeterminate.state.observedCancellation == .requestPending)
+    }
+
     @Test("Execution completion racing cancellation is completed before cancel")
     func completionBeforeCancellation() {
         let capabilities: ExternalOperationBackendCapabilities = [.observe, .cancel]
