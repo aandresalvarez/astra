@@ -329,6 +329,41 @@ struct RunBrokerOrchestratorTests {
         #expect(fixture.transport.immediateTerminationCount == 1)
     }
 
+    @Test("an exact retry resumes the effect after a crash immediately after audit")
+    func terminationRetryAfterAuditOnly() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+        let service = fixture.orchestrator(authorizer: AllowExactRunBrokerImmediateTerminationAuthorizer())
+        _ = try service.start(fixture.request())
+        let auditID = brokerUUID(92)
+        _ = try fixture.ledger.append(.init(
+            eventID: .init(rawValue: auditID),
+            occurredAt: brokerTestDate.addingTimeInterval(10),
+            event: .executionControlTransitioned(
+                executionID: fixture.manifest.executionID,
+                authority: fixture.manifest.authority,
+                transition: .requestCancellation(.immediate),
+                backendCapabilities: [.observe, .cancel]
+            )
+        ))
+
+        try service.requestImmediateTermination(
+            .init(executionID: fixture.manifest.executionID, intent: .immediate),
+            requestedAt: brokerTestDate.addingTimeInterval(60),
+            auditID: auditID
+        )
+
+        #expect(fixture.transport.immediateTerminationCount == 1)
+        let auditEvents = try fixture.ledger.events(limit: 100).filter {
+            $0.envelope.eventID.rawValue == auditID
+        }
+        #expect(auditEvents.count == 1)
+        #expect(auditEvents.first?.envelope.occurredAt == brokerTestDate.addingTimeInterval(10))
+    }
+
     @Test("default authorizer denies immediate termination without an audit or effect")
     func terminationIsFailClosed() throws {
         let fixture = try BrokerFixture()

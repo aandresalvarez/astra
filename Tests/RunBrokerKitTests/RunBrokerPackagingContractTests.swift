@@ -64,8 +64,8 @@ struct RunBrokerPackagingContractTests {
         #expect(!app.contains("RunBrokerInstaller"))
     }
 
-    @Test("Broker executable opens and recovers the canonical RunLedger before serving")
-    func brokerUsesCanonicalLedger() throws {
+    @Test("Broker acquires singleton ownership before credentials, ledger, and recovery")
+    func brokerOwnershipPrecedesRecovery() throws {
         let main = try String(
             contentsOf: repositoryRoot().appendingPathComponent(
                 "Tools/AstraRunBrokerTool/main.swift"
@@ -77,9 +77,15 @@ struct RunBrokerPackagingContractTests {
         #expect(try main.indexOf("RunBrokerCohortResolver.resolve(") < main.indexOf(
             "RunBrokerRunLedgerAdapter("
         ))
-        #expect(try main.indexOf("try scheduler.recover()") < main.indexOf(
-            "RunBrokerUnixSocketListener("
-        ))
+        let ownership = try main.indexOf("RunBrokerUnixSocketListener(")
+        let credentials = try main.indexOf("secureStore.loadOrCreate(")
+        let ledger = try main.indexOf("RunLedger(configuration:")
+        let recovery = try main.indexOf("try scheduler.recover()")
+        let reconciliation = try main.indexOf("startRuntimeSwitchReconciliation(")
+        #expect(ownership < credentials)
+        #expect(ownership < ledger)
+        #expect(ownership < recovery)
+        #expect(ownership < reconciliation)
     }
 
     private func repositoryRoot() -> URL {

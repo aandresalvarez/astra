@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import RunBrokerClient
 
 public enum RunBrokerCohort {
     public static let brokerExecutableName = "astra-run-broker"

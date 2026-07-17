@@ -120,11 +120,95 @@ enum RunLedgerProjectionStore {
             connection: connection,
             database: database
         )
-        return .init(
+        let durable = RunLedgerProjection(
             executions: executions,
             operations: operations,
             monitorDeadlines: monitorDeadlines
         )
+        return try loadRuntimeSwitchProjection(
+            over: durable,
+            connection: connection,
+            database: database
+        )
+    }
+
+    /// Runtime-switch policy intentionally has no mutable snapshot table. The
+    /// journal is small at this boundary and remains the sole canonical owner;
+    /// loading replays just the typed runtime-switch events under the same
+    /// SQLite lock used by append CAS.
+    private static func loadRuntimeSwitchProjection(
+        over durable: RunLedgerProjection,
+        connection: RunLedgerSQLiteConnection,
+        database: OpaquePointer
+    ) throws -> RunLedgerProjection {
+        let statement = try connection.statement(
+            """
+            SELECT sequence, event_id, event_kind, aggregate_kind, aggregate_id, payload
+            FROM events
+            WHERE event_kind IN (
+                'runtime_switch.target_reserved', 'runtime_switch.admitted',
+                'runtime_switch.policy_transitioned',
+                'runtime_switch.completion_archived',
+                'execution.force_challenge_recorded', 'execution.force_challenge_consumed'
+            )
+            ORDER BY sequence
+            """,
+            database: database
+        )
+        defer { statement.finalize() }
+        var projection = durable
+        while try statement.step() == .row {
+            guard let eventUUID = UUID(uuidString: try statement.text(at: 1)) else {
+                throw RunLedgerError.projectionDrift("Runtime-switch event ID is invalid")
+            }
+            let eventID = RunLedgerEventID(rawValue: eventUUID)
+            let envelope = try RunLedgerCodec.envelope(
+                eventID: eventID,
+                from: statement.blob(at: 5)
+            )
+            guard try statement.text(at: 2) == envelope.event.kind,
+                  try statement.text(at: 3) == envelope.event.aggregateKind,
+                  try statement.text(at: 4) == envelope.event.aggregateID else {
+                throw RunLedgerError.projectionDrift("Runtime-switch event index differs from payload")
+            }
+            projection = try RunLedgerProjector.reduceRuntimeSwitch(
+                projection,
+                storedEvent: .init(sequence: statement.int64(at: 0), envelope: envelope),
+                storeID: durable.executions.values.first?.manifest.storeID
+                    ?? runtimeSwitchStoreID(from: envelope)
+            )
+        }
+        return projection
+    }
+
+    private static func runtimeSwitchStoreID(
+        from envelope: RunLedgerEventEnvelope
+    ) throws -> RunBrokerStoreID {
+        switch envelope.event {
+        case .runtimeSwitchTargetReserved(let request, _, _):
+            return request.intent.expectedSource.storeID
+        case .runtimeSwitchAdmitted(let request, _, _, _):
+            return request.intent.expectedSource.storeID
+        case .runtimeSwitchPolicyTransitioned(let expected, let next, _):
+            if let storeID = next.record?.request.intent.expectedSource.storeID
+                ?? expected.record?.request.intent.expectedSource.storeID {
+                return storeID
+            }
+            throw RunLedgerError.projectionDrift("Runtime-switch policy event has no store binding")
+        case .runtimeSwitchCompletionArchived(let expected, _):
+            guard let storeID = expected.record?.request.intent.expectedSource.storeID else {
+                throw RunLedgerError.projectionDrift(
+                    "Runtime-switch archive event has no store binding"
+                )
+            }
+            return storeID
+        case .executionForceChallengeRecorded, .executionForceChallengeConsumed:
+            throw RunLedgerError.projectionDrift(
+                "Execution-force event has no admitted execution store binding"
+            )
+        default:
+            throw RunLedgerError.projectionDrift("Unexpected event in runtime-switch projection")
+        }
     }
 
     private static func loadNormalizedEffects(

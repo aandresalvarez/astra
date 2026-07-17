@@ -464,8 +464,7 @@ public struct RuntimeSwitchRecord: Codable, Equatable, Hashable, Sendable {
                 && completionEvidenceID != nil
                 && completionLedgerSequence != nil
         case .inDoubt:
-            return replacementEffect == nil
-                && replacementAcceptanceID == nil
+            return replacementAcceptanceID == nil
                 && replacementAcceptanceLedgerSequence == nil
                 && completionEvidenceID == nil
                 && completionLedgerSequence == nil
@@ -1184,8 +1183,7 @@ public enum RuntimeSwitchPolicy {
     ) -> RuntimeSwitchPolicyReduction {
         guard let record = state.record,
               record.request.intent.expectedSource == source,
-              record.progress != .completed,
-              record.replacementEffect == nil else {
+              record.progress != .completed else {
             return .blocked(state, .invalidTransition)
         }
         if record.progress == .inDoubt { return .result(state, .idempotent) }

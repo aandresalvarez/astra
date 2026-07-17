@@ -5,6 +5,7 @@ let package = Package(
     name: "ASTRA",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "RunBrokerClient", targets: ["RunBrokerClient"]),
         .library(name: "ASTRARunLedger", targets: ["ASTRARunLedger"]),
         .library(name: "RunBrokerService", targets: ["RunBrokerService"]),
         // Standalone process-boundary fixture; never embedded in ASTRA.app.
@@ -58,7 +59,7 @@ let package = Package(
         ),
         .target(
             name: "ASTRARunLedger",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "RunBrokerPolicy"],
             path: "ASTRARunLedger",
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
@@ -73,15 +74,65 @@ let package = Package(
             path: "RunSupervisorSupport"
         ),
         .target(
+            name: "RunBrokerClient",
+            dependencies: ["ASTRACore"],
+            path: "RunBrokerKit",
+            exclude: [
+                "RunBrokerApplicationCommandHandling.swift",
+                "RunBrokerClientServer.swift",
+                "RunBrokerCohort.swift",
+                "RunBrokerDiagnostics.swift",
+                "RunBrokerEndpoint.swift",
+                "RunBrokerInstallationTransactionLock.swift",
+                "RunBrokerInstaller.swift",
+                "RunBrokerLaunchAgentInstallation.swift",
+                "RunBrokerMonitorScheduler.swift",
+                "RunBrokerPackageMetadata.swift",
+                "RunBrokerPaths.swift",
+                "RunBrokerPayloadInstallation.swift",
+                "RunBrokerRunLedgerAdapter.swift",
+                "RunBrokerSchedulerContracts.swift",
+                "RunBrokerSecureStore.swift",
+                "RunBrokerUnixSocketListener.swift",
+            ],
+            sources: [
+                "RunBrokerApplicationContracts.swift",
+                "RunBrokerApplicationV2Contracts.swift",
+                "RunBrokerAuthentication.swift",
+                "RunBrokerClient.swift",
+                "RunBrokerClientBootstrap.swift",
+                "RunBrokerCommands.swift",
+                "RunBrokerProtocol.swift",
+                "RunBrokerResponseAuthentication.swift",
+                "RunBrokerTransport.swift",
+                "RunBrokerUnixSocketConnection.swift",
+                "RunBrokerWireCodec.swift",
+            ]
+        ),
+        .target(
             name: "RunBrokerKit",
-            dependencies: ["ASTRACore", "ASTRARunLedger"],
-            path: "RunBrokerKit"
+            dependencies: ["ASTRACore", "ASTRARunLedger", "RunBrokerClient"],
+            path: "RunBrokerKit",
+            exclude: [
+                "RunBrokerApplicationContracts.swift",
+                "RunBrokerApplicationV2Contracts.swift",
+                "RunBrokerAuthentication.swift",
+                "RunBrokerClient.swift",
+                "RunBrokerClientBootstrap.swift",
+                "RunBrokerCommands.swift",
+                "RunBrokerProtocol.swift",
+                "RunBrokerResponseAuthentication.swift",
+                "RunBrokerTransport.swift",
+                "RunBrokerUnixSocketConnection.swift",
+                "RunBrokerWireCodec.swift",
+            ]
         ),
         .target(
             name: "RunBrokerService",
             dependencies: [
                 "ASTRACore",
                 "ASTRARunLedger",
+                "RunBrokerPolicy",
                 "RunSupervisorSupport",
                 "RunBrokerKit",
             ],
@@ -128,7 +179,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "AstraRunBrokerTool",
-            dependencies: ["RunBrokerKit"],
+            dependencies: [
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunBrokerKit",
+                "RunBrokerService",
+                "RunSupervisorSupport",
+            ],
             path: "Tools/AstraRunBrokerTool"
         ),
         .executableTarget(
@@ -190,6 +247,7 @@ let package = Package(
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                "RunBrokerClient",
                 "RunSupervisorSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
@@ -266,7 +324,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRARunLedgerTests",
-            dependencies: ["ASTRARunLedger", "ASTRACore"],
+            dependencies: ["ASTRARunLedger", "ASTRACore", "RunBrokerPolicy"],
             path: "Tests/ASTRARunLedgerTests",
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
@@ -287,7 +345,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RunBrokerKitTests",
-            dependencies: ["RunBrokerKit", "ASTRARunLedger"],
+            dependencies: ["RunBrokerKit", "RunBrokerClient", "ASTRARunLedger"],
             path: "Tests/RunBrokerKitTests"
         ),
         .testTarget(

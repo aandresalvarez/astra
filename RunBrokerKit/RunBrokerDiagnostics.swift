@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 
 public enum RunBrokerDiagnosticEvent: String, Sendable {
     case launchAgentBootoutFailed = "launch_agent_bootout_failed"

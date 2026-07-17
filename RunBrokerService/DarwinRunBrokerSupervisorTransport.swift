@@ -18,6 +18,26 @@ public struct DarwinRunBrokerSupervisorTransport: RunBrokerSupervisorTransportin
         self.client = client
     }
 
+    public func presence(
+        identity: RunSupervisorIdentity,
+        capability: RunSupervisorCapability
+    ) throws -> RunBrokerSupervisorPresence {
+        do {
+            let directory = try trustedRoot.openExecutionDirectory(identity.executionID)
+            guard let discovery = try fileSystem.readDiscovery(in: directory) else {
+                throw RunBrokerServiceError.supervisorUnavailable
+            }
+            try validate(discovery: discovery, expected: identity, capability: capability)
+            // Exact replay authenticates live control or the committed offline
+            // spool. A directory or PID alone is never presence proof.
+            _ = try replay(identity: identity, capability: capability, after: 0)
+            return .authenticated
+        } catch RunSupervisorError.systemCall(let operation, let code)
+            where operation == "openat execution directory" && code == ENOENT {
+            return .absent
+        }
+    }
+
     public func replay(
         identity: RunSupervisorIdentity,
         capability: RunSupervisorCapability,
@@ -30,31 +50,31 @@ public struct DarwinRunBrokerSupervisorTransport: RunBrokerSupervisorTransportin
             let socketPath = directory.path + "/control.sock"
             let socketMissing = lstat(socketPath, &socketStatus) != 0 && errno == ENOENT
             if !socketMissing {
-            let request = try RunSupervisorControlAuthentication.makeRequest(
-                executionID: identity.executionID,
-                action: .init(kind: .replay, afterSequence: sequence),
-                capability: capability
-            )
-            do {
-                let response = try client.send(request, directory: directory)
-                guard response.accepted else {
-                    throw RunBrokerServiceError.supervisorRejected(
-                        response.errorCode ?? "unknown"
-                    )
-                }
-                return .init(
-                    identity: identity,
-                    source: .liveAuthenticated,
-                    events: response.events,
-                    lastSequence: response.lastSequence
+                let request = try RunSupervisorControlAuthentication.makeRequest(
+                    executionID: identity.executionID,
+                    action: .init(kind: .replay, afterSequence: sequence),
+                    capability: capability
                 )
-            } catch RunSupervisorError.systemCall(let operation, let code)
-                where operation == "connect unix socket"
-                    && (code == ECONNREFUSED || code == ENOENT) {
-                // A typed inability to connect may race a clean supervisor
-                // exit. Only this condition may downgrade to capability-gated
-                // offline spool recovery. Auth/schema/tamper errors propagate.
-            }
+                do {
+                    let response = try client.send(request, directory: directory)
+                    guard response.accepted else {
+                        throw RunBrokerServiceError.supervisorRejected(
+                            response.errorCode ?? "unknown"
+                        )
+                    }
+                    return .init(
+                        identity: identity,
+                        source: .liveAuthenticated,
+                        events: response.events,
+                        lastSequence: response.lastSequence
+                    )
+                } catch RunSupervisorError.systemCall(let operation, let code)
+                    where operation == "connect unix socket"
+                        && (code == ECONNREFUSED || code == ENOENT) {
+                    // A typed inability to connect may race a clean supervisor
+                    // exit. Only this condition may downgrade to capability-gated
+                    // offline spool recovery. Auth/schema/tamper errors propagate.
+                }
             }
         }
 

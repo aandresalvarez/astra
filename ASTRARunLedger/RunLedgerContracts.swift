@@ -1,5 +1,6 @@
 import ASTRACore
 import Foundation
+import RunBrokerPolicy
 
 public struct RunLedgerEventID: RawRepresentable, Codable, Hashable, Sendable, Identifiable {
     public let rawValue: UUID
@@ -127,6 +128,47 @@ public enum RunLedgerEvent: Equatable, Sendable {
         disposition: RunLedgerMonitorAttemptDisposition,
         nextDueAt: Date?
     )
+    /// Atomically binds one globally unique request, reservation, and target
+    /// execution before policy admission. The trusted reservation object is
+    /// constructed by the ledger projector from the committed sequence.
+    case runtimeSwitchTargetReserved(
+        request: ActiveRuntimeSwitchRequest,
+        requestDigest: RuntimeSwitchRequestDigest,
+        reservationID: RuntimeSwitchEvidenceID
+    )
+    /// One admission fact atomically verifies source/target digests, reserves
+    /// the replacement identity, binds any force challenge, and advances the
+    /// policy from its current durable state.
+    case runtimeSwitchAdmitted(
+        request: ActiveRuntimeSwitchRequest,
+        requestDigest: RuntimeSwitchRequestDigest,
+        reservationID: RuntimeSwitchEvidenceID,
+        forceChallenge: RuntimeForceSwitchChallenge?
+    )
+    /// Exact compare-and-swap over the canonical runtime-switch policy state.
+    /// An effect identifier is present iff this transition records an external
+    /// effect intent; dispatch must happen only after this event commits.
+    case runtimeSwitchPolicyTransitioned(
+        expected: RuntimeSwitchPolicyState,
+        next: RuntimeSwitchPolicyState,
+        effectID: RuntimeSwitchEffectID?
+    )
+    /// The projector derives the archived state using the event's actual
+    /// inserted sequence, so unrelated ledger writes cannot stale a predicted
+    /// rollover sequence.
+    case runtimeSwitchCompletionArchived(
+        expected: RuntimeSwitchPolicyState,
+        archiveEvidenceID: RuntimeSwitchEvidenceID
+    )
+    case executionForceChallengeRecorded(ExecutionForceChallenge)
+    case executionForceChallengeConsumed(
+        challengeID: RuntimeForceChallengeID,
+        requestDigest: ExecutionForceRequestDigest,
+        effectID: RuntimeSwitchEffectID,
+        actorID: RuntimeSwitchActorID,
+        sessionID: UUID,
+        confirmedAt: Date
+    )
 
     public var kind: String {
         switch self {
@@ -139,6 +181,12 @@ public enum RunLedgerEvent: Equatable, Sendable {
         case .monitorDeadlineUpserted: "monitor.deadline_upserted"
         case .monitorDeadlineRemoved: "monitor.deadline_removed"
         case .monitorAttemptRecorded: "monitor.attempt_recorded"
+        case .runtimeSwitchTargetReserved: "runtime_switch.target_reserved"
+        case .runtimeSwitchAdmitted: "runtime_switch.admitted"
+        case .runtimeSwitchPolicyTransitioned: "runtime_switch.policy_transitioned"
+        case .runtimeSwitchCompletionArchived: "runtime_switch.completion_archived"
+        case .executionForceChallengeRecorded: "execution.force_challenge_recorded"
+        case .executionForceChallengeConsumed: "execution.force_challenge_consumed"
         }
     }
 
@@ -150,6 +198,15 @@ public enum RunLedgerEvent: Equatable, Sendable {
         case .operationClaimed, .operationTombstoned,
              .monitorDeadlineUpserted, .monitorDeadlineRemoved, .monitorAttemptRecorded:
             "operation"
+        case .runtimeSwitchTargetReserved, .runtimeSwitchAdmitted,
+             .runtimeSwitchPolicyTransitioned,
+             .runtimeSwitchCompletionArchived:
+            // Runtime switching is a lifecycle transition of the exact
+            // source execution. Keep the stable v1 aggregate taxonomy; the
+            // event kind carries the narrower domain classification.
+            "execution"
+        case .executionForceChallengeRecorded, .executionForceChallengeConsumed:
+            "execution"
         }
     }
 
@@ -170,6 +227,21 @@ public enum RunLedgerEvent: Equatable, Sendable {
             deadline.operationID.rawValue.uuidString.lowercased()
         case .monitorDeadlineRemoved(let expected):
             expected.operationID.rawValue.uuidString.lowercased()
+        case .runtimeSwitchTargetReserved(let request, _, _):
+            request.intent.requestID.rawValue.uuidString.lowercased()
+        case .runtimeSwitchAdmitted(let request, _, _, _):
+            request.intent.requestID.rawValue.uuidString.lowercased()
+        case .runtimeSwitchPolicyTransitioned(_, let next, _):
+            next.record?.request.intent.requestID.rawValue.uuidString.lowercased()
+                ?? next.lastArchivedCompletion?.requestID.rawValue.uuidString.lowercased()
+                ?? "runtime-switch-policy"
+        case .runtimeSwitchCompletionArchived(let expected, _):
+            expected.record?.request.intent.requestID.rawValue.uuidString.lowercased()
+                ?? "runtime-switch-policy"
+        case .executionForceChallengeRecorded(let challenge):
+            challenge.executionID.rawValue.uuidString.lowercased()
+        case .executionForceChallengeConsumed(let challengeID, _, _, _, _, _):
+            challengeID.rawValue.uuidString.lowercased()
         }
     }
 }
@@ -194,6 +266,18 @@ extension RunLedgerEvent: Codable {
         case attemptedAt
         case disposition
         case nextDueAt
+        case request
+        case requestDigest
+        case reservationID
+        case next
+        case effectID
+        case challenge
+        case forceChallenge
+        case challengeID
+        case actorID
+        case sessionID
+        case confirmedAt
+        case archiveEvidenceID
     }
 
     public init(from decoder: Decoder) throws {
@@ -257,6 +341,43 @@ extension RunLedgerEvent: Codable {
                 CodingKeys.attemptedAt.rawValue,
                 CodingKeys.disposition.rawValue,
                 CodingKeys.nextDueAt.rawValue,
+            ]
+        case "runtime_switch.target_reserved":
+            expectedKeys = [
+                CodingKeys.kind.rawValue,
+                CodingKeys.request.rawValue,
+                CodingKeys.requestDigest.rawValue,
+                CodingKeys.reservationID.rawValue,
+            ]
+        case "runtime_switch.admitted":
+            expectedKeys = [
+                CodingKeys.kind.rawValue,
+                CodingKeys.request.rawValue,
+                CodingKeys.requestDigest.rawValue,
+                CodingKeys.reservationID.rawValue,
+                CodingKeys.forceChallenge.rawValue,
+            ]
+        case "runtime_switch.policy_transitioned":
+            expectedKeys = [
+                CodingKeys.kind.rawValue,
+                CodingKeys.expected.rawValue,
+                CodingKeys.next.rawValue,
+                CodingKeys.effectID.rawValue,
+            ]
+        case "runtime_switch.completion_archived":
+            expectedKeys = [
+                CodingKeys.kind.rawValue,
+                CodingKeys.expected.rawValue,
+                CodingKeys.archiveEvidenceID.rawValue,
+            ]
+        case "execution.force_challenge_recorded":
+            expectedKeys = [CodingKeys.kind.rawValue, CodingKeys.challenge.rawValue]
+        case "execution.force_challenge_consumed":
+            expectedKeys = [
+                CodingKeys.kind.rawValue, CodingKeys.challengeID.rawValue,
+                CodingKeys.requestDigest.rawValue, CodingKeys.effectID.rawValue,
+                CodingKeys.actorID.rawValue, CodingKeys.sessionID.rawValue,
+                CodingKeys.confirmedAt.rawValue,
             ]
         default:
             throw DecodingError.dataCorruptedError(
@@ -349,6 +470,61 @@ extension RunLedgerEvent: Codable {
                 ),
                 nextDueAt: try container.decodeIfPresent(Date.self, forKey: .nextDueAt)
             )
+        case "runtime_switch.target_reserved":
+            self = .runtimeSwitchTargetReserved(
+                request: try container.decode(ActiveRuntimeSwitchRequest.self, forKey: .request),
+                requestDigest: try container.decode(
+                    RuntimeSwitchRequestDigest.self,
+                    forKey: .requestDigest
+                ),
+                reservationID: try container.decode(
+                    RuntimeSwitchEvidenceID.self,
+                    forKey: .reservationID
+                )
+            )
+        case "runtime_switch.admitted":
+            self = .runtimeSwitchAdmitted(
+                request: try container.decode(ActiveRuntimeSwitchRequest.self, forKey: .request),
+                requestDigest: try container.decode(
+                    RuntimeSwitchRequestDigest.self,
+                    forKey: .requestDigest
+                ),
+                reservationID: try container.decode(
+                    RuntimeSwitchEvidenceID.self,
+                    forKey: .reservationID
+                ),
+                forceChallenge: try container.decodeIfPresent(
+                    RuntimeForceSwitchChallenge.self,
+                    forKey: .forceChallenge
+                )
+            )
+        case "runtime_switch.policy_transitioned":
+            self = .runtimeSwitchPolicyTransitioned(
+                expected: try container.decode(RuntimeSwitchPolicyState.self, forKey: .expected),
+                next: try container.decode(RuntimeSwitchPolicyState.self, forKey: .next),
+                effectID: try container.decodeIfPresent(RuntimeSwitchEffectID.self, forKey: .effectID)
+            )
+        case "runtime_switch.completion_archived":
+            self = .runtimeSwitchCompletionArchived(
+                expected: try container.decode(RuntimeSwitchPolicyState.self, forKey: .expected),
+                archiveEvidenceID: try container.decode(
+                    RuntimeSwitchEvidenceID.self,
+                    forKey: .archiveEvidenceID
+                )
+            )
+        case "execution.force_challenge_recorded":
+            self = .executionForceChallengeRecorded(
+                try container.decode(ExecutionForceChallenge.self, forKey: .challenge)
+            )
+        case "execution.force_challenge_consumed":
+            self = .executionForceChallengeConsumed(
+                challengeID: try container.decode(RuntimeForceChallengeID.self, forKey: .challengeID),
+                requestDigest: try container.decode(ExecutionForceRequestDigest.self, forKey: .requestDigest),
+                effectID: try container.decode(RuntimeSwitchEffectID.self, forKey: .effectID),
+                actorID: try container.decode(RuntimeSwitchActorID.self, forKey: .actorID),
+                sessionID: try container.decode(UUID.self, forKey: .sessionID),
+                confirmedAt: try container.decode(Date.self, forKey: .confirmedAt)
+            )
         default:
             preconditionFailure("Event kind was validated before decoding")
         }
@@ -400,6 +576,36 @@ extension RunLedgerEvent: Codable {
             try container.encode(attemptedAt, forKey: .attemptedAt)
             try container.encode(disposition, forKey: .disposition)
             try container.encode(nextDueAt, forKey: .nextDueAt)
+        case .runtimeSwitchTargetReserved(let request, let requestDigest, let reservationID):
+            try container.encode(request, forKey: .request)
+            try container.encode(requestDigest, forKey: .requestDigest)
+            try container.encode(reservationID, forKey: .reservationID)
+        case .runtimeSwitchAdmitted(
+            let request, let requestDigest, let reservationID, let forceChallenge
+        ):
+            try container.encode(request, forKey: .request)
+            try container.encode(requestDigest, forKey: .requestDigest)
+            try container.encode(reservationID, forKey: .reservationID)
+            try container.encode(forceChallenge, forKey: .forceChallenge)
+        case .runtimeSwitchPolicyTransitioned(let expected, let next, let effectID):
+            try container.encode(expected, forKey: .expected)
+            try container.encode(next, forKey: .next)
+            try container.encode(effectID, forKey: .effectID)
+        case .runtimeSwitchCompletionArchived(let expected, let archiveEvidenceID):
+            try container.encode(expected, forKey: .expected)
+            try container.encode(archiveEvidenceID, forKey: .archiveEvidenceID)
+        case .executionForceChallengeRecorded(let challenge):
+            try container.encode(challenge, forKey: .challenge)
+        case .executionForceChallengeConsumed(
+            let challengeID, let requestDigest, let effectID,
+            let actorID, let sessionID, let confirmedAt
+        ):
+            try container.encode(challengeID, forKey: .challengeID)
+            try container.encode(requestDigest, forKey: .requestDigest)
+            try container.encode(effectID, forKey: .effectID)
+            try container.encode(actorID, forKey: .actorID)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(confirmedAt, forKey: .confirmedAt)
         }
     }
 }

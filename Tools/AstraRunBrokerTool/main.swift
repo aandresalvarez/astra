@@ -2,10 +2,14 @@ import Foundation
 import Darwin
 import RunBrokerKit
 import ASTRACore
+import ASTRARunLedger
+import RunBrokerService
+import RunSupervisorSupport
 
 private enum BrokerMainError: Error {
     case invalidArguments
     case installationIdentityMismatch
+    case unsafeRuntimeDirectory
 }
 
 private struct Arguments {
@@ -38,6 +42,16 @@ private struct Arguments {
     }
 }
 
+private struct BrokerStderrLogger: RunBrokerServiceLogging {
+    func record(event: String, fields: [String: String]) {
+        let suffix = fields.keys.sorted().map { key in
+            "\(key)=\(fields[key] ?? "")"
+        }.joined(separator: " ")
+        let line = suffix.isEmpty ? event : "\(event) \(suffix)"
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+}
+
 private func run() throws -> Never {
     let arguments = try Arguments(Array(CommandLine.arguments.dropFirst()))
     let identity = RunBrokerChannelIdentity(
@@ -56,20 +70,53 @@ private func run() throws -> Never {
         .lastPathComponent
 
     let secureStore = RunBrokerSecureStore(expectedUserID: getuid())
+    // The socket is the broker's process-ownership lease. Acquire it before
+    // creating credentials, opening the ledger, or starting recovery work so
+    // a duplicate launch cannot produce durable or external side effects.
+    let listener = try RunBrokerUnixSocketListener(
+        identity: identity,
+        secureStore: secureStore,
+        expectedUserID: getuid()
+    )
     let secrets = try secureStore.loadOrCreate(identity: identity)
     guard secrets.installationID == arguments.installationID else {
         throw BrokerMainError.installationIdentityMismatch
     }
 
-    let ledger = try RunBrokerRunLedgerAdapter(
-        identity: identity,
+    // One canonical ledger instance is shared by the scheduler, durable run
+    // orchestrator, status reader, and projection outbox. No adapter owns a
+    // second mutable database connection or projection cursor.
+    let canonicalLedger = try RunLedger(configuration: .init(
+        ledgerDirectoryURL: identity.ledgerDirectoryURL,
         installationID: secrets.installationID
+    ))
+    let monitorLedger = RunBrokerRunLedgerAdapter(ledger: canonicalLedger)
+    let runRoot = identity.supportDirectory.appendingPathComponent("Executions", isDirectory: true)
+    let capabilityDirectory = identity.supportDirectory
+        .appendingPathComponent("SupervisorCapabilities", isDirectory: true)
+    try ensurePrivateDirectory(runRoot)
+    let trustedRoot = try RunSupervisorTrustedRoot(path: runRoot.path)
+    let vault = DarwinRunBrokerCapabilityVault(directoryURL: capabilityDirectory)
+    let supervisorTransport = DarwinRunBrokerSupervisorTransport(trustedRoot: trustedRoot)
+    let orchestrator = RunBrokerOrchestrator(
+        ledger: canonicalLedger,
+        vault: vault,
+        spawner: DarwinRunBrokerSupervisorSpawner(runRootURL: runRoot),
+        transport: supervisorTransport,
+        installedBrokerExecutableURL: cohort.brokerExecutableURL,
+        allowAuthenticatedImmediateTermination: true
     )
     let scheduler = RunBrokerMonitorScheduler(
-        ledger: ledger,
+        ledger: monitorLedger,
         monitor: UnavailableRunBrokerExternalOperationMonitor()
     )
     try scheduler.recover()
+    let applicationService = RunBrokerApplicationService(
+        ledger: canonicalLedger,
+        orchestrator: orchestrator,
+        vault: vault
+    )
+    applicationService.startRuntimeSwitchReconciliation(logger: BrokerStderrLogger())
     let authenticator = RunBrokerRequestAuthenticator(secret: secrets.capabilitySecret)
     let peerPolicy = RunBrokerPeerIdentityPolicy(expectedUserID: getuid())
     let endpoint = RunBrokerRequestEndpoint(
@@ -78,18 +125,33 @@ private func run() throws -> Never {
         brokerVersion: brokerVersion,
         authenticator: authenticator,
         peerPolicy: peerPolicy,
-        scheduler: scheduler
-    )
-    let listener = try RunBrokerUnixSocketListener(
-        identity: identity,
-        secureStore: secureStore,
-        expectedUserID: getuid()
+        scheduler: scheduler,
+        applicationHandler: applicationService
     )
     return try RunBrokerServer(
         listener: listener,
         endpoint: endpoint,
         responseAuthenticator: authenticator
     ).runForever()
+}
+
+/// Creates only broker-owned runtime storage. This is not installation or
+/// rollout activation and never touches ASTRA.app or LaunchAgent state.
+private func ensurePrivateDirectory(_ url: URL) throws {
+    if mkdir(url.path, 0o700) != 0, errno != EEXIST {
+        throw BrokerMainError.unsafeRuntimeDirectory
+    }
+    let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw BrokerMainError.unsafeRuntimeDirectory }
+    defer { close(descriptor) }
+    var status = stat()
+    guard fstat(descriptor, &status) == 0,
+          (status.st_mode & S_IFMT) == S_IFDIR,
+          status.st_uid == geteuid(),
+          UInt16(status.st_mode & 0o777) == 0o700,
+          status.st_nlink >= 2 else {
+        throw BrokerMainError.unsafeRuntimeDirectory
+    }
 }
 
 do {

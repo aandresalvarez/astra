@@ -47,7 +47,10 @@ public struct RunBrokerProtocolVersion: RawRepresentable, Codable, Hashable, Sen
     }
 
     public static let v1 = Self(rawValue: 1)
-    public static let current = Self.v1
+    /// v2 adds the authenticated application control plane. A v1 app may
+    /// negotiate, but it must update before it can start or control a run.
+    public static let v2 = Self(rawValue: 2)
+    public static let current = Self.v2
     public static let minimumSecure = Self.v1
 
     public static func < (lhs: Self, rhs: Self) -> Bool {
@@ -168,16 +171,25 @@ public struct RunBrokerCapabilities: Codable, Equatable, Sendable {
     public let schedulerRead: Bool
     public let schedulerMutation: Bool
     public let durableIdempotency: Bool
+    public let applicationControl: Bool
+    public let gracefulCancellation: Bool
+    public let immediateTermination: Bool
 
     public init(
         health: Bool = true,
         schedulerRead: Bool,
         schedulerMutation: Bool,
-        durableIdempotency: Bool
+        durableIdempotency: Bool,
+        applicationControl: Bool = false,
+        gracefulCancellation: Bool = false,
+        immediateTermination: Bool = false
     ) {
         self.health = health
         self.schedulerRead = schedulerRead
         self.schedulerMutation = schedulerMutation
         self.durableIdempotency = durableIdempotency
+        self.applicationControl = applicationControl
+        self.gracefulCancellation = gracefulCancellation
+        self.immediateTermination = immediateTermination
     }
 }

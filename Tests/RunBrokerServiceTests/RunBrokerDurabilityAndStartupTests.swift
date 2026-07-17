@@ -42,40 +42,37 @@ struct RunBrokerDurabilityAndStartupTests {
         }
     }
 
-    @Test("app outbox acknowledgement waits for durable projection and exact dedupe replay")
-    func projectionBeforeAppAcknowledgement() throws {
+    @Test("projection remains pending across broker instances until exact app acknowledgement")
+    func projectionPullBeforeExactAcknowledgement() throws {
         let fixture = try BrokerFixture()
         try fixture.admitOnly()
-        let projector = CrashAfterProjectionProjector()
-        let delivery = RunBrokerProjectionDeliveryService(
-            ledger: fixture.ledger,
-            projection: projector
-        )
-        #expect(throws: ProjectionCrash.self) {
-            _ = try delivery.deliver(limit: 1)
-        }
-        let before = try #require(fixture.ledger.outbox().first)
-        #expect(!before.isAcknowledged)
-        #expect(projector.messageIDs == [before.messageID])
+        let firstBroker = RunBrokerProjectionOutbox(ledger: fixture.ledger)
+        let first = try #require(try firstBroker.next())
+        let restartedBroker = RunBrokerProjectionOutbox(ledger: fixture.ledger)
+        #expect(try restartedBroker.next() == first)
 
-        #expect(try delivery.deliver(limit: 1) == 1)
-        let after = try #require(fixture.ledger.outbox().first)
-        #expect(after.isAcknowledged)
-        #expect(projector.messageIDs == [before.messageID, before.messageID])
+        _ = try restartedBroker.acknowledge(.init(
+            sequence: first.sequence,
+            messageID: first.messageID
+        ))
+        #expect(try restartedBroker.next() == nil)
+        #expect(try fixture.ledger.outbox().first?.isAcknowledged == true)
     }
 
-    @Test("a non-durable app projection cannot advance the ledger outbox")
-    func nonDurableProjectionDoesNotAck() throws {
+    @Test("wrong projection acknowledgement cannot advance the ledger outbox")
+    func wrongProjectionAcknowledgementDoesNotAck() throws {
         let fixture = try BrokerFixture()
         try fixture.admitOnly()
-        let delivery = RunBrokerProjectionDeliveryService(
-            ledger: fixture.ledger,
-            projection: NeverDurableProjector()
-        )
-        #expect(throws: RunBrokerServiceError.projectionDidNotBecomeDurable) {
-            _ = try delivery.deliver(limit: 1)
+        let outbox = RunBrokerProjectionOutbox(ledger: fixture.ledger)
+        let next = try #require(try outbox.next())
+        #expect(throws: (any Error).self) {
+            _ = try outbox.acknowledge(.init(
+                sequence: next.sequence,
+                messageID: brokerUUID(99)
+            ))
         }
         #expect(try fixture.ledger.outbox().first?.isAcknowledged == false)
+        #expect(try outbox.next() == next)
     }
 
     @Test("concurrent app bootstraps coalesce broker reconciliation before orphan recovery and queue drain")
@@ -140,28 +137,6 @@ struct RunBrokerDurabilityAndStartupTests {
         let resolved = try RunBrokerCohortResolver.resolve(brokerExecutableURL: broker)
         #expect(resolved.brokerExecutableURL == broker.resolvingSymlinksInPath().standardizedFileURL)
         #expect(resolved.supervisorExecutableURL == supervisor.resolvingSymlinksInPath().standardizedFileURL)
-    }
-}
-
-enum ProjectionCrash: Error { case afterDurableWrite }
-
-final class CrashAfterProjectionProjector: RunBrokerProjectionApplying, @unchecked Sendable {
-    private let lock = NSLock()
-    private(set) var messageIDs: [RunLedgerEventID] = []
-
-    func durablyApply(_ message: RunLedgerOutboxMessage) throws -> RunBrokerProjectionApplyDisposition {
-        lock.lock()
-        messageIDs.append(message.messageID)
-        let isFirst = messageIDs.count == 1
-        lock.unlock()
-        if isFirst { throw ProjectionCrash.afterDurableWrite }
-        return .exactReplayDurable
-    }
-}
-
-struct NeverDurableProjector: RunBrokerProjectionApplying {
-    func durablyApply(_ message: RunLedgerOutboxMessage) throws -> RunBrokerProjectionApplyDisposition {
-        .notDurable
     }
 }
 

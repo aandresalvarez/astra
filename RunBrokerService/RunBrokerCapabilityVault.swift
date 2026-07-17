@@ -9,21 +9,24 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
         let identity: RunSupervisorIdentity
         let manifestSHA256: ExecutionLaunchArgumentsSHA256
         let capability: RunSupervisorCapability
+        let launchMaterialAuthenticator: String?
 
         private enum CodingKeys: String, CodingKey, CaseIterable {
-            case schemaVersion, identity, manifestSHA256, capability
+            case schemaVersion, identity, manifestSHA256, capability, launchMaterialAuthenticator
         }
 
         init(
             schemaVersion: Int,
             identity: RunSupervisorIdentity,
             manifestSHA256: ExecutionLaunchArgumentsSHA256,
-            capability: RunSupervisorCapability
+            capability: RunSupervisorCapability,
+            launchMaterialAuthenticator: String?
         ) {
             self.schemaVersion = schemaVersion
             self.identity = identity
             self.manifestSHA256 = manifestSHA256
             self.capability = capability
+            self.launchMaterialAuthenticator = launchMaterialAuthenticator
         }
 
         init(from decoder: Decoder) throws {
@@ -34,7 +37,7 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
             }
             let container = try decoder.container(keyedBy: CodingKeys.self)
             schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-            guard schemaVersion == 1 else {
+            guard schemaVersion == 1 || schemaVersion == 2 else {
                 throw RunBrokerServiceError.capabilityIdentityMismatch
             }
             identity = try container.decode(RunSupervisorIdentity.self, forKey: .identity)
@@ -43,6 +46,17 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
                 forKey: .manifestSHA256
             )
             capability = try container.decode(RunSupervisorCapability.self, forKey: .capability)
+            launchMaterialAuthenticator = try container.decodeIfPresent(
+                String.self,
+                forKey: .launchMaterialAuthenticator
+            )
+            if let launchMaterialAuthenticator {
+                let allowed = CharacterSet(charactersIn: "0123456789abcdef")
+                guard launchMaterialAuthenticator.utf8.count == 64,
+                      launchMaterialAuthenticator.unicodeScalars.allSatisfy(allowed.contains) else {
+                    throw RunBrokerServiceError.capabilityIdentityMismatch
+                }
+            }
         }
     }
 
@@ -61,10 +75,11 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .millisecondsSince1970
         let data = try encoder.encode(PersistedRecord(
-            schemaVersion: 1,
+            schemaVersion: 2,
             identity: record.identity,
             manifestSHA256: record.manifestSHA256,
-            capability: record.capability
+            capability: record.capability,
+            launchMaterialAuthenticator: record.launchMaterialAuthenticator
         ))
 
         let temporary = directoryURL.appendingPathComponent(
@@ -92,7 +107,8 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
                 let existing = try load(executionID: record.identity.executionID)
                 guard existing?.identity == record.identity,
                       existing?.manifestSHA256 == record.manifestSHA256,
-                      existing?.capability == record.capability else {
+                      existing?.capability == record.capability,
+                      existing?.launchMaterialAuthenticator == record.launchMaterialAuthenticator else {
                     throw RunBrokerServiceError.capabilityIdentityMismatch
                 }
                 return
@@ -118,14 +134,15 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         let persisted = try decoder.decode(PersistedRecord.self, from: data)
-        guard persisted.schemaVersion == 1,
+        guard (persisted.schemaVersion == 1 || persisted.schemaVersion == 2),
               persisted.identity.executionID == executionID else {
             throw RunBrokerServiceError.capabilityIdentityMismatch
         }
         return .init(
             identity: persisted.identity,
             manifestSHA256: persisted.manifestSHA256,
-            capability: persisted.capability
+            capability: persisted.capability,
+            launchMaterialAuthenticator: persisted.launchMaterialAuthenticator
         )
     }
 

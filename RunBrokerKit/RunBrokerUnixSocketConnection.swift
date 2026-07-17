@@ -5,7 +5,7 @@ public final class RunBrokerUnixSocketConnection: RunBrokerConnection, @unchecke
     private let lock = NSLock()
     private var descriptor: Int32
 
-    init(
+    package init(
         descriptor: Int32,
         ioTimeout: TimeInterval = RunBrokerTransportPolicy.defaultIOTimeout
     ) throws {
@@ -218,7 +218,7 @@ public struct RunBrokerUnixSocketConnector: RunBrokerConnecting {
     }
 }
 
-func runBrokerUnixAddress(path: String) throws -> sockaddr_un {
+package func runBrokerUnixAddress(path: String) throws -> sockaddr_un {
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(path.utf8CString)
