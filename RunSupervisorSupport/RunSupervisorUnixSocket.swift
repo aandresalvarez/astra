@@ -143,12 +143,14 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         var noSignal: Int32 = 1
         _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
         Self.configureIOTimeouts(client)
+        var decodedRequest: RunSupervisorControlRequest?
         do {
             let data = try RunSupervisorFrameIO.readFrame(
                 from: client,
                 maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
             )
             let request = try RunSupervisorWireCoding.decode(RunSupervisorControlRequest.self, from: data)
+            decodedRequest = request
             var uid: uid_t = 0
             var gid: gid_t = 0
             guard getpeereid(client, &uid, &gid) == 0 else {
@@ -156,19 +158,22 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
             }
             try authenticator.authenticate(request, peerUID: uid)
             let response = try handler(request.action)
-            let encoded = try RunSupervisorDigests.canonicalData(response)
+            let envelope = try authenticator.makeResponse(response, for: request)
+            let encoded = try RunSupervisorDigests.canonicalData(envelope)
             try RunSupervisorFrameIO.writeFrame(
                 encoded,
                 to: client,
                 maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
             )
         } catch {
+            guard let request = decodedRequest else { return }
             let response = RunSupervisorControlResponse(
                 accepted: false,
                 lastSequence: 0,
                 errorCode: Self.errorCode(error)
             )
-            if let encoded = try? RunSupervisorDigests.canonicalData(response) {
+            if let envelope = try? authenticator.makeResponse(response, for: request),
+               let encoded = try? RunSupervisorDigests.canonicalData(envelope) {
                 try? RunSupervisorFrameIO.writeFrame(
                     encoded,
                     to: client,
@@ -250,6 +255,9 @@ public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Se
         _ request: RunSupervisorControlRequest,
         directory: RunSupervisorRunDirectory
     ) throws -> RunSupervisorControlResponse {
+        guard let capability = request.responseVerificationCapability else {
+            throw RunSupervisorError.responseAuthenticationFailed
+        }
         let path = directory.path + "/control.sock"
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
             throw RunSupervisorError.oversizedFrame(limit: MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1)
@@ -305,7 +313,15 @@ public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Se
             from: fd,
             maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
         )
-        return try RunSupervisorWireCoding.decode(RunSupervisorControlResponse.self, from: response)
+        let envelope = try RunSupervisorWireCoding.decode(
+            RunSupervisorAuthenticatedControlResponse.self,
+            from: response
+        )
+        return try RunSupervisorControlAuthentication.verifyResponse(
+            envelope,
+            for: request,
+            capability: capability
+        )
     }
 }
 

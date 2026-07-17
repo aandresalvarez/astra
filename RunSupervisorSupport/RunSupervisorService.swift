@@ -2,93 +2,6 @@ import ASTRACore
 import Darwin
 import Foundation
 
-public struct RunSupervisorProviderLaunchRequest: Sendable {
-    public let executablePath: String
-    public let arguments: [String]
-    public let currentDirectory: String
-    public let environment: [String: String]
-
-    public init(
-        executablePath: String,
-        arguments: [String],
-        currentDirectory: String,
-        environment: [String: String]
-    ) {
-        self.executablePath = executablePath
-        self.arguments = arguments
-        self.currentDirectory = currentDirectory
-        self.environment = environment
-    }
-}
-
-public protocol RunSupervisorOwnedProcess: AnyObject, Sendable {
-    var stdoutFileHandle: FileHandle { get }
-    var stderrFileHandle: FileHandle { get }
-    var processIdentifierDiagnostic: Int32? { get }
-    func setTerminationHandler(_ handler: @escaping @Sendable (RunSupervisorProcessTermination) -> Void)
-    func run() throws
-    func writeStandardInputLine(_ line: String) throws
-    @discardableResult func closeStandardInput() throws -> Bool
-    func requestGracefulCancellation() -> Bool
-    @discardableResult func terminateImmediately() -> Bool
-}
-
-public struct RunSupervisorProcessTermination: Equatable, Sendable {
-    public let exitCode: Int32
-    public let signal: Int32?
-    public let reason: RunSupervisorTerminationReason
-
-    public init(
-        exitCode: Int32,
-        signal: Int32?,
-        reason: RunSupervisorTerminationReason? = nil
-    ) {
-        self.exitCode = exitCode
-        self.signal = signal
-        self.reason = reason ?? (signal == nil ? (exitCode < 0 ? .waitFailed : .exited) : .signaled)
-    }
-}
-
-public protocol RunSupervisorProviderLaunching: Sendable {
-    func makeProcess(_ request: RunSupervisorProviderLaunchRequest) throws -> any RunSupervisorOwnedProcess
-}
-
-public struct DarwinRunSupervisorProviderLauncher: RunSupervisorProviderLaunching {
-    public init() {}
-
-    public func makeProcess(_ request: RunSupervisorProviderLaunchRequest) throws -> any RunSupervisorOwnedProcess {
-        DarwinRunSupervisorOwnedProcess(
-            process: ExecutionScopedProcess(
-                executablePath: request.executablePath,
-                arguments: request.arguments,
-                currentDirectory: request.currentDirectory,
-                environment: request.environment,
-                providesStdinChannel: true
-            )
-        )
-    }
-}
-
-public final class DarwinRunSupervisorOwnedProcess: RunSupervisorOwnedProcess, @unchecked Sendable {
-    private let process: ExecutionScopedProcess
-    public init(process: ExecutionScopedProcess) { self.process = process }
-    public var stdoutFileHandle: FileHandle { process.stdoutFileHandle }
-    public var stderrFileHandle: FileHandle { process.stderrFileHandle }
-    public var processIdentifierDiagnostic: Int32? { process.processIdentifierDiagnostic }
-    public func setTerminationHandler(
-        _ handler: @escaping @Sendable (RunSupervisorProcessTermination) -> Void
-    ) {
-        process.terminationHandler = {
-            handler(.init(exitCode: $0.terminationStatus, signal: $0.terminationSignalDiagnostic))
-        }
-    }
-    public func run() throws { try process.run() }
-    public func writeStandardInputLine(_ line: String) throws { try process.writeStdinLineChecked(line) }
-    public func closeStandardInput() throws -> Bool { try process.closeStdinChannelChecked() }
-    public func requestGracefulCancellation() -> Bool { false }
-    public func terminateImmediately() -> Bool { process.terminateImmediately() }
-}
-
 public enum RunSupervisorServiceOutcome: Equatable, Sendable {
     case launched(exitCode: Int32)
     case existingLive
@@ -103,6 +16,10 @@ public final class RunSupervisorService: @unchecked Sendable {
     private let clock: any RunSupervisorClock
     private let spoolMaximumBytes: Int
     private let spoolCriticalReserveBytes: Int
+    /// Serializes lifecycle evidence that can race provider termination.
+    /// The process callback only stages raw termination evidence; this lock
+    /// orders control effects before the terminal event is persisted.
+    private let lifecycleEventLock = NSLock()
     private let stateLock = NSLock()
     private var process: (any RunSupervisorOwnedProcess)?
     private var spool: RunSupervisorEventSpool?
@@ -152,11 +69,15 @@ public final class RunSupervisorService: @unchecked Sendable {
 
         let spool = try RunSupervisorEventSpool(
             directory: directory,
+            capability: payload.capability,
             maximumBytes: spoolMaximumBytes,
             criticalReserveBytes: spoolCriticalReserveBytes,
             clock: clock
         )
-        self.spool = spool
+        stateLock.lock(); self.spool = spool; stateLock.unlock()
+        defer {
+            stateLock.lock(); self.spool = nil; stateLock.unlock()
+        }
         let authenticator = RunSupervisorControlAuthenticator(
             executionID: payload.manifest.executionID,
             capability: payload.capability,
@@ -204,27 +125,18 @@ public final class RunSupervisorService: @unchecked Sendable {
             catch { throw RunSupervisorError.terminalPersistenceFailed }
             throw error
         }
-        stateLock.lock()
-        process = ownedProcess
-        stateLock.unlock()
         let terminated = DispatchSemaphore(value: 0)
-        let exitStatus = RunSupervisorExitStatusBox()
-        let terminalPersistenceError = RunSupervisorErrorBox()
-        ownedProcess.setTerminationHandler { [weak self] termination in
-            exitStatus.set(termination.exitCode)
-            do {
-                try self?.recordTermination(termination)
-            } catch {
-                terminalPersistenceError.set(error)
+        let terminationBox = RunSupervisorTerminationBox()
+        ownedProcess.setTerminationHandler { termination in
+            if terminationBox.setIfEmpty(termination) {
+                terminated.signal()
             }
-            terminated.signal()
         }
         do {
             try ownedProcess.run()
         } catch {
             do { _ = try spool.appendCritical(.providerLaunchFailed) }
             catch { throw RunSupervisorError.terminalPersistenceFailed }
-            stateLock.lock(); process = nil; stateLock.unlock()
             throw error
         }
         var providerCompleted = false
@@ -232,13 +144,24 @@ public final class RunSupervisorService: @unchecked Sendable {
             if !providerCompleted {
                 _ = ownedProcess.terminateImmediately()
                 terminated.wait()
+                stateLock.lock(); process = nil; stateLock.unlock()
             }
         }
-        reduce(.executionStarted, capabilities: [.cancel])
-        _ = try spool.appendCritical(
-            .providerStarted,
-            payload: .init(providerPID: ownedProcess.processIdentifierDiagnostic)
-        )
+        lifecycleEventLock.lock()
+        do {
+            reduce(.executionStarted, capabilities: [.cancel])
+            _ = try spool.appendCritical(
+                .providerStarted,
+                payload: .init(providerPID: ownedProcess.processIdentifierDiagnostic)
+            )
+            stateLock.lock()
+            process = ownedProcess
+            stateLock.unlock()
+            lifecycleEventLock.unlock()
+        } catch {
+            lifecycleEventLock.unlock()
+            throw error
+        }
         let outputPersistenceError = RunSupervisorErrorBox()
         try fileSystem.writeDiscovery(
             .init(
@@ -257,41 +180,61 @@ public final class RunSupervisorService: @unchecked Sendable {
         startOutputReader(
             ownedProcess.stdoutFileHandle,
             kind: .standardOutput,
+            spool: spool,
             group: outputGroup,
             persistenceError: outputPersistenceError
         )
         startOutputReader(
             ownedProcess.stderrFileHandle,
             kind: .standardError,
+            spool: spool,
             group: outputGroup,
             persistenceError: outputPersistenceError
         )
         terminated.wait()
         providerCompleted = true
+        guard let termination = terminationBox.value else {
+            throw RunSupervisorError.terminalPersistenceFailed
+        }
         outputGroup.wait()
+        lifecycleEventLock.lock()
+        do {
+            try recordTermination(termination, spool: spool)
+            lifecycleEventLock.unlock()
+        } catch {
+            lifecycleEventLock.unlock()
+            throw error
+        }
         server.stop()
         shouldStopServer = false
-        if let error = terminalPersistenceError.value { throw error }
         if let error = outputPersistenceError.value { throw error }
-        return .launched(exitCode: exitStatus.value)
+        return .launched(exitCode: termination.exitCode)
     }
 
     private func handle(_ action: RunSupervisorControlAction) throws -> RunSupervisorControlResponse {
+        stateLock.lock(); let spool = self.spool; stateLock.unlock()
         guard let spool else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         switch action.kind {
         case .handshake, .status:
             break
         case .replay:
-            let events = try spool.replay(after: action.afterSequence!, limit: 4)
+            // One maximum-sized output event plus the authenticated envelope
+            // remains below the bounded 64 KiB control frame. Returning four
+            // would double-base64-expand the envelope beyond that limit.
+            let events = try spool.replay(after: action.afterSequence!, limit: 1)
             return .init(accepted: true, events: events, lastSequence: spool.lastSequence)
         case .acknowledge:
             try spool.acknowledge(through: action.acknowledgeThrough!)
         case .writeStandardInput:
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
             stateLock.lock(); let process = self.process; stateLock.unlock()
             guard let process else { throw RunSupervisorError.alreadyRunningOrInDoubt }
             try process.writeStandardInputLine(action.standardInputLine!)
             _ = try spool.appendCritical(.standardInputAccepted)
         case .closeStandardInput:
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
             stateLock.lock(); let process = self.process; stateLock.unlock()
             guard let process else { throw RunSupervisorError.alreadyRunningOrInDoubt }
             guard try process.closeStandardInput() else {
@@ -299,13 +242,17 @@ public final class RunSupervisorService: @unchecked Sendable {
             }
             _ = try spool.appendCritical(.standardInputClosed)
         case .cancel:
-            try requestCancellation(action.cancellationIntent!)
+            try requestCancellation(action.cancellationIntent!, spool: spool)
         }
         return .init(accepted: true, lastSequence: spool.lastSequence)
     }
 
-    private func requestCancellation(_ intent: ExecutionCancellationIntent) throws {
-        guard let spool else { throw RunSupervisorError.alreadyRunningOrInDoubt }
+    private func requestCancellation(
+        _ intent: ExecutionCancellationIntent,
+        spool: RunSupervisorEventSpool
+    ) throws {
+        lifecycleEventLock.lock()
+        defer { lifecycleEventLock.unlock() }
         stateLock.lock(); let process = self.process; stateLock.unlock()
         guard let process else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         _ = try spool.appendCritical(.cancellationRequested, payload: .init(cancellationIntent: intent))
@@ -321,6 +268,9 @@ public final class RunSupervisorService: @unchecked Sendable {
         }
         reduce(.requestCancellation(intent), capabilities: [.cancel])
         reduce(.backendAcceptedCancellation, capabilities: [.cancel])
+        // The termination callback may run synchronously. It only stages the
+        // raw result; terminal persistence waits for this serialized section
+        // to publish whether the signal was actually issued.
         let issued = process.terminateImmediately()
         guard issued else {
             reduce(.observationBecameIndeterminate, capabilities: [.cancel])
@@ -331,7 +281,10 @@ public final class RunSupervisorService: @unchecked Sendable {
         _ = try spool.appendCritical(.terminationStarted, payload: .init(cancellationIntent: intent))
     }
 
-    private func recordTermination(_ termination: RunSupervisorProcessTermination) throws {
+    private func recordTermination(
+        _ termination: RunSupervisorProcessTermination,
+        spool: RunSupervisorEventSpool
+    ) throws {
         defer {
             stateLock.lock(); process = nil; stateLock.unlock()
         }
@@ -342,7 +295,6 @@ public final class RunSupervisorService: @unchecked Sendable {
         let authoritativelyCancelled = requestedCancellation == .immediate
             && terminationWasIssued
             && termination.signal != nil
-        guard let spool else { throw RunSupervisorError.terminalPersistenceFailed }
         do {
             if authoritativelyCancelled {
                 reduce(.cancellationConfirmed, capabilities: [.cancel])
@@ -384,13 +336,14 @@ public final class RunSupervisorService: @unchecked Sendable {
     private func startOutputReader(
         _ handle: FileHandle,
         kind: RunSupervisorEventKind,
+        spool: RunSupervisorEventSpool,
         group: DispatchGroup,
         persistenceError: RunSupervisorErrorBox
     ) {
         group.enter()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             defer { group.leave() }
-            guard let self, let spool = self.spool else {
+            guard let self else {
                 persistenceError.set(RunSupervisorError.outputPersistenceFailed)
                 return
             }
@@ -427,17 +380,22 @@ public final class RunSupervisorService: @unchecked Sendable {
     }
 }
 
-private final class RunSupervisorExitStatusBox: @unchecked Sendable {
+private final class RunSupervisorTerminationBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var status: Int32 = -1
+    private var termination: RunSupervisorProcessTermination?
 
-    var value: Int32 {
+    var value: RunSupervisorProcessTermination? {
         lock.lock(); defer { lock.unlock() }
-        return status
+        return termination
     }
 
-    func set(_ value: Int32) {
-        lock.lock(); status = value; lock.unlock()
+    @discardableResult
+    func setIfEmpty(_ value: RunSupervisorProcessTermination) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard termination == nil else { return false }
+        termination = value
+        return true
     }
 }
 

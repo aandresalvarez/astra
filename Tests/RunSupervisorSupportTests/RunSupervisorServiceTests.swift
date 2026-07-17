@@ -18,7 +18,10 @@ struct RunSupervisorServiceTests {
         #expect(try service.run(payload) == .launched(exitCode: 7))
 
         let runDirectory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
-        let spool = try RunSupervisorEventSpool(directory: runDirectory)
+        let spool = try RunSupervisorEventSpool(
+            directory: runDirectory,
+            capability: payload.capability
+        )
         let events = try spool.replay(after: 0)
         #expect(events.filter { $0.kind == .standardOutput }.compactMap(\.payload.data).reduce(Data(), +) == Data("out".utf8))
         #expect(events.filter { $0.kind == .standardError }.compactMap(\.payload.data).reduce(Data(), +) == Data("err".utf8))
@@ -74,7 +77,10 @@ struct RunSupervisorServiceTests {
         let outcome = try await runTask.value
         guard case .launched = outcome else { Issue.record("Expected a launched supervisor"); return }
 
-        let spool = try RunSupervisorEventSpool(directory: connected.directory)
+        let spool = try RunSupervisorEventSpool(
+            directory: connected.directory,
+            capability: payload.capability
+        )
         let events = try spool.replay(after: 0)
         let persisted = try RunSupervisorWireCoding.encode(events)
         #expect(!String(decoding: persisted, as: UTF8.self).contains(secretInput))
@@ -142,7 +148,10 @@ struct RunSupervisorServiceTests {
         #expect(!response.accepted)
         #expect(try await runTask.value == .launched(exitCode: 0))
 
-        let spool = try RunSupervisorEventSpool(directory: connected.directory)
+        let spool = try RunSupervisorEventSpool(
+            directory: connected.directory,
+            capability: payload.capability
+        )
         let events = try spool.replay(after: 0)
         #expect(events.contains { $0.kind == .cancellationRequested })
         #expect(!events.contains { $0.kind == .terminationStarted })
@@ -151,6 +160,94 @@ struct RunSupervisorServiceTests {
         #expect(exited.payload.exitCode == 0)
         #expect(exited.payload.terminationSignal == nil)
         #expect(exited.payload.terminationReason == .exited)
+    }
+
+    @Test("synchronous immediate termination is linearized before terminal evidence")
+    func synchronousImmediateTerminationIsLinearized() async throws {
+        let fixture = try makeFixture("synccancel")
+        let process = SynchronousCancellationProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 132)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: SynchronousCancellationLauncher(process: process)
+        )
+        let runTask = Task.detached { try service.run(payload) }
+        let connected = try waitForConnection(payload: payload, root: fixture.root)
+
+        #expect(try send(
+            .init(kind: .cancel, cancellationIntent: .immediate),
+            payload: payload,
+            directory: connected.directory
+        ).accepted)
+        #expect(try await runTask.value == .launched(exitCode: 143))
+
+        let spool = try RunSupervisorEventSpool(
+            directory: connected.directory,
+            capability: payload.capability
+        )
+        let orderedKinds = try spool.replay(after: 0).map(\.kind).filter {
+            [.cancellationRequested, .terminationStarted, .cancellationConfirmed, .providerExited]
+                .contains($0)
+        }
+        #expect(orderedKinds == [
+            .cancellationRequested,
+            .terminationStarted,
+            .cancellationConfirmed,
+            .providerExited,
+        ])
+    }
+
+    @Test("an immediate exit persists provider start before output and terminal last")
+    func immediateExitPreservesLifecycleOrdering() throws {
+        let fixture = try makeFixture("immediate-order")
+        let process = ImmediateOutputExitProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 133)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: ImmediateOutputExitLauncher(process: process)
+        )
+
+        #expect(try service.run(payload) == .launched(exitCode: 0))
+
+        let directory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: directory,
+            capability: payload.capability
+        ).replay(after: 0)
+        let kinds = events.map(\.kind)
+        let ready = try #require(kinds.firstIndex(of: .supervisorReady))
+        let started = try #require(kinds.firstIndex(of: .providerStarted))
+        let output = try #require(kinds.firstIndex(of: .standardOutput))
+        let exited = try #require(kinds.firstIndex(of: .providerExited))
+        #expect(ready < started)
+        #expect(started < output)
+        #expect(output < exited)
+        #expect(events.last?.kind == .providerExited)
+    }
+
+    @Test("terminal persistence waits for delayed output drain")
+    func terminalWaitsForDelayedOutputDrain() async throws {
+        let fixture = try makeFixture("delayed-drain")
+        let process = DelayedDrainExitProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 134)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: DelayedDrainExitLauncher(process: process)
+        )
+        let runTask = Task.detached { try service.run(payload) }
+
+        #expect(process.waitUntilOutputReaderRequested())
+        try process.emitAndClose(Data("delayed-output".utf8))
+        #expect(try await runTask.value == .launched(exitCode: 0))
+
+        let directory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: directory,
+            capability: payload.capability
+        ).replay(after: 0)
+        #expect(events.filter { $0.kind == .standardOutput }
+            .compactMap(\.payload.data).reduce(Data(), +) == Data("delayed-output".utf8))
+        #expect(events.last?.kind == .providerExited)
     }
 
     @Test("broken stdin operations never produce durable acceptance evidence")

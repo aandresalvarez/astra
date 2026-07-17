@@ -25,6 +25,7 @@ public enum RunSupervisorError: Error, Equatable, Sendable, CustomStringConverti
     case alreadyRunningOrInDoubt
     case launchPayloadConflict
     case authenticationFailed
+    case responseAuthenticationFailed
     case replayedNonce
     case staleAuthentication
     case peerUIDMismatch
@@ -53,6 +54,7 @@ public enum RunSupervisorError: Error, Equatable, Sendable, CustomStringConverti
         case .alreadyRunningOrInDoubt: "existing execution is running or in doubt"
         case .launchPayloadConflict: "execution launch payload conflicts with the existing record"
         case .authenticationFailed: "control authentication failed"
+        case .responseAuthenticationFailed: "control response authentication failed"
         case .replayedNonce: "control nonce was already used"
         case .staleAuthentication: "control authentication timestamp is stale"
         case .peerUIDMismatch: "control peer uid does not match the supervisor"
@@ -177,9 +179,25 @@ public enum RunSupervisorDigests {
     }
 
     package static func hmac(_ data: Data, capability: RunSupervisorCapability) -> String {
-        Data(HMAC<SHA256>.authenticationCode(for: data, using: capability.symmetricKey))
+        hmacBytes(data, capability: capability)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    package static func hmacBytes(
+        _ data: Data,
+        capability: RunSupervisorCapability
+    ) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: data, using: capability.symmetricKey))
+    }
+
+    package static func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    package static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
+        constantTimeEqual(Data(lhs.utf8), Data(rhs.utf8))
     }
 
     package static func canonicalData<T: Encodable>(_ value: T) throws -> Data {

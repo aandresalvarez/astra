@@ -215,6 +215,130 @@ struct RunSupervisorContractAndAuthTests {
         }
     }
 
+    @Test("response MAC binds the nonce execution action protocol and exact response body")
+    func mutuallyAuthenticatedResponse() throws {
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 71)
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: payload.manifest.executionID,
+            action: .init(kind: .replay, afterSequence: 3),
+            capability: payload.capability,
+            nonce: RunSupervisorTestSupport.uuid(72),
+            protocolVersion: 1
+        )
+        let response = RunSupervisorControlResponse(accepted: true, lastSequence: 4)
+        let envelope = try RunSupervisorControlAuthentication.makeResponse(
+            response,
+            for: request,
+            capability: payload.capability
+        )
+        #expect(try RunSupervisorControlAuthentication.verifyResponse(
+            envelope,
+            for: request,
+            capability: payload.capability
+        ) == response)
+
+        var changedBodyObject = try #require(
+            JSONSerialization.jsonObject(with: envelope.body) as? [String: Any]
+        )
+        changedBodyObject["lastSequence"] = 5
+        let changedBody = try JSONSerialization.data(withJSONObject: changedBodyObject)
+        let forgedBody = try RunSupervisorAuthenticatedControlResponse(
+            body: changedBody,
+            authentication: envelope.authentication
+        )
+        #expect(throws: RunSupervisorError.responseAuthenticationFailed) {
+            try RunSupervisorControlAuthentication.verifyResponse(
+                forgedBody,
+                for: request,
+                capability: payload.capability
+            )
+        }
+
+        let changedContexts = [
+            try RunSupervisorControlAuthentication.makeRequest(
+                executionID: payload.manifest.executionID,
+                action: request.action,
+                capability: payload.capability,
+                nonce: RunSupervisorTestSupport.uuid(73),
+                protocolVersion: request.protocolVersion
+            ),
+            try RunSupervisorControlAuthentication.makeRequest(
+                executionID: payload.manifest.executionID,
+                action: .init(kind: .status),
+                capability: payload.capability,
+                nonce: request.nonce,
+                protocolVersion: request.protocolVersion
+            ),
+            try RunSupervisorControlAuthentication.makeRequest(
+                executionID: try RunSupervisorTestSupport.payload(identitySeed: 81).manifest.executionID,
+                action: request.action,
+                capability: payload.capability,
+                nonce: request.nonce,
+                protocolVersion: request.protocolVersion
+            ),
+            try RunSupervisorControlAuthentication.makeRequest(
+                executionID: payload.manifest.executionID,
+                action: request.action,
+                capability: payload.capability,
+                nonce: request.nonce,
+                protocolVersion: request.protocolVersion + 1
+            )
+        ]
+        for changedContext in changedContexts {
+            #expect(throws: RunSupervisorError.responseAuthenticationFailed) {
+                try RunSupervisorControlAuthentication.verifyResponse(
+                    envelope,
+                    for: changedContext,
+                    capability: payload.capability
+                )
+            }
+        }
+
+        let wrongCapability = try RunSupervisorCapability(bytes: Data(repeating: 0xCC, count: 32))
+        #expect(throws: RunSupervisorError.responseAuthenticationFailed) {
+            try RunSupervisorControlAuthentication.verifyResponse(
+                envelope,
+                for: request,
+                capability: wrongCapability
+            )
+        }
+    }
+
+    @Test("one maximum-output event fits the mutually authenticated control frame")
+    func maximumOutputResponseFitsControlFrame() throws {
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 91)
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: payload.manifest.executionID,
+            action: .init(kind: .replay, afterSequence: 0),
+            capability: payload.capability,
+            nonce: RunSupervisorTestSupport.uuid(92)
+        )
+        let event = RunSupervisorEvent(
+            sequence: 1,
+            id: RunSupervisorTestSupport.uuid(93),
+            timestamp: RunSupervisorTestSupport.fixedDate,
+            kind: .standardOutput,
+            payload: .init(data: Data(repeating: 0xFE, count: 32_768))
+        )
+        let response = RunSupervisorControlResponse(
+            accepted: true,
+            events: [event],
+            lastSequence: event.sequence
+        )
+        let envelope = try RunSupervisorControlAuthentication.makeResponse(
+            response,
+            for: request,
+            capability: payload.capability
+        )
+        let wire = try RunSupervisorWireCoding.encode(envelope)
+        #expect(wire.count <= RunSupervisorProtocol.maximumControlFrameBytes)
+        #expect(try RunSupervisorControlAuthentication.verifyResponse(
+            envelope,
+            for: request,
+            capability: payload.capability
+        ) == response)
+    }
+
     @Test("exact replay requires authenticated liveness; changed stale and wrong identity fail")
     func admissionFencing() throws {
         let payload = try RunSupervisorTestSupport.payload(authorityEpoch: 4)

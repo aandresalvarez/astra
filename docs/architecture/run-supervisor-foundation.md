@@ -49,18 +49,34 @@ second provider or adopt a PID.
 Control uses a per-run `0600` Unix socket. Every bounded frame has a strict
 schema and protocol version. Requests bind the execution ID, peer UID, timestamp,
 nonce, action, and HMAC. Nonces are single-use within a bounded replay window.
-Socket creation refuses any pre-existing entry, and shutdown unlinks only the
-same socket inode that the server bound. Connection slots and I/O deadlines
-bound unauthenticated same-user resource consumption.
+Every response is also authenticated: its HMAC binds the request nonce,
+execution ID, action, negotiated protocol version, and exact encoded response
+body. Peer UID is only an additional local check; it is not trusted as proof of
+execution authority. A same-user replacement socket therefore cannot forge a
+handshake, accepted control, replay, or terminal result. Socket creation refuses
+any pre-existing entry, and shutdown unlinks only the same socket inode that the
+server bound. Connection slots and I/O deadlines bound unauthenticated same-user
+resource consumption.
 
 ## Events, replay, and backpressure
 
 The append-only spool owns durable supervisor observations. Events have monotonic
-sequences and IDs. Frames use a length, digest, and commit marker. On recovery,
-only an incomplete final frame may be quarantined and truncated; corruption of
-a committed frame fails closed. Acknowledgement is monotonic and compaction is
-an atomic file replacement. Its integrity-checked watermark is separate metadata,
-not a replay-visible event, so replay-to-ledger-to-ack pumps always converge.
+sequences and IDs. Every frame uses a length, capability HMAC, and commit marker;
+the acknowledgement watermark is capability-HMAC authenticated as well. Opening,
+replaying, or acknowledging a stopped supervisor's spool therefore requires the
+execution capability. Offline recovery is bounded and takes an exclusive spool
+lock, so it fails closed while a live supervisor owns the file. This is the
+authenticated terminal-recovery path after a short-lived supervisor has removed
+its socket and exited.
+
+On recovery, only an incomplete final frame may be quarantined and truncated;
+wrong capabilities and corruption of committed frames fail closed. Acknowledgement
+is monotonic and compaction is an atomic file replacement. The durable watermark
+is committed before compaction and recovery accepts either the old contiguous
+prefix or the compacted prefix. Thus a crash at any acknowledgement or compaction
+rename/fsync boundary cannot resurrect acknowledged events or make a valid spool
+unopenable. The watermark is separate metadata, not a replay-visible event, so
+replay-to-ledger-to-ack pumps always converge.
 
 Output is read with POSIX streaming reads and is never treated as EOF after a
 read error. Output backpressures before it consumes the critical reserve. The
@@ -81,6 +97,14 @@ Standard input is deliberately transient. `stdin_accepted` and `stdin_closed`
 mean the local provider pipe operation succeeded; a missing process, EPIPE, or
 close failure is returned as indeterminate/error and never receives durable
 acceptance evidence. Input contents are not written to the spool.
+
+Provider termination callbacks never persist events directly. They stage the
+kernel termination result, while a serialized lifecycle boundary finishes any
+in-flight control transition. The service records `providerStarted` before
+starting output readers, drains both output pipes to EOF, and only then records
+cancellation confirmation and `providerExited`. This makes `providerExited` the
+last event even for synchronous callbacks, immediate exits, and delayed pipe
+drain.
 
 ## Compatibility and migration
 
