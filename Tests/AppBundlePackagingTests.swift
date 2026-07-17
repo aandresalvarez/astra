@@ -51,6 +51,16 @@ struct AppBundlePackagingTests {
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
+    @Test("provider crash harness is built for regression tests but never staged in the app")
+    func providerCrashHarnessRemainsTestOnly() throws {
+        let package = try String(contentsOf: repoRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+
+        #expect(package.contains(#".executable(name: "astra-agent-process-crash-harness""#))
+        #expect(package.contains(#"path: "Tests/AgentProcessCrashHarness""#))
+        #expect(!script.contains("astra-agent-process-crash-harness"))
+    }
+
     @Test("build script derives and embeds the authoritative store schema version")
     func buildScriptEmbedsStoreSchemaVersion() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)

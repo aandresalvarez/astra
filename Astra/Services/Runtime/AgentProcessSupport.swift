@@ -33,7 +33,7 @@ struct AgentExecutionScopedProcessError: LocalizedError {
     }
 }
 
-enum AgentExecutionScopedProcessStdinMode {
+package enum AgentExecutionScopedProcessStdinMode {
     case inherited
     case closed
     case pipe
@@ -41,7 +41,7 @@ enum AgentExecutionScopedProcessStdinMode {
 
 /// Launches a provider in its own process group so cancellation can clean up
 /// tool subprocesses that the provider starts or backgrounds.
-final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
+package final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
     private let executablePath: String
     private let arguments: [String]
     private let currentDirectory: String
@@ -56,6 +56,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    private let ownerLifetimePipe = Pipe()
     // Created only when the provider speaks a stdin control protocol; other
     // providers keep inheriting the parent's stdin unchanged. Writes and the
     // close run on different threads (approval tasks vs the stdout handler
@@ -65,12 +66,16 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private let stdinPipe: Pipe?
     private let stdinLock = NSLock()
     private var stdinClosed = false
+    private let ownerLifetimeLock = NSLock()
+    private var ownerLifetimeReadClosed = false
+    private var ownerLifetimeWriteClosed = false
+    private var descriptorSetupFailureCode: Int32?
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
     var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
 
-    var isRunning: Bool {
+    package var isRunning: Bool {
         lock.lock()
         defer { lock.unlock() }
         return running
@@ -82,7 +87,13 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         return status
     }
 
-    init(
+    var ownerLifetimePipeIsClosedForTesting: Bool {
+        ownerLifetimeLock.lock()
+        defer { ownerLifetimeLock.unlock() }
+        return ownerLifetimeReadClosed && ownerLifetimeWriteClosed
+    }
+
+    package init(
         executablePath: String,
         arguments: [String],
         currentDirectory: String,
@@ -96,6 +107,32 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         self.environment = environment
         self.stdinMode = providesStdinChannel ? .pipe : stdinMode
         self.stdinPipe = self.stdinMode == .pipe ? Pipe() : nil
+
+        // Pipe descriptors are process-global. Without CLOEXEC, an unrelated
+        // concurrent spawn can inherit a duplicate of the lifetime write end
+        // and prevent the watchdog from observing real owner EOF.
+        let descriptors = [
+            stdoutPipe.fileHandleForReading.fileDescriptor,
+            stdoutPipe.fileHandleForWriting.fileDescriptor,
+            stderrPipe.fileHandleForReading.fileDescriptor,
+            stderrPipe.fileHandleForWriting.fileDescriptor,
+            ownerLifetimePipe.fileHandleForReading.fileDescriptor,
+            ownerLifetimePipe.fileHandleForWriting.fileDescriptor
+        ] + (stdinPipe.map {
+            [$0.fileHandleForReading.fileDescriptor, $0.fileHandleForWriting.fileDescriptor]
+        } ?? [])
+        for descriptor in descriptors {
+            if let failure = Self.setCloseOnExec(descriptor), descriptorSetupFailureCode == nil {
+                descriptorSetupFailureCode = failure
+            }
+        }
+    }
+
+    private static func setCloseOnExec(_ descriptor: Int32) -> Int32? {
+        let flags = fcntl(descriptor, F_GETFD)
+        guard flags >= 0 else { return errno }
+        guard fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) == 0 else { return errno }
+        return nil
     }
 
     /// Writes one line to the child's stdin. Safe to call after the child has
@@ -120,10 +157,48 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         stdinPipe.fileHandleForWriting.closeFile()
     }
 
-    func run() throws {
+    package func run() throws {
         var actions: posix_spawn_file_actions_t? = nil
         var attr: posix_spawnattr_t? = nil
         var childPID = pid_t(0)
+        var didLaunch = false
+        defer {
+            if !didLaunch {
+                closeAfterFailedLaunch()
+                AppLogger.error(
+                    "Provider process containment failed before process-group ownership was established; descriptors closed",
+                    category: "Worker"
+                )
+            }
+        }
+
+        if let descriptorSetupFailureCode {
+            throw AgentExecutionScopedProcessError(
+                operation: "fcntl(FD_CLOEXEC)",
+                code: descriptorSetupFailureCode
+            )
+        }
+        guard access(executablePath, X_OK) == 0 else {
+            throw AgentExecutionScopedProcessError(operation: "provider executable preflight", code: errno)
+        }
+
+        // Reserve a descriptor outside the range providers commonly use. The
+        // spawn dup action creates the sole non-CLOEXEC copy in the child.
+        let lifetimeDescriptor = fcntl(
+            ownerLifetimePipe.fileHandleForReading.fileDescriptor,
+            F_DUPFD_CLOEXEC,
+            64
+        )
+        guard lifetimeDescriptor >= 0 else {
+            throw AgentExecutionScopedProcessError(operation: "fcntl(F_DUPFD_CLOEXEC)", code: errno)
+        }
+        defer { close(lifetimeDescriptor) }
+
+        let launchPlan = AgentParentDeathSupervisor.launchPlan(
+            executablePath: executablePath,
+            arguments: arguments,
+            lifetimeDescriptor: lifetimeDescriptor
+        )
 
         guard posix_spawn_file_actions_init(&actions) == 0 else {
             throw AgentExecutionScopedProcessError(operation: "posix_spawn_file_actions_init", code: errno)
@@ -143,6 +218,28 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_addclose(stdout_read)")
         try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
                   operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        try check(
+            posix_spawn_file_actions_adddup2(
+                &actions,
+                ownerLifetimePipe.fileHandleForReading.fileDescriptor,
+                lifetimeDescriptor
+            ),
+            operation: "posix_spawn_file_actions_adddup2(owner_lifetime)"
+        )
+        try check(
+            posix_spawn_file_actions_addclose(
+                &actions,
+                ownerLifetimePipe.fileHandleForReading.fileDescriptor
+            ),
+            operation: "posix_spawn_file_actions_addclose(owner_lifetime_read)"
+        )
+        try check(
+            posix_spawn_file_actions_addclose(
+                &actions,
+                ownerLifetimePipe.fileHandleForWriting.fileDescriptor
+            ),
+            operation: "posix_spawn_file_actions_addclose(owner_lifetime_write)"
+        )
         if let stdinPipe {
             try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
                       operation: "posix_spawn_file_actions_adddup2(stdin)")
@@ -160,14 +257,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_setflags", code: errno)
         }
 
-        var argv = makeCStringArray([executablePath] + arguments)
+        var argv = makeCStringArray([launchPlan.executablePath] + launchPlan.arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
         defer {
             freeCStringArray(argv)
             freeCStringArray(envp)
         }
 
-        let spawnResult = executablePath.withCString { executable in
+        let spawnResult = launchPlan.executablePath.withCString { executable in
             argv.withUnsafeMutableBufferPointer { argvBuffer in
                 envp.withUnsafeMutableBufferPointer { envBuffer in
                     posix_spawn(
@@ -182,16 +279,23 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             }
         }
         try check(spawnResult, operation: "posix_spawn")
+        didLaunch = true
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
         stdinPipe?.fileHandleForReading.closeFile()
+        closeOwnerLifetimeRead()
 
         lock.lock()
         processID = childPID
         processGroupID = childPID
         running = true
         lock.unlock()
+
+        AppLogger.info(
+            "Provider process containment armed for process group \(childPID)",
+            category: "Worker"
+        )
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.reapProcess(pid: childPID)
@@ -246,9 +350,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             exitStatus = Self.exitCode(from: waitStatus)
         } else {
             exitStatus = -1
+            AppLogger.warning(
+                "Provider process wait failed for process group \(pid): \(String(cString: strerror(errno)))",
+                category: "Worker"
+            )
         }
 
         cleanupResidualProcessGroup()
+        closeOwnerLifetimeWrite()
 
         closeStdinChannel()
 
@@ -257,7 +366,37 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         running = false
         lock.unlock()
 
+        AppLogger.info(
+            "Provider process containment released for process group \(pid) with status \(exitStatus)",
+            category: "Worker"
+        )
+
         terminationHandler?(self)
+    }
+
+    private func closeAfterFailedLaunch() {
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+        stdinPipe?.fileHandleForReading.closeFile()
+        closeOwnerLifetimeRead()
+        closeOwnerLifetimeWrite()
+        closeStdinChannel()
+    }
+
+    private func closeOwnerLifetimeRead() {
+        ownerLifetimeLock.lock()
+        defer { ownerLifetimeLock.unlock() }
+        guard !ownerLifetimeReadClosed else { return }
+        ownerLifetimeReadClosed = true
+        ownerLifetimePipe.fileHandleForReading.closeFile()
+    }
+
+    private func closeOwnerLifetimeWrite() {
+        ownerLifetimeLock.lock()
+        defer { ownerLifetimeLock.unlock() }
+        guard !ownerLifetimeWriteClosed else { return }
+        ownerLifetimeWriteClosed = true
+        ownerLifetimePipe.fileHandleForWriting.closeFile()
     }
 
     private func cleanupResidualProcessGroup() {
@@ -382,157 +521,6 @@ final class AgentLockedBuffer: @unchecked Sendable {
         let remaining = _value
         _value = ""
         return remaining
-    }
-}
-
-struct AgentRuntimeStreamTelemetrySnapshot: Sendable {
-    let rawLineCount: Int
-    let jsonLineCount: Int
-    let plainTextLineCount: Int
-    let parsedEventCount: Int
-    let emittedEventCount: Int
-    let textEventCount: Int
-    let thinkingEventCount: Int
-    let toolUseEventCount: Int
-    let toolResultEventCount: Int
-    let statsEventCount: Int
-    let completedEventCount: Int
-    let failedEventCount: Int
-    let unknownEventCount: Int
-    let unknownTypeCounts: [String: Int]
-    let unknownSamples: [(type: String, sample: String)]
-
-    var fields: [String: String] {
-        [
-            "raw_lines": String(rawLineCount),
-            "json_lines": String(jsonLineCount),
-            "plain_text_lines": String(plainTextLineCount),
-            "parsed_events": String(parsedEventCount),
-            "emitted_events": String(emittedEventCount),
-            "text_events": String(textEventCount),
-            "thinking_events": String(thinkingEventCount),
-            "tool_use_events": String(toolUseEventCount),
-            "tool_result_events": String(toolResultEventCount),
-            "stats_events": String(statsEventCount),
-            "completed_events": String(completedEventCount),
-            "failed_events": String(failedEventCount),
-            "unknown_events": String(unknownEventCount),
-            "unknown_types": unknownTypeCounts
-                .sorted { $0.key < $1.key }
-                .map { "\($0.key):\($0.value)" }
-                .joined(separator: ",")
-        ]
-    }
-}
-
-final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
-    private let lock = NSLock()
-    private let maxUnknownSamples: Int
-
-    private var rawLineCount = 0
-    private var jsonLineCount = 0
-    private var plainTextLineCount = 0
-    private var parsedEventCount = 0
-    private var emittedEventCount = 0
-    private var textEventCount = 0
-    private var thinkingEventCount = 0
-    private var toolUseEventCount = 0
-    private var toolResultEventCount = 0
-    private var statsEventCount = 0
-    private var completedEventCount = 0
-    private var failedEventCount = 0
-    private var unknownEventCount = 0
-    private var unknownTypeCounts: [String: Int] = [:]
-    private var unknownSamples: [(type: String, sample: String)] = []
-
-    init(maxUnknownSamples: Int = 3) {
-        self.maxUnknownSamples = maxUnknownSamples
-    }
-
-    func recordRawLine(parsesJSONLines: Bool) {
-        lock.lock()
-        rawLineCount += 1
-        if parsesJSONLines {
-            jsonLineCount += 1
-        } else {
-            plainTextLineCount += 1
-        }
-        lock.unlock()
-    }
-
-    func recordParsed(_ events: [AgentEvent]) {
-        lock.lock()
-        parsedEventCount += events.count
-        for event in events {
-            record(event)
-        }
-        lock.unlock()
-    }
-
-    func recordEmitted(_ events: [AgentEvent]) {
-        lock.lock()
-        emittedEventCount += events.count
-        lock.unlock()
-    }
-
-    func snapshot() -> AgentRuntimeStreamTelemetrySnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return AgentRuntimeStreamTelemetrySnapshot(
-            rawLineCount: rawLineCount,
-            jsonLineCount: jsonLineCount,
-            plainTextLineCount: plainTextLineCount,
-            parsedEventCount: parsedEventCount,
-            emittedEventCount: emittedEventCount,
-            textEventCount: textEventCount,
-            thinkingEventCount: thinkingEventCount,
-            toolUseEventCount: toolUseEventCount,
-            toolResultEventCount: toolResultEventCount,
-            statsEventCount: statsEventCount,
-            completedEventCount: completedEventCount,
-            failedEventCount: failedEventCount,
-            unknownEventCount: unknownEventCount,
-            unknownTypeCounts: unknownTypeCounts,
-            unknownSamples: unknownSamples
-        )
-    }
-
-    private func record(_ event: AgentEvent) {
-        switch event {
-        case .control:
-            break
-        case .started:
-            break
-        case .thinking:
-            thinkingEventCount += 1
-        case .text:
-            textEventCount += 1
-        case .toolUse:
-            toolUseEventCount += 1
-        case .toolResult:
-            toolResultEventCount += 1
-        case .fileChange:
-            break
-        case .permissionRequested:
-            break
-        case .stats:
-            statsEventCount += 1
-        case .astraProtocol:
-            break
-        case .completed:
-            completedEventCount += 1
-        case .failed:
-            failedEventCount += 1
-        case .teamEvent:
-            break
-        case .unknown(_, let type, let raw):
-            unknownEventCount += 1
-            unknownTypeCounts[type, default: 0] += 1
-            if unknownSamples.count < maxUnknownSamples,
-               !unknownSamples.contains(where: { $0.type == type }) {
-                unknownSamples.append((type: type, sample: raw))
-            }
-        }
     }
 }
 
