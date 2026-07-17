@@ -201,8 +201,8 @@ struct AppBundlePackagingTests {
         #expect(!script.contains(deepDistributedSign))
     }
 
-    @Test("RunBroker metadata hashes the final signed nested payload before outer app signing")
-    func runBrokerMetadataSealsFinalSignedPayloadBytes() throws {
+    @Test("RunBroker metadata seals the final signed broker-supervisor cohort before outer app signing")
+    func runBrokerMetadataSealsFinalSignedCohortBytes() throws {
         let script = try String(
             contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"),
             encoding: .utf8
@@ -210,23 +210,36 @@ struct AppBundlePackagingTests {
         let nestedSign = #"sign_bundled_tools_with sign_developer_id"#
         let finalizeCall = "\nfinalize_run_broker_payload_metadata\n"
         let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
-        let nestedVerification = #"/usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE""#
-        let digest = #"/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE""#
-        let immutableVersion = #"payload_version="${APP_VERSION}-${APP_BUILD}-${digest:0:32}""#
-        let liveDigestAssertion = #""$metadata_sha" != "$actual_broker_sha""#
+        let brokerVerification = #"/usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE""#
+        let supervisorVerification = #"/usr/bin/codesign --verify --strict "$RUN_SUPERVISOR_EXECUTABLE""#
+        let brokerDigest = #"/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE""#
+        let supervisorDigest = #"/usr/bin/shasum -a 256 "$RUN_SUPERVISOR_EXECUTABLE""#
+        let cohortTranscript = #"astra.run-broker.cohort.v1\0%s\0%s\0%s\0%s"#
+        let immutableVersion = #"payload_version="${APP_VERSION}-${APP_BUILD}-${cohort_digest:0:32}""#
+        let liveBrokerDigestAssertion = #""$metadata_sha" != "$actual_broker_sha""#
+        let liveSupervisorDigestAssertion = #""$metadata_supervisor_sha" != "$actual_supervisor_sha""#
+        let liveCohortAssertion = #""$metadata_cohort_sha" != "$actual_cohort_sha""#
 
         for key in [
             "ASTRARunBrokerPayloadSchemaVersion",
             "ASTRARunBrokerPayloadVersion",
             "ASTRARunBrokerPayloadSHA256",
-            "ASTRARunBrokerPayloadExecutable"
+            "ASTRARunBrokerPayloadExecutable",
+            "ASTRARunSupervisorPayloadSHA256",
+            "ASTRARunSupervisorPayloadExecutable",
+            "ASTRARunBrokerCohortSHA256"
         ] {
             #expect(script.contains(key))
         }
-        #expect(script.contains(nestedVerification))
-        #expect(script.contains(digest))
+        #expect(script.contains(brokerVerification))
+        #expect(script.contains(supervisorVerification))
+        #expect(script.contains(brokerDigest))
+        #expect(script.contains(supervisorDigest))
+        #expect(script.contains(cohortTranscript))
         #expect(script.contains(immutableVersion))
-        #expect(script.contains(liveDigestAssertion))
+        #expect(script.contains(liveBrokerDigestAssertion))
+        #expect(script.contains(liveSupervisorDigestAssertion))
+        #expect(script.contains(liveCohortAssertion))
         #expect(try index(of: nestedSign, in: script) < index(of: finalizeCall, in: script))
         #expect(try index(of: finalizeCall, in: script) < index(of: outerSign, in: script))
         #expect(!script.contains(#"--deep --entitlements "$ENTITLEMENTS" --sign"#))

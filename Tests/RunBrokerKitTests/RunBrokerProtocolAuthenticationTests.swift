@@ -164,12 +164,67 @@ struct RunBrokerProtocolAuthenticationTests {
             try protector.consume(nonce: Data([1]), now: now)
         }
         try protector.consume(nonce: Data([2]), now: now)
-        try protector.consume(nonce: Data([3]), now: now)
-        try protector.consume(nonce: Data([1]), now: now)
+        #expect(throws: RunBrokerAuthenticationError.replayCapacityExceeded) {
+            try protector.consume(nonce: Data([3]), now: now)
+        }
+        // Saturation must not evict a still-live nonce and reopen its replay
+        // window. Capacity pressure fails closed until an entry expires.
+        #expect(throws: RunBrokerAuthenticationError.replay) {
+            try protector.consume(nonce: Data([1]), now: now)
+        }
 
         let expiring = RunBrokerReplayProtector(capacity: 2, retention: 1)
         try expiring.consume(nonce: Data([4]), now: now)
         try expiring.consume(nonce: Data([4]), now: now.addingTimeInterval(2))
+    }
+
+    @Test("Response MAC binds exact response bytes to the originating request transcript")
+    func responseTranscriptBinding() throws {
+        let fixture = try authFixture()
+        let request = try fixture.authenticator.authenticatedRequest(
+            requestID: uuid(30),
+            idempotencyKey: uuid(31),
+            channel: .development,
+            installationID: fixture.installationID,
+            command: .health,
+            now: fixture.now
+        )
+        let body = RunBrokerResponseEnvelope(
+            protocolVersion: .current,
+            requestID: request.requestID,
+            result: .health(
+                .init(status: .healthy, brokerVersion: "sealed", ledgerAvailable: true)
+            )
+        )
+        let authenticated = try fixture.authenticator.authenticatedResponse(body, for: request)
+        #expect(try fixture.authenticator.verify(authenticated, for: request) == body)
+
+        let forgedBody = RunBrokerResponseEnvelope(
+            protocolVersion: .current,
+            requestID: request.requestID,
+            result: .accepted
+        )
+        let forgedBytes = try RunBrokerWireCodec.responseBodyData(forgedBody)
+        let forged = try RunBrokerAuthenticatedResponseEnvelope(
+            body: forgedBytes,
+            authentication: authenticated.authentication
+        )
+        #expect(throws: RunBrokerAuthenticationError.invalidResponseMAC) {
+            try fixture.authenticator.verify(forged, for: request)
+        }
+
+        let reboundRequest = RunBrokerRequestEnvelope(
+            protocolVersion: request.protocolVersion,
+            requestID: uuid(32),
+            idempotencyKey: uuid(33),
+            channel: request.channel,
+            installationID: request.installationID,
+            command: .capabilities,
+            authentication: request.authentication
+        )
+        #expect(throws: RunBrokerAuthenticationError.invalidResponseMAC) {
+            try fixture.authenticator.verify(authenticated, for: reboundRequest)
+        }
     }
 
     @Test("Full-length comparison logic accepts equality and rejects first and last byte mismatches")

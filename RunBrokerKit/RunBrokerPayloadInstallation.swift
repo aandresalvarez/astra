@@ -33,8 +33,28 @@ extension RunBrokerInstaller {
     }
 
     func validateSource(_ payload: RunBrokerPayload) throws {
+        try validateSourceExecutable(
+            payload.sourceExecutableURL,
+            expectedSHA256: payload.expectedSHA256
+        )
+        try validateSourceExecutable(
+            payload.sourceSupervisorExecutableURL,
+            expectedSHA256: payload.expectedSupervisorSHA256
+        )
+        guard try RunBrokerCohort.digest(
+            brokerSHA256: payload.expectedSHA256,
+            supervisorSHA256: payload.expectedSupervisorSHA256
+        ) == payload.expectedCohortSHA256 else {
+            throw RunBrokerInstallationError.invalidCohortDigest
+        }
+    }
+
+    private func validateSourceExecutable(
+        _ sourceURL: URL,
+        expectedSHA256: RunBrokerSHA256Digest
+    ) throws {
         let descriptor = open(
-            payload.sourceExecutableURL.path,
+            sourceURL.path,
             O_RDONLY | O_NOFOLLOW | O_CLOEXEC
         )
         guard descriptor >= 0 else {
@@ -47,7 +67,7 @@ extension RunBrokerInstaller {
               (info.st_mode & 0o111) != 0 else {
             throw RunBrokerInstallationError.sourceIsNotRegularExecutable
         }
-        guard try Self.sha256(descriptor: descriptor) == payload.expectedSHA256 else {
+        guard try Self.sha256(descriptor: descriptor) == expectedSHA256 else {
             throw RunBrokerInstallationError.sourceDigestMismatch
         }
     }
@@ -55,7 +75,8 @@ extension RunBrokerInstaller {
     func stagePayloadIfNeeded(
         _ payload: RunBrokerPayload,
         destinationDirectory: URL,
-        destinationExecutable: URL
+        destinationExecutable: URL,
+        destinationSupervisorExecutable: URL
     ) throws {
         var destinationInfo = stat()
         if lstat(destinationDirectory.path, &destinationInfo) == 0 {
@@ -64,14 +85,18 @@ extension RunBrokerInstaller {
                   UInt16(destinationInfo.st_mode & 0o777) == 0o700 else {
                 throw RunBrokerInstallationError.unsafeExistingPayload
             }
-            var executableInfo = stat()
-            guard lstat(destinationExecutable.path, &executableInfo) == 0,
-                  (executableInfo.st_mode & S_IFMT) == S_IFREG,
-                  executableInfo.st_uid == userID,
-                  UInt16(executableInfo.st_mode & 0o777) == 0o700 else {
-                throw RunBrokerInstallationError.unsafeExistingPayload
-            }
-            guard try Self.sha256(of: destinationExecutable) == payload.expectedSHA256 else {
+            try validateInstalledExecutable(
+                destinationExecutable,
+                expectedSHA256: payload.expectedSHA256
+            )
+            try validateInstalledExecutable(
+                destinationSupervisorExecutable,
+                expectedSHA256: payload.expectedSupervisorSHA256
+            )
+            guard try installedCohortDigest(
+                broker: destinationExecutable,
+                supervisor: destinationSupervisorExecutable
+            ) == payload.expectedCohortSHA256 else {
                 throw RunBrokerInstallationError.installedDigestMismatch
             }
             return
@@ -86,12 +111,53 @@ extension RunBrokerInstaller {
         defer { try? fileManager.removeItem(at: staging) }
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: false)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.path)
-        let stagedExecutable = staging.appendingPathComponent("astra-run-broker")
+        let stagedExecutable = staging.appendingPathComponent(RunBrokerCohort.brokerExecutableName)
+        let stagedSupervisor = staging.appendingPathComponent(
+            RunBrokerCohort.supervisorExecutableName
+        )
         try copyExecutableNoFollow(from: payload.sourceExecutableURL, to: stagedExecutable)
+        try copyExecutableNoFollow(
+            from: payload.sourceSupervisorExecutableURL,
+            to: stagedSupervisor
+        )
         guard try Self.sha256(of: stagedExecutable) == payload.expectedSHA256 else {
             throw RunBrokerInstallationError.installedDigestMismatch
         }
+        guard try Self.sha256(of: stagedSupervisor) == payload.expectedSupervisorSHA256,
+              try installedCohortDigest(
+                broker: stagedExecutable,
+                supervisor: stagedSupervisor
+              ) == payload.expectedCohortSHA256 else {
+            throw RunBrokerInstallationError.installedDigestMismatch
+        }
         try fileManager.moveItem(at: staging, to: destinationDirectory)
+    }
+
+    private func validateInstalledExecutable(
+        _ url: URL,
+        expectedSHA256: RunBrokerSHA256Digest
+    ) throws {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == userID,
+              UInt16(info.st_mode & 0o777) == 0o700,
+              info.st_nlink == 1 else {
+            throw RunBrokerInstallationError.unsafeExistingPayload
+        }
+        guard try Self.sha256(of: url) == expectedSHA256 else {
+            throw RunBrokerInstallationError.installedDigestMismatch
+        }
+    }
+
+    private func installedCohortDigest(
+        broker: URL,
+        supervisor: URL
+    ) throws -> RunBrokerSHA256Digest {
+        try RunBrokerCohort.digest(
+            brokerSHA256: Self.sha256(of: broker),
+            supervisorSHA256: Self.sha256(of: supervisor)
+        )
     }
 
     private func copyExecutableNoFollow(from source: URL, to destination: URL) throws {

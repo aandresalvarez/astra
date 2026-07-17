@@ -10,9 +10,11 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
     public let versionsDirectory: URL
     public let currentPayloadURL: URL
     public let currentExecutableURL: URL
+    public let currentSupervisorExecutableURL: URL
     public let socketDirectory: URL
     public let socketURL: URL
     public let authenticationDirectory: URL
+    public let ledgerDirectoryURL: URL
     public let capabilitySecretURL: URL
     public let installationIDURL: URL
     public let launchAgentPlistURL: URL
@@ -43,9 +45,12 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
         self.currentPayloadURL = support.appendingPathComponent("Current", isDirectory: true)
         self.currentExecutableURL = currentPayloadURL
             .appendingPathComponent("astra-run-broker", isDirectory: false)
+        self.currentSupervisorExecutableURL = currentPayloadURL
+            .appendingPathComponent("astra-run-supervisor", isDirectory: false)
         self.socketDirectory = support.appendingPathComponent("IPC", isDirectory: true)
         self.socketURL = socketDirectory.appendingPathComponent("broker.sock", isDirectory: false)
         self.authenticationDirectory = support.appendingPathComponent("Authentication", isDirectory: true)
+        self.ledgerDirectoryURL = support.appendingPathComponent("Ledger", isDirectory: true)
         self.capabilitySecretURL = authenticationDirectory
             .appendingPathComponent("capability.key", isDirectory: false)
         self.installationIDURL = authenticationDirectory
@@ -145,21 +150,5 @@ public struct RunBrokerSHA256Digest: Codable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
-    }
-}
-
-public struct RunBrokerPayload: Equatable, Sendable {
-    public let sourceExecutableURL: URL
-    public let version: RunBrokerPayloadVersion
-    public let expectedSHA256: RunBrokerSHA256Digest
-
-    public init(
-        sourceExecutableURL: URL,
-        version: RunBrokerPayloadVersion,
-        expectedSHA256: RunBrokerSHA256Digest
-    ) {
-        self.sourceExecutableURL = sourceExecutableURL
-        self.version = version
-        self.expectedSHA256 = expectedSHA256
     }
 }

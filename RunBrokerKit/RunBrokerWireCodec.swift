@@ -81,16 +81,24 @@ public struct RunBrokerWireCodec: Sendable {
         return request
     }
 
-    public func encode(response: RunBrokerResponseEnvelope) throws -> Data {
-        try response.validate()
+    public func encode(response: RunBrokerAuthenticatedResponseEnvelope) throws -> Data {
         return try frameCodec.encode(payload: Self.encoder().encode(response))
     }
 
-    public func decodeResponse(frame: Data) throws -> RunBrokerResponseEnvelope {
-        let response: RunBrokerResponseEnvelope = try strictDecode(
+    public func decodeResponse(frame: Data) throws -> RunBrokerAuthenticatedResponseEnvelope {
+        try strictDecode(
             Self.self,
             data: frameCodec.decode(frame: frame)
         )
+    }
+
+    public static func responseBodyData(_ response: RunBrokerResponseEnvelope) throws -> Data {
+        try response.validate()
+        return try encoder().encode(response)
+    }
+
+    public func decodeResponseBody(_ body: Data) throws -> RunBrokerResponseEnvelope {
+        let response: RunBrokerResponseEnvelope = try strictDecode(Self.self, data: body)
         try response.validate()
         return response
     }
@@ -117,6 +125,22 @@ public struct RunBrokerWireCodec: Sendable {
                 command: command,
                 issuedAtMilliseconds: issuedAtMilliseconds,
                 nonce: nonce
+            )
+        )
+    }
+
+    public static func responseAuthenticationTranscript(
+        request: RunBrokerRequestEnvelope,
+        responseBody: Data
+    ) throws -> Data {
+        try encoder().encode(
+            RunBrokerResponseAuthenticationTranscriptV1(
+                requestProtocolVersion: request.protocolVersion,
+                requestID: request.requestID,
+                idempotencyKey: request.idempotencyKey,
+                requestNonce: request.authentication.nonce,
+                command: request.command,
+                responseBody: responseBody
             )
         )
     }
@@ -164,4 +188,14 @@ private struct RunBrokerAuthenticationTranscriptV1: Encodable {
     let command: RunBrokerCommand
     let issuedAtMilliseconds: Int64
     let nonce: Data
+}
+
+private struct RunBrokerResponseAuthenticationTranscriptV1: Encodable {
+    let domain = "astra.run-broker.response.v1"
+    let requestProtocolVersion: RunBrokerProtocolVersion
+    let requestID: UUID
+    let idempotencyKey: UUID
+    let requestNonce: Data
+    let command: RunBrokerCommand
+    let responseBody: Data
 }

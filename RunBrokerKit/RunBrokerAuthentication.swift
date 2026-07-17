@@ -52,7 +52,9 @@ public enum RunBrokerAuthenticationError: Error, Equatable, Sendable {
     case expiredRequest
     case requestFromFuture
     case invalidMAC
+    case invalidResponseMAC
     case replay
+    case replayCapacityExceeded
     case wrongChannel
     case wrongInstallation
     case wrongPeerUID(expected: UInt32, actual: UInt32)
@@ -154,6 +156,39 @@ public struct RunBrokerRequestAuthenticator: Sendable {
         }
     }
 
+    public func authenticatedResponse(
+        _ response: RunBrokerResponseEnvelope,
+        for request: RunBrokerRequestEnvelope
+    ) throws -> RunBrokerAuthenticatedResponseEnvelope {
+        let body = try RunBrokerWireCodec.responseBodyData(response)
+        let transcript = try RunBrokerWireCodec.responseAuthenticationTranscript(
+            request: request,
+            responseBody: body
+        )
+        return try RunBrokerAuthenticatedResponseEnvelope(
+            body: body,
+            authentication: Self.mac(for: transcript, secret: secret)
+        )
+    }
+
+    /// Authenticates the exact response bytes before decoding any claimed
+    /// health, acceptance, scheduler, or error truth from them.
+    public func verify(
+        _ response: RunBrokerAuthenticatedResponseEnvelope,
+        for request: RunBrokerRequestEnvelope,
+        using wireCodec: RunBrokerWireCodec = .init()
+    ) throws -> RunBrokerResponseEnvelope {
+        let transcript = try RunBrokerWireCodec.responseAuthenticationTranscript(
+            request: request,
+            responseBody: response.body
+        )
+        let expected = Self.mac(for: transcript, secret: secret)
+        guard Self.constantTimeEqual(expected, response.authentication) else {
+            throw RunBrokerAuthenticationError.invalidResponseMAC
+        }
+        return try wireCodec.decodeResponseBody(response.body)
+    }
+
     private static func mac(for transcript: Data, secret: RunBrokerCapabilitySecret) -> Data {
         let key = SymmetricKey(data: secret.bytes)
         return Data(HMAC<SHA256>.authenticationCode(for: transcript, using: key))
@@ -201,9 +236,10 @@ public final class RunBrokerReplayProtector: @unchecked Sendable {
         guard !nonceSet.contains(nonce) else {
             throw RunBrokerAuthenticationError.replay
         }
-        while entries.count >= capacity, let oldest = entries.first {
-            entries.removeFirst()
-            nonceSet.remove(oldest.nonce)
+        // Every remaining entry is live after removeExpired. Evicting one
+        // would let its nonce be replayed inside the authentication window.
+        guard entries.count < capacity else {
+            throw RunBrokerAuthenticationError.replayCapacityExceeded
         }
         entries.append(Entry(nonce: nonce, expiresAt: now.addingTimeInterval(retention)))
         nonceSet.insert(nonce)

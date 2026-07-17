@@ -91,7 +91,12 @@ public struct RunBrokerMonitorAttemptResult: Equatable, Sendable {
 }
 
 public protocol RunBrokerExternalOperationMonitoring: Sendable {
+    var isAvailable: Bool { get }
     func monitor(operationID: RunBrokerOperationID) throws -> RunBrokerMonitorAttemptResult
+}
+
+public extension RunBrokerExternalOperationMonitoring {
+    var isAvailable: Bool { true }
 }
 
 /// PR4 supplies the durable implementation. Every mutation includes an
@@ -104,13 +109,15 @@ public protocol RunBrokerMonitorLedger: Sendable {
 
     func upsertMonitorDeadline(
         _ deadline: RunBrokerMonitorDeadline,
+        replacing expected: RunBrokerMonitorDeadline?,
         idempotencyKey: UUID
-    ) throws
+    ) throws -> RunBrokerMonitorMutationDisposition
 
     func removeMonitorDeadline(
-        operationID: RunBrokerOperationID,
+        expected: RunBrokerMonitorDeadline,
+        occurredAt: Date,
         idempotencyKey: UUID
-    ) throws
+    ) throws -> RunBrokerMonitorMutationDisposition
 
     func recordMonitorAttempt(
         expectedDeadline: RunBrokerMonitorDeadline,
@@ -126,8 +133,14 @@ public enum RunBrokerMonitorAttemptCommit: Equatable, Sendable {
     case stale
 }
 
+public enum RunBrokerMonitorMutationDisposition: Equatable, Sendable {
+    case appended
+    case exactReplay
+}
+
 public enum RunBrokerLedgerError: Error, Equatable, Sendable {
     case unavailable
+    case monitorScheduleConflict(RunBrokerOperationID)
 }
 
 public struct UnavailableRunBrokerMonitorLedger: RunBrokerMonitorLedger {
@@ -140,15 +153,17 @@ public struct UnavailableRunBrokerMonitorLedger: RunBrokerMonitorLedger {
 
     public func upsertMonitorDeadline(
         _ deadline: RunBrokerMonitorDeadline,
+        replacing expected: RunBrokerMonitorDeadline?,
         idempotencyKey: UUID
-    ) throws {
+    ) throws -> RunBrokerMonitorMutationDisposition {
         throw RunBrokerLedgerError.unavailable
     }
 
     public func removeMonitorDeadline(
-        operationID: RunBrokerOperationID,
+        expected: RunBrokerMonitorDeadline,
+        occurredAt: Date,
         idempotencyKey: UUID
-    ) throws {
+    ) throws -> RunBrokerMonitorMutationDisposition {
         throw RunBrokerLedgerError.unavailable
     }
 
@@ -192,11 +207,14 @@ public struct RunBrokerBackoffPolicy: Equatable, Sendable {
 
 public enum RunBrokerSchedulerError: Error, Equatable, Sendable {
     case ledgerUnavailable
+    case monitorUnavailable
     case duplicateRecoveredDeadline(RunBrokerOperationID)
+    case monitorScheduleConflict(RunBrokerOperationID)
 }
 
 public struct UnavailableRunBrokerExternalOperationMonitor: RunBrokerExternalOperationMonitoring {
     public init() {}
+    public var isAvailable: Bool { false }
     public func monitor(operationID: RunBrokerOperationID) throws -> RunBrokerMonitorAttemptResult {
         throw RunBrokerLedgerError.unavailable
     }

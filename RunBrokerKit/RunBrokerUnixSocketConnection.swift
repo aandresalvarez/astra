@@ -5,16 +5,26 @@ public final class RunBrokerUnixSocketConnection: RunBrokerConnection, @unchecke
     private let lock = NSLock()
     private var descriptor: Int32
 
-    init(descriptor: Int32) {
+    init(
+        descriptor: Int32,
+        ioTimeout: TimeInterval = RunBrokerTransportPolicy.defaultIOTimeout
+    ) throws {
+        precondition(ioTimeout > 0 && ioTimeout.isFinite)
         self.descriptor = descriptor
         var enabled: Int32 = 1
-        _ = setsockopt(
+        guard setsockopt(
             descriptor,
             SOL_SOCKET,
             SO_NOSIGPIPE,
             &enabled,
             socklen_t(MemoryLayout<Int32>.size)
-        )
+        ) == 0 else {
+            throw RunBrokerTransportError.systemCall(
+                operation: "setsockopt-nosigpipe",
+                code: errno
+            )
+        }
+        try Self.configureIOTimeouts(descriptor, seconds: ioTimeout)
     }
 
     public var peerIdentity: RunBrokerPeerIdentity {
@@ -122,6 +132,44 @@ public final class RunBrokerUnixSocketConnection: RunBrokerConnection, @unchecke
         }
         return data
     }
+
+    private static func configureIOTimeouts(_ descriptor: Int32, seconds: TimeInterval) throws {
+        let wholeSeconds = floor(seconds)
+        var timeout = timeval(
+            tv_sec: Int(wholeSeconds),
+            tv_usec: Int32((seconds - wholeSeconds) * 1_000_000)
+        )
+        let receiveStatus = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+        guard receiveStatus == 0 else {
+            throw RunBrokerTransportError.systemCall(
+                operation: "setsockopt-receive-timeout",
+                code: errno
+            )
+        }
+        let sendStatus = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+        guard sendStatus == 0 else {
+            throw RunBrokerTransportError.systemCall(
+                operation: "setsockopt-send-timeout",
+                code: errno
+            )
+        }
+    }
 }
 
 public struct RunBrokerUnixSocketConnector: RunBrokerConnecting {
@@ -160,7 +208,7 @@ public struct RunBrokerUnixSocketConnector: RunBrokerConnecting {
             guard status == 0 else {
                 throw RunBrokerTransportError.systemCall(operation: "connect", code: errno)
             }
-            let connection = RunBrokerUnixSocketConnection(descriptor: descriptor)
+            let connection = try RunBrokerUnixSocketConnection(descriptor: descriptor)
             try peerPolicy.verify(connection.peerIdentity)
             return connection
         } catch {

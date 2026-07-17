@@ -40,6 +40,7 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
     deinit { armedDeadline?.cancel() }
 
     public var ledgerAvailable: Bool { ledger.isAvailable }
+    public var monitorAvailable: Bool { monitor.isAvailable }
 
     public var isOperational: Bool {
         lock.lock()
@@ -63,7 +64,11 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         }
     }
 
-    public func upsert(_ deadline: RunBrokerMonitorDeadline, idempotencyKey: UUID) throws {
+    public func upsert(
+        _ deadline: RunBrokerMonitorDeadline,
+        replacing expected: RunBrokerMonitorDeadline?,
+        idempotencyKey: UUID
+    ) throws {
         try requireLedger()
         let durableDeadline = RunBrokerMonitorDeadline(
             operationID: deadline.operationID,
@@ -73,20 +78,37 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
             attempt: deadline.attempt,
             generation: idempotencyKey
         )
-        try ledger.upsertMonitorDeadline(durableDeadline, idempotencyKey: idempotencyKey)
-        lock.lock()
-        deadlines[durableDeadline.operationID] = durableDeadline
-        rearmLocked()
-        lock.unlock()
+        do {
+            _ = try ledger.upsertMonitorDeadline(
+                durableDeadline,
+                replacing: expected,
+                idempotencyKey: idempotencyKey
+            )
+        } catch RunBrokerLedgerError.monitorScheduleConflict(let operationID) {
+            try reconcileScheduleConflict(operationID)
+        }
+        // The durable event may be an exact replay while a later connection
+        // has already advanced the schedule. Always fetch current truth rather
+        // than applying the replayed command to this process's cache.
+        try refreshAfterMutation()
     }
 
-    public func remove(operationID: RunBrokerOperationID, idempotencyKey: UUID) throws {
+    public func remove(
+        expected: RunBrokerMonitorDeadline,
+        occurredAt: Date,
+        idempotencyKey: UUID
+    ) throws {
         try requireLedger()
-        try ledger.removeMonitorDeadline(operationID: operationID, idempotencyKey: idempotencyKey)
-        lock.lock()
-        deadlines.removeValue(forKey: operationID)
-        rearmLocked()
-        lock.unlock()
+        do {
+            _ = try ledger.removeMonitorDeadline(
+                expected: expected,
+                occurredAt: occurredAt,
+                idempotencyKey: idempotencyKey
+            )
+        } catch RunBrokerLedgerError.monitorScheduleConflict(let operationID) {
+            try reconcileScheduleConflict(operationID)
+        }
+        try refreshAfterMutation()
     }
 
     public func status() throws -> [RunBrokerMonitorDeadline] {
@@ -101,6 +123,7 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
 
     public func wake() throws {
         try requireLedger()
+        try requireMonitor()
         lock.lock()
         guard !wakeInProgress else {
             lock.unlock()
@@ -176,7 +199,7 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
             lock.unlock()
             if commit == .stale {
                 do {
-                    try refreshProjectionFromLedger()
+                    try refreshProjectionFromLedger(rearm: false)
                 } catch {
                     diagnostics.record(.schedulerRecoveryFailed, error: error)
                     markDegraded()
@@ -191,10 +214,15 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         guard ledger.isAvailable else { throw RunBrokerSchedulerError.ledgerUnavailable }
     }
 
+    private func requireMonitor() throws {
+        guard monitor.isAvailable else { throw RunBrokerSchedulerError.monitorUnavailable }
+    }
+
     private func rearmLocked() {
         armedDeadline?.cancel()
         armedDeadline = nil
-        guard !degraded,
+        guard monitor.isAvailable,
+              !degraded,
               let earliest = deadlines.values.min(by: Self.deadlinePrecedes) else { return }
         armedDeadline = timer.schedule(at: earliest.dueAt) { [weak self] in
             do {
@@ -205,11 +233,27 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         }
     }
 
-    private func refreshProjectionFromLedger() throws {
+    private func refreshProjectionFromLedger(rearm: Bool) throws {
         let validated = try validatedProjectionFromLedger()
         lock.lock()
         deadlines = validated
+        if rearm { rearmLocked() }
         lock.unlock()
+    }
+
+    private func refreshAfterMutation() throws {
+        do {
+            try refreshProjectionFromLedger(rearm: true)
+        } catch {
+            diagnostics.record(.schedulerRecoveryFailed, error: error)
+            markDegraded()
+            throw error
+        }
+    }
+
+    private func reconcileScheduleConflict(_ operationID: RunBrokerOperationID) throws -> Never {
+        try refreshAfterMutation()
+        throw RunBrokerSchedulerError.monitorScheduleConflict(operationID)
     }
 
     private func validatedProjectionFromLedger() throws

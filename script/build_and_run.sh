@@ -381,9 +381,11 @@ for tool_product in "${TOOL_PRODUCTS[@]}"; do
   cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"
   chmod +x "$BUNDLED_TOOLS_DIR/$tool_product"
 done
-RUN_BROKER_PAYLOAD_SCHEMA_VERSION=1
+RUN_BROKER_PAYLOAD_SCHEMA_VERSION=2
 RUN_BROKER_EXECUTABLE_NAME="astra-run-broker"
 RUN_BROKER_EXECUTABLE="$BUNDLED_TOOLS_DIR/$RUN_BROKER_EXECUTABLE_NAME"
+RUN_SUPERVISOR_EXECUTABLE_NAME="astra-run-supervisor"
+RUN_SUPERVISOR_EXECUTABLE="$BUNDLED_TOOLS_DIR/$RUN_SUPERVISOR_EXECUTABLE_NAME"
 
 APP_ICON_SOURCE="$ROOT_DIR/Astra/Resources/AppIcon.icns"
 if [[ "$ASTRA_CHANNEL" == "dev" && -f "$ROOT_DIR/Astra/Resources/AppIconDev.icns" ]]; then
@@ -582,8 +584,8 @@ sign_sparkle_framework_with() {
 }
 
 finalize_run_broker_payload_metadata() {
-  if [[ ! -x "$RUN_BROKER_EXECUTABLE" ]]; then
-    echo "FAIL: RunBroker payload missing before metadata finalization: $RUN_BROKER_EXECUTABLE" >&2
+  if [[ ! -x "$RUN_BROKER_EXECUTABLE" || ! -x "$RUN_SUPERVISOR_EXECUTABLE" ]]; then
+    echo "FAIL: RunBroker cohort is incomplete before metadata finalization." >&2
     exit 3
   fi
   # The digest is intentionally computed only after the nested executable has
@@ -592,23 +594,34 @@ finalize_run_broker_payload_metadata() {
   # satisfy. The outer app signature added below seals this metadata without
   # touching the nested broker again.
   /usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE"
-  local digest payload_version
-  digest="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" | /usr/bin/awk '{print $1}')"
-  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "FAIL: unable to derive RunBroker SHA-256 from final signed payload." >&2
+  /usr/bin/codesign --verify --strict "$RUN_SUPERVISOR_EXECUTABLE"
+  local broker_digest supervisor_digest cohort_digest payload_version
+  broker_digest="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" | /usr/bin/awk '{print $1}')"
+  supervisor_digest="$(/usr/bin/shasum -a 256 "$RUN_SUPERVISOR_EXECUTABLE" | /usr/bin/awk '{print $1}')"
+  cohort_digest="$(/usr/bin/printf 'astra.run-broker.cohort.v1\0%s\0%s\0%s\0%s' \
+    "$RUN_BROKER_EXECUTABLE_NAME" "$broker_digest" \
+    "$RUN_SUPERVISOR_EXECUTABLE_NAME" "$supervisor_digest" \
+    | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  if [[ ! "$broker_digest" =~ ^[0-9a-f]{64}$ ||
+        ! "$supervisor_digest" =~ ^[0-9a-f]{64}$ ||
+        ! "$cohort_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "FAIL: unable to derive RunBroker cohort SHA-256 metadata." >&2
     exit 3
   fi
   # A 128-bit digest prefix prevents different local/dev payload bytes with
   # the same app version/build from colliding in the immutable Versions store.
-  payload_version="${APP_VERSION}-${APP_BUILD}-${digest:0:32}"
+  payload_version="${APP_VERSION}-${APP_BUILD}-${cohort_digest:0:32}"
   if [[ ${#payload_version} -gt 128 || ! "$payload_version" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "FAIL: invalid derived RunBroker payload version '$payload_version'." >&2
     exit 3
   fi
   /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadSchemaVersion integer $RUN_BROKER_PAYLOAD_SCHEMA_VERSION" "$INFO_PLIST"
   /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadVersion string $payload_version" "$INFO_PLIST"
-  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadSHA256 string $digest" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadSHA256 string $broker_digest" "$INFO_PLIST"
   /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadExecutable string $RUN_BROKER_EXECUTABLE_NAME" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunSupervisorPayloadSHA256 string $supervisor_digest" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunSupervisorPayloadExecutable string $RUN_SUPERVISOR_EXECUTABLE_NAME" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerCohortSHA256 string $cohort_digest" "$INFO_PLIST"
 }
 
 if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
@@ -733,22 +746,39 @@ verify_app_bundle() {
     fi
   done
 
-  local metadata_schema metadata_version metadata_sha metadata_executable actual_broker_sha expected_payload_version
+  local metadata_schema metadata_version metadata_sha metadata_executable
+  local metadata_supervisor_sha metadata_supervisor_executable metadata_cohort_sha
+  local actual_broker_sha actual_supervisor_sha actual_cohort_sha expected_payload_version
   metadata_schema="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadSchemaVersion' "$INFO_PLIST" 2>/dev/null || true)"
   metadata_version="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadVersion' "$INFO_PLIST" 2>/dev/null || true)"
   metadata_sha="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadSHA256' "$INFO_PLIST" 2>/dev/null || true)"
   metadata_executable="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadExecutable' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_supervisor_sha="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunSupervisorPayloadSHA256' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_supervisor_executable="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunSupervisorPayloadExecutable' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_cohort_sha="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerCohortSHA256' "$INFO_PLIST" 2>/dev/null || true)"
   actual_broker_sha="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" 2>/dev/null | /usr/bin/awk '{print $1}')"
-  expected_payload_version="${APP_VERSION}-${APP_BUILD}-${actual_broker_sha:0:32}"
+  actual_supervisor_sha="$(/usr/bin/shasum -a 256 "$RUN_SUPERVISOR_EXECUTABLE" 2>/dev/null | /usr/bin/awk '{print $1}')"
+  actual_cohort_sha="$(/usr/bin/printf 'astra.run-broker.cohort.v1\0%s\0%s\0%s\0%s' \
+    "$RUN_BROKER_EXECUTABLE_NAME" "$actual_broker_sha" \
+    "$RUN_SUPERVISOR_EXECUTABLE_NAME" "$actual_supervisor_sha" \
+    | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  expected_payload_version="${APP_VERSION}-${APP_BUILD}-${actual_cohort_sha:0:32}"
   if [[ "$metadata_schema" != "$RUN_BROKER_PAYLOAD_SCHEMA_VERSION" ||
         "$metadata_executable" != "$RUN_BROKER_EXECUTABLE_NAME" ||
         "$metadata_sha" != "$actual_broker_sha" ||
+        "$metadata_supervisor_executable" != "$RUN_SUPERVISOR_EXECUTABLE_NAME" ||
+        "$metadata_supervisor_sha" != "$actual_supervisor_sha" ||
+        "$metadata_cohort_sha" != "$actual_cohort_sha" ||
         "$metadata_version" != "$expected_payload_version" ]]; then
-    echo "FAIL: signed RunBroker payload metadata does not match the final bundled executable." >&2
+    echo "FAIL: signed RunBroker cohort metadata does not match the final bundled executables." >&2
     errors=$((errors + 1))
   fi
   if ! /usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE" 2>/dev/null; then
     echo "FAIL: final bundled RunBroker payload signature is invalid." >&2
+    errors=$((errors + 1))
+  fi
+  if ! /usr/bin/codesign --verify --strict "$RUN_SUPERVISOR_EXECUTABLE" 2>/dev/null; then
+    echo "FAIL: final bundled RunSupervisor cohort signature is invalid." >&2
     errors=$((errors + 1))
   fi
 

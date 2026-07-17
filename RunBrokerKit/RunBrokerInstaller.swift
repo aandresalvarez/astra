@@ -5,9 +5,11 @@ import ASTRACore
 public enum RunBrokerInstallationError: Error, Equatable, Sendable {
     case invalidPayloadVersion
     case invalidDigest
+    case invalidCohortDigest
     case sourceIsNotRegularExecutable
     case sourceDigestMismatch
     case installedDigestMismatch
+    case installedCohortIncomplete
     case unsafeExistingPayload
     case unsafeExternalDirectory
     case currentSelectorIsUnsafe
@@ -26,15 +28,18 @@ public struct RunBrokerInstallationResult: Equatable, Sendable {
     public let installationID: RunBrokerInstallationID
     public let installedVersion: RunBrokerPayloadVersion
     public let executableURL: URL
+    public let supervisorExecutableURL: URL
 
     public init(
         installationID: RunBrokerInstallationID,
         installedVersion: RunBrokerPayloadVersion,
-        executableURL: URL
+        executableURL: URL,
+        supervisorExecutableURL: URL
     ) {
         self.installationID = installationID
         self.installedVersion = installedVersion
         self.executableURL = executableURL
+        self.supervisorExecutableURL = supervisorExecutableURL
     }
 }
 
@@ -101,11 +106,14 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         let destinationDirectory = identity.versionsDirectory
             .appendingPathComponent(payload.version.rawValue, isDirectory: true)
         let destinationExecutable = destinationDirectory
-            .appendingPathComponent("astra-run-broker", isDirectory: false)
+            .appendingPathComponent(RunBrokerCohort.brokerExecutableName, isDirectory: false)
+        let destinationSupervisorExecutable = destinationDirectory
+            .appendingPathComponent(RunBrokerCohort.supervisorExecutableName, isDirectory: false)
         try stagePayloadIfNeeded(
             payload,
             destinationDirectory: destinationDirectory,
-            destinationExecutable: destinationExecutable
+            destinationExecutable: destinationExecutable,
+            destinationSupervisorExecutable: destinationSupervisorExecutable
         )
 
         let previousPlist = try readExistingPlist(identity.launchAgentPlistURL)
@@ -165,7 +173,8 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         return .init(
             installationID: secrets.installationID,
             installedVersion: payload.version,
-            executableURL: destinationExecutable
+            executableURL: destinationExecutable,
+            supervisorExecutableURL: destinationSupervisorExecutable
         )
     }
 

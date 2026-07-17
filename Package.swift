@@ -63,7 +63,7 @@ let package = Package(
         ),
         .target(
             name: "RunBrokerKit",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "ASTRARunLedger"],
             path: "RunBrokerKit"
         ),
         .target(
@@ -256,7 +256,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RunBrokerKitTests",
-            dependencies: ["RunBrokerKit"],
+            dependencies: ["RunBrokerKit", "ASTRARunLedger"],
             path: "Tests/RunBrokerKitTests"
         )
     ]
