@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 @testable import HostControlToolSupport
 @testable import WorkspaceToolSupport
 
@@ -857,14 +858,16 @@ struct HostControlToolSupportTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
 
         let jobRoot = root.appendingPathComponent(".astra/tasks/task-5/jobs", isDirectory: true)
+        let workspaceTaskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5"
+        let workspaceRunID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb5"
         let workspaceConfiguration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
             image: "astra/workspace:latest",
             containerName: "astra-mixed",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-5",
-            runID: "run-5",
+            taskID: workspaceTaskID,
+            runID: workspaceRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -888,7 +891,16 @@ struct HostControlToolSupportTests {
             "label": "dbt death",
             "progress_probe": "dbt"
         ])
-        #expect(try resultText(start).contains("command: cd /workspace && dbt build --select +death"))
+        let startText = try resultText(start)
+        let startResult = try JSONDecoder().decode(
+            WorkspaceManagedJobStructuredResult.self,
+            from: try #require(startText.data(using: .utf8))
+        )
+        #expect(startResult.status == .running)
+        #expect(startResult.startReceipt?.taskID == UUID(uuidString: workspaceTaskID))
+        #expect(startResult.startReceipt?.runID == UUID(uuidString: workspaceRunID))
+        #expect(startResult.startReceipt?.invocationID == "number:6")
+        #expect(!startText.contains("dbt build"))
         executor.cleanup()
 
         let hostLogText = try String(contentsOf: hostLog, encoding: .utf8)
@@ -921,7 +933,10 @@ struct HostControlToolSupportTests {
             }
         #expect(workspaceRecords.contains {
             $0["toolName"] as? String == "workspace_job_start"
-                && $0["mappedCommand"] as? String == "cd /workspace && dbt build --select +death"
+                && $0["jobID"] as? String == startResult.jobID
+                && $0["jobStatus"] as? String == "running"
+                && $0["command"] == nil
+                && $0["mappedCommand"] == nil
         })
     }
 
