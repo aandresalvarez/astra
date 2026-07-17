@@ -82,6 +82,7 @@ struct AppSemanticFitnessTests {
             "mission.checkpoint.created": .lifecycle,
             "mission.milestone.completed": .lifecycle,
             "mission.milestone.created": .lifecycle,
+            "objective.assessment.changed": .lifecycle,
             "permission.approval.requested": .system,
             "permission.denied": .tool,
             "permission.request.resolved": .system,
