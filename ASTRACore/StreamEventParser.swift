@@ -73,6 +73,7 @@ public struct StreamToolResultBlock: Decodable {
     public let type: String
     public let tool_use_id: String?
     public let content: ToolResultContent?
+    public let text: String?
     /// Claude can report a failed tool call inside an otherwise successful
     /// provider process. Preserve that outcome so task completion does not
     /// mistake process exit 0 for completion of the requested external action.
@@ -103,7 +104,7 @@ public struct StreamToolResultBlock: Decodable {
         switch content {
         case .string(let s): return s
         case .blocks(let blocks): return blocks.compactMap(\.text).joined(separator: "\n")
-        case .none: return ""
+        case .none: return text ?? ""
         }
     }
 }
@@ -189,6 +190,10 @@ public struct FileChange: Identifiable {
 // MARK: - Parsed Event
 
 public enum ParsedEvent {
+    /// Transient provider lifecycle or progress activity. Control events keep
+    /// process liveness current without becoming conversation, tool-result, or
+    /// token-accounting state.
+    case control(type: String)
     case systemInit(model: String?, sessionId: String?)
     case thinking(text: String)
     case text(text: String)
@@ -214,11 +219,18 @@ public enum StreamEventParser {
     }
 
     public static func parseAll(line: String) -> [ParsedEvent] {
-        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        guard let data = line.data(using: .utf8) else { return [] }
+        parseStructured(line: line).resolvingUnrecognized(with: { [] })
+    }
+
+    static func parseStructured(line: String) -> StructuredStreamParseOutcome<ParsedEvent> {
+        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .unrecognized }
+        guard let data = line.data(using: .utf8) else { return .unrecognized }
 
         guard let baseEvent = try? JSONDecoder().decode(StreamSystemEvent.self, from: data) else {
-            return []
+            if (try? JSONSerialization.jsonObject(with: data)) != nil {
+                return .recognized([.unknown(type: "unknown")])
+            }
+            return .unrecognized
         }
 
         switch baseEvent.type {
@@ -227,25 +239,27 @@ public enum StreamEventParser {
             if baseEvent.subtype == "task_started",
                let taskType = baseEvent.task_type, agentTaskTypes.contains(taskType) {
                 let name = extractAgentName(from: baseEvent.description) ?? baseEvent.task_id ?? "teammate"
-                return [.teammateStarted(
+                return .recognized([.teammateStarted(
                     taskId: baseEvent.task_id ?? "",
                     name: name,
                     prompt: baseEvent.prompt ?? ""
-                )]
+                )])
             }
             if baseEvent.subtype == "task_completed" || baseEvent.subtype == "task_notification" {
                 let name = baseEvent.summary ?? extractAgentName(from: baseEvent.description) ?? baseEvent.task_id ?? "teammate"
-                return [.teammateCompleted(
+                return .recognized([.teammateCompleted(
                     taskId: baseEvent.task_id ?? "",
                     name: name
-                )]
+                )])
             }
-            return [.systemInit(model: baseEvent.model, sessionId: baseEvent.session_id)]
+            return .recognized([.systemInit(model: baseEvent.model, sessionId: baseEvent.session_id)])
 
         case "assistant":
-            guard let event = try? JSONDecoder().decode(StreamAssistantEvent.self, from: data),
-                  let content = event.message?.content else {
-                return []
+            guard let event = try? JSONDecoder().decode(StreamAssistantEvent.self, from: data) else {
+                return .recognized([.unknown(type: "assistant")])
+            }
+            guard let content = event.message?.content else {
+                return .recognized([.control(type: "assistant")])
             }
             var events: [ParsedEvent] = []
             var firstThinking: ParsedEvent?
@@ -264,14 +278,14 @@ public enum StreamEventParser {
                let usageEvent = parsedUsageEvent(from: usage) {
                 events.append(usageEvent)
             }
-            return events
+            return .recognized(events.isEmpty ? [.control(type: "assistant")] : events)
 
         case "stream_event":
             guard let envelope = try? JSONDecoder().decode(StreamPartialEventEnvelope.self, from: data),
                   let event = envelope.event else {
-                return []
+                return .recognized([.unknown(type: "stream_event")])
             }
-            return parsedEvents(from: event)
+            return .recognized(parsedEvents(from: event))
 
         case "user":
             let lower = line.lowercased()
@@ -280,7 +294,7 @@ public enum StreamEventParser {
             if denialKeywords.contains(where: { lower.contains($0) }) {
                 let tool = extractDeniedTool(from: line) ?? "unknown"
                 let reason = extractDenialReason(from: line)
-                return [.permissionDenied(tool: tool, reason: reason)]
+                return .recognized([.permissionDenied(tool: tool, reason: reason)])
             }
             if let userEvent = try? JSONDecoder().decode(StreamUserEvent.self, from: data),
                let blocks = userEvent.message?.content {
@@ -290,16 +304,16 @@ public enum StreamEventParser {
                     return text.isEmpty ? nil : (block.tool_use_id ?? "", text, block.is_error ?? false)
                 }
                 if !results.isEmpty {
-                    return results.map {
+                    return .recognized(results.map {
                         .toolResult(toolId: $0.0, content: $0.1, isError: $0.2)
-                    }
+                    })
                 }
             }
-            return [.toolResult(toolId: "", content: "", isError: false)]
+            return .recognized([.control(type: "user")])
 
         case "result":
             guard let event = try? JSONDecoder().decode(StreamResultEvent.self, from: data) else {
-                return []
+                return .recognized([.unknown(type: "result")])
             }
 
             var totalInput = 0
@@ -315,7 +329,7 @@ public enum StreamEventParser {
                 totalOutput = totalOutputTokens(from: usage)
             }
 
-            return [.result(
+            return .recognized([.result(
                 text: event.result,
                 costUSD: event.total_cost_usd,
                 totalInputTokens: totalInput,
@@ -323,10 +337,10 @@ public enum StreamEventParser {
                 durationMs: event.duration_ms,
                 numTurns: event.num_turns,
                 isError: event.is_error ?? false
-            )]
+            )])
 
         default:
-            return [.unknown(type: baseEvent.type)]
+            return .recognized([.unknown(type: baseEvent.type)])
         }
     }
 
@@ -334,25 +348,33 @@ public enum StreamEventParser {
         switch event.type {
         case "message_start":
             guard let usage = event.message?.usage,
-                  let usageEvent = parsedUsageEvent(from: usage) else { return [] }
+                  let usageEvent = parsedUsageEvent(from: usage) else {
+                return [.control(type: "stream_event.message_start")]
+            }
             return [usageEvent]
         case "message_delta":
             guard let usage = event.usage,
-                  let usageEvent = parsedUsageEvent(from: usage) else { return [] }
+                  let usageEvent = parsedUsageEvent(from: usage) else {
+                return [.control(type: "stream_event.message_delta")]
+            }
             return [usageEvent]
         case "content_block_start":
-            return []
+            return [.control(type: "stream_event.content_block_start")]
         case "content_block_delta":
-            guard let delta = event.delta else { return [] }
+            guard let delta = event.delta else {
+                return [.unknown(type: "stream_event.content_block_delta")]
+            }
             if let text = delta.text, !text.isEmpty {
                 return [.text(text: text)]
             }
             if let thinking = delta.thinking, !thinking.isEmpty {
                 return [.thinking(text: thinking)]
             }
-            return []
+            return [.control(type: "stream_event.content_block_delta")]
+        case "content_block_stop", "message_stop":
+            return [.control(type: "stream_event.\(event.type)")]
         default:
-            return []
+            return [.unknown(type: "stream_event.\(event.type)")]
         }
     }
 
@@ -362,13 +384,17 @@ public enum StreamEventParser {
             guard includeThinking, let text = block.thinking, !text.isEmpty else { return [] }
             return [.thinking(text: text)]
         case "text":
-            guard let text = block.text, !text.isEmpty else { return [] }
+            guard let text = block.text, !text.isEmpty else {
+                return [.control(type: "assistant.block.text")]
+            }
             return [.text(text: text)]
         case "tool_use":
-            guard let name = block.name, let id = block.id else { return [] }
+            guard let name = block.name, let id = block.id else {
+                return [.unknown(type: "assistant.block.tool_use")]
+            }
             return [parsedToolUseEvent(name: name, id: id, input: block.input?.mapValues { $0.value })]
         default:
-            return []
+            return [.unknown(type: "assistant.block.\(block.type)")]
         }
     }
 

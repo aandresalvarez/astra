@@ -27,8 +27,8 @@ public enum CopilotStreamEventParser {
         var emittedMergedResult = false
         for event in events {
             switch event {
-            case .control:
-                continue
+            case .control(let type):
+                parsed.append(.control(type: type))
             case .stats where hasCompletion:
                 if let stats, !emittedMergedResult {
                     parsed.append(.result(
@@ -76,8 +76,11 @@ public enum CopilotStreamEventParser {
         guard !trimmed.isEmpty else { return [] }
 
         guard let data = trimmed.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let json = try? JSONSerialization.jsonObject(with: data) else {
             return parsePlainTextAgentEvents(line: trimmed)
+        }
+        guard let object = json as? [String: Any] else {
+            return [.unknown(provider: "copilot", type: "unknown", raw: trimmed)]
         }
 
         return events(from: object, raw: trimmed)
@@ -103,32 +106,50 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized == "user.message" || normalized == "assistant.turn_start" || normalized == "assistant.turn_end" {
-            return []
+            return [.control(type: normalized)]
         }
 
         if normalized == "assistant.message_start" || normalized == "abort" {
-            return []
+            return [.control(type: normalized)]
+        }
+
+        // `assistant.idle` is Copilot lifecycle metadata emitted after a turn,
+        // including after an aborted process. The process exit path owns the
+        // actual success/failure outcome; keep this marker transient so it
+        // cannot become an unknown durable event or extend actionable work.
+        if normalized == "assistant.idle" {
+            return [.control(type: normalized)]
         }
 
         if normalized == "assistant.reasoning" || normalized == "assistant.reasoning_delta" {
             if let text = textValue(in: object), !text.isEmpty {
                 return [.thinking(text: text)]
             }
-            return []
+            return [.control(type: normalized)]
         }
 
         // Copilot streams one tool call's JSON arguments as many deltas before
         // emitting the authoritative tool.execution_start event. Treating each
         // fragment as a tool invocation makes one call look like a retry loop.
         if normalized == "assistant.tool_call_delta" {
-            return []
+            return [.control(type: normalized)]
+        }
+
+        // Copilot explicitly marks these events ephemeral. Partial output and
+        // progress messages are live tool activity, not independently final
+        // results or new tool invocations. Preserve them as non-durable
+        // control events so the process watchdog sees liveness while only the
+        // authoritative tool.execution_complete enters task history.
+        if normalized == "tool.execution_partial_result"
+            || normalized == "tool.execution_progress" {
+            return [.control(type: normalized)]
         }
 
         if normalized == "assistant.message_delta" {
             if let text = textValue(in: object), !text.isEmpty {
                 return [.text(text: text)]
             }
-            return [.unknown(provider: "copilot", type: type, raw: raw)]
+            return [.control(type: normalized)]
         }
 
         if normalized == "assistant.message" {
@@ -139,7 +160,7 @@ public enum CopilotStreamEventParser {
                 if let text = textValue(in: object), !text.isEmpty {
                     return [.text(text: text)]
                 }
-                return []
+                return [.control(type: "assistant.message.tool_request")]
             }
             if let text = textValue(in: object), !text.isEmpty {
                 return [.completed(summary: text)]
@@ -226,8 +247,8 @@ public enum CopilotStreamEventParser {
 
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
-        case .control:
-            return nil
+        case .control(let type):
+            return .control(type: type)
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):
@@ -375,7 +396,7 @@ public enum CopilotStreamEventParser {
         if sessionID != nil || model != nil {
             return [.started(sessionID: sessionID, model: model)]
         }
-        return []
+        return [.control(type: type.lowercased())]
     }
 
     private static func sessionShutdownEvents(from object: [String: Any]) -> [AgentEvent]? {

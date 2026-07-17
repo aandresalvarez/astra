@@ -20,6 +20,9 @@ let package = Package(
         // explicit TOOL_PRODUCTS allowlist and never stages this executable.
         .executable(name: "astra-agent-process-crash-harness", targets: ["AgentProcessCrashHarness"]),
         .executable(name: "astra-run-supervisor-broker-harness", targets: ["RunSupervisorBrokerHarness"]),
+        // Regression harness for abrupt HostControl-parent termination. It is
+        // built by SwiftPM tests but is not copied into either ASTRA app.
+        .executable(name: "astra-host-control-crash-harness", targets: ["HostControlCrashHarness"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
@@ -127,6 +130,11 @@ let package = Package(
             name: "AstraRunBrokerTool",
             dependencies: ["RunBrokerKit"],
             path: "Tools/AstraRunBrokerTool"
+        ),
+        .executableTarget(
+            name: "HostControlCrashHarness",
+            dependencies: ["HostControlToolSupport"],
+            path: "Tests/HostControlCrashHarness"
         ),
         .executableTarget(
             name: "AstraWorkspaceTool",
@@ -248,7 +256,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunBrokerPolicyTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunBrokerPolicyTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "HostControlCrashHarness", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(

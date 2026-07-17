@@ -6,12 +6,14 @@ public enum CursorStreamEventParser {
     }
 
     public static func parseAll(line: String) -> [ParsedEvent] {
-        let cursorEvents = cursorSpecificParsedEvents(line: line)
-        if !cursorEvents.isEmpty {
-            return cursorEvents
+        switch cursorSpecificParsedEvents(line: line) {
+        case .recognized(let events):
+            return events
+        case .unrecognized:
+            return StreamEventParser.parseStructured(line: line).resolvingUnrecognized(with: {
+                parsePlainText(line: line)
+            })
         }
-        let streamEvents = StreamEventParser.parseAll(line: line)
-        return streamEvents.isEmpty ? parsePlainText(line: line) : streamEvents
     }
 
     public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
@@ -31,6 +33,8 @@ public enum CursorStreamEventParser {
 
     private static func agentEvents(from event: ParsedEvent, rawLine: String) -> [AgentEvent] {
         switch event {
+        case .control(let type):
+            return [.control(type: type)]
         case .systemInit(let model, let sessionID):
             return [.started(sessionID: sessionID, model: model)]
         case .thinking(let text):
@@ -81,20 +85,27 @@ public enum CursorStreamEventParser {
         return .unknown(provider: "cursor", type: type, raw: raw)
     }
 
-    private static func cursorSpecificParsedEvents(line: String) -> [ParsedEvent] {
+    private static func cursorSpecificParsedEvents(line: String) -> StructuredStreamParseOutcome<ParsedEvent> {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let data = trimmed.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = object["type"] as? String else {
-            return []
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return .unrecognized
+        }
+        guard let object = json as? [String: Any] else {
+            return .recognized([.unknown(type: "unknown")])
+        }
+        guard let type = object["type"] as? String else {
+            return .recognized([.unknown(type: "unknown")])
         }
         switch type {
         case "thinking":
-            guard let text = object["text"] as? String, !text.isEmpty else { return [] }
-            return [.thinking(text: text)]
+            guard let text = object["text"] as? String, !text.isEmpty else {
+                return .recognized([.unknown(type: type)])
+            }
+            return .recognized([.thinking(text: text)])
         default:
-            return []
+            return .unrecognized
         }
     }
 

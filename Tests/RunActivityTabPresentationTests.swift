@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 import ASTRAModels
 @testable import ASTRA
@@ -99,12 +101,12 @@ struct RunActivityTabPresentationTests {
         let compact = RunActivityProgressTimelinePresentation(
             messages: messages,
             planItems: planItems,
-            showsAllMessages: false
+            historyAnchorID: nil
         )
         let expanded = RunActivityProgressTimelinePresentation(
             messages: messages,
             planItems: planItems,
-            showsAllMessages: true
+            historyAnchorID: messages.last?.id
         )
 
         #expect(compact.phases.map(\.status) == [.completed, .active, .upcoming])
@@ -112,6 +114,7 @@ struct RunActivityTabPresentationTests {
         #expect(compact.hiddenMessageCount == 2)
         #expect(expanded.visibleMessages == messages)
         #expect(expanded.hiddenMessageCount == 0)
+        #expect(expanded.isBrowsingHistory)
     }
 
     @Test("completed plans keep their progress attached to the final phase")
@@ -122,7 +125,7 @@ struct RunActivityTabPresentationTests {
                 TaskProtocolTodoItem(id: "inspect", text: "Inspect", status: .done),
                 TaskProtocolTodoItem(id: "verify", text: "Verify", status: .done)
             ],
-            showsAllMessages: false
+            historyAnchorID: nil
         )
 
         #expect(timeline.phases.map(\.status) == [.completed, .completed])
@@ -153,18 +156,134 @@ struct RunActivityTabPresentationTests {
         #expect(!bubble.contains(".accessibilityElement(children: .combine)"))
     }
 
-    @Test("update history choice is tracked independently for each run")
+    @Test("live run activity limits clock invalidation to the elapsed badge")
+    func liveRunActivityLimitsClockInvalidationToElapsedBadge() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/TaskMainView.swift"),
+            encoding: .utf8
+        )
+
+        let disclosureStart = try #require(source.range(of: "private func runActivityDisclosureContent("))
+        let disclosureEnd = try #require(
+            source[disclosureStart.upperBound...].range(of: "private func runActivityDisclosureTitle(")
+        )
+        let disclosure = String(source[disclosureStart.lowerBound..<disclosureEnd.lowerBound])
+        #expect(disclosure.components(separatedBy: "TimelineView(.periodic(from: .now, by: 1))").count - 1 == 1)
+
+        let summaryStart = try #require(source.range(of: "private func runActivitySummaryPartsText("))
+        let summaryEnd = try #require(
+            source[summaryStart.upperBound...].range(of: "private func runActivityDetails(")
+        )
+        let summary = String(source[summaryStart.lowerBound..<summaryEnd.lowerBound])
+        #expect(!summary.contains("TimelineView"))
+        #expect(!summary.contains("now: Date"))
+
+        let badgeStart = try #require(source.range(of: "private func runActivityLiveBadge("))
+        let badgeEnd = try #require(
+            source[badgeStart.upperBound...].range(of: "private func compactLiveDuration(")
+        )
+        let badge = String(source[badgeStart.lowerBound..<badgeEnd.lowerBound])
+        #expect(!badge.contains(".animation("))
+        #expect(!badge.contains("sin("))
+    }
+
+    @Test("update history anchor is tracked independently for each run")
     func updateHistoryState() {
         let otherRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000502")!
+        let anchorID = progressMessage(index: 12).id
         var state = RunActivityDisclosureState()
 
-        state.toggleAllUpdates(runID: Self.runID)
+        state.setUpdateHistoryAnchor(anchorID, runID: Self.runID)
 
-        #expect(state.showsAllUpdates(runID: Self.runID))
-        #expect(!state.showsAllUpdates(runID: otherRunID))
+        #expect(state.updateHistoryAnchor(runID: Self.runID) == anchorID)
+        #expect(state.updateHistoryAnchor(runID: otherRunID) == nil)
 
-        state.toggleAllUpdates(runID: Self.runID)
-        #expect(!state.showsAllUpdates(runID: Self.runID))
+        state.setUpdateHistoryAnchor(nil, runID: Self.runID)
+        #expect(state.updateHistoryAnchor(runID: Self.runID) == nil)
+    }
+
+    @Test("2,500 updates remain in stable bounded history pages")
+    func largeProgressHistoryUsesBoundedStablePages() throws {
+        let messages = (0..<2_500).map(progressMessage(index:))
+        let latest = RunActivityProgressTimelinePresentation(
+            messages: messages,
+            planItems: [],
+            historyAnchorID: messages.last?.id
+        )
+
+        #expect(latest.visibleMessages.count == RunActivityProgressTimelinePresentation.historyPageSize)
+        #expect(latest.visibleMessages.first?.text == "Update 2480")
+        #expect(latest.visibleMessages.last?.text == "Update 2499")
+        #expect(latest.olderMessageCount == 2_480)
+        #expect(latest.newerMessageCount == 0)
+
+        let originalPageIDs = latest.visibleMessages.map(\.id)
+        let appendedMessages = messages + [progressMessage(index: 2_500)]
+        let stableAfterAppend = RunActivityProgressTimelinePresentation(
+            messages: appendedMessages,
+            planItems: [],
+            historyAnchorID: messages.last?.id
+        )
+        #expect(stableAfterAppend.visibleMessages.map(\.id) == originalPageIDs)
+        #expect(stableAfterAppend.newerMessageCount == 1)
+
+        var anchorID = try #require(latest.latestPageAnchorID)
+        var visitedIDs = Set<UUID>()
+        while true {
+            let page = RunActivityProgressTimelinePresentation(
+                messages: messages,
+                planItems: [],
+                historyAnchorID: anchorID
+            )
+            #expect(page.visibleMessages.count <= RunActivityProgressTimelinePresentation.historyPageSize)
+            visitedIDs.formUnion(page.visibleMessages.map(\.id))
+            guard let olderAnchorID = page.olderPageAnchorID else { break }
+            anchorID = olderAnchorID
+        }
+        #expect(visitedIDs.count == messages.count)
+    }
+
+    @Test("progress rows retain a fixed visual line budget")
+    func progressRowsRetainFixedVisualLineBudget() throws {
+        #expect(RunActivityLayout.progressMessageLineLimit == 4)
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/RunActivityTabsView.swift"),
+            encoding: .utf8
+        )
+        #expect(source.contains(".lineLimit(RunActivityLayout.progressMessageLineLimit)"))
+        #expect(!source.contains(".lineLimit(presentation.showsAllMessages ? nil"))
+    }
+
+    @MainActor
+    @Test("2,500-update timeline renders within a bounded surface")
+    func largeProgressHistoryHasBoundedRenderedHeight() throws {
+        let messages = (0..<2_500).map(progressMessage(index:))
+        let presentation = RunActivityProgressTimelinePresentation(
+            messages: messages,
+            planItems: [],
+            historyAnchorID: messages.last?.id
+        )
+        let host = NSHostingView(rootView: RunActivityProgressTimelineView(
+            presentation: presentation,
+            isRunning: true,
+            onSelectHistoryAnchor: { _ in }
+        ))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        let width = host.widthAnchor.constraint(equalToConstant: 620)
+        width.isActive = true
+        defer { width.isActive = false }
+
+        host.layoutSubtreeIfNeeded()
+        let renderedHeight = host.fittingSize.height
+
+        #expect(renderedHeight > 0)
+        #expect(renderedHeight < 4_000, "bounded page rendered at \(renderedHeight) points")
     }
 
     private func completedRunSnapshot() -> TaskRunSnapshot {

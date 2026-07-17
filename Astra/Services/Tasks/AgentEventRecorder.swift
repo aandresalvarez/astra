@@ -702,6 +702,8 @@ enum AgentEventRecorder {
     /// OpenCode already split their terminal result envelope.
     static func agentEvents(from parsed: ParsedEvent) -> [AgentEvent] {
         switch parsed {
+        case .control(let type):
+            return [.control(type: type)]
         case .systemInit(let model, let sessionId):
             return [.started(sessionID: sessionId, model: model)]
         case .thinking(let text):
