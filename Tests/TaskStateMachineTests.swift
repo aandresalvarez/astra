@@ -179,6 +179,35 @@ struct TaskStateMachineTests {
         #expect(!task.isTerminal)
     }
 
+    @Test("Trusted external registration repairs provider failure but not explicit cancellation")
+    func externalMonitoringRepairsProviderFailureExceptCancellation() throws {
+        let container = try makeTaskStateMachineContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Monitor", goal: "Wait for the managed job")
+        task.status = .failed
+        task.completedAt = Date(timeIntervalSince1970: 900)
+        context.insert(task)
+
+        let repaired = TaskStateMachine.pauseForMonitoredExternalOperation(
+            task,
+            modelContext: context,
+            at: Date(timeIntervalSince1970: 1_000)
+        )
+        #expect(repaired.changed)
+        #expect(task.status == .waitingExternal)
+        #expect(task.completedAt == nil)
+
+        task.status = .cancelled
+        let rejected = TaskStateMachine.pauseForMonitoredExternalOperation(
+            task,
+            modelContext: context,
+            at: Date(timeIntervalSince1970: 1_001)
+        )
+        #expect(!rejected.changed)
+        #expect(rejected.rejection == .illegalTransition)
+        #expect(task.status == .cancelled)
+    }
+
     @Test("Continuation admission failure restores previous terminal status")
     func continuationAdmissionFailureRestoresPreviousTerminalStatus() throws {
         let container = try makeTaskStateMachineContainer()

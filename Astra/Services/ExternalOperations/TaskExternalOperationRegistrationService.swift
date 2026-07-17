@@ -187,6 +187,16 @@ enum TaskExternalOperationRegistrationService {
             operation.terminalObservedAt = now
         }
         modelContext.insert(operation)
+        // Registration is the durable ownership boundary. Move the task out of
+        // provider-owned Running immediately so a later provider timeout,
+        // budget exit, or crash cannot expose a retry that duplicates the job.
+        _ = TaskExternalOperationProviderLifecycleService.beginMonitoringAtRegistration(
+            operation: operation,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            at: now
+        )
         AppLogger.audit(.taskStarted, category: "ExternalOperation", taskID: task.id, fields: [
             "operation": "register",
             "backend": backendKind,

@@ -524,7 +524,9 @@ enum TaskStateMachine {
             task,
             to: .waitingExternal,
             intent: "external_operation_monitoring",
-            allowedFrom: [.running, .waitingExternal],
+            // A trusted registration repairs any stale provider-owned result
+            // after restart. Explicit cancellation is the sole exception.
+            allowedFrom: Set(TaskStatus.allCases).subtracting([.cancelled]),
             completedAt: .clear,
             readState: .read,
             modelContext: modelContext,

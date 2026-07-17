@@ -1060,11 +1060,11 @@ final class AgentRuntimeWorker {
             "phase": auditPhase.rawValue,
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
-
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled
             TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
+        } else if TaskExternalOperationProviderLifecycleService.preserveMonitoringAfterProviderExitIfNeeded(task: task, run: run, modelContext: modelContext) {
         } else if result.policyApprovalRequired {
             TaskRuntimeOutcomeTransition.applyPolicyApproval(
                 task: task,

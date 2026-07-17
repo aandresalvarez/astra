@@ -51,6 +51,13 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(operation.externalIdentity == record.startReceipt?.externalIdentity)
         #expect(operation.originatingRunID == fixture.run.id)
         #expect(operation.backendJobID == record.jobID)
+        #expect(fixture.task.status == .waitingExternal)
+        #expect(fixture.run.status == .completed)
+        #expect(fixture.run.typedStopReason == .externalOutcomePending)
+        #expect(fixture.run.completedAt != nil)
+        #expect(fixture.task.events.filter {
+            $0.run?.id == fixture.run.id && $0.type == "externalOperation.monitoring.started"
+        }.count == 1)
         let controlPlaneProjection = [
             operation.externalIdentity,
             operation.backendKindRaw,
@@ -58,6 +65,56 @@ struct TaskExternalOperationRegistrationServiceTests {
             operation.originatingContextRevision ?? ""
         ].joined(separator: "|")
         #expect(!controlPlaneProjection.contains("super-secret-value"))
+    }
+
+    @Test("registered operation repairs non-success provider exit classifications")
+    func registeredOperationWinsOverProviderFailureAndBudgetExit() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        fixture.task.status = .running
+        let record = try fixture.createBackendRecord(invocationID: "provider-exit-guard")
+        let content = try fixture.structuredResult(for: record)
+        guard case .registered = TaskExternalOperationRegistrationService.registerStructuredStartResult(
+            content,
+            toolResultID: "outer-provider-exit-guard",
+            observedToolName: "workspace_job_start",
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context,
+            now: Date(timeIntervalSince1970: 10_000)
+        ) else {
+            Issue.record("Expected trusted job registration")
+            return
+        }
+
+        fixture.task.status = .failed
+        fixture.run.status = .timeout
+        fixture.run.typedStopReason = .timeout
+        #expect(TaskExternalOperationProviderLifecycleService.preserveMonitoringAfterProviderExitIfNeeded(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context,
+            at: Date(timeIntervalSince1970: 10_001)
+        ))
+        #expect(fixture.task.status == .waitingExternal)
+        #expect(fixture.run.status == .completed)
+        #expect(fixture.run.typedStopReason == .externalOutcomePending)
+
+        fixture.task.status = .budgetExceeded
+        fixture.run.status = .budgetExceeded
+        fixture.run.typedStopReason = .maxBudgetReached
+        #expect(TaskExternalOperationProviderLifecycleService.preserveMonitoringAfterProviderExitIfNeeded(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context,
+            at: Date(timeIntervalSince1970: 10_002)
+        ))
+        #expect(fixture.task.status == .waitingExternal)
+        #expect(fixture.run.status == .completed)
+        #expect(fixture.run.typedStopReason == .externalOutcomePending)
+        #expect(fixture.task.events.filter {
+            $0.run?.id == fixture.run.id && $0.type == "externalOperation.monitoring.started"
+        }.count == 1)
     }
 
     @Test("crash after launch adopts trusted backend record exactly once")

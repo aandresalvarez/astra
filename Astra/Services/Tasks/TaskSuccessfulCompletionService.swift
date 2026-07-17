@@ -119,29 +119,13 @@ enum TaskSuccessfulCompletionService {
         run: TaskRun,
         modelContext: ModelContext
     ) {
-        let completedAt = run.completedAt ?? Date()
-        run.completedAt = completedAt
-        run.recordExternalOutcomePending()
-        TaskStateMachine.pauseForMonitoredExternalOperation(
-            task,
+        _ = TaskExternalOperationProviderLifecycleService.returnProviderRunToMonitoring(
+            operation: operation,
+            task: task,
+            run: run,
             modelContext: modelContext,
-            at: completedAt
+            at: run.completedAt ?? Date()
         )
-        let alreadyRecorded = task.events.contains {
-            $0.run?.id == run.id && $0.type == "externalOperation.monitoring.started"
-        }
-        if !alreadyRecorded {
-            modelContext.insert(TaskEvent(
-                task: task,
-                type: "externalOperation.monitoring.started",
-                payload: TaskEvent.payloadString([
-                    "backend": operation.backendKindRaw,
-                    "external_identity": operation.externalIdentity,
-                    "originating_run_id": operation.originatingRunID.uuidString
-                ]),
-                run: run
-            ))
-        }
     }
 
     /// Re-runs non-publication completion gates after a durable external
