@@ -1189,6 +1189,54 @@ struct RuntimeSwitchStrictDurableContractTests {
         }
     }
 
+    @Test("Resolved target requires a canonical supervision policy")
+    func resolvedTargetRequiresCanonicalSupervisionPolicy() throws {
+        let fixture = try Fixture()
+        let valid = fixture.manifest(
+            executionID: executionID(810),
+            runtimeID: .codexCLI,
+            configurationRevision: "valid-supervision"
+        )
+        #expect(try RuntimeSwitchResolvedTarget(
+            manifest: valid,
+            manifestSHA256: digest(810)
+        ).manifest.supervisionPolicy != nil)
+
+        let missing = ExecutionLaunchManifest(
+            installationID: valid.installationID,
+            storeID: valid.storeID,
+            executionID: executionID(811),
+            taskID: valid.taskID,
+            authority: valid.authority,
+            configuration: valid.configuration,
+            declaredEffects: valid.declaredEffects,
+            supervisionPolicy: nil,
+            createdAt: valid.createdAt
+        )
+        #expect(throws: RuntimeSwitchContractError.invalidTargetManifest) {
+            try RuntimeSwitchResolvedTarget(manifest: missing, manifestSHA256: digest(811))
+        }
+
+        var wire = try #require(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(
+                    try RuntimeSwitchResolvedTarget(manifest: valid, manifestSHA256: digest(810))
+                )
+            ) as? [String: Any]
+        )
+        var manifest = try #require(wire["manifest"] as? [String: Any])
+        var policy = try #require(manifest["supervisionPolicy"] as? [String: Any])
+        policy["unexpected"] = true
+        manifest["supervisionPolicy"] = policy
+        wire["manifest"] = manifest
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(
+                RuntimeSwitchResolvedTarget.self,
+                from: JSONSerialization.data(withJSONObject: wire)
+            )
+        }
+    }
+
     @Test("Trusted attestations are deliberately not Codable")
     func attestationsAreNotWireValues() {
         #expect(!(VerifiedRuntimeSwitchAdmission.self is any Codable.Type))
@@ -1681,6 +1729,10 @@ private struct Fixture {
                 configurationRevision: configurationRevision
             ),
             declaredEffects: declaredEffects,
+            supervisionPolicy: try! .init(
+                hardTimeoutSeconds: 3_600,
+                idleProgressTimeoutSeconds: 300
+            ),
             createdAt: createdAt
         )
     }

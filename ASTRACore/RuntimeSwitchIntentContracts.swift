@@ -193,7 +193,15 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
 
     private static func validate(_ manifest: ExecutionLaunchManifest) throws {
         let configuration = manifest.configuration
-        guard configuration.runtimeID.rawValue.utf8.count <= 128,
+        guard manifest.authority.epoch.rawValue > 0,
+              let supervisionPolicy = manifest.supervisionPolicy,
+              (try? ExecutionSupervisionPolicySnapshot(
+                  hardTimeoutSeconds: supervisionPolicy.hardTimeoutSeconds,
+                  idleProgressTimeoutSeconds: supervisionPolicy.idleProgressTimeoutSeconds,
+                  maximumOutputEventBytes: supervisionPolicy.maximumOutputEventBytes,
+                  maximumPersistedOutputBytes: supervisionPolicy.maximumPersistedOutputBytes
+              )) == supervisionPolicy,
+              configuration.runtimeID.rawValue.utf8.count <= 128,
               (configuration.modelID?.utf8.count ?? 0) <= 256,
               configuration.executablePath.utf8.count <= 4_096,
               configuration.workingDirectory.utf8.count <= 4_096,
@@ -223,6 +231,7 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
             authority: manifest.authority,
             configuration: canonicalConfiguration,
             declaredEffects: manifest.declaredEffects,
+            supervisionPolicy: supervisionPolicy,
             createdAt: manifest.createdAt
         )
         guard canonicalManifest == manifest,
@@ -275,6 +284,19 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
         let manifest = try decoder.container(keyedBy: ManifestCodingKeys.self)
         try validateAuthorityShape(from: manifest.superDecoder(forKey: .authority))
         try validateConfigurationShape(from: manifest.superDecoder(forKey: .configuration))
+        guard manifest.contains(.supervisionPolicy),
+              try !manifest.decodeNil(forKey: .supervisionPolicy) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .supervisionPolicy,
+                in: manifest,
+                debugDescription: "A runtime switch target requires a supervision policy"
+            )
+        }
+        try RuntimeSwitchStrictCoding.rejectUnknownKeys(
+            in: manifest.superDecoder(forKey: .supervisionPolicy),
+            allowed: Set(SupervisionPolicyCodingKeys.allCases.map(\.rawValue)),
+            typeName: "runtime switch target supervision policy"
+        )
         var effects = try manifest.nestedUnkeyedContainer(forKey: .declaredEffects)
         while !effects.isAtEnd {
             try validateEffectShape(from: effects.superDecoder())
@@ -352,7 +374,7 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
 
     private enum ManifestCodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion, installationID, storeID, executionID, taskID
-        case authority, configuration, declaredEffects, createdAt
+        case authority, configuration, declaredEffects, supervisionPolicy, createdAt
     }
 
     private enum AuthorityCodingKeys: String, CodingKey, CaseIterable { case id, epoch }
@@ -367,6 +389,11 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
     }
 
     private enum EffectCodingKeys: String, CodingKey, CaseIterable { case scope, access }
+
+    private enum SupervisionPolicyCodingKeys: String, CodingKey, CaseIterable {
+        case hardTimeoutSeconds, idleProgressTimeoutSeconds
+        case maximumOutputEventBytes, maximumPersistedOutputBytes
+    }
 
     private enum ScopeKind: String, CaseIterable {
         case workspaceRepository, remotePath, datasetDatabase, cloudResource, computeOnly, unknown
