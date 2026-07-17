@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -12,7 +11,12 @@ package enum RunSupervisorSpoolFrameCodec {
     static let commitMarker: UInt64 = 0x415354524153504c
     static let maximumPayloadBytes = 65_536
 
-    static func encode(_ event: RunSupervisorEvent) throws -> Data {
+    private static let authenticationDomain = Data("astra.run-supervisor.spool-frame.v1\0".utf8)
+
+    static func encode(
+        _ event: RunSupervisorEvent,
+        capability: RunSupervisorCapability
+    ) throws -> Data {
         let payload = try RunSupervisorDigests.canonicalData(event)
         guard payload.count <= maximumPayloadBytes else {
             throw RunSupervisorError.oversizedFrame(limit: maximumPayloadBytes)
@@ -20,16 +24,18 @@ package enum RunSupervisorSpoolFrameCodec {
         var length = UInt32(payload.count).bigEndian
         let header = withUnsafeBytes(of: &length) { Data($0) }
         var marker = commitMarker.bigEndian
+        let authenticated = authenticationDomain + header + payload
         return header
             + payload
-            + Data(SHA256.hash(data: header + payload))
+            + RunSupervisorDigests.hmacBytes(authenticated, capability: capability)
             + withUnsafeBytes(of: &marker) { Data($0) }
     }
 
     static func decode(
         fileDescriptor: Int32,
         offset: Int,
-        fileSize: Int
+        fileSize: Int,
+        capability: RunSupervisorCapability
     ) throws -> RunSupervisorSpoolFrameDecodeResult {
         let remaining = fileSize - offset
         guard remaining >= 4 else { return .incompleteTail }
@@ -41,11 +47,21 @@ package enum RunSupervisorSpoolFrameCodec {
         let total = 4 + payloadLength + 32 + 8
         guard remaining >= total else { return .incompleteTail }
         let payload = try preadExactly(payloadLength, from: fileDescriptor, offset: offset + 4)
-        let expectedDigest = try preadExactly(32, from: fileDescriptor, offset: offset + 4 + payloadLength)
+        let expectedAuthentication = try preadExactly(
+            32,
+            from: fileDescriptor,
+            offset: offset + 4 + payloadLength
+        )
         let markerData = try preadExactly(8, from: fileDescriptor, offset: offset + 4 + payloadLength + 32)
         let marker = markerData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).bigEndian }
         guard marker == commitMarker,
-              Data(SHA256.hash(data: header + payload)) == expectedDigest else {
+              RunSupervisorDigests.constantTimeEqual(
+                  RunSupervisorDigests.hmacBytes(
+                      authenticationDomain + header + payload,
+                      capability: capability
+                  ),
+                  expectedAuthentication
+              ) else {
             return .corruptCommittedFrame
         }
         let decoder = JSONDecoder()

@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -6,13 +5,14 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     public static let defaultMaximumBytes = 8 * 1_024 * 1_024
     public static let defaultCriticalReserveBytes = 256 * 1_024
     private static let filename = "events.spool"
-    private static let acknowledgementFilename = "events.ack"
 
     private let directory: RunSupervisorRunDirectory
+    private let capability: RunSupervisorCapability
     private let maximumBytes: Int
     private let criticalReserveBytes: Int
     private let terminalReserveBytes: Int
     private let clock: any RunSupervisorClock
+    private let faultInjector: any RunSupervisorSpoolFaultInjecting
     private let lock = NSCondition()
     private var fileDescriptor: Int32
     private var events: [RunSupervisorEvent] = []
@@ -20,12 +20,33 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     private var highestSequence: UInt64 = 0
     private var acknowledgedSequence: UInt64 = 0
     private var outputBackpressured = false
+    private var persistencePoisoned = false
 
-    public init(
+    public convenience init(
         directory: RunSupervisorRunDirectory,
+        capability: RunSupervisorCapability,
         maximumBytes: Int = defaultMaximumBytes,
         criticalReserveBytes: Int = defaultCriticalReserveBytes,
         clock: any RunSupervisorClock = SystemRunSupervisorClock()
+    ) throws {
+        try self.init(
+            directory: directory,
+            capability: capability,
+            maximumBytes: maximumBytes,
+            criticalReserveBytes: criticalReserveBytes,
+            clock: clock,
+            faultInjector: NoOpRunSupervisorSpoolFaultInjector()
+        )
+    }
+
+    package init(
+        directory: RunSupervisorRunDirectory,
+        capability: RunSupervisorCapability,
+        maximumBytes: Int = defaultMaximumBytes,
+        criticalReserveBytes: Int = defaultCriticalReserveBytes,
+        clock: any RunSupervisorClock = SystemRunSupervisorClock(),
+        faultInjector: any RunSupervisorSpoolFaultInjecting,
+        createIfMissing: Bool = true
     ) throws {
         guard maximumBytes > 0,
               criticalReserveBytes > 0,
@@ -33,26 +54,48 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
             throw RunSupervisorError.invalidSchema
         }
         self.directory = directory
+        self.capability = capability
         self.maximumBytes = maximumBytes
         self.criticalReserveBytes = criticalReserveBytes
         self.terminalReserveBytes = max(1, criticalReserveBytes / 2)
         self.clock = clock
-        self.fileDescriptor = try Self.openSpool(in: directory)
-        let recovery = try reopenAndValidate()
-        let persistedAcknowledgement = try Self.readAcknowledgement(in: directory)
-        guard persistedAcknowledgement <= highestSequence,
-              Self.isValidCompactedPrefix(
-                firstSequence: events.first?.sequence,
-                acknowledgement: persistedAcknowledgement
-              ) else {
-            throw RunSupervisorError.corruptCommittedSpool
-        }
-        acknowledgedSequence = persistedAcknowledgement
-        if recovery > 0 {
-            _ = try appendCritical(
-                .recoveryTailQuarantined,
-                payload: .init(quarantinedByteCount: UInt64(recovery))
+        self.faultInjector = faultInjector
+        let opened = try RunSupervisorSpoolFileIO.openSpool(
+            in: directory,
+            createIfMissing: createIfMissing
+        )
+        self.fileDescriptor = opened.fileDescriptor
+        do {
+            try RunSupervisorSpoolDurability.ensureAuthenticationMarker(
+                in: directory,
+                spoolFileDescriptor: fileDescriptor,
+                capability: capability,
+                allowCreation: opened.wasCreated
             )
+            let recovery = try reopenAndValidate()
+            let persistedAcknowledgement = try RunSupervisorSpoolDurability.readAcknowledgement(
+                in: directory,
+                capability: capability
+            )
+            guard persistedAcknowledgement <= highestSequence,
+                  RunSupervisorSpoolDurability.isValidCompactedPrefix(
+                    firstSequence: events.first?.sequence,
+                    acknowledgement: persistedAcknowledgement
+                  ) else {
+                throw RunSupervisorError.corruptCommittedSpool
+            }
+            acknowledgedSequence = persistedAcknowledgement
+            if recovery > 0 {
+                _ = try appendCritical(
+                    .recoveryTailQuarantined,
+                    payload: .init(quarantinedByteCount: UInt64(recovery))
+                )
+            }
+        } catch {
+            _ = flock(fileDescriptor, LOCK_UN)
+            close(fileDescriptor)
+            fileDescriptor = -1
+            throw error
         }
     }
 
@@ -75,8 +118,9 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         }
         lock.lock()
         defer { lock.unlock() }
+        guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let candidate = makeEvent(kind, payload: .init(data: data))
-        let frame = try RunSupervisorSpoolFrameCodec.encode(candidate)
+        let frame = try RunSupervisorSpoolFrameCodec.encode(candidate, capability: capability)
         guard currentBytes + frame.count <= maximumBytes - criticalReserveBytes else {
             if !outputBackpressured {
                 outputBackpressured = true
@@ -98,6 +142,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         try payload.validate(for: kind)
         lock.lock()
         defer { lock.unlock() }
+        guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let event = makeEvent(kind, payload: payload)
         try appendEncodedCritical(event)
         return event
@@ -107,6 +152,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         guard limit > 0, limit <= 4_096 else { throw RunSupervisorError.oversizedFrame(limit: 4_096) }
         lock.lock()
         defer { lock.unlock() }
+        guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let replayFloor = max(sequence, acknowledgedSequence)
         return Array(events.lazy.filter { $0.sequence > replayFloor }.prefix(limit))
     }
@@ -114,24 +160,36 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     public func acknowledge(through sequence: UInt64) throws {
         lock.lock()
         defer { lock.unlock() }
+        guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         guard sequence >= acknowledgedSequence, sequence <= highestSequence else {
             throw RunSupervisorError.invalidAcknowledgement
         }
         if sequence == acknowledgedSequence { return }
-        try persistAcknowledgement(sequence)
-        acknowledgedSequence = sequence
-        try compactLocked(through: sequence)
-        if outputBackpressured, currentBytes < maximumBytes - criticalReserveBytes {
-            outputBackpressured = false
-            let released = makeEvent(.outputBackpressureReleased, payload: .init())
-            try appendEncodedCritical(released)
-            lock.broadcast()
+        do {
+            try RunSupervisorSpoolDurability.persistAcknowledgement(
+                sequence,
+                directory: directory,
+                capability: capability,
+                faultInjector: faultInjector
+            )
+            acknowledgedSequence = sequence
+            try compactLocked(through: sequence)
+            if outputBackpressured, currentBytes < maximumBytes - criticalReserveBytes {
+                outputBackpressured = false
+                let released = makeEvent(.outputBackpressureReleased, payload: .init())
+                try appendEncodedCritical(released)
+                lock.broadcast()
+            }
+        } catch {
+            persistencePoisoned = true
+            throw error
         }
     }
 
     public func waitForOutputCapacity(deadline: Date) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        if persistencePoisoned { return false }
         while outputBackpressured {
             if !lock.wait(until: deadline) { return false }
         }
@@ -152,7 +210,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     }
 
     private func appendEncodedCritical(_ event: RunSupervisorEvent) throws {
-        let frame = try RunSupervisorSpoolFrameCodec.encode(event)
+        let frame = try RunSupervisorSpoolFrameCodec.encode(event, capability: capability)
         let capacity = event.kind.isTerminalTruth ? maximumBytes : maximumBytes - terminalReserveBytes
         guard currentBytes + frame.count <= capacity else {
             throw RunSupervisorError.spoolCriticalCapacityExhausted
@@ -161,7 +219,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     }
 
     private func appendEncoded(_ event: RunSupervisorEvent, frame: Data) throws {
-        try Self.writeAll(frame, to: fileDescriptor)
+        try RunSupervisorSpoolFileIO.writeAll(frame, to: fileDescriptor)
         guard fsync(fileDescriptor) == 0 else {
             throw RunSupervisorError.systemCall("fsync event spool", errno)
         }
@@ -183,16 +241,22 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         guard tempFD >= 0 else { throw RunSupervisorError.systemCall("open spool compaction", errno) }
         var succeeded = false
         defer {
-            close(tempFD)
-            if !succeeded { unlinkat(directory.fileDescriptor, temporary, 0) }
+            if !succeeded {
+                close(tempFD)
+                unlinkat(directory.fileDescriptor, temporary, 0)
+            }
         }
         var bytes = 0
         for event in retained {
-            let frame = try RunSupervisorSpoolFrameCodec.encode(event)
-            try Self.writeAll(frame, to: tempFD)
+            let frame = try RunSupervisorSpoolFrameCodec.encode(event, capability: capability)
+            try RunSupervisorSpoolFileIO.writeAll(frame, to: tempFD)
             bytes += frame.count
         }
         guard fsync(tempFD) == 0 else { throw RunSupervisorError.systemCall("fsync compacted spool", errno) }
+        try faultInjector.checkpoint(.compactionTemporarySynced)
+        guard flock(tempFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw RunSupervisorError.alreadyRunningOrInDoubt
+        }
         guard renameat(
             directory.fileDescriptor,
             temporary,
@@ -201,13 +265,14 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         ) == 0 else {
             throw RunSupervisorError.systemCall("rename compacted spool", errno)
         }
+        try faultInjector.checkpoint(.compactionRenamed)
         guard fsync(directory.fileDescriptor) == 0 else {
             throw RunSupervisorError.systemCall("fsync run directory", errno)
         }
-        let replacementFD = try Self.openSpool(in: directory)
+        try faultInjector.checkpoint(.compactionDirectorySynced)
         succeeded = true
         let oldFD = fileDescriptor
-        fileDescriptor = replacementFD
+        fileDescriptor = tempFD
         close(oldFD)
         events = retained
         currentBytes = bytes
@@ -229,7 +294,8 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
             switch try RunSupervisorSpoolFrameCodec.decode(
                 fileDescriptor: fileDescriptor,
                 offset: offset,
-                fileSize: fileSize
+                fileSize: fileSize,
+                capability: capability
             ) {
             case .incompleteTail:
                 break
@@ -248,7 +314,12 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         }
         let tailBytes = fileSize - offset
         if tailBytes > 0 {
-            try quarantineTail(offset: offset, byteCount: tailBytes)
+            try RunSupervisorSpoolFileIO.quarantineTail(
+                fileDescriptor: fileDescriptor,
+                directory: directory,
+                offset: offset,
+                byteCount: tailBytes
+            )
             guard fsync(directory.fileDescriptor) == 0 else {
                 throw RunSupervisorError.systemCall("fsync tail quarantine directory", errno)
             }
@@ -261,132 +332,5 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         currentBytes = offset
         highestSequence = decoded.last?.sequence ?? 0
         return tailBytes
-    }
-
-    private func persistAcknowledgement(_ sequence: UInt64) throws {
-        var encodedSequence = sequence.bigEndian
-        let sequenceData = withUnsafeBytes(of: &encodedSequence) { Data($0) }
-        let data = sequenceData + Data(SHA256.hash(data: sequenceData))
-        let temporary = ".events-ack-\(UUID().uuidString.lowercased()).tmp"
-        let fd = openat(
-            directory.fileDescriptor,
-            temporary,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard fd >= 0 else { throw RunSupervisorError.systemCall("open acknowledgement temp", errno) }
-        var succeeded = false
-        defer {
-            close(fd)
-            if !succeeded { unlinkat(directory.fileDescriptor, temporary, 0) }
-        }
-        try Self.writeAll(data, to: fd)
-        guard fsync(fd) == 0 else {
-            throw RunSupervisorError.systemCall("fsync acknowledgement", errno)
-        }
-        guard renameat(
-            directory.fileDescriptor,
-            temporary,
-            directory.fileDescriptor,
-            Self.acknowledgementFilename
-        ) == 0 else {
-            throw RunSupervisorError.systemCall("rename acknowledgement", errno)
-        }
-        guard fsync(directory.fileDescriptor) == 0 else {
-            throw RunSupervisorError.systemCall("fsync acknowledgement directory", errno)
-        }
-        succeeded = true
-    }
-
-    private static func readAcknowledgement(in directory: RunSupervisorRunDirectory) throws -> UInt64 {
-        let fd = openat(
-            directory.fileDescriptor,
-            acknowledgementFilename,
-            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
-        )
-        if fd < 0, errno == ENOENT { return 0 }
-        guard fd >= 0 else {
-            throw RunSupervisorError.unsafeFilesystemEntry(acknowledgementFilename)
-        }
-        defer { close(fd) }
-        var status = stat()
-        guard fstat(fd, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFREG,
-              status.st_uid == geteuid(),
-              (status.st_mode & 0o077) == 0,
-              status.st_nlink == 1,
-              status.st_size == 40 else {
-            throw RunSupervisorError.corruptCommittedSpool
-        }
-        let data = try RunSupervisorSpoolFrameCodec.preadExactly(40, from: fd, offset: 0)
-        let sequenceData = data.prefix(8)
-        guard Data(SHA256.hash(data: sequenceData)) == data.suffix(32) else {
-            throw RunSupervisorError.corruptCommittedSpool
-        }
-        return sequenceData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).bigEndian }
-    }
-
-    private static func isValidCompactedPrefix(
-        firstSequence: UInt64?,
-        acknowledgement: UInt64
-    ) -> Bool {
-        guard let firstSequence else { return acknowledgement == 0 }
-        if acknowledgement == 0 { return firstSequence == 1 }
-        return firstSequence == acknowledgement
-            || (acknowledgement < UInt64.max && firstSequence == acknowledgement + 1)
-    }
-
-    private func quarantineTail(offset: Int, byteCount: Int) throws {
-        let evidence = try RunSupervisorSpoolFrameCodec.preadExactly(
-            byteCount,
-            from: fileDescriptor,
-            offset: offset
-        )
-        let name = "events-tail-\(UUID().uuidString.lowercased()).quarantine"
-        let fd = openat(
-            directory.fileDescriptor,
-            name,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard fd >= 0 else { throw RunSupervisorError.systemCall("open spool quarantine", errno) }
-        defer { close(fd) }
-        try Self.writeAll(evidence, to: fd)
-        guard fsync(fd) == 0 else { throw RunSupervisorError.systemCall("fsync spool quarantine", errno) }
-    }
-
-    private static func openSpool(in directory: RunSupervisorRunDirectory) throws -> Int32 {
-        let fd = openat(
-            directory.fileDescriptor,
-            filename,
-            O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard fd >= 0 else { throw RunSupervisorError.unsafeFilesystemEntry(filename) }
-        var status = stat()
-        guard fstat(fd, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFREG,
-              status.st_uid == geteuid(),
-              (status.st_mode & 0o077) == 0,
-              status.st_nlink == 1 else {
-            close(fd)
-            throw RunSupervisorError.unsafeFilesystemEntry(filename)
-        }
-        return fd
-    }
-
-    private static func writeAll(_ data: Data, to fd: Int32) throws {
-        var offset = 0
-        while offset < data.count {
-            let result = data.withUnsafeBytes {
-                Darwin.write(fd, $0.baseAddress!.advanced(by: offset), data.count - offset)
-            }
-            if result < 0 {
-                if errno == EINTR { continue }
-                throw RunSupervisorError.systemCall("write event spool", errno)
-            }
-            if result == 0 { throw RunSupervisorError.systemCall("write event spool", EIO) }
-            offset += result
-        }
     }
 }

@@ -67,7 +67,10 @@ struct RunSupervisorExecutableIntegrationTests {
                 && !RunSupervisorTestSupport.isAlive(broker.supervisorPID)
         })
 
-        let spool = try RunSupervisorEventSpool(directory: connected.directory)
+        let spool = try RunSupervisorEventSpool(
+            directory: connected.directory,
+            capability: payload.capability
+        )
         let finalEvents = try spool.replay(after: 0)
         #expect(finalEvents.contains { $0.kind == .terminationStarted })
         #expect(finalEvents.contains { $0.kind == .cancellationConfirmed })
@@ -108,6 +111,95 @@ struct RunSupervisorExecutableIntegrationTests {
                 && !RunSupervisorTestSupport.isAlive(descendantPID)
                 && !RunSupervisorTestSupport.isAlive(broker.supervisorPID)
         })
+    }
+
+    @Test("terminal truth is capability-gated and recoverable offline after broker and supervisor exit")
+    func boundedOfflineTerminalRecoveryAfterBrokerDeath() throws {
+        let fixture = try integrationFixture("offlinerecover")
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        let ready = fixture.rootURL.appendingPathComponent("short-provider.ready")
+        let release = fixture.rootURL.appendingPathComponent("short-provider.release")
+        let script = """
+        root="$1"
+        : > "$root/short-provider.ready"
+        while [ ! -f "$root/short-provider.release" ]; do /bin/sleep 0.05; done
+        printf 'offline-terminal-output\n'
+        exit 7
+        """
+        let payload = try RunSupervisorTestSupport.payload(
+            executablePath: "/bin/sh",
+            arguments: ["-c", script, "provider", fixture.rootURL.path],
+            workingDirectory: fixture.rootURL.path,
+            identitySeed: 160
+        )
+        let broker = try launchBroker(payload: payload, rootURL: fixture.rootURL, holdAfterLaunch: true)
+        defer {
+            terminateForCleanup(broker.process)
+            terminateForCleanup(pid: broker.supervisorPID)
+        }
+        let connected = try waitForAuthenticatedRun(payload: payload, root: fixture.root)
+        #expect(RunSupervisorTestSupport.waitUntil(timeout: 5) {
+            FileManager.default.fileExists(atPath: ready.path)
+        })
+
+        #expect(kill(broker.process.processIdentifier, SIGKILL) == 0)
+        broker.process.waitUntilExit()
+        #expect(!broker.process.isRunning)
+        try Data().write(to: release)
+        let socketPath = URL(fileURLWithPath: connected.directory.path)
+            .appendingPathComponent("control.sock").path
+        #expect(RunSupervisorTestSupport.waitUntil(timeout: 8) {
+            var status = stat()
+            return !RunSupervisorTestSupport.isAlive(broker.supervisorPID)
+                && lstat(socketPath, &status) != 0
+                && errno == ENOENT
+        })
+
+        let wrongCapability = try RunSupervisorCapability(bytes: Data(repeating: 0xE7, count: 32))
+        #expect(throws: RunSupervisorError.corruptCommittedSpool) {
+            try RunSupervisorOfflineSpoolRecovery.replay(
+                directory: connected.directory,
+                capability: wrongCapability,
+                after: 0,
+                limit: 1
+            )
+        }
+
+        var recovered: [RunSupervisorEvent] = []
+        while true {
+            let batch = try RunSupervisorOfflineSpoolRecovery.replay(
+                directory: connected.directory,
+                capability: payload.capability,
+                after: 0,
+                limit: 1
+            )
+            guard let event = batch.events.first else { break }
+            recovered.append(event)
+            try RunSupervisorOfflineSpoolRecovery.acknowledge(
+                directory: connected.directory,
+                capability: payload.capability,
+                through: event.sequence
+            )
+            #expect(recovered.count <= 16)
+        }
+        #expect(Set(recovered.map(\.sequence)).count == recovered.count)
+        #expect(recovered.contains { event in
+            event.kind == .standardOutput
+                && event.payload.data.map {
+                    String(decoding: $0, as: UTF8.self).contains("offline-terminal-output")
+                } == true
+        })
+        #expect(recovered.contains { event in
+            event.kind == .providerExited
+                && event.payload.exitCode == 7
+                && event.payload.terminationReason == .exited
+        })
+        #expect(try RunSupervisorOfflineSpoolRecovery.replay(
+            directory: connected.directory,
+            capability: payload.capability,
+            after: 0,
+            limit: 1
+        ).events.isEmpty)
     }
 
     private func integrationFixture(_ suffix: String) throws -> (

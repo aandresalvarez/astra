@@ -93,6 +93,7 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
     public let issuedAtMilliseconds: Int64
     public let action: RunSupervisorControlAction
     public let authentication: String
+    package let responseVerificationCapability: RunSupervisorCapability?
 
     public init(
         protocolVersion: UInt16 = RunSupervisorProtocol.maximumVersion,
@@ -109,6 +110,26 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         self.issuedAtMilliseconds = issuedAtMilliseconds
         self.action = action
         self.authentication = authentication
+        self.responseVerificationCapability = nil
+    }
+
+    package init(
+        protocolVersion: UInt16,
+        executionID: RunBrokerExecutionID,
+        nonce: UUID,
+        issuedAtMilliseconds: Int64,
+        action: RunSupervisorControlAction,
+        authentication: String,
+        responseVerificationCapability: RunSupervisorCapability
+    ) {
+        self.schemaVersion = 1
+        self.protocolVersion = protocolVersion
+        self.executionID = executionID
+        self.nonce = nonce
+        self.issuedAtMilliseconds = issuedAtMilliseconds
+        self.action = action
+        self.authentication = authentication
+        self.responseVerificationCapability = responseVerificationCapability
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -128,7 +149,18 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         issuedAtMilliseconds = try container.decode(Int64.self, forKey: .issuedAtMilliseconds)
         action = try container.decode(RunSupervisorControlAction.self, forKey: .action)
         authentication = try container.decode(String.self, forKey: .authentication)
+        responseVerificationCapability = nil
         guard authentication.utf8.count == 64 else { throw RunSupervisorError.invalidSchema }
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.schemaVersion == rhs.schemaVersion
+            && lhs.protocolVersion == rhs.protocolVersion
+            && lhs.executionID == rhs.executionID
+            && lhs.nonce == rhs.nonce
+            && lhs.issuedAtMilliseconds == rhs.issuedAtMilliseconds
+            && lhs.action == rhs.action
+            && lhs.authentication == rhs.authentication
     }
 }
 
@@ -139,92 +171,6 @@ package struct RunSupervisorUnsignedControlRequest: Codable {
     let nonce: UUID
     let issuedAtMilliseconds: Int64
     let action: RunSupervisorControlAction
-}
-
-public struct RunSupervisorControlResponse: Codable, Equatable, Sendable {
-    public let schemaVersion: Int
-    public let protocolMinimumVersion: UInt16
-    public let protocolMaximumVersion: UInt16
-    public let accepted: Bool
-    public let events: [RunSupervisorEvent]
-    public let lastSequence: UInt64
-    public let errorCode: String?
-
-    public init(
-        accepted: Bool,
-        events: [RunSupervisorEvent] = [],
-        lastSequence: UInt64,
-        errorCode: String? = nil
-    ) {
-        schemaVersion = 1
-        protocolMinimumVersion = RunSupervisorProtocol.minimumVersion
-        protocolMaximumVersion = RunSupervisorProtocol.maximumVersion
-        self.accepted = accepted
-        self.events = events
-        self.lastSequence = lastSequence
-        self.errorCode = errorCode
-    }
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion, protocolMinimumVersion, protocolMaximumVersion
-        case accepted, events, lastSequence, errorCode
-    }
-
-    public init(from decoder: Decoder) throws {
-        try decoder.rejectUnknownKeyNames(Set(CodingKeys.allCases.map(\.stringValue)))
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard try container.decode(Int.self, forKey: .schemaVersion) == 1 else {
-            throw RunSupervisorError.invalidSchema
-        }
-        schemaVersion = 1
-        protocolMinimumVersion = try container.decode(UInt16.self, forKey: .protocolMinimumVersion)
-        protocolMaximumVersion = try container.decode(UInt16.self, forKey: .protocolMaximumVersion)
-        accepted = try container.decode(Bool.self, forKey: .accepted)
-        events = try container.decode([RunSupervisorEvent].self, forKey: .events)
-        lastSequence = try container.decode(UInt64.self, forKey: .lastSequence)
-        errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
-        guard protocolMinimumVersion <= protocolMaximumVersion,
-              protocolMinimumVersion <= RunSupervisorProtocol.maximumVersion,
-              protocolMaximumVersion >= RunSupervisorProtocol.minimumVersion,
-              events.count <= 4,
-              events.allSatisfy({ $0.sequence <= lastSequence }),
-              (accepted ? errorCode == nil : errorCode != nil) else {
-            throw RunSupervisorError.invalidSchema
-        }
-    }
-}
-
-public enum RunSupervisorControlAuthentication {
-    public static func makeRequest(
-        executionID: RunBrokerExecutionID,
-        action: RunSupervisorControlAction,
-        capability: RunSupervisorCapability,
-        nonce: UUID = UUID(),
-        now: Date = Date(),
-        protocolVersion: UInt16 = RunSupervisorProtocol.maximumVersion
-    ) throws -> RunSupervisorControlRequest {
-        let millis = Int64((now.timeIntervalSince1970 * 1_000).rounded())
-        let unsigned = RunSupervisorUnsignedControlRequest(
-            schemaVersion: 1,
-            protocolVersion: protocolVersion,
-            executionID: executionID,
-            nonce: nonce,
-            issuedAtMilliseconds: millis,
-            action: action
-        )
-        let authentication = RunSupervisorDigests.hmac(
-            try RunSupervisorDigests.canonicalData(unsigned),
-            capability: capability
-        )
-        return .init(
-            protocolVersion: protocolVersion,
-            executionID: executionID,
-            nonce: nonce,
-            issuedAtMilliseconds: millis,
-            action: action,
-            authentication: authentication
-        )
-    }
 }
 
 public final class RunSupervisorControlAuthenticator: @unchecked Sendable {
@@ -276,7 +222,7 @@ public final class RunSupervisorControlAuthenticator: @unchecked Sendable {
             try RunSupervisorDigests.canonicalData(unsigned),
             capability: capability
         )
-        guard constantTimeEqual(expected, request.authentication) else {
+        guard RunSupervisorDigests.constantTimeEqual(expected, request.authentication) else {
             throw RunSupervisorError.authenticationFailed
         }
         lock.lock()
@@ -289,10 +235,14 @@ public final class RunSupervisorControlAuthenticator: @unchecked Sendable {
         seenNonces[request.nonce] = now
     }
 
-    private func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
-        let a = Array(lhs.utf8)
-        let b = Array(rhs.utf8)
-        guard a.count == b.count else { return false }
-        return zip(a, b).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    package func makeResponse(
+        _ response: RunSupervisorControlResponse,
+        for request: RunSupervisorControlRequest
+    ) throws -> RunSupervisorAuthenticatedControlResponse {
+        try RunSupervisorControlAuthentication.makeResponse(
+            response,
+            for: request,
+            capability: capability
+        )
     }
 }
