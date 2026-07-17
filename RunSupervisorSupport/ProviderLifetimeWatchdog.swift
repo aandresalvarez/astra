@@ -7,7 +7,7 @@ import Foundation
 /// end. A SIGKILL, crash, or ordinary owner exit closes the write end in the
 /// kernel, so EOF is an authoritative owner-death signal that does not depend
 /// on Swift cleanup handlers running.
-enum AgentParentDeathSupervisor {
+enum ProviderLifetimeWatchdog {
     struct LaunchPlan: Equatable {
         let executablePath: String
         let arguments: [String]

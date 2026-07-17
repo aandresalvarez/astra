@@ -12,10 +12,12 @@ let package = Package(
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
+        .executable(name: "astra-run-supervisor", targets: ["AstraRunSupervisor"]),
         // Test-only: gives `swift test` an independently killable owner
         // process for parent-death regressions. The app bundle uses the
         // explicit TOOL_PRODUCTS allowlist and never stages this executable.
         .executable(name: "astra-agent-process-crash-harness", targets: ["AgentProcessCrashHarness"]),
+        .executable(name: "astra-run-supervisor-broker-harness", targets: ["RunSupervisorBrokerHarness"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
@@ -52,6 +54,11 @@ let package = Package(
             name: "RunLedgerOpenHarness",
             dependencies: ["ASTRARunLedger", "ASTRACore"],
             path: "Tests/RunLedgerOpenHarness"
+        ),
+        .target(
+            name: "RunSupervisorSupport",
+            dependencies: ["ASTRACore"],
+            path: "RunSupervisorSupport"
         ),
         .target(
             name: "MailToolSupport",
@@ -97,11 +104,21 @@ let package = Package(
             dependencies: ["WorkspaceToolSupport"],
             path: "Tools/AstraWorkspaceTool"
         ),
+        .executableTarget(
+            name: "AstraRunSupervisor",
+            dependencies: ["RunSupervisorSupport"],
+            path: "Tools/AstraRunSupervisor"
+        ),
         // Kept under Tests and excluded from ASTRATests source discovery.
         .executableTarget(
             name: "AgentProcessCrashHarness",
             dependencies: ["ASTRA"],
             path: "Tests/AgentProcessCrashHarness"
+        ),
+        .executableTarget(
+            name: "RunSupervisorBrokerHarness",
+            dependencies: ["RunSupervisorSupport"],
+            path: "Tests/RunSupervisorBrokerHarness"
         ),
         .executableTarget(
             name: "StanfordMailTool",
@@ -136,6 +153,7 @@ let package = Package(
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                "RunSupervisorSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
@@ -201,7 +219,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(
@@ -219,6 +237,11 @@ let package = Package(
             name: "MCPServerKitTests",
             dependencies: ["MCPServerKit"],
             path: "Tests/MCPServerKitTests"
+        ),
+        .testTarget(
+            name: "RunSupervisorSupportTests",
+            dependencies: ["RunSupervisorSupport", "ASTRACore"],
+            path: "Tests/RunSupervisorSupportTests"
         )
     ]
 )

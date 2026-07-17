@@ -1842,7 +1842,6 @@ struct ArchitectureFitnessTests {
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
             "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -1851,7 +1850,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
-            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            "Tests/ProcessMonitorTests.swift": .init(3_500, .owner("Runtime process stream tests")),
             "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
