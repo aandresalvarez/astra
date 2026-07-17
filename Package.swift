@@ -5,6 +5,9 @@ let package = Package(
     name: "ASTRA",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "ASTRARunLedger", targets: ["ASTRARunLedger"]),
+        // Standalone process-boundary fixture; never embedded in ASTRA.app.
+        .executable(name: "run-ledger-open-harness", targets: ["RunLedgerOpenHarness"]),
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
@@ -34,6 +37,17 @@ let package = Package(
         .target(
             name: "ASTRALogging",
             path: "ASTRALogging"
+        ),
+        .target(
+            name: "ASTRARunLedger",
+            dependencies: ["ASTRACore"],
+            path: "ASTRARunLedger",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
+        .executableTarget(
+            name: "RunLedgerOpenHarness",
+            dependencies: ["ASTRARunLedger", "ASTRACore"],
+            path: "Tests/RunLedgerOpenHarness"
         ),
         .target(
             name: "MailToolSupport",
@@ -177,8 +191,14 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
+            exclude: ["ArchitectureFitnessTests", "ASTRARunLedgerTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
+        ),
+        .testTarget(
+            name: "ASTRARunLedgerTests",
+            dependencies: ["ASTRARunLedger", "ASTRACore"],
+            path: "Tests/ASTRARunLedgerTests",
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .testTarget(
             name: "MailToolSupportTests",
