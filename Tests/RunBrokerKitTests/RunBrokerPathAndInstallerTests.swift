@@ -23,7 +23,212 @@ struct RunBrokerPathAndInstallerTests {
         #expect(prod.socketURL != dev.socketURL)
         #expect(prod.capabilitySecretURL != dev.capabilitySecretURL)
         #expect(prod.installationIDURL != dev.installationIDURL)
+        #expect(prod.installerLockURL != dev.installerLockURL)
         #expect(prod.launchAgentPlistURL != dev.launchAgentPlistURL)
+    }
+
+    @Test("Installer lock serializes independent OS processes")
+    func installerLockSerializesProcesses() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.secureStore.ensurePrivateDirectory(fixture.identity.supportDirectory)
+        let lock = try RunBrokerInstallationTransactionLock.acquire(
+            at: fixture.identity.installerLockURL,
+            expectedUserID: getuid()
+        )
+        let ready = fixture.root.appendingPathComponent("child-ready")
+        let acquired = fixture.root.appendingPathComponent("child-acquired")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = [
+            "-c",
+            """
+            import fcntl, os, sys
+            fd = os.open(sys.argv[1], os.O_RDWR | os.O_NOFOLLOW)
+            with open(sys.argv[2], "w") as marker:
+                marker.write("ready")
+                marker.flush()
+                os.fsync(marker.fileno())
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            with open(sys.argv[3], "w") as marker:
+                marker.write("acquired")
+            """,
+            fixture.identity.installerLockURL.path,
+            ready.path,
+            acquired.path
+        ]
+        try process.run()
+        try waitForInstallerMarker(ready)
+        #expect(process.isRunning)
+        #expect(!FileManager.default.fileExists(atPath: acquired.path))
+
+        lock.release()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(FileManager.default.fileExists(atPath: acquired.path))
+    }
+
+    @Test("Older payload waiting behind a newer install cannot downgrade Current")
+    func serializedRaceRejectsDowngrade() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let controller = ThreadSafeLaunchController()
+        let health = BlockingHealthChecker()
+        let installer = RunBrokerInstaller(
+            launchController: controller,
+            healthChecker: health,
+            secureStore: fixture.secureStore,
+            userID: getuid(),
+            diagnostics: NoOpRunBrokerDiagnostics()
+        )
+        let newerSource = try fixture.sourceExecutable(name: "sources/v2", bytes: "newer")
+        let olderSource = try fixture.sourceExecutable(name: "sources/v1", bytes: "older")
+        let newer = try fixture.payload(source: newerSource, version: "2")
+        let older = try fixture.payload(source: olderSource, version: "1")
+        let results = ConcurrentInstallerResults()
+        let newerFinished = DispatchSemaphore(value: 0)
+        let olderFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            results.setNewer(Result { try installer.install(payload: newer, identity: fixture.identity) })
+            newerFinished.signal()
+        }
+        #expect(health.entered.wait(timeout: .now() + 2) == .success)
+        DispatchQueue.global().async {
+            results.setOlder(Result { try installer.install(payload: older, identity: fixture.identity) })
+            olderFinished.signal()
+        }
+        #expect(olderFinished.wait(timeout: .now() + 0.15) == .timedOut)
+        #expect(controller.reloadCount == 1)
+
+        health.proceed.signal()
+        #expect(newerFinished.wait(timeout: .now() + 2) == .success)
+        #expect(olderFinished.wait(timeout: .now() + 2) == .success)
+        #expect(results.newerError == nil)
+        #expect(
+            results.olderError as? RunBrokerInstallationError
+                == .payloadDowngradeRejected(current: "2", requested: "1")
+        )
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.identity.currentPayloadURL.path
+            ) == "Versions/2"
+        )
+        #expect(controller.reloadCount == 1)
+    }
+
+    @Test("Installer lock is private and symlink substitution fails closed")
+    func installerLockSecurity() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.sourceExecutable(name: "sources/v1", bytes: "one")
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source, version: "1"),
+            identity: fixture.identity
+        )
+        var info = stat()
+        #expect(lstat(fixture.identity.installerLockURL.path, &info) == 0)
+        #expect((info.st_mode & S_IFMT) == S_IFREG)
+        #expect(UInt16(info.st_mode & 0o777) == 0o600)
+        #expect(info.st_nlink == 1)
+
+        let hardLink = fixture.root.appendingPathComponent("installer-lock-hard-link")
+        #expect(link(fixture.identity.installerLockURL.path, hardLink.path) == 0)
+        #expect(throws: RunBrokerInstallationError.unsafeInstallerLock) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source, version: "1"),
+                identity: fixture.identity
+            )
+        }
+        try FileManager.default.removeItem(at: hardLink)
+
+        try FileManager.default.removeItem(at: fixture.identity.installerLockURL)
+        let outside = fixture.root.appendingPathComponent("outside-lock")
+        try Data().write(to: outside)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.identity.installerLockURL,
+            withDestinationURL: outside
+        )
+        #expect(throws: (any Error).self) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source, version: "1"),
+                identity: fixture.identity
+            )
+        }
+    }
+
+    @Test("First install may be unorderable but later upgrade precedence must be orderable")
+    func unorderableVersionPolicy() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/dev", bytes: "dev")
+        let source2 = try fixture.sourceExecutable(name: "sources/release", bytes: "release")
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: "pre-release"),
+            identity: fixture.identity
+        )
+        #expect(throws: RunBrokerInstallationError.unorderablePayloadVersion("pre-release")) {
+            try fixture.installer.install(
+                payload: try fixture.payload(
+                    source: source2,
+                    version: "1.0.0-2-22222222222222222222222222222222"
+                ),
+                identity: fixture.identity
+            )
+        }
+    }
+
+    @Test("Different payload versions cannot claim the same numeric build")
+    func sameBuildCollision() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/build-a", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/build-b", bytes: "two")
+        let current = "1.0.0-42-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let requested = "1.0.1-42-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: current),
+            identity: fixture.identity
+        )
+        #expect(throws: RunBrokerInstallationError.payloadBuildCollision(
+            current: current,
+            requested: requested
+        )) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source2, version: requested),
+                identity: fixture.identity
+            )
+        }
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.identity.currentPayloadURL.path
+            ) == "Versions/\(current)"
+        )
+        #expect(fixture.launchController.reloadCount == 1)
+    }
+
+    @Test("Exact version reinstall requires the original full payload digest")
+    func exactVersionDigestCollision() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/exact-a", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/exact-b", bytes: "two")
+        let version = "1.0.0-42-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: version),
+            identity: fixture.identity
+        )
+        #expect(throws: RunBrokerInstallationError.installedDigestMismatch) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source2, version: version),
+                identity: fixture.identity
+            )
+        }
+        #expect(fixture.launchController.reloadCount == 1)
     }
 
     @Test("Installed broker survives source app replacement and plist uses stable external paths")
@@ -296,6 +501,82 @@ private final class FakeHealthChecker: RunBrokerPostReloadHealthChecking, @unche
         expectedVersion: RunBrokerPayloadVersion
     ) throws {
         if shouldFail { throw RunBrokerInstallationError.healthCheckFailed }
+    }
+}
+
+private final class ThreadSafeLaunchController: RunBrokerLaunchControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var reloads = 0
+    var reloadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reloads
+    }
+    func reload(_ agent: RunBrokerLaunchAgent) throws {
+        lock.lock()
+        reloads += 1
+        lock.unlock()
+    }
+    func unload(_ agent: RunBrokerLaunchAgent) throws {}
+}
+
+private final class BlockingHealthChecker: RunBrokerPostReloadHealthChecking, @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let proceed = DispatchSemaphore(value: 0)
+    func waitUntilHealthy(
+        identity: RunBrokerChannelIdentity,
+        installationID: RunBrokerInstallationID,
+        expectedVersion: RunBrokerPayloadVersion
+    ) throws {
+        entered.signal()
+        _ = proceed.wait(timeout: .now() + 5)
+    }
+}
+
+private final class ConcurrentInstallerResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var newer: Result<RunBrokerInstallationResult, any Error>?
+    private var older: Result<RunBrokerInstallationResult, any Error>?
+
+    var newerError: (any Error)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return newer?.failure
+    }
+
+    var olderError: (any Error)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return older?.failure
+    }
+
+    func setNewer(_ result: Result<RunBrokerInstallationResult, any Error>) {
+        lock.lock()
+        newer = result
+        lock.unlock()
+    }
+
+    func setOlder(_ result: Result<RunBrokerInstallationResult, any Error>) {
+        lock.lock()
+        older = result
+        lock.unlock()
+    }
+}
+
+private extension Result {
+    var failure: Failure? {
+        guard case .failure(let error) = self else { return nil }
+        return error
+    }
+}
+
+private func waitForInstallerMarker(_ url: URL) throws {
+    let deadline = Date().addingTimeInterval(2)
+    while !FileManager.default.fileExists(atPath: url.path) {
+        guard Date() < deadline else {
+            throw RunBrokerInstallationError.healthCheckFailed
+        }
+        usleep(10_000)
     }
 }
 

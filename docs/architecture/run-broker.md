@@ -30,6 +30,19 @@ Production and development have different LaunchAgent labels, Application
 Support roots, Unix sockets, installation IDs, and capability secrets. The
 current implementation intentionally does not map the unsupported beta channel.
 
+Each channel also owns a private `installer.lock`. The installer takes an
+exclusive OS `flock` before reading or creating installation secrets and holds
+it through payload staging, selector and plist mutation, launchctl reload,
+health verification, and rollback. This makes the multi-file transaction
+serial across independent ASTRA processes. Numeric build precedence from the
+signed payload version then prevents an older app process that was waiting on
+the lock from replacing a newer installed payload. An upgrade must have a
+strictly newer numeric build; only the exact same version identity may repeat,
+and its installed executable must still match the full packaged digest. A
+different payload claiming the same build fails as a collision. A first install
+has no competing precedence and may use a pre-release unorderable version. The
+channel-specific support roots keep production and development locks disjoint.
+
 ## Local protocol
 
 The Unix-socket protocol uses a four-byte big-endian length prefix and rejects
