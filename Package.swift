@@ -9,6 +9,10 @@ let package = Package(
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
+        // Test-only: gives `swift test` an independently killable owner
+        // process for parent-death regressions. The app bundle uses the
+        // explicit TOOL_PRODUCTS allowlist and never stages this executable.
+        .executable(name: "astra-agent-process-crash-harness", targets: ["AgentProcessCrashHarness"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
@@ -78,6 +82,12 @@ let package = Package(
             name: "AstraWorkspaceTool",
             dependencies: ["WorkspaceToolSupport"],
             path: "Tools/AstraWorkspaceTool"
+        ),
+        // Kept under Tests and excluded from ASTRATests source discovery.
+        .executableTarget(
+            name: "AgentProcessCrashHarness",
+            dependencies: ["ASTRA"],
+            path: "Tests/AgentProcessCrashHarness"
         ),
         .executableTarget(
             name: "StanfordMailTool",
@@ -177,7 +187,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(
