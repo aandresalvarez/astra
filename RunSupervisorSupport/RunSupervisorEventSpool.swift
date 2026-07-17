@@ -120,12 +120,12 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
 
     public var lastSequence: UInt64 {
         lock.lock(); defer { lock.unlock() }
-        return highestSequence
+        return fileDescriptor >= 0 ? highestSequence : 0
     }
 
     public var lastAcknowledgedSequence: UInt64 {
         lock.lock(); defer { lock.unlock() }
-        return acknowledgedSequence
+        return fileDescriptor >= 0 ? acknowledgedSequence : 0
     }
 
     @discardableResult
@@ -135,6 +135,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         }
         lock.lock()
         defer { lock.unlock() }
+        guard fileDescriptor >= 0 else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let candidate = makeEvent(kind, payload: .init(data: data))
         let frame = try RunSupervisorSpoolFrameCodec.encode(candidate, capability: capability)
@@ -159,6 +160,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         try payload.validate(for: kind)
         lock.lock()
         defer { lock.unlock() }
+        guard fileDescriptor >= 0 else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let event = makeEvent(kind, payload: payload)
         try appendEncodedCritical(event)
@@ -169,6 +171,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         guard limit > 0, limit <= 4_096 else { throw RunSupervisorError.oversizedFrame(limit: 4_096) }
         lock.lock()
         defer { lock.unlock() }
+        guard fileDescriptor >= 0 else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         let replayFloor = max(sequence, acknowledgedSequence)
         return Array(events.lazy.filter { $0.sequence > replayFloor }.prefix(limit))
@@ -177,6 +180,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     public func acknowledge(through sequence: UInt64) throws {
         lock.lock()
         defer { lock.unlock() }
+        guard fileDescriptor >= 0 else { throw RunSupervisorError.alreadyRunningOrInDoubt }
         guard !persistencePoisoned else { throw RunSupervisorError.corruptCommittedSpool }
         guard sequence >= acknowledgedSequence, sequence <= highestSequence else {
             throw RunSupervisorError.invalidAcknowledgement
@@ -210,7 +214,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         while outputBackpressured {
             if !lock.wait(until: deadline) { return false }
         }
-        return true
+        return fileDescriptor >= 0 && !persistencePoisoned
     }
 
     private func makeEvent(
