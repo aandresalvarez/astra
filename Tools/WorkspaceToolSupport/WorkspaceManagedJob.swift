@@ -1,91 +1,14 @@
 import Foundation
+import ASTRACore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
 
-public enum WorkspaceManagedJobStatus: String, Codable, Equatable, Sendable {
-    case queued
-    case running
-    case succeeded
-    case failed
-    case cancelled
-    case timedOut = "timed_out"
-}
-
-public struct WorkspaceManagedJobRecord: Codable, Equatable, Sendable {
-    public var jobID: String
-    public var command: String
-    public var label: String?
-    public var progressProbe: String?
-    public var runtime: String
-    public var status: WorkspaceManagedJobStatus
-    public var createdAt: Date
-    public var startedAt: Date?
-    public var updatedAt: Date
-    public var completedAt: Date?
-    public var lastHeartbeatAt: Date?
-    public var lastOutputAt: Date?
-    public var timeoutSeconds: TimeInterval?
-    public var exitCode: Int32?
-    public var stdoutLogPath: String
-    public var stderrLogPath: String
-    public var heartbeatPath: String
-    public var resultPath: String
-    public var message: String?
-
-    public init(
-        jobID: String,
-        command: String,
-        label: String? = nil,
-        progressProbe: String? = nil,
-        runtime: String,
-        status: WorkspaceManagedJobStatus,
-        createdAt: Date,
-        startedAt: Date? = nil,
-        updatedAt: Date,
-        completedAt: Date? = nil,
-        lastHeartbeatAt: Date? = nil,
-        lastOutputAt: Date? = nil,
-        timeoutSeconds: TimeInterval? = nil,
-        exitCode: Int32? = nil,
-        stdoutLogPath: String,
-        stderrLogPath: String,
-        heartbeatPath: String,
-        resultPath: String,
-        message: String? = nil
-    ) {
-        self.jobID = jobID
-        self.command = command
-        self.label = label
-        self.progressProbe = progressProbe
-        self.runtime = runtime
-        self.status = status
-        self.createdAt = createdAt
-        self.startedAt = startedAt
-        self.updatedAt = updatedAt
-        self.completedAt = completedAt
-        self.lastHeartbeatAt = lastHeartbeatAt
-        self.lastOutputAt = lastOutputAt
-        self.timeoutSeconds = timeoutSeconds
-        self.exitCode = exitCode
-        self.stdoutLogPath = stdoutLogPath
-        self.stderrLogPath = stderrLogPath
-        self.heartbeatPath = heartbeatPath
-        self.resultPath = resultPath
-        self.message = message
-    }
-
-    public var isTerminal: Bool {
-        switch status {
-        case .queued, .running:
-            return false
-        case .succeeded, .failed, .cancelled, .timedOut:
-            return true
-        }
-    }
-}
+/// `flock` protects separate processes, but Darwin treats locks acquired by the
+/// same process as cooperating ownership. Serialize in-process admissions too.
+private let workspaceManagedJobAdmissionProcessLock = NSLock()
 
 public struct WorkspaceManagedJobTail: Equatable, Sendable {
     public var jobID: String
@@ -110,17 +33,52 @@ public enum WorkspaceManagedJobStoreError: LocalizedError, Sendable {
     }
 }
 
+public struct WorkspaceManagedJobAdmission: Sendable {
+    public var record: WorkspaceManagedJobRecord
+    public var isNew: Bool
+
+    public init(record: WorkspaceManagedJobRecord, isNew: Bool) {
+        self.record = record
+        self.isNew = isNew
+    }
+}
+
 public protocol WorkspaceJobManaging: AnyObject {
     func start(
         command: String,
         timeoutSeconds: TimeInterval?,
         label: String?,
-        progressProbe: String?
+        progressProbe: String?,
+        invocationID: String
     ) -> WorkspaceManagedJobRecord
     func status(jobID: String) -> WorkspaceManagedJobRecord
     func tail(jobID: String, stream: String, lines: Int) -> WorkspaceManagedJobTail
     func cancel(jobID: String) -> WorkspaceManagedJobRecord
     func wait(jobID: String, timeoutSeconds: TimeInterval) -> WorkspaceManagedJobRecord
+    /// Fails closed: true means provider cleanup must preserve the executor
+    /// because it may still own admitted external work.
+    func hasTrustedNonterminalOwnedJob() -> Bool
+}
+
+public extension WorkspaceJobManaging {
+    /// Compatibility entry point for non-MCP callers. New durable callers must
+    /// pass the stable, type-tagged invocation ID received from MCPServerKit.
+    func start(
+        command: String,
+        timeoutSeconds: TimeInterval?,
+        label: String?,
+        progressProbe: String?
+    ) -> WorkspaceManagedJobRecord {
+        start(
+            command: command,
+            timeoutSeconds: timeoutSeconds,
+            label: label,
+            progressProbe: progressProbe,
+            invocationID: "legacy:\(UUID().uuidString.lowercased())"
+        )
+    }
+
+    func hasTrustedNonterminalOwnedJob() -> Bool { true }
 }
 
 public final class WorkspaceManagedJobStore {
@@ -196,8 +154,116 @@ public final class WorkspaceManagedJobStore {
         return record
     }
 
+    public func create(
+        command: String,
+        timeoutSeconds: TimeInterval?,
+        label: String?,
+        progressProbe: String?,
+        runtime: String,
+        taskID: String,
+        runID: String,
+        invocationID: String,
+        containerName: String
+    ) throws -> WorkspaceManagedJobRecord {
+        let jobID = makeJobID()
+        let directory = try jobDirectory(jobID: jobID)
+        let layout = WorkspaceManagedJobFileLayout(directory: directory)
+        let receipt = try WorkspaceManagedJobStartReceipt.make(
+            taskID: taskID,
+            runID: runID,
+            invocationID: invocationID,
+            requestFingerprint: try WorkspaceManagedJobRequestFingerprint.make(
+                command: command,
+                timeoutSeconds: timeoutSeconds,
+                label: label,
+                progressProbe: progressProbe
+            ),
+            containerName: containerName,
+            jobID: jobID
+        )
+        try createTrustedDirectoryChain(to: directory)
+        let commandURL = layout.command
+        try ("#!/bin/sh\n" + command + "\n").write(to: commandURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: commandURL.path)
+
+        let now = Date()
+        let record = WorkspaceManagedJobRecord(
+            jobID: jobID,
+            command: command,
+            label: label,
+            progressProbe: progressProbe,
+            runtime: runtime,
+            status: .queued,
+            createdAt: now,
+            updatedAt: now,
+            timeoutSeconds: timeoutSeconds,
+            stdoutLogPath: layout.stdout.path,
+            stderrLogPath: layout.stderr.path,
+            heartbeatPath: layout.heartbeat.path,
+            resultPath: layout.result.path,
+            startReceipt: receipt
+        )
+        try save(record)
+        return record
+    }
+
+    /// Atomically adopts or creates one invocation receipt across provider/MCP
+    /// processes. `flock` ownership is released by the kernel after crashes.
+    /// The lock covers lookup plus durable queued-record creation; it does not
+    /// cover executor launch, so a crash leaves an adoptable, explicitly
+    /// uncertain queued receipt instead of permitting a duplicate launch.
+    public func admitInvocation(
+        command: String,
+        timeoutSeconds: TimeInterval?,
+        label: String?,
+        progressProbe: String?,
+        runtime: String,
+        taskID: String,
+        runID: String,
+        invocationID: String,
+        containerName: String
+    ) throws -> WorkspaceManagedJobAdmission {
+        let requestFingerprint = try WorkspaceManagedJobRequestFingerprint.make(
+            command: command,
+            timeoutSeconds: timeoutSeconds,
+            label: label,
+            progressProbe: progressProbe
+        )
+        return try withInvocationAdmissionLock {
+            if let existing = try listTrustedRecords().first(where: { record in
+                guard let receipt = record.startReceipt else { return false }
+                return receipt.invocationID == invocationID
+                    && receipt.belongsTo(
+                        taskID: taskID,
+                        runID: runID,
+                        containerName: containerName
+                    )
+            }) {
+                guard existing.startReceipt?.requestFingerprint == requestFingerprint else {
+                    throw WorkspaceManagedJobContractError.invocationPayloadMismatch
+                }
+                return WorkspaceManagedJobAdmission(record: existing, isNew: false)
+            }
+            return WorkspaceManagedJobAdmission(
+                record: try create(
+                    command: command,
+                    timeoutSeconds: timeoutSeconds,
+                    label: label,
+                    progressProbe: progressProbe,
+                    runtime: runtime,
+                    taskID: taskID,
+                    runID: runID,
+                    invocationID: invocationID,
+                    containerName: containerName
+                ),
+                isNew: true
+            )
+        }
+    }
+
     public func save(_ record: WorkspaceManagedJobRecord) throws {
         let canonicalID = try canonicalJobID(record.jobID)
+        try record.startReceipt?.validate(jobID: canonicalID)
         let directory = jobDirectory(forCanonicalID: canonicalID)
         var trustedRecord = record
         applyTrustedFileLayout(to: &trustedRecord, jobID: canonicalID, directory: directory)
@@ -220,9 +286,82 @@ public final class WorkspaceManagedJobStore {
         guard (try? canonicalJobID(record.jobID)) == canonicalID else {
             throw WorkspaceManagedJobStoreError.invalidJobID
         }
+        try record.startReceipt?.validate(jobID: canonicalID)
         applyTrustedFileLayout(to: &record, jobID: canonicalID, directory: directory)
         applyRuntimeFiles(to: &record, directory: directory)
         return record
+    }
+
+    /// Enumerates records through the same no-symlink/no-hardlink boundary as
+    /// direct lookup. Any malformed candidate fails the whole listing so
+    /// destructive cleanup preserves the executor.
+    public func listTrustedRecords() throws -> [WorkspaceManagedJobRecord] {
+        switch pathExistsWithoutFollowingSymlink(at: rootURL) {
+        case false:
+            return []
+        case nil:
+            throw trustedFileReadError(path: rootURL.path)
+        case true:
+            guard trustedDirectoryStat(at: rootURL) != nil else {
+                throw trustedFileReadError(path: rootURL.path)
+            }
+        }
+
+        let entries = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var records: [WorkspaceManagedJobRecord] = []
+        var ownerInvocations: Set<String> = []
+        for entry in entries {
+            let name = entry.lastPathComponent
+            guard (try? canonicalJobID(name)) == name,
+                  trustedDirectoryStat(at: entry) != nil else {
+                throw trustedFileReadError(path: entry.path)
+            }
+            let record = try load(jobID: name)
+            if let receipt = record.startReceipt {
+                let ownerInvocation = [
+                    receipt.taskID.uuidString.lowercased(),
+                    receipt.runID.uuidString.lowercased(),
+                    receipt.invocationID,
+                    receipt.containerName
+                ].joined(separator: "|")
+                guard ownerInvocations.insert(ownerInvocation).inserted else {
+                    throw trustedFileReadError(path: entry.path)
+                }
+            }
+            records.append(record)
+        }
+        return records
+    }
+
+    private func withInvocationAdmissionLock<T>(_ body: () throws -> T) throws -> T {
+        workspaceManagedJobAdmissionProcessLock.lock()
+        defer { workspaceManagedJobAdmissionProcessLock.unlock() }
+        try validateJobRootForCreation()
+        try createTrustedDirectoryChain(to: rootURL)
+        let lockURL = rootURL.appendingPathComponent(".invocation-admission.lock", isDirectory: false)
+        let descriptor = open(
+            lockURL.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(S_IRUSR | S_IWUSR)
+        )
+        guard descriptor >= 0 else {
+            throw trustedFileReadError(path: lockURL.path)
+        }
+        defer { close(descriptor) }
+
+        var lockStat = stat()
+        guard fstat(descriptor, &lockStat) == 0,
+              (lockStat.st_mode & S_IFMT) == S_IFREG,
+              lockStat.st_nlink == 1,
+              flock(descriptor, LOCK_EX) == 0 else {
+            throw trustedFileReadError(path: lockURL.path)
+        }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try body()
     }
 
     private func jobDirectory(forCanonicalID canonicalID: String) -> URL {
@@ -789,7 +928,8 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         command: String,
         timeoutSeconds: TimeInterval?,
         label: String?,
-        progressProbe: String?
+        progressProbe: String?,
+        invocationID: String
     ) -> WorkspaceManagedJobRecord {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -799,32 +939,52 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         if let errorMessage = pathResolution.errorMessage {
             return failedSynthetic(command: command, message: errorMessage)
         }
+        let admission: WorkspaceManagedJobAdmission
         do {
-            try store.validateJobRootForCreation()
-        } catch {
-            return failedSynthetic(command: command, message: error.localizedDescription)
-        }
-        let container = executor.ensureContainerStarted()
-        guard container.exitCode == 0 else {
-            return failedSynthetic(
-                command: command,
-                message: container.stderr.isEmpty ? "Failed to start Docker workspace container" : container.stderr
+            _ = try WorkspaceManagedJobStartReceipt.make(
+                taskID: configuration.taskID,
+                runID: configuration.runID,
+                invocationID: invocationID,
+                requestFingerprint: try WorkspaceManagedJobRequestFingerprint.make(
+                    command: pathResolution.command,
+                    timeoutSeconds: timeoutSeconds,
+                    label: label,
+                    progressProbe: progressProbe
+                ),
+                containerName: configuration.containerName,
+                jobID: "preflight"
             )
-        }
-
-        do {
-            var record = try store.create(
+            admission = try store.admitInvocation(
                 command: pathResolution.command,
                 timeoutSeconds: timeoutSeconds,
                 label: label,
                 progressProbe: progressProbe,
-                runtime: "docker"
+                runtime: "docker",
+                taskID: configuration.taskID,
+                runID: configuration.runID,
+                invocationID: invocationID,
+                containerName: configuration.containerName
             )
-            record.status = .running
-            record.startedAt = Date()
-            record.updatedAt = record.startedAt ?? record.updatedAt
-            try store.save(record)
+        } catch {
+            return failedSynthetic(command: command, message: error.localizedDescription)
+        }
+        guard admission.isNew else { return admission.record }
+        var record = admission.record
 
+        let container = executor.ensureContainerStarted()
+        guard container.exitCode == 0 else {
+            let message = container.stderr.isEmpty
+                ? "Failed to start Docker workspace container"
+                : container.stderr
+            return (try? store.mark(
+                jobID: record.jobID,
+                status: .failed,
+                message: message,
+                exitCode: container.exitCode
+            )) ?? failedSynthetic(command: command, message: message)
+        }
+
+        do {
             let result = executor.runDockerCommand(
                 arguments: [
                     "exec", "-d",
@@ -846,6 +1006,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                     exitCode: result.exitCode
                 )
             }
+            record.status = .running
+            record.startedAt = Date()
+            record.updatedAt = record.startedAt ?? record.updatedAt
+            try store.save(record)
             return try store.load(jobID: record.jobID)
         } catch {
             return failedSynthetic(command: command, message: error.localizedDescription)
@@ -1048,6 +1212,32 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             latest = status(jobID: jobID)
         }
         return latest
+    }
+
+    public func hasTrustedNonterminalOwnedJob() -> Bool {
+        do {
+            return try store.listTrustedRecords().contains { record in
+                guard !record.isTerminal else { return false }
+                guard let receipt = record.startReceipt else {
+                    // A legacy nonterminal record cannot prove that cleanup is
+                    // safe, so preserve the executor.
+                    return true
+                }
+                // A conflicting task/run receipt on this same task-scoped
+                // executor is corruption, not evidence that stopping is safe.
+                return receipt.containerName == configuration.containerName
+            }
+        } catch {
+            // Cleanup is destructive. Preserve the container when trusted
+            // records cannot prove it idle.
+            return true
+        }
+    }
+
+    @discardableResult
+    public func cleanupExecutorIfIdle() -> Bool {
+        guard !hasTrustedNonterminalOwnedJob() else { return false }
+        return executor.stopManagedContainerIfPresent()
     }
 
     private func containerJobDirectory(jobID: String) -> String {

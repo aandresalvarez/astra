@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import MCPServerKit
 
 public struct WorkspaceDockerMount: Codable, Equatable, Sendable {
@@ -2564,8 +2565,18 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
 
     public func cleanup() {
         guard containerStarted else { return }
-        _ = runDockerCommand(arguments: ["stop", configuration.containerName], commandLabel: "docker stop", timeoutSeconds: 10)
+        _ = stopManagedContainerIfPresent()
+    }
+
+    @discardableResult
+    func stopManagedContainerIfPresent() -> Bool {
+        let result = runDockerCommand(
+            arguments: ["stop", configuration.containerName],
+            commandLabel: "docker stop",
+            timeoutSeconds: 10
+        )
         containerStarted = false
+        return result.exitCode == 0
     }
 
     public func ensureContainerStarted() -> WorkspaceCommandResult {
@@ -2727,7 +2738,6 @@ public final class WorkspaceToolDiagnosticsRecorder: @unchecked Sendable {
 
     func recordJob(
         toolName: String,
-        command: String?,
         job: WorkspaceManagedJobRecord,
         timeoutSeconds: TimeInterval? = nil
     ) {
@@ -2737,13 +2747,13 @@ public final class WorkspaceToolDiagnosticsRecorder: @unchecked Sendable {
             runID: runID,
             route: route,
             toolName: toolName,
-            command: command,
-            mappedCommand: job.command,
+            command: nil,
+            mappedCommand: nil,
             workingDirectory: nil,
             timeoutSeconds: timeoutSeconds ?? job.timeoutSeconds,
             exitCode: job.exitCode,
             timedOut: job.status == .timedOut,
-            stderrTail: Self.tail(job.message ?? ""),
+            stderrTail: nil,
             jobID: job.jobID,
             jobStatus: job.status.rawValue,
             heartbeatPath: job.heartbeatPath.isEmpty ? nil : job.heartbeatPath,
@@ -2853,6 +2863,9 @@ public final class WorkspaceMCPServer {
     }
 
     public func cleanup() {
+        guard jobManager?.hasTrustedNonterminalOwnedJob() != true else {
+            return
+        }
         executor.cleanup()
     }
 
@@ -2861,7 +2874,10 @@ public final class WorkspaceMCPServer {
         case "workspace_shell":
             return handleWorkspaceShell(arguments: call.arguments)
         case "workspace_job_start":
-            return handleWorkspaceJobStart(arguments: call.arguments)
+            return handleWorkspaceJobStart(
+                arguments: call.arguments,
+                invocationID: call.invocationID
+            )
         case "workspace_job_status":
             return handleWorkspaceJobStatus(arguments: call.arguments)
         case "workspace_job_tail":
@@ -2899,7 +2915,10 @@ public final class WorkspaceMCPServer {
         ])
     }
 
-    private func handleWorkspaceJobStart(arguments: [String: Any]) -> MCPServerReply {
+    private func handleWorkspaceJobStart(
+        arguments: [String: Any],
+        invocationID: String
+    ) -> MCPServerReply {
         guard let jobManager else {
             return .error(code: -32001, message: "workspace_job_start is unavailable")
         }
@@ -2911,9 +2930,10 @@ public final class WorkspaceMCPServer {
             command: command,
             timeoutSeconds: timeoutSeconds(from: arguments["timeout_seconds"]),
             label: clean(arguments["label"] as? String),
-            progressProbe: clean(arguments["progress_probe"] as? String)
+            progressProbe: clean(arguments["progress_probe"] as? String),
+            invocationID: invocationID
         )
-        diagnosticsRecorder?.recordJob(toolName: "workspace_job_start", command: command, job: job)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_start", job: job)
         return encodeJobResult(job: job)
     }
 
@@ -2925,7 +2945,7 @@ public final class WorkspaceMCPServer {
             return .error(code: -32602, message: "workspace_job_status requires job_id")
         }
         let job = jobManager.status(jobID: jobID)
-        diagnosticsRecorder?.recordJob(toolName: "workspace_job_status", command: nil, job: job)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_status", job: job)
         return encodeJobResult(job: job)
     }
 
@@ -2957,7 +2977,7 @@ public final class WorkspaceMCPServer {
             return .error(code: -32602, message: "workspace_job_cancel requires job_id")
         }
         let job = jobManager.cancel(jobID: jobID)
-        diagnosticsRecorder?.recordJob(toolName: "workspace_job_cancel", command: nil, job: job)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_cancel", job: job)
         return encodeJobResult(job: job)
     }
 
@@ -2970,7 +2990,7 @@ public final class WorkspaceMCPServer {
         }
         let timeout = min(timeoutSeconds(from: arguments["max_wait_seconds"]) ?? 30, WorkspaceCommandRoutingPolicy.maxJobWaitSeconds)
         let job = jobManager.wait(jobID: jobID, timeoutSeconds: timeout)
-        diagnosticsRecorder?.recordJob(toolName: "workspace_job_wait", command: nil, job: job, timeoutSeconds: timeout)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_wait", job: job, timeoutSeconds: timeout)
         return encodeJobResult(job: job)
     }
 
@@ -3002,11 +3022,29 @@ public final class WorkspaceMCPServer {
     }
 
     private func encodeJobResult(job: WorkspaceManagedJobRecord) -> MCPServerReply {
-        .result([
+        let structured: WorkspaceManagedJobStructuredResult
+        do {
+            structured = try WorkspaceManagedJobStructuredResult(
+                jobID: job.jobID,
+                status: job.status,
+                startReceipt: job.startReceipt
+            )
+        } catch {
+            return .error(code: -32002, message: "Workspace managed-job result failed validation")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(structured),
+              let text = String(data: data, encoding: .utf8),
+              let structuredContent = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .error(code: -32002, message: "Workspace managed-job result could not be encoded")
+        }
+        return .result([
             "content": [[
                 "type": "text",
-                "text": formatted(job)
+                "text": text
             ]],
+            "structuredContent": structuredContent,
             "isError": job.status == .failed || job.status == .timedOut
         ])
     }
@@ -3028,53 +3066,12 @@ public final class WorkspaceMCPServer {
         return lines.joined(separator: "\n")
     }
 
-    private func formatted(_ job: WorkspaceManagedJobRecord) -> String {
-        var lines = [
-            "job_id: \(job.jobID)",
-            "status: \(job.status.rawValue)",
-            "runtime: \(job.runtime)",
-            "command: \(job.command)"
-        ]
-        if let label = job.label {
-            lines.append("label: \(label)")
-        }
-        if let progressProbe = job.progressProbe {
-            lines.append("progress_probe: \(progressProbe)")
-        }
-        if let exitCode = job.exitCode {
-            lines.append("exit_code: \(exitCode)")
-        }
-        if let lastHeartbeatAt = job.lastHeartbeatAt {
-            lines.append("last_heartbeat_at: \(iso8601(lastHeartbeatAt))")
-        }
-        if let lastOutputAt = job.lastOutputAt {
-            lines.append("last_output_at: \(iso8601(lastOutputAt))")
-        }
-        if let completedAt = job.completedAt {
-            lines.append("completed_at: \(iso8601(completedAt))")
-        }
-        if let message = job.message {
-            lines.append("message: \(message)")
-        }
-        lines += [
-            "stdout_log: \(job.stdoutLogPath.isEmpty ? "<unavailable>" : job.stdoutLogPath)",
-            "stderr_log: \(job.stderrLogPath.isEmpty ? "<unavailable>" : job.stderrLogPath)",
-            "heartbeat: \(job.heartbeatPath.isEmpty ? "<unavailable>" : job.heartbeatPath)",
-            "result: \(job.resultPath.isEmpty ? "<unavailable>" : job.resultPath)"
-        ]
-        return lines.joined(separator: "\n")
-    }
-
     private func formatted(_ tail: WorkspaceManagedJobTail) -> String {
         [
             "job_id: \(tail.jobID)",
             "stream: \(tail.stream)",
             tail.text.isEmpty ? "<empty>" : tail.text
         ].joined(separator: "\n")
-    }
-
-    private func iso8601(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
     }
 
     private func toolSchemas() -> [[String: Any]] {

@@ -1,12 +1,17 @@
 import Foundation
+import CoreFoundation
 
 public struct MCPToolCall {
     public var name: String
     public var arguments: [String: Any]
+    /// Opaque, stable, type-tagged JSON-RPC request identity. Side-effecting
+    /// handlers use this for idempotent admission.
+    public var invocationID: String
 
-    public init(name: String, arguments: [String: Any]) {
+    public init(name: String, arguments: [String: Any], invocationID: String = "") {
         self.name = name
         self.arguments = arguments
+        self.invocationID = invocationID
     }
 }
 
@@ -84,13 +89,21 @@ public final class MCPServer {
     }
 
     private func handleToolRequest(id: Any?, object: [String: Any]) -> String? {
+        guard let invocationID = stableInvocationID(id) else {
+            diagnostics(.invalidRequest)
+            return encodeError(id: nil, code: -32600, message: "tools/call requires a string or numeric request id")
+        }
         guard let params = object["params"] as? [String: Any],
               let toolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         diagnostics(.toolCall(toolName))
-        switch handleToolCall(MCPToolCall(name: toolName, arguments: arguments)) {
+        switch handleToolCall(MCPToolCall(
+            name: toolName,
+            arguments: arguments,
+            invocationID: invocationID
+        )) {
         case .result(let result):
             return encodeResult(id: id, result: result)
         case .error(let code, let message):
@@ -117,6 +130,23 @@ public final class MCPServer {
         case .none: return NSNull()
         default: return NSNull()
         }
+    }
+
+    private func stableInvocationID(_ id: Any?) -> String? {
+        let stable: String
+        switch id {
+        case let value as String:
+            stable = "string-base64:" + Data(value.utf8).base64EncodedString()
+        case let value as NSNumber where CFGetTypeID(value) != CFBooleanGetTypeID():
+            stable = "number:" + value.stringValue
+        default:
+            return nil
+        }
+        guard stable.count <= 256,
+              stable.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+        return stable
     }
 
     private func encode(_ object: [String: Any]) -> String? {

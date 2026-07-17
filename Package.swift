@@ -46,7 +46,7 @@ let package = Package(
         ),
         .target(
             name: "WorkspaceToolSupport",
-            dependencies: ["MCPServerKit"],
+            dependencies: ["ASTRACore", "MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
