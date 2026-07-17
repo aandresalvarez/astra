@@ -333,6 +333,7 @@ enum AgentPromptBuilder {
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
             sshBlock += "\nASTRA host control can check SSH reachability for this alias, but it does not accept provider-supplied remote commands."
             sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
+            sshBlock += "\n\(RemoteWorkspacePromptGuidance.longRunningCommandContract)"
             appendSection(
                 sshBlock,
                 kind: .supportingContext,
@@ -349,6 +350,7 @@ enum AgentPromptBuilder {
             }
             sshBlock += "\nASTRA host control can check SSH reachability for these aliases, but it does not accept provider-supplied remote commands."
             sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
+            sshBlock += "\n\(RemoteWorkspacePromptGuidance.longRunningCommandContract)"
             appendSection(
                 sshBlock,
                 kind: .supportingContext,

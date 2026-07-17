@@ -18,16 +18,16 @@ public enum CodexStreamEventParser {
         guard !trimmed.isEmpty else { return [] }
 
         guard let data = trimmed.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let json = try? JSONSerialization.jsonObject(with: data) else {
             return parsePlainTextAgentEvents(line: trimmed)
         }
-
-        let codexEvents = events(from: object, raw: trimmed)
-        if !codexEvents.isEmpty {
-            return codexEvents
+        guard let object = json as? [String: Any] else {
+            return [.unknown(provider: "codex", type: "unknown", raw: trimmed)]
         }
 
-        return CopilotStreamEventParser.parseAgentEvents(line: line).map(relabelUnknownAgentEvent)
+        return events(from: object, raw: trimmed).resolvingUnrecognized(with: {
+            CopilotStreamEventParser.parseAgentEvents(line: line).map(relabelUnknownAgentEvent)
+        })
     }
 
     public static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
@@ -42,27 +42,27 @@ public enum CodexStreamEventParser {
         return .unknown(provider: "codex", type: type, raw: raw)
     }
 
-    private static func events(from object: [String: Any], raw: String) -> [AgentEvent] {
+    private static func events(from object: [String: Any], raw: String) -> StructuredStreamParseOutcome<AgentEvent> {
         let type = string(in: object, keys: ["type", "event", "kind"]) ?? "unknown"
         let normalized = type.lowercased()
 
         switch normalized {
         case "thread.started":
-            return [.started(sessionID: string(in: object, keys: ["thread_id", "threadId", "id"]), model: nil)]
+            return .recognized([.started(sessionID: string(in: object, keys: ["thread_id", "threadId", "id"]), model: nil)])
         case "turn.started":
-            return [.control(type: "turn.started")]
+            return .recognized([.control(type: "turn.started")])
         case "turn.completed":
-            return usageEvent(from: object).map { [$0] } ?? []
+            return .recognized(usageEvent(from: object).map { [$0] } ?? [.control(type: "turn.completed")])
         case "turn.failed", "error", "failed":
-            return [.failed(message: textValue(in: object) ?? raw)]
+            return .recognized([.failed(message: textValue(in: object) ?? raw)])
         case "item.started":
-            return startedItemEvents(from: object, raw: raw)
+            return .recognized(startedItemEvents(from: object, raw: raw))
         case "item.completed":
-            return completedItemEvents(from: object, raw: raw)
+            return .recognized(completedItemEvents(from: object, raw: raw))
         case "assistant.message_delta", "assistant.message", "assistant.reasoning_delta", "assistant.reasoning":
-            return CopilotStreamEventParser.parseAgentEvents(line: raw).map(relabelUnknownAgentEvent)
+            return .recognized(CopilotStreamEventParser.parseAgentEvents(line: raw).map(relabelUnknownAgentEvent))
         default:
-            return []
+            return .unrecognized
         }
     }
 
@@ -106,7 +106,9 @@ public enum CodexStreamEventParser {
             return [.completed(summary: textValue(in: item))]
         }
         if itemType.contains("reasoning") {
-            guard let text = textValue(in: item), !text.isEmpty else { return [] }
+            guard let text = textValue(in: item), !text.isEmpty else {
+                return [.control(type: "item.completed.\(itemType)")]
+            }
             return [.thinking(text: text)]
         }
         if itemType.contains("tool") || item["tool"] != nil || item["name"] != nil {
@@ -166,8 +168,8 @@ public enum CodexStreamEventParser {
 
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
-        case .control:
-            return nil
+        case .control(let type):
+            return .control(type: type)
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):

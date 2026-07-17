@@ -2725,15 +2725,13 @@ struct TaskMainView: View {
         let isExpanded = runActivityDisclosureState.isExpanded(runID: run.id, presentation: presentation)
         let accent = runActivitySummaryColor(run: run, notices: notices)
         let title = runActivityDisclosureTitle(run: run, notices: notices)
-        // Static snapshot for the accessibility label only; the visible
-        // duration ticks via the narrowed TimelineView in
-        // runActivitySummaryPartsView so the whole disclosure no longer rebuilds
-        // every second.
+        // Run activity counts change from persisted events, not from time.
+        // Keep this summary static so the live badge is the disclosure's only
+        // clock-driven leaf.
         let accessibilityParts = runActivitySummaryParts(
             run: run,
             presentation: presentation,
-            notices: notices,
-            now: Date()
+            notices: notices
         )
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -2772,7 +2770,7 @@ struct TaskMainView: View {
                                 .fixedSize()
                             }
                         }
-                        runActivitySummaryPartsView(
+                        runActivitySummaryPartsText(
                             run: run,
                             presentation: presentation,
                             notices: notices
@@ -2833,42 +2831,13 @@ struct TaskMainView: View {
         return "Details"
     }
 
-    /// The "·"-joined summary parts (elapsed time, tokens, etc.). When the run
-    /// is live, only this leaf ticks on the 1 s clock; everything else in the
-    /// disclosure is built once. See the UI responsiveness audit (Cluster 5).
-    @ViewBuilder
-    private func runActivitySummaryPartsView(
-        run: TaskRunSnapshot,
-        presentation: RunActivityPresentation,
-        notices: [TaskRunNotice]
-    ) -> some View {
-        if run.status == .running && run.completedAt == nil {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                runActivitySummaryPartsText(
-                    run: run,
-                    presentation: presentation,
-                    notices: notices,
-                    now: context.date
-                )
-            }
-        } else {
-            runActivitySummaryPartsText(
-                run: run,
-                presentation: presentation,
-                notices: notices,
-                now: Date()
-            )
-        }
-    }
-
     @ViewBuilder
     private func runActivitySummaryPartsText(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
-        notices: [TaskRunNotice],
-        now: Date
+        notices: [TaskRunNotice]
     ) -> some View {
-        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices, now: now)
+        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices)
         if !parts.isEmpty {
             Text(parts.joined(separator: " · "))
                 .font(Stanford.chatMeta())
@@ -2950,10 +2919,10 @@ struct TaskMainView: View {
             isRunning: run.status == .running,
             presentation: presentation,
             planItems: protocolState.todoItems,
-            showsAllUpdates: runActivityDisclosureState.showsAllUpdates(runID: run.id),
-            onToggleHistory: {
+            updateHistoryAnchorID: runActivityDisclosureState.updateHistoryAnchor(runID: run.id),
+            onSelectUpdateHistoryAnchor: { anchorID in
                 withAnimation(chatStatusDisclosureAnimation) {
-                    runActivityDisclosureState.toggleAllUpdates(runID: run.id)
+                    runActivityDisclosureState.setUpdateHistoryAnchor(anchorID, runID: run.id)
                 }
             },
             onOpenFiles: { isShowingFilesPopover = true },
@@ -2988,8 +2957,7 @@ struct TaskMainView: View {
     private func runActivitySummaryParts(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
-        notices: [TaskRunNotice],
-        now: Date
+        notices: [TaskRunNotice]
     ) -> [String] {
         var parts: [String] = []
         let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
@@ -3035,16 +3003,14 @@ struct TaskMainView: View {
 
     private func runActivityLiveBadge(run: TaskRunSnapshot, now: Date) -> some View {
         let elapsed = compactLiveDuration(Int(now.timeIntervalSince(run.startedAt)))
-        let pulse = (sin(now.timeIntervalSinceReferenceDate * (2 * Double.pi / 2.8)) + 1) / 2
-        let dotOpacity = 0.48 + (pulse * 0.22)
-        let dotScale = 0.92 + (pulse * 0.08)
 
         return HStack(spacing: 4) {
             Circle()
-                .fill(Stanford.lagunita.opacity(dotOpacity))
+                // "Live" plus the advancing elapsed time already communicates
+                // liveness. A static dot avoids a continuous animation during
+                // multi-hour runs.
+                .fill(Stanford.lagunita.opacity(0.62))
                 .frame(width: 4.5, height: 4.5)
-                .scaleEffect(dotScale)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 1.2), value: dotOpacity)
             Text("Live · \(elapsed)")
                 .font(Stanford.chatMeta(10))
                 .foregroundStyle(Stanford.lagunita.opacity(0.9))
