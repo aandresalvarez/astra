@@ -110,7 +110,24 @@ struct WorkspacePackageService {
         appReports: inout [String: WorkspaceAppPackageValidationReport],
         issues: inout [PortablePackageValidationIssue]
     ) {
-        let bundleURL = packageURL.appendingPathComponent(entry.relativeBundlePath)
+        // `relativeBundlePath` is untrusted manifest data. Unlike capability
+        // paths (which flow through the O_NOFOLLOW safe reader), it is handed
+        // straight to `WorkspaceAppPackageService.validatePackage` as a package
+        // ROOT, so a value like `../existing.astra-app` or a symlinked bundle
+        // would let an outer package — whose checksums cover only its own
+        // files — validate and import a bundle outside the `.astra-share`
+        // directory, defeating containment. Reject anything that isn't a
+        // portable relative path staying inside the package root.
+        guard let bundleURL = Self.containedBundleURL(
+            packageURL: packageURL,
+            relativePath: entry.relativeBundlePath
+        ) else {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app bundle path must stay inside the package."
+            ))
+            return
+        }
         let report = appPackageService.validatePackage(at: bundleURL)
         appReports[entry.logicalID] = report
         if !report.canInstall {
@@ -133,6 +150,21 @@ struct WorkspacePackageService {
         if entry.packageDigest != actualDigest {
             issues.append(blocker("/\(entry.relativeBundlePath)", "Embedded app package digest does not match the manifest entry."))
         }
+    }
+
+    /// Returns the bundle URL only when `relativePath` is a portable relative
+    /// path that stays inside `packageURL` even after symlink resolution;
+    /// otherwise `nil`. Root and candidate are resolved identically so a
+    /// `/private`-alias collapse (see `WorkspaceFileLayout.appDirectoryURL`)
+    /// applies to both and can't produce a false mismatch.
+    private static func containedBundleURL(packageURL: URL, relativePath: String) -> URL? {
+        guard PortablePackageSafeFileReader.isPortableRelativePath(relativePath) else { return nil }
+        let root = packageURL.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = packageURL.appendingPathComponent(relativePath)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path == root.path || candidate.path.hasPrefix(rootPath) else { return nil }
+        return packageURL.appendingPathComponent(relativePath)
     }
 
     private func validateEmbeddedCapability(
@@ -181,7 +213,14 @@ struct WorkspacePackageService {
         path: String,
         issues: inout [PortablePackageValidationIssue]
     ) {
-        guard let required = SemanticVersion(string: minimumASTRAVersion) else { return }
+        // `minimumASTRAVersion` is a required field and the format's only
+        // compatibility gate. An unparsable value (malformed export or a
+        // hand-edited attempt to slip past the gate) must be a blocker, not a
+        // silently-skipped check that would let an incompatible package import.
+        guard let required = SemanticVersion(string: minimumASTRAVersion) else {
+            issues.append(blocker(path, "Minimum ASTRA version \"\(minimumASTRAVersion)\" is not a valid version string."))
+            return
+        }
         let current = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
         if current < required {
             issues.append(blocker(path, "This package requires ASTRA \(minimumASTRAVersion) or later (running \(current))."))

@@ -1838,7 +1838,7 @@ struct ArchitectureFitnessTests {
             // command flag plus the portable-package import surface (one
             // @State, one sheet, URL partition in importWorkspace) — the
             // review UI and import logic themselves live in their own files.
-            "Astra/Views/ContentView.swift": .init(4_870, .owner("Workspace shell composition")),
+            "Astra/Views/ContentView.swift": .init(4_890, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body

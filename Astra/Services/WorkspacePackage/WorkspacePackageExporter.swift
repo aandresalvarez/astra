@@ -68,6 +68,28 @@ struct WorkspacePackageExporter {
         config.workspaceAppDependencyBindings = nil
         config.workspaceAppAutomationStates = nil
 
+        // Domain-3 machine-local state must never leave the sender's machine.
+        // `additionalPaths`/`activeWorkingPath` are dropped on the import side;
+        // these two are dropped here at the source because nothing downstream
+        // sanitizes them and the structural content scan does not inspect them:
+        //   - `activeExecutionEnvironmentJSON` embeds source/Dockerfile/mount
+        //     host paths and credential-projection host paths.
+        //   - each SSH connection's `keyPath` is an absolute private-key path
+        //     that only resolves on the sender's machine.
+        // Capture which SSH connections carried a local key BEFORE blanking, so
+        // the manifest's readiness checklist can still tell the recipient which
+        // connections need a key re-pointed locally.
+        let sshLabelsRequiringLocalKeys = config.sshConnections
+            .filter { !$0.keyPath.isEmpty }
+            .map(\.displayLabel)
+            .sorted()
+        config.activeExecutionEnvironmentJSON = nil
+        config.sshConnections = config.sshConnections.map { connection in
+            var sanitized = connection
+            sanitized.keyPath = ""
+            return sanitized
+        }
+
         let stagingURL = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".astra-share-staging-\(UUID().uuidString.lowercased())", isDirectory: true)
         var published = false
@@ -106,10 +128,7 @@ struct WorkspacePackageExporter {
             capabilityEntries: capabilityEntries,
             requiredConnectorServiceTypes: Array(Set((config.connectors ?? []).map(\.serviceType))).sorted(),
             googleAccountsRequiringReauth: (config.googleOAuthAccountProfiles ?? []).map(\.email).sorted(),
-            sshConnectionsRequiringLocalKeys: config.sshConnections
-                .filter { !$0.keyPath.isEmpty }
-                .map(\.displayLabel)
-                .sorted()
+            sshConnectionsRequiringLocalKeys: sshLabelsRequiringLocalKeys
         )
         try writeJSON(manifest, to: stagingURL.appendingPathComponent("manifest.json"))
 
@@ -137,7 +156,12 @@ struct WorkspacePackageExporter {
         guard let modelContext = workspace.modelContext else { return [] }
         let workspaceID = workspace.id
         let descriptor = FetchDescriptor<WorkspaceApp>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        let apps = (try? modelContext.fetch(descriptor)) ?? []
+        // Propagate a store/fetch failure rather than swallowing it into an
+        // empty list: this profile promises to include every workspace app, and
+        // self-verification can't catch the omission because it intentionally
+        // expects `workspaceApps` to be absent from the config. A silent
+        // downgrade would publish a "complete" package missing all apps.
+        let apps = try modelContext.fetch(descriptor)
         guard !apps.isEmpty else { return [] }
 
         let appsRootURL = stagingURL.appendingPathComponent("apps", isDirectory: true)
@@ -196,6 +220,16 @@ struct WorkspacePackageExporter {
 
             var clamped = package
             CapabilityGovernanceNormalizer.clampToLocalDraft(&clamped)
+            // An `.asset` icon points at an on-disk image that
+            // `CapabilityLibrary.install` copies from an asset root derived from
+            // `sourceMetadata.url` — which the draft clamp above just cleared, so
+            // the asset can't travel and import would throw and roll back the
+            // whole workspace. Downgrade to the descriptor's own declared
+            // fallback symbol so the embedded capability stays self-contained
+            // JSON that installs cleanly.
+            if clamped.iconDescriptor.kind == .asset {
+                clamped.iconDescriptor = .systemSymbol(clamped.iconDescriptor.fallbackSystemName)
+            }
 
             let relativePath = "capabilities/\(capabilityID).json"
             try writeJSON(clamped, to: stagingURL.appendingPathComponent(relativePath))

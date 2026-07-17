@@ -265,6 +265,161 @@ struct WorkspacePackageTests {
         #expect(appReport.canInstall)
     }
 
+    // MARK: - Machine-local state stripping
+
+    @MainActor
+    @Test("exported package strips the machine-local execution environment")
+    func exportedPackageStripsExecutionEnvironment() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        workspace.activeExecutionEnvironmentJSON = "{\"kind\":\"docker\",\"sourcePath\":\"/opt/only-on-sender\"}"
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.canInstall)
+        #expect(report.workspaceConfig?.activeExecutionEnvironmentJSON == nil)
+    }
+
+    @MainActor
+    @Test("exported package blanks SSH key paths but flags them for local setup")
+    func exportedPackageBlanksSSHKeyPaths() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        SSHConnectionManager.save(
+            [SSHConnection(name: "prod", host: "prod.example.com", user: "deploy", keyPath: "/Users/alice/.ssh/prod_key")],
+            workspacePath: workspace.primaryPath
+        )
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        let result = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // The sender's absolute private-key path never leaves the machine...
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.canInstall)
+        let ssh = try #require(report.workspaceConfig?.sshConnections)
+        #expect(ssh.count == 1)
+        #expect(ssh.allSatisfy { $0.keyPath.isEmpty })
+        // ...but the connection is still flagged so the recipient knows to
+        // re-point a key locally.
+        #expect(result.manifest.sshConnectionsRequiringLocalKeys == ["prod"])
+    }
+
+    @MainActor
+    @Test("exported package downgrades an asset-icon capability to its fallback symbol")
+    func exportedPackageDowngradesAssetIcon() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        // A capability whose icon is an on-disk asset: CapabilityLibrary.install
+        // would copy it from an asset root the draft clamp strips, so import
+        // would throw and roll back the whole workspace. The exporter must
+        // downgrade the icon to the descriptor's fallback symbol.
+        let assetRoot = root.appendingPathComponent("asset-source", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: assetRoot.appendingPathComponent("assets", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("png".utf8).write(to: assetRoot.appendingPathComponent("assets/icon.png"))
+        var capability = Self.makeCapability(id: "local.tool", governance: .localDraft())
+        capability.iconDescriptor = .asset("assets/icon.png", fallbackSystemName: "puzzlepiece.extension")
+
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        try capabilityLibrary.install(CapabilityPackageSource(package: capability, manifestURL: nil, assetRootURL: assetRoot))
+        workspace.enabledCapabilityIDs = ["local.tool"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let embedded = try decoder.decode(
+            PluginPackage.self,
+            from: Data(contentsOf: destination.appendingPathComponent("capabilities/local.tool.json"))
+        )
+        #expect(embedded.iconDescriptor.kind == .systemSymbol)
+        #expect(embedded.iconDescriptor.value == "puzzlepiece.extension")
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+    }
+
+    // MARK: - Embedded app containment / version gate
+
+    @MainActor
+    @Test("package validation rejects an embedded app bundle path outside the package")
+    func validationRejectsAppBundlePathTraversal() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let sourceApp = root.appendingPathComponent("source.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.minimalAppManifest(id: "notes", name: "Notes"),
+            to: sourceApp
+        )
+        _ = try WorkspaceAppPackageService().importPackage(at: sourceApp, into: workspace, modelContext: container.mainContext)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // Point the app bundle outside the package: an untrusted manifest whose
+        // checksums cover only its own files must not be able to validate/import
+        // a bundle escaping the `.astra-share` directory.
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        var manifest = try Self.decodeManifest(at: manifestURL)
+        manifest.appEntries = manifest.appEntries.map { entry in
+            var tampered = entry
+            tampered.relativeBundlePath = "../escape.astra-app"
+            return tampered
+        }
+        try Self.encodeManifest(manifest, to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("must stay inside the package") })
+    }
+
+    @MainActor
+    @Test("package validation rejects a malformed minimum ASTRA version")
+    func validationRejectsMalformedVersion() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        var manifest = try Self.decodeManifest(at: manifestURL)
+        manifest.minimumASTRAVersion = "not-a-version"
+        try Self.encodeManifest(manifest, to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("is not a valid version string") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

@@ -64,7 +64,15 @@ struct WorkspacePackageImportTests {
         #expect(outcome.capabilitiesInstalledAsDraft == ["local.tool"])
         let installed = try #require(targetLibrary.installedPackage(id: "local.tool"))
         #expect(installed.governance.approvalStatus == .draft)
-        #expect(outcome.workspace.enabledCapabilityIDs == ["local.tool"])
+        // ...and is NOT auto-enabled: an embedded draft must stay off the
+        // imported workspace's enabled set until the recipient approves it,
+        // or the runtime resource matcher would expose it to task runs while
+        // the review UI still says "pending approval". (A custom capability
+        // always reads back as draft from the library — its ID isn't a trusted
+        // built-in — so the enabled-set strip is unconditional in practice; the
+        // approved-stays-enabled branch is reachable only for genuine built-ins,
+        // which a fixture can't fake without coupling to the real catalog.)
+        #expect(outcome.workspace.enabledCapabilityIDs.isEmpty)
     }
 
     @MainActor

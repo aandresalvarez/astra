@@ -98,6 +98,24 @@ struct WorkspacePackageImportCoordinator {
         // identity, so the source ID is display metadata only.
         config.id = nil
 
+        // Embedded custom capabilities land as local drafts pending review (see
+        // the capability loop below). But `config.enabledCapabilityIDs` carries
+        // the sender's enabled set verbatim, and the runtime resource matcher
+        // exposes enabled capabilities to task runs regardless of governance —
+        // so a freshly-imported draft would run immediately, contradicting the
+        // "pending approval" the review UI shows. Strip any embedded capability
+        // that is not already installed-and-approved on this machine from the
+        // imported workspace's enabled set; the recipient re-enables it after
+        // approving. Built-in / already-approved capabilities keep their state.
+        let embeddedIDsNeedingApproval = Set(manifest.capabilityEntries.map(\.packageID).filter { id in
+            guard let installed = capabilityLibrary.installedPackage(id: id) else { return true }
+            return installed.governance.approvalStatus != .approved
+        })
+        if !embeddedIDsNeedingApproval.isEmpty {
+            config.enabledCapabilityIDs = (config.enabledCapabilityIDs ?? [])
+                .filter { !embeddedIDsNeedingApproval.contains($0) }
+        }
+
         try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: true)
         var installedCapabilityIDs: [String] = []
         var committed = false
@@ -118,23 +136,13 @@ struct WorkspacePackageImportCoordinator {
         )
         let workspace = configResult.workspace
 
-        var appsImported: [String] = []
-        for entry in manifest.appEntries {
-            let bundleURL = packageURL.appendingPathComponent(entry.relativeBundlePath, isDirectory: true)
-            let result: WorkspaceAppPackageImportResult
-            if let importAppBundle {
-                result = try importAppBundle(bundleURL, workspace, modelContext)
-            } else {
-                result = try appPackageService.importPackage(
-                    at: bundleURL,
-                    into: workspace,
-                    modelContext: modelContext,
-                    persistence: .deferSave
-                )
-            }
-            appsImported.append(result.app.name)
-        }
-
+        // Install embedded capabilities BEFORE importing the apps. App
+        // dependency bindings are resolved by `WorkspaceAppService.createApp`
+        // against the currently-installed capability library; if an app that
+        // declares a capability-provided contract is created first, its binding
+        // is persisted as unmapped and the later install never recreates it, so
+        // the app stays stuck in a missing-dependency state even after the
+        // recipient approves the capability.
         var capabilitiesInstalledAsDraft: [String] = []
         var capabilitiesAlreadyInstalled: [String] = []
         for entry in manifest.capabilityEntries {
@@ -156,6 +164,23 @@ struct WorkspacePackageImportCoordinator {
             try capabilityLibrary.install(capability)
             installedCapabilityIDs.append(entry.packageID)
             capabilitiesInstalledAsDraft.append(entry.packageID)
+        }
+
+        var appsImported: [String] = []
+        for entry in manifest.appEntries {
+            let bundleURL = packageURL.appendingPathComponent(entry.relativeBundlePath, isDirectory: true)
+            let result: WorkspaceAppPackageImportResult
+            if let importAppBundle {
+                result = try importAppBundle(bundleURL, workspace, modelContext)
+            } else {
+                result = try appPackageService.importPackage(
+                    at: bundleURL,
+                    into: workspace,
+                    modelContext: modelContext,
+                    persistence: .deferSave
+                )
+            }
+            appsImported.append(result.app.name)
         }
 
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
