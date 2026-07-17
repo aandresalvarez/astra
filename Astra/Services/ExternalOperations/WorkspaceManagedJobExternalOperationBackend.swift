@@ -101,6 +101,7 @@ final class WorkspaceManagedJobBackendLocatorResolver {
 struct WorkspaceManagedJobExternalOperationBackend:
     TaskExternalOperationObserving,
     TaskExternalOperationCancelling,
+    TaskExternalOperationOwnershipValidating,
     @unchecked Sendable
 {
     private let locatorResolver: WorkspaceManagedJobBackendLocatorResolver
@@ -183,6 +184,21 @@ struct WorkspaceManagedJobExternalOperationBackend:
             executionState: state,
             health: record.status == .failed && record.startReceipt == nil ? .malformed : .healthy
         )
+    }
+
+    func validateOwnership(_ request: TaskExternalOperationBackendRequest) async -> Bool {
+        guard request.backendKind == WorkspaceManagedJobStartReceipt.backend,
+              let locator = await locatorResolver.locator(for: request),
+              let record = try? WorkspaceManagedJobStore(rootPath: locator.jobRootPath)
+                .load(jobID: request.backendJobID),
+              let receipt = record.startReceipt,
+              receipt.taskID == request.taskID,
+              receipt.runID == request.originatingRunID,
+              receipt.externalIdentity == request.externalIdentity,
+              (try? receipt.validate(jobID: record.jobID)) != nil else {
+            return false
+        }
+        return true
     }
 
     private static func executionState(

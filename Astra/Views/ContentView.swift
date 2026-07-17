@@ -646,6 +646,7 @@ struct ContentView: View {
             onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
         )
+        .environment(\.taskExternalOperationActions, .live(runtime: runtime))
     }
 
     // MARK: - F7 Workspace App surfaces

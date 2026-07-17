@@ -11,6 +11,9 @@ The first vertical slice supports ASTRA-managed Docker workspace jobs. It does
 not add generic remote-command execution. A future SSH backend must be
 alias-scoped, separately permissioned, and expose the same typed observe/cancel
 interface without persisting commands or credentials in the control plane.
+Concrete backends are registered in a closed, fail-closed registry keyed by a
+validated backend kind. Unknown or malformed kinds cannot observe, cancel, or
+reactivate an operation.
 
 ## Ownership and state
 
@@ -82,6 +85,17 @@ Stopping monitoring changes only the control-plane registration. Cancelling
 external work is a separate explicit backend action. Deleting a task or
 workspace never invokes backend cancellation.
 
+The task surface exposes manual polling, stop, resume, cancellation, and
+ownership-gated quarantine reactivation. Stop and cancellation use different
+confirmation language so the user is never told that one implies the other.
+Reactivation validates the authoritative owner receipt without launching or
+polling the job; a failed proof leaves the registration quarantined.
+
+In-app task events remain the durable notification audit trail. macOS
+notifications reuse the same semantic transition deduplication and are
+best-effort only when the user has already authorized notifications; monitoring
+never triggers a permission prompt.
+
 Workspace export contains only the bounded safe control-plane projection.
 Every imported registration is quarantined unconditionally and cannot contact
 an executor until a future explicit reactivation flow validates local
@@ -90,10 +104,7 @@ ownership.
 ## Follow-up phases
 
 1. Add an alias-scoped, separately permissioned SSH observer/canceller. Do not
-   add a generic SSH command API.
-2. Add task UI for operation history, manual poll, stop monitoring, explicit
-   cancellation confirmation, and quarantine reactivation.
-3. Add OS notifications using the same durable semantic transition key; task
-   events remain the in-app audit trail.
-4. Add executor-specific completion validators where deterministic validation
+   add a generic SSH command API. The backend registry is ready, but this phase
+   also requires a reviewed remote helper and deployment/permission contract.
+2. Add executor-specific completion validators where deterministic validation
    can replace a provider wake.

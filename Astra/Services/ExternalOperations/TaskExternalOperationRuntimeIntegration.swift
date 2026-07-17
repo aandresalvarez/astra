@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
@@ -15,7 +16,7 @@ struct TaskEventExternalOperationNotificationSink:
     TaskExternalOperationNotificationSinking,
     @unchecked Sendable
 {
-    let action: @MainActor @Sendable (TaskExternalOperationNotification) -> Bool
+    let action: @MainActor @Sendable (TaskExternalOperationNotification) async -> Bool
 
     func notify(_ notification: TaskExternalOperationNotification) async -> Bool {
         await action(notification)
@@ -66,7 +67,17 @@ extension AppRuntimeController {
             )
         }
 
-        let backend = WorkspaceManagedJobExternalOperationBackend(modelContext: modelContext)
+        let dockerBackend = WorkspaceManagedJobExternalOperationBackend(modelContext: modelContext)
+        let backend = TaskExternalOperationBackendRouter(registry: .init([
+            (kind: WorkspaceManagedJobStartReceipt.backend, backend: dockerBackend)
+        ]))
+#if canImport(UserNotifications)
+        let systemNotificationDelivery: any TaskExternalOperationSystemNotificationDelivering =
+            UserNotificationCenterExternalOperationDelivery()
+#else
+        let systemNotificationDelivery: any TaskExternalOperationSystemNotificationDelivering =
+            NoopTaskExternalOperationSystemNotificationDelivery()
+#endif
         let wakeSink = TaskQueueExternalOperationWakeSink { [taskQueue] request in
             let taskID = request.taskID
             var descriptor = FetchDescriptor<AgentTask>(
@@ -105,12 +116,14 @@ extension AppRuntimeController {
                 taskID: task.id,
                 auditFields: ["operation": "external_operation_observation_event"]
             )
+            await systemNotificationDelivery.deliver(notification)
             return true
         }
         let monitor = TaskExternalOperationMonitorService(
             modelContext: modelContext,
             observer: backend,
             canceller: backend,
+            ownershipValidator: backend,
             wakeSink: wakeSink,
             notificationSink: notificationSink,
             contextProvider: { taskID in

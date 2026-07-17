@@ -495,6 +495,8 @@ struct TaskMainView: View {
             mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 
+            TaskExternalOperationControlsHost(taskID: task.id)
+
             composerView(decisionDockPresentation: dockPresentation)
         }
         .navigationTitle("")

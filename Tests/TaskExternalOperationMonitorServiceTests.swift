@@ -121,6 +121,80 @@ struct TaskExternalOperationMonitorServiceTests {
         #expect(cancelled.monitoringState == .completed)
     }
 
+    @Test("stopped monitoring resumes without launching or cancelling work")
+    func stoppedMonitoringResumes() async throws {
+        let fixture = try Fixture()
+        let operation = fixture.insertOperation(
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .stopped
+        )
+        let observer = SequenceOperationObserver(observations: [])
+        let canceller = RecordingOperationCanceller(
+            observation: .init(executionState: .cancelled, health: .healthy)
+        )
+        let service = fixture.makeService(observer: observer, canceller: canceller)
+
+        #expect(service.resumeMonitoring(operationID: operation.id) == .applied)
+        #expect(operation.monitoringState == .active)
+        #expect(operation.executionState == .running)
+        #expect(operation.observationHealth == .unknown)
+        #expect(operation.nextCheckAt == fixture.clock.now())
+        #expect(await observer.callCount == 0)
+        #expect(await canceller.callCount == 0)
+    }
+
+    @Test("terminal operation cannot be cancelled again")
+    func terminalOperationCannotBeCancelledAgain() async throws {
+        let fixture = try Fixture()
+        let operation = fixture.insertOperation(
+            executionState: .cancelled,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        let canceller = RecordingOperationCanceller(
+            observation: .init(executionState: .cancelled, health: .healthy)
+        )
+        let service = fixture.makeService(
+            observer: SequenceOperationObserver(observations: []),
+            canceller: canceller
+        )
+
+        #expect(await service.cancelExternalWork(operationID: operation.id) == .notMonitoring)
+        #expect(await canceller.callCount == 0)
+    }
+
+    @Test("quarantine reactivation requires backend ownership proof before contact")
+    func quarantineReactivationRequiresOwnershipProof() async throws {
+        let fixture = try Fixture()
+        let rejected = fixture.insertOperation(
+            externalIdentity: "docker:rejected",
+            executionState: .running,
+            observationHealth: .quarantined,
+            monitoringState: .quarantined
+        )
+        let accepted = fixture.insertOperation(
+            externalIdentity: "docker:accepted",
+            executionState: .running,
+            observationHealth: .quarantined,
+            monitoringState: .quarantined
+        )
+        let validator = SelectiveOwnershipValidator(acceptedIdentity: accepted.externalIdentity)
+        let observer = SequenceOperationObserver(observations: [])
+        let service = fixture.makeService(observer: observer, ownershipValidator: validator)
+
+        #expect(await service.reactivateQuarantinedOperation(operationID: rejected.id) == .ownershipRejected)
+        #expect(rejected.monitoringState == .quarantined)
+        #expect(rejected.observationHealth == .quarantined)
+
+        #expect(await service.reactivateQuarantinedOperation(operationID: accepted.id) == .applied)
+        #expect(accepted.monitoringState == .active)
+        #expect(accepted.observationHealth == .unknown)
+        #expect(accepted.nextCheckAt == fixture.clock.now())
+        #expect(await observer.callCount == 0)
+        #expect(await validator.callCount == 2)
+    }
+
     @Test("quarantined registrations never contact an observer")
     func quarantinedRegistrationNeverPolls() async throws {
         let fixture = try Fixture()
@@ -303,6 +377,7 @@ private struct Fixture {
         canceller: any TaskExternalOperationCancelling = RecordingOperationCanceller(
             observation: TaskExternalOperationObservation(executionState: .cancelled, health: .healthy)
         ),
+        ownershipValidator: any TaskExternalOperationOwnershipValidating = RejectingTaskExternalOperationOwnershipValidator(),
         wakeSink: any TaskExternalOperationWakeSinking = RecordingOperationWakeSink(),
         notificationSink: any TaskExternalOperationNotificationSinking = RecordingOperationNotificationSink(),
         backoff: any TaskExternalOperationBackoffPolicy = FixedOperationBackoff(delay: 30),
@@ -312,6 +387,7 @@ private struct Fixture {
             modelContext: context,
             observer: observer,
             canceller: canceller,
+            ownershipValidator: ownershipValidator,
             wakeSink: wakeSink,
             notificationSink: notificationSink,
             clock: clock,
@@ -421,6 +497,20 @@ private actor RecordingOperationCanceller: TaskExternalOperationCancelling {
     func cancel(_: TaskExternalOperationBackendRequest) -> TaskExternalOperationObservation {
         callCount += 1
         return observation
+    }
+}
+
+private actor SelectiveOwnershipValidator: TaskExternalOperationOwnershipValidating {
+    private let acceptedIdentity: String
+    private(set) var callCount = 0
+
+    init(acceptedIdentity: String) {
+        self.acceptedIdentity = acceptedIdentity
+    }
+
+    func validateOwnership(_ request: TaskExternalOperationBackendRequest) -> Bool {
+        callCount += 1
+        return request.externalIdentity == acceptedIdentity
     }
 }
 

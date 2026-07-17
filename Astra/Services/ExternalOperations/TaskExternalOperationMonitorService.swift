@@ -69,6 +69,16 @@ protocol TaskExternalOperationCancelling: Sendable {
     func cancel(_ request: TaskExternalOperationBackendRequest) async -> TaskExternalOperationObservation
 }
 
+protocol TaskExternalOperationOwnershipValidating: Sendable {
+    /// Revalidates a persisted registration against the backend's trusted
+    /// owner record without launching, polling, or cancelling external work.
+    func validateOwnership(_ request: TaskExternalOperationBackendRequest) async -> Bool
+}
+
+struct RejectingTaskExternalOperationOwnershipValidator: TaskExternalOperationOwnershipValidating {
+    func validateOwnership(_: TaskExternalOperationBackendRequest) async -> Bool { false }
+}
+
 enum TaskExternalOperationWakeIntent: String, Equatable, Sendable {
     case ambiguousObservation = "ambiguous_observation"
     case completionValidation = "completion_validation"
@@ -143,6 +153,7 @@ enum TaskExternalOperationPollResult: Equatable, Sendable {
     case missing
     case notMonitoring
     case quarantined
+    case ownershipRejected
     case staleIgnored
 }
 
@@ -171,6 +182,7 @@ final class TaskExternalOperationMonitorService {
     private let modelContext: ModelContext
     private let observer: any TaskExternalOperationObserving
     private let canceller: any TaskExternalOperationCancelling
+    private let ownershipValidator: any TaskExternalOperationOwnershipValidating
     private let wakeSink: any TaskExternalOperationWakeSinking
     private let notificationSink: any TaskExternalOperationNotificationSinking
     private let clock: any TaskExternalOperationClock
@@ -187,6 +199,7 @@ final class TaskExternalOperationMonitorService {
         modelContext: ModelContext,
         observer: any TaskExternalOperationObserving,
         canceller: any TaskExternalOperationCancelling,
+        ownershipValidator: any TaskExternalOperationOwnershipValidating = RejectingTaskExternalOperationOwnershipValidator(),
         wakeSink: any TaskExternalOperationWakeSinking = NoopTaskExternalOperationWakeSink(),
         notificationSink: any TaskExternalOperationNotificationSinking = NoopTaskExternalOperationNotificationSink(),
         clock: any TaskExternalOperationClock = SystemTaskExternalOperationClock(),
@@ -198,6 +211,7 @@ final class TaskExternalOperationMonitorService {
         self.modelContext = modelContext
         self.observer = observer
         self.canceller = canceller
+        self.ownershipValidator = ownershipValidator
         self.wakeSink = wakeSink
         self.notificationSink = notificationSink
         self.clock = clock
@@ -321,6 +335,59 @@ final class TaskExternalOperationMonitorService {
         return .applied
     }
 
+    func resumeMonitoring(operationID: UUID) -> TaskExternalOperationPollResult {
+        guard let operation = fetchOperation(id: operationID) else { return .missing }
+        guard operation.monitoringState != .quarantined else { return .quarantined }
+        guard operation.monitoringState == .stopped,
+              !operation.executionState.isTerminalObservation else {
+            return .notMonitoring
+        }
+        let now = clock.now()
+        operation.generation += 1
+        operation.monitoringState = .active
+        operation.observationHealth = .unknown
+        operation.nextCheckAt = now
+        operation.leaseOwner = nil
+        operation.leaseExpiresAt = nil
+        operation.updatedAt = now
+        persist(operation: "external_operation_monitoring_resumed")
+        return .applied
+    }
+
+    func reactivateQuarantinedOperation(operationID: UUID) async -> TaskExternalOperationPollResult {
+        guard let operation = fetchOperation(id: operationID) else { return .missing }
+        guard operation.monitoringState == .quarantined else { return .notMonitoring }
+
+        let generation = operation.generation
+        let request = backendRequest(for: operation)
+        guard await ownershipValidator.validateOwnership(request) else {
+            AppLogger.audit(.workerBlocked, category: "ExternalOperation", taskID: operation.taskID, fields: [
+                "operation": "external_operation_reactivate",
+                "result": "ownership_rejected",
+                "backend": operation.backendKindRaw
+            ], level: .warning)
+            return .ownershipRejected
+        }
+
+        // Ownership validation can suspend. A concurrent delete or state
+        // transition must win rather than being overwritten by this result.
+        guard let current = fetchOperation(id: operationID),
+              current.generation == generation,
+              current.monitoringState == .quarantined else {
+            return .staleIgnored
+        }
+        let now = clock.now()
+        current.generation += 1
+        current.monitoringState = .active
+        current.observationHealth = .unknown
+        current.nextCheckAt = now
+        current.leaseOwner = nil
+        current.leaseExpiresAt = nil
+        current.updatedAt = now
+        persist(operation: "external_operation_reactivated")
+        return .applied
+    }
+
     func cancelExternalWork(operationID: UUID) async -> TaskExternalOperationPollResult {
         if let existing = inFlightCancellations[operationID] {
             return .coalesced(await existing.task.value)
@@ -362,6 +429,7 @@ final class TaskExternalOperationMonitorService {
     private func performCancellation(operationID: UUID) async -> TaskExternalOperationPollResult {
         guard let operation = fetchOperation(id: operationID) else { return .missing }
         guard operation.monitoringState != .quarantined else { return .quarantined }
+        guard !operation.executionState.isTerminalObservation else { return .notMonitoring }
         let now = clock.now()
         operation.generation += 1
         let generation = operation.generation
