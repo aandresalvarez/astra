@@ -1,0 +1,216 @@
+import Foundation
+
+extension RunLedger {
+    public func outbox(
+        after sequence: Int64 = 0,
+        limit: Int = 1_000
+    ) throws -> [RunLedgerOutboxMessage] {
+        guard sequence >= 0 else {
+            throw RunLedgerError.invalidEvent("Outbox cursor cannot be negative")
+        }
+        let safeLimit = max(1, min(limit, 10_000))
+        return try connection.withLock { database in
+            let acknowledged = try outboxAcknowledgement(database: database)
+            let statement = try connection.statement(
+                """
+                SELECT sequence, message_id, event_kind, payload, occurred_at
+                FROM outbox WHERE sequence > ? ORDER BY sequence LIMIT ?
+                """,
+                bindings: [.integer(sequence), .integer(Int64(safeLimit))],
+                database: database
+            )
+            defer { statement.finalize() }
+            var messages: [RunLedgerOutboxMessage] = []
+            while try statement.step() == .row {
+                let messageID = RunLedgerEventID(
+                    rawValue: try uuid(try statement.text(at: 1), field: "outbox.message_id")
+                )
+                let messageSequence = statement.int64(at: 0)
+                messages.append(.init(
+                    sequence: messageSequence,
+                    messageID: messageID,
+                    eventKind: try statement.text(at: 2),
+                    payload: try statement.blob(at: 3),
+                    occurredAt: Date(timeIntervalSince1970: statement.double(at: 4)),
+                    isAcknowledged: messageSequence <= acknowledged
+                ))
+            }
+            return messages
+        }
+    }
+
+    /// Acknowledges exactly the next message. Single-step advancement is
+    /// intentionally conservative: consumers must durably process each message
+    /// before the ledger will expose progress past it.
+    @discardableResult
+    public func acknowledgeOutbox(
+        sequence requested: Int64,
+        messageID requestedMessageID: RunLedgerEventID
+    ) throws -> RunLedgerCursorDisposition {
+        try connection.withLock { database in
+            try connection.withImmediateTransaction(database: database) {
+                let current = try outboxAcknowledgement(database: database)
+                if requested == current, current > 0 {
+                    let currentMessageID = try outboxMessageID(
+                        sequence: current,
+                        database: database
+                    )
+                    guard currentMessageID == requestedMessageID else {
+                        throw RunLedgerError.outboxMessageIdentityMismatch(
+                            sequence: requested,
+                            expected: currentMessageID,
+                            requested: requestedMessageID
+                        )
+                    }
+                    return .idempotent
+                }
+                guard requested > current else {
+                    throw RunLedgerError.outboxAcknowledgementWouldRegress(
+                        current: current,
+                        requested: requested
+                    )
+                }
+                let next = try nextOutboxMessage(after: current, database: database)
+                guard requested == next?.sequence else {
+                    throw RunLedgerError.outboxAcknowledgementWouldSkip(
+                        current: current,
+                        requested: requested,
+                        next: next?.sequence
+                    )
+                }
+                guard let next, next.messageID == requestedMessageID else {
+                    throw RunLedgerError.outboxMessageIdentityMismatch(
+                        sequence: requested,
+                        expected: next?.messageID ?? requestedMessageID,
+                        requested: requestedMessageID
+                    )
+                }
+                let statement = try connection.statement(
+                    """
+                    UPDATE outbox_state SET last_acknowledged_sequence = ? WHERE singleton_id = 1
+                    """,
+                    bindings: [.integer(requested)],
+                    database: database
+                )
+                defer { statement.finalize() }
+                guard try statement.step() == .done,
+                      connection.changes(database: database) == 1 else {
+                    throw RunLedgerError.projectionDrift("Outbox acknowledgement row is missing")
+                }
+                return .applied
+            }
+        }
+    }
+
+    public func checkpoint(for consumerID: RunLedgerConsumerID) throws -> Int64 {
+        try connection.withLock { database in
+            try connection.scalarInt64(
+                "SELECT event_sequence FROM consumer_checkpoints WHERE consumer_id = ?",
+                bindings: [.text(consumerID.rawValue)],
+                database: database
+            ) ?? 0
+        }
+    }
+
+    /// Advances exactly one durable journal event. Batch skipping is forbidden
+    /// so a consumer cannot checkpoint work it has not individually observed.
+    @discardableResult
+    public func advanceCheckpoint(
+        for consumerID: RunLedgerConsumerID,
+        through requested: Int64
+    ) throws -> RunLedgerCursorDisposition {
+        try connection.withLock { database in
+            try connection.withImmediateTransaction(database: database) {
+                let current = try connection.scalarInt64(
+                    "SELECT event_sequence FROM consumer_checkpoints WHERE consumer_id = ?",
+                    bindings: [.text(consumerID.rawValue)],
+                    database: database
+                ) ?? 0
+                if requested == current { return .idempotent }
+                guard requested > current else {
+                    throw RunLedgerError.checkpointWouldRegress(
+                        current: current,
+                        requested: requested
+                    )
+                }
+                let next = try connection.scalarInt64(
+                    "SELECT MIN(sequence) FROM events WHERE sequence > ?",
+                    bindings: [.integer(current)],
+                    database: database
+                )
+                guard requested == next else {
+                    throw RunLedgerError.checkpointWouldSkip(
+                        current: current,
+                        requested: requested,
+                        next: next
+                    )
+                }
+                let existing = current > 0
+                let sql = existing
+                    ? "UPDATE consumer_checkpoints SET event_sequence = ? WHERE consumer_id = ?"
+                    : "INSERT INTO consumer_checkpoints (event_sequence, consumer_id) VALUES (?, ?)"
+                let statement = try connection.statement(
+                    sql,
+                    bindings: [.integer(requested), .text(consumerID.rawValue)],
+                    database: database
+                )
+                defer { statement.finalize() }
+                guard try statement.step() == .done,
+                      connection.changes(database: database) == 1 else {
+                    throw RunLedgerError.projectionDrift("Consumer checkpoint write affected no row")
+                }
+                return .applied
+            }
+        }
+    }
+
+    func outboxAcknowledgement(database: OpaquePointer) throws -> Int64 {
+        guard let value = try connection.scalarInt64(
+            "SELECT last_acknowledged_sequence FROM outbox_state WHERE singleton_id = 1",
+            database: database
+        ) else {
+            throw RunLedgerError.projectionDrift("Outbox acknowledgement state is missing")
+        }
+        return value
+    }
+
+    private func nextOutboxMessage(
+        after sequence: Int64,
+        database: OpaquePointer
+    ) throws -> (sequence: Int64, messageID: RunLedgerEventID)? {
+        let statement = try connection.statement(
+            """
+            SELECT sequence, message_id FROM outbox
+            WHERE sequence > ? ORDER BY sequence LIMIT 1
+            """,
+            bindings: [.integer(sequence)],
+            database: database
+        )
+        defer { statement.finalize() }
+        guard try statement.step() == .row else { return nil }
+        let result = (
+            sequence: statement.int64(at: 0),
+            messageID: RunLedgerEventID(
+                rawValue: try uuid(try statement.text(at: 1), field: "outbox.message_id")
+            )
+        )
+        guard try statement.step() == .done else {
+            throw RunLedgerError.projectionDrift("Outbox sequence is not unique")
+        }
+        return result
+    }
+
+    private func outboxMessageID(
+        sequence: Int64,
+        database: OpaquePointer
+    ) throws -> RunLedgerEventID {
+        guard let value = try connection.scalarText(
+            "SELECT message_id FROM outbox WHERE sequence = ?",
+            bindings: [.integer(sequence)],
+            database: database
+        ) else {
+            throw RunLedgerError.projectionDrift("Acknowledged outbox message is missing")
+        }
+        return .init(rawValue: try uuid(value, field: "outbox.message_id"))
+    }
+}
