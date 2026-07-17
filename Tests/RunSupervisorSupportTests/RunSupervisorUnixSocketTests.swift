@@ -93,6 +93,59 @@ struct RunSupervisorUnixSocketTests {
         #expect(waitForPeerClosure(client, timeout: 1))
     }
 
+    @Test("stop drains an in-flight handler after its authenticated response is sent")
+    func stopPreservesInFlightResponse() throws {
+        let fixture = try makeFixture()
+        let handlerEntered = DispatchSemaphore(value: 0)
+        let releaseHandler = DispatchSemaphore(value: 0)
+        let clientFinished = DispatchSemaphore(value: 0)
+        let stopFinished = DispatchSemaphore(value: 0)
+        let result = SocketTestResponseBox()
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: .init(
+                executionID: fixture.payload.manifest.executionID,
+                capability: fixture.payload.capability
+            )
+        )
+        try server.start { _ in
+            handlerEntered.signal()
+            releaseHandler.wait()
+            return .init(accepted: false, lastSequence: 41, errorCode: "execution_finished")
+        }
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: fixture.payload.manifest.executionID,
+            action: .init(kind: .status),
+            capability: fixture.payload.capability
+        )
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                result.set(response: try DarwinRunSupervisorControlClient().send(
+                    request,
+                    directory: fixture.directory
+                ))
+            } catch {
+                result.set(error: error)
+            }
+            clientFinished.signal()
+        }
+        #expect(handlerEntered.wait(timeout: .now() + 2) == .success)
+        DispatchQueue.global(qos: .utility).async {
+            server.stop()
+            stopFinished.signal()
+        }
+        #expect(stopFinished.wait(timeout: .now() + 0.05) == .timedOut)
+        releaseHandler.signal()
+        #expect(clientFinished.wait(timeout: .now() + 2) == .success)
+        #expect(stopFinished.wait(timeout: .now() + 2) == .success)
+        #expect(result.error == nil)
+        #expect(result.response == .init(
+            accepted: false,
+            lastSequence: 41,
+            errorCode: "execution_finished"
+        ))
+    }
+
     @Test("stop safely joins an accept loop that has not started accepting")
     func stopAcceptRace() throws {
         let fixture = try makeFixture()
@@ -385,6 +438,34 @@ private final class SocketTestErrorBox: @unchecked Sendable {
     func set(_ error: Error) {
         lock.lock()
         if stored == nil { stored = error }
+        lock.unlock()
+    }
+}
+
+private final class SocketTestResponseBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedResponse: RunSupervisorControlResponse?
+    private var storedError: Error?
+
+    var response: RunSupervisorControlResponse? {
+        lock.lock(); defer { lock.unlock() }
+        return storedResponse
+    }
+
+    var error: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return storedError
+    }
+
+    func set(response: RunSupervisorControlResponse) {
+        lock.lock()
+        storedResponse = response
+        lock.unlock()
+    }
+
+    func set(error: Error) {
+        lock.lock()
+        storedError = error
         lock.unlock()
     }
 }

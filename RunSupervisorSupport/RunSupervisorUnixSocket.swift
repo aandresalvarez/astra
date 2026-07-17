@@ -35,6 +35,11 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         case stopped
     }
 
+    private enum ClientPhase: Equatable {
+        case reading
+        case handling
+    }
+
     public let socketName = "control.sock"
     private let directory: RunSupervisorRunDirectory
     private let authenticator: RunSupervisorControlAuthenticator
@@ -48,7 +53,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     private let clientGroup = DispatchGroup()
     private var listener: Int32 = -1
     private var lifecycle: Lifecycle = .idle
-    private var activeClients: Set<Int32> = []
+    private var activeClients: [Int32: ClientPhase] = [:]
     private var boundDevice: dev_t?
     private var boundInode: ino_t?
 
@@ -202,7 +207,9 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         // Wake accept without closing the descriptor. Closing here would let
         // another thread reuse the integer before accept() has returned.
         if fd >= 0 { shutdown(fd, SHUT_RDWR) }
-        for client in activeClients { shutdown(client, SHUT_RDWR) }
+        for (client, phase) in activeClients where phase == .reading {
+            shutdown(client, SHUT_RDWR)
+        }
         stateLock.unlock()
 
         acceptLoopGroup.wait()
@@ -255,7 +262,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 close(client)
                 return
             }
-            activeClients.insert(client)
+            activeClients[client] = .reading
             clientGroup.enter()
             stateLock.unlock()
             let clientGroup = self.clientGroup
@@ -277,7 +284,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     ) {
         defer {
             stateLock.lock()
-            activeClients.remove(client)
+            activeClients.removeValue(forKey: client)
             stateLock.unlock()
             close(client)
         }
@@ -298,6 +305,9 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 throw RunSupervisorError.systemCall("getpeereid", errno)
             }
             try authenticator.authenticate(request, peerUID: uid)
+            guard beginHandling(client) else {
+                throw RunSupervisorError.alreadyRunningOrInDoubt
+            }
             let response = try handler(request.action)
             let envelope = try authenticator.makeResponse(response, for: request)
             let encoded = try RunSupervisorDigests.canonicalData(envelope)
@@ -322,6 +332,16 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 )
             }
         }
+    }
+
+    private func beginHandling(_ client: Int32) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard lifecycle == .running, activeClients[client] == .reading else {
+            return false
+        }
+        activeClients[client] = .handling
+        return true
     }
 
     package var activeClientCount: Int {
