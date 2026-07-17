@@ -1,6 +1,12 @@
 import Foundation
 
 extension RunLedger {
+    public func outboxAcknowledgedThrough() throws -> Int64 {
+        try connection.withLock { database in
+            try outboxAcknowledgement(database: database)
+        }
+    }
+
     public func outbox(
         after sequence: Int64 = 0,
         limit: Int = 1_000

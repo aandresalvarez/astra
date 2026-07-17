@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "ASTRARunLedger", targets: ["ASTRARunLedger"]),
+        .library(name: "RunBrokerService", targets: ["RunBrokerService"]),
         // Standalone process-boundary fixture; never embedded in ASTRA.app.
         .executable(name: "run-ledger-open-harness", targets: ["RunLedgerOpenHarness"]),
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
@@ -65,6 +66,16 @@ let package = Package(
             name: "RunBrokerKit",
             dependencies: ["ASTRACore", "ASTRARunLedger"],
             path: "RunBrokerKit"
+        ),
+        .target(
+            name: "RunBrokerService",
+            dependencies: [
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunSupervisorSupport",
+                "RunBrokerKit",
+            ],
+            path: "RunBrokerService"
         ),
         .target(
             name: "MailToolSupport",
@@ -230,7 +241,7 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
         ),
         .testTarget(
@@ -258,6 +269,17 @@ let package = Package(
             name: "RunBrokerKitTests",
             dependencies: ["RunBrokerKit", "ASTRARunLedger"],
             path: "Tests/RunBrokerKitTests"
+        ),
+        .testTarget(
+            name: "RunBrokerServiceTests",
+            dependencies: [
+                "RunBrokerService",
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunSupervisorSupport",
+                "RunBrokerKit",
+            ],
+            path: "Tests/RunBrokerServiceTests"
         )
     ]
 )
