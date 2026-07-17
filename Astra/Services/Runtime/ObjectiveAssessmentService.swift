@@ -54,6 +54,12 @@ enum ObjectiveAssessmentService {
               state.objectiveAssessment != nil else {
             return
         }
+        guard TaskObjectiveAssessmentEventStore.clear(
+            task: task,
+            reason: "objective_drift_detection_disabled"
+        ).didPersist else {
+            return
+        }
         state.objectiveAssessment = nil
         TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
     }
@@ -230,6 +236,17 @@ enum ObjectiveAssessmentService {
             ], level: .debug)
             return
         }
+        guard TaskObjectiveAssessmentEventStore.record(
+            parsed,
+            task: task,
+            source: "utility_model"
+        ).didPersist else {
+            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
+                "operation": "objective_assessment",
+                "result": "event_persistence_failed"
+            ], level: .error)
+            return
+        }
         stateToSave.objectiveAssessment = parsed
         TaskContextStateManager.saveState(stateToSave, taskFolder: folder, taskID: task.id)
 
@@ -288,6 +305,12 @@ enum ObjectiveAssessmentService {
             fallbackVerificationStatus: fallbackVerificationStatus
         )
         guard assessment.inputHash != fresh else { return }
+        guard TaskObjectiveAssessmentEventStore.clear(
+            task: task,
+            reason: "stale_after_failed_reassessment"
+        ).didPersist else {
+            return
+        }
         state.objectiveAssessment = nil
         TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
         AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
