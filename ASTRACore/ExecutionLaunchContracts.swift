@@ -141,6 +141,7 @@ public struct ExecutionLaunchManifest: Codable, Equatable, Hashable, Sendable {
     public let authority: RunBrokerAuthority
     public let configuration: ExecutionLaunchConfigurationSnapshot
     public let declaredEffects: [ExecutionEffectClaim]
+    public let supervisionPolicy: ExecutionSupervisionPolicySnapshot?
     public let createdAt: Date
 
     public init(
@@ -151,6 +152,7 @@ public struct ExecutionLaunchManifest: Codable, Equatable, Hashable, Sendable {
         authority: RunBrokerAuthority,
         configuration: ExecutionLaunchConfigurationSnapshot,
         declaredEffects: [ExecutionEffectClaim],
+        supervisionPolicy: ExecutionSupervisionPolicySnapshot? = nil,
         createdAt: Date
     ) {
         self.schemaVersion = Self.currentSchemaVersion
@@ -161,6 +163,7 @@ public struct ExecutionLaunchManifest: Codable, Equatable, Hashable, Sendable {
         self.authority = authority
         self.configuration = configuration
         self.declaredEffects = declaredEffects
+        self.supervisionPolicy = supervisionPolicy
         self.createdAt = createdAt
     }
 
@@ -173,6 +176,7 @@ public struct ExecutionLaunchManifest: Codable, Equatable, Hashable, Sendable {
         case authority
         case configuration
         case declaredEffects
+        case supervisionPolicy
         case createdAt
     }
 
@@ -197,6 +201,10 @@ public struct ExecutionLaunchManifest: Codable, Equatable, Hashable, Sendable {
             forKey: .configuration
         )
         self.declaredEffects = try container.decode([ExecutionEffectClaim].self, forKey: .declaredEffects)
+        self.supervisionPolicy = try container.decodeIfPresent(
+            ExecutionSupervisionPolicySnapshot.self,
+            forKey: .supervisionPolicy
+        )
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 }

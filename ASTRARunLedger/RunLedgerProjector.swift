@@ -300,6 +300,26 @@ enum RunLedgerProjector {
                 monitorDeadlines: projection.monitorDeadlines
             )
 
+        case .supervisorObservationRecorded(let observation):
+            guard let execution = projection.executions[observation.executionID] else {
+                throw RunLedgerError.missingExecution(observation.executionID)
+            }
+            try RunLedgerAdmissionProjector.validateAuthority(observation.authority)
+            try RunLedgerAdmissionProjector.requireCurrentAuthority(
+                observation.authority,
+                execution: execution
+            )
+            guard observation.supervisorSequence > 0,
+                  observation.occurredAt >= execution.manifest.createdAt,
+                  observation.output.map({ !$0.isEmpty && $0.count <= 32_768 }) ?? true else {
+                throw RunLedgerError.invalidEvent("Supervisor observation is outside durable bounds")
+            }
+            // Observation order and total output limits are checked by the
+            // serialized broker service against journal history before append.
+            // This event intentionally has no second mutable projection table:
+            // the append-only journal/outbox is the canonical replay source.
+            return projection
+
         case .monitorDeadlineUpserted,
              .monitorDeadlineRemoved,
              .monitorAttemptRecorded:

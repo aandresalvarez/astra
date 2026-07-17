@@ -115,6 +115,7 @@ public enum RunLedgerEvent: Equatable, Sendable {
         transition: RunLedgerExecutionControlEvent,
         backendCapabilities: ExternalOperationBackendCapabilities
     )
+    case supervisorObservationRecorded(RunBrokerSupervisorObservation)
     case monitorDeadlineUpserted(
         deadline: RunLedgerMonitorDeadline,
         replacing: RunLedgerMonitorDeadline?
@@ -134,6 +135,7 @@ public enum RunLedgerEvent: Equatable, Sendable {
         case .executionAuthorityTransferred: "execution.authority_transferred"
         case .operationTombstoned: "operation.tombstoned"
         case .executionControlTransitioned: "execution.control_transitioned"
+        case .supervisorObservationRecorded: "execution.supervisor_observation_recorded"
         case .monitorDeadlineUpserted: "monitor.deadline_upserted"
         case .monitorDeadlineRemoved: "monitor.deadline_removed"
         case .monitorAttemptRecorded: "monitor.attempt_recorded"
@@ -143,7 +145,7 @@ public enum RunLedgerEvent: Equatable, Sendable {
     public var aggregateKind: String {
         switch self {
         case .executionAdmitted, .executionAuthorityTransferred,
-             .executionControlTransitioned:
+             .executionControlTransitioned, .supervisorObservationRecorded:
             "execution"
         case .operationClaimed, .operationTombstoned,
              .monitorDeadlineUpserted, .monitorDeadlineRemoved, .monitorAttemptRecorded:
@@ -161,6 +163,8 @@ public enum RunLedgerEvent: Equatable, Sendable {
         case .executionAuthorityTransferred(let executionID, _, _),
              .executionControlTransitioned(let executionID, _, _, _):
             executionID.rawValue.uuidString.lowercased()
+        case .supervisorObservationRecorded(let observation):
+            observation.executionID.rawValue.uuidString.lowercased()
         case .monitorDeadlineUpserted(let deadline, _),
              .monitorAttemptRecorded(let deadline, _, _, _):
             deadline.operationID.rawValue.uuidString.lowercased()
@@ -184,6 +188,7 @@ extension RunLedgerEvent: Codable {
         case reason
         case transition
         case backendCapabilities
+        case supervisorObservation
         case deadline
         case expected
         case attemptedAt
@@ -232,6 +237,8 @@ extension RunLedgerEvent: Codable {
                 CodingKeys.transition.rawValue,
                 CodingKeys.backendCapabilities.rawValue,
             ]
+        case "execution.supervisor_observation_recorded":
+            expectedKeys = [CodingKeys.kind.rawValue, CodingKeys.supervisorObservation.rawValue]
         case "monitor.deadline_upserted":
             expectedKeys = [
                 CodingKeys.kind.rawValue,
@@ -313,6 +320,13 @@ extension RunLedgerEvent: Codable {
                     forKey: .backendCapabilities
                 )
             )
+        case "execution.supervisor_observation_recorded":
+            self = .supervisorObservationRecorded(
+                try container.decode(
+                    RunBrokerSupervisorObservation.self,
+                    forKey: .supervisorObservation
+                )
+            )
         case "monitor.deadline_upserted":
             self = .monitorDeadlineUpserted(
                 deadline: try container.decode(RunLedgerMonitorDeadline.self, forKey: .deadline),
@@ -374,6 +388,8 @@ extension RunLedgerEvent: Codable {
             try container.encode(authority, forKey: .authority)
             try container.encode(transition, forKey: .transition)
             try container.encode(capabilities, forKey: .backendCapabilities)
+        case .supervisorObservationRecorded(let observation):
+            try container.encode(observation, forKey: .supervisorObservation)
         case .monitorDeadlineUpserted(let deadline, let replacing):
             try container.encode(deadline, forKey: .deadline)
             try container.encode(replacing, forKey: .expected)
