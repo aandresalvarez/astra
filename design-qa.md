@@ -1,47 +1,85 @@
-# Progress Module Design QA
+# Guided First-Install Design QA
 
-- Source visual truth: `/Users/alvaro1/.codex/generated_images/019f63c1-72d4-75c2-8648-101d977f4e63/exec-784e91f5-0267-436f-ad01-591dea37c975.png`
-- Rendered implementation: `/tmp/astra-progress-popover-current.png`
-- Collapsed-state evidence: `/tmp/astra-window.png`
-- Focused comparison: `/tmp/astra-progress-comparison.png`
-- Viewport: ASTRA Dev window 1550 x 1220 points; run-details popover 566 x 564 points
-- State: completed Run 3, Updates selected, three real progress messages; Run 2 visible below
+- Source visual truth: `/Users/alvaro1/.codex/generated_images/019f6d39-c6af-7661-9cb8-4fb87e628f8e/exec-44d9acec-09c4-481b-935e-c737b8efd17f.png`
+- Implementation screenshot: `/Users/alvaro1/.codex/visualizations/2026/07/16/019f6d39-c6af-7661-9cb8-4fb87e628f8e/04-guided-installer-final.png`
+- Viewport: native macOS window, 720 x 520 point content area plus system title bar
+- State: existing ASTRA 0.1.28 detected; local 0.1.30 build ready to replace it
 
-## Full-view comparison evidence
+## Full-View Comparison Evidence
 
-The source is a wide inline module, while the reachable production fixture renders the same component inside ASTRA's narrower run-details popover. The implementation preserves the requested hierarchy: status context, scan-first tabs with counts, one selected content surface, and a compact progress timeline. The narrow state wraps message copy without horizontal overflow or hidden controls.
+The final native window preserves the selected design's centered ASTRA icon,
+single install heading, two-line explanation, explicit existing-version row,
+one cardinal-red primary action, quiet cancel action, and trust footer. Native
+AppKit title-bar rendering and the live build version are expected platform and
+test-data differences.
 
-## Focused comparison evidence
+## Focused Comparison Evidence
 
-The combined comparison at `/tmp/astra-progress-comparison.png` verifies the tab treatment, selected underline, count placement, timeline markers, timestamps, and update-message rhythm. A focused comparison was necessary because those controls are too small to assess reliably in the full-window capture.
+The status and action region was inspected separately because it owns the
+critical clarity contract. The final capture shows the full replacement copy
+without truncation, the old and new versions before action, and the complete
+primary label. No separate asset crop was needed: the only non-system asset is
+the supplied production ASTRA icon, which is clearly readable at full-view
+scale and comes directly from `Astra/Resources/AppIcon.icns`.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: ASTRA's registered Source Sans 3 UI face is used with
+  native fallbacks, semibold/bold hierarchy, neutral tracking, and no clipped
+  or truncated text.
+- Spacing and layout rhythm: the final pass matches the source's narrow status
+  group and CTA, centered vertical flow, generous whitespace, and fully visible
+  footer.
+- Colors and visual tokens: the production cardinal-red icon and CTA, warm
+  neutral surface, charcoal reading text, and secondary gray copy match the
+  selected direction and ASTRA tokens.
+- Image quality and asset fidelity: the real 1024 px ASTRA icon is rendered by
+  `NSImage`; SF Symbols are used only for standard native status/lock icons.
+- Copy and content: destination, replacement, both versions, automatic open,
+  cancel, progress, failure, and completion states are explicit. The source's
+  unconditional “Signed and notarized” footer was intentionally replaced with
+  “Installs in Applications · Opens automatically” because ASTRA also supports
+  internal ad-hoc releases where a notarization claim would be false.
+
+## Comparison History
+
+1. Initial implementation capture:
+   `/Users/alvaro1/.codex/visualizations/2026/07/16/019f6d39-c6af-7661-9cb8-4fb87e628f8e/02-guided-installer-implementation.png`
+   - P2: status/button groups were materially wider than the selected design,
+     and the footer sat too close to the bottom edge.
+   - Fix: narrowed the message, status row, and primary button; tightened
+     vertical gaps and status-row padding.
+2. Refined capture:
+   `/Users/alvaro1/.codex/visualizations/2026/07/16/019f6d39-c6af-7661-9cb8-4fb87e628f8e/03-guided-installer-refined.png`
+   - P1: the version replacement sentence truncated at the most important
+     information.
+   - Fix: gave the status copy layout priority and a single-line adaptive text
+     treatment at the existing ASTRA caption size.
+3. Final capture:
+   `/Users/alvaro1/.codex/visualizations/2026/07/16/019f6d39-c6af-7661-9cb8-4fb87e628f8e/04-guided-installer-final.png`
+   - The earlier P1/P2 findings are resolved. No actionable P0-P2 visual issue
+     remains.
+
+## Interaction Verification
+
+- The native window and its primary/cancel controls were exposed through the
+  macOS accessibility tree.
+- Cancel was exercised and terminated the installer-only process without
+  changing the installed application.
+- The copy, first-install, existing-copy replacement, failed-source
+  preservation, verification, and relaunch command paths were exercised in a
+  disposable filesystem by the focused regression suite.
+- The live primary button was intentionally not clicked against the user's real
+  `/Applications/ASTRA.app`; the same operation is covered by the disposable
+  integration tests.
 
 ## Findings
 
-No actionable P0, P1, or P2 differences remain.
+No actionable P0, P1, or P2 mismatch remains.
 
-- Expected responsive difference: the mock shows a wide inline header; the verified fixture uses the existing 566-point run-details popover. The tab strip remains readable at this width and has a menu fallback below its fitting width.
-- Expected data difference: this fixture has no typed todo plan for the selected run, so it correctly shows the message timeline without invented phase labels. Runs with typed plan items render completed, current, and queued phases.
-- Expected domain difference: update rows do not show file badges because progress events do not carry a durable file association. The Files tab remains the source of truth for changed files.
+## Follow-up Polish
 
-## Required fidelity surfaces
-
-- Fonts and typography: existing Stanford UI, section, metadata, and monospace tokens preserve ASTRA's hierarchy; wrapped progress copy remains readable.
-- Spacing and layout rhythm: 40-point disclosure target, 34-point tab targets, compact row spacing, and dividers remain consistent in the narrow surface.
-- Colors and visual tokens: Lagunita selection and underline, semantic status colors, sandstone dividers, and existing text tokens match ASTRA's design system.
-- Image quality and asset fidelity: the target contains only interface icons; production uses the existing SF Symbols rather than substitute artwork.
-- Copy and content: real run labels, timestamps, counts, tool names, and progress text are shown; no mock-only copy leaked into production.
-
-## Primary interactions tested
-
-- Collapsed activity keeps the current status and live duration visible.
-- The disclosure is exposed as an accessibility button rather than flattened into the agent-response container.
-- Selecting Tools removes Updates rows from the accessibility tree and constructs only tool rows; returning to Updates restores only progress content.
-- Per-run tab selection and update-history choice are covered by deterministic regression tests.
-
-## Comparison history
-
-- Initial live pass found the parent agent-response accessibility container flattened the disclosure control.
-- Fix: changed the parent container from combined children to contained children and added a regression test.
-- Post-fix evidence: the live accessibility tree exposes `Show run activity` as a button with its current status value.
+- P3: the inactive traffic-light appearance is controlled by macOS focus state
+  and can vary by OS version; no product fix is warranted.
 
 final result: passed

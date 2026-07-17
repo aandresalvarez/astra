@@ -276,10 +276,11 @@ dist/release/appcast.xml
 
 The `.zip` is Sparkle's update payload (what the appcast points at and what
 installed apps download for in-place updates); the `.dmg` is the
-human-facing download — a double-click-to-mount disk image with the app and
-an Applications-folder shortcut side by side, the install convention Mac
-users expect. Point download links/buttons at the `.dmg`; leave the `.zip`
-for Sparkle alone.
+human-facing download. Open it and double-click `Install ASTRA`; ASTRA's
+guided installer detects the Applications destination, makes replacement
+explicit when an older copy exists, verifies the copy, and opens the installed
+application automatically. Point download links/buttons at the `.dmg`; leave
+the `.zip` for Sparkle alone.
 
 The GitHub release workflow also publishes a stable `ASTRA.dmg` alias copied
 from the versioned DMG. Use this URL for human download buttons:

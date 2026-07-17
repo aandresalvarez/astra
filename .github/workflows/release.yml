@@ -558,7 +558,7 @@ jobs:
           cp "$VERSIONED_DMG" "$HUMAN_DMG"
 
           RELEASE_DOWNLOAD_NOTES=$'## Download ASTRA\n\n'
-          RELEASE_DOWNLOAD_NOTES+="For a first install, download **ASTRA.dmg**, open it, and drag **ASTRA** to **Applications**."
+          RELEASE_DOWNLOAD_NOTES+="For a first install, download **ASTRA.dmg**, open it, and double-click **Install ASTRA**. The guided installer confirms the destination or replacement and opens the installed copy automatically."
           RELEASE_DOWNLOAD_NOTES+=$'\n\n'
           RELEASE_DOWNLOAD_NOTES+="Do not use \`ASTRA-${VERSION}.zip\` for a first install. That zip is Sparkle's updater payload for already-installed copies of ASTRA. The \`appcast.xml\` file is Sparkle metadata, and \`ASTRA-${VERSION}.dSYM.zip\` contains debug symbols."
 

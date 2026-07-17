@@ -88,6 +88,14 @@ struct ReleaseUpdateScriptTests {
         #expect(script.contains(#"echo "  $FINAL_DMG""#))
     }
 
+    @Test("the human DMG exposes one guided installer instead of an ambiguous drag target")
+    func dmgContainsGuidedInstallerOnly() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
+
+        #expect(script.contains(#"ditto "$APP_BUNDLE" "$DMG_STAGING/Install $APP_NAME.app""#))
+        #expect(!script.contains(#"ln -s /Applications "$DMG_STAGING/Applications""#))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

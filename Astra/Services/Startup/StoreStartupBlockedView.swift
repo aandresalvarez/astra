@@ -189,7 +189,7 @@ struct StoreStartupBlockedView: View {
 
     private func relaunch(bundleURL: URL, auditResult: String) {
         do {
-            let command = ApplicationsFolderMover.relaunchCommand(
+            let command = ApplicationRelauncher.command(
                 processID: ProcessInfo.processInfo.processIdentifier,
                 destination: bundleURL
             )
