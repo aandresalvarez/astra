@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="ASTRA"
-TOOL_PRODUCTS=("astra-browser" "astra-mcp-gateway" "astra-host-control" "astra-run-supervisor" "astra-workspace" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
+TOOL_PRODUCTS=("astra-browser" "astra-mcp-gateway" "astra-host-control" "astra-run-broker" "astra-run-supervisor" "astra-workspace" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
@@ -381,6 +381,9 @@ for tool_product in "${TOOL_PRODUCTS[@]}"; do
   cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"
   chmod +x "$BUNDLED_TOOLS_DIR/$tool_product"
 done
+RUN_BROKER_PAYLOAD_SCHEMA_VERSION=1
+RUN_BROKER_EXECUTABLE_NAME="astra-run-broker"
+RUN_BROKER_EXECUTABLE="$BUNDLED_TOOLS_DIR/$RUN_BROKER_EXECUTABLE_NAME"
 
 APP_ICON_SOURCE="$ROOT_DIR/Astra/Resources/AppIcon.icns"
 if [[ "$ASTRA_CHANNEL" == "dev" && -f "$ROOT_DIR/Astra/Resources/AppIconDev.icns" ]]; then
@@ -543,27 +546,69 @@ sign_developer_id() {
   /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$target"
 }
 
-sign_bundled_tools_for_notarization() {
+sign_local_identity() {
+  local target="$1"
+  /usr/bin/codesign --force "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$target"
+}
+
+sign_ad_hoc() {
+  local target="$1"
+  /usr/bin/codesign --force --sign - "$target"
+}
+
+sign_bundled_tools_with() {
+  local signer="$1"
   local tool_product
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
-    sign_developer_id "$BUNDLED_TOOLS_DIR/$tool_product"
+    "$signer" "$BUNDLED_TOOLS_DIR/$tool_product"
   done
 }
 
-sign_sparkle_framework_for_notarization() {
+sign_sparkle_framework_with() {
+  local signer="$1"
   local framework="$APP_FRAMEWORKS/Sparkle.framework"
   [[ -d "$framework" ]] || return 0
   # Sign inside-out: Sparkle's own XPC services / helper app / Autoupdate tool
-  # first, then the framework. Notarization requires every Mach-O in the
-  # bundle to carry hardened runtime + a secure timestamp.
+  # first, then the framework. The supplied signer preserves the active mode's
+  # Developer-ID, local-identity, or ad-hoc semantics.
   local nested
   while IFS= read -r -d '' nested; do
-    sign_developer_id "$nested"
+    "$signer" "$nested"
   done < <(find "$framework" \( -name "*.xpc" -o -name "*.app" \) -print0 2>/dev/null)
   local autoupdate
   autoupdate="$(find "$framework" -type f -name "Autoupdate" -print 2>/dev/null | head -n 1 || true)"
-  [[ -n "$autoupdate" ]] && sign_developer_id "$autoupdate"
-  sign_developer_id "$framework"
+  [[ -n "$autoupdate" ]] && "$signer" "$autoupdate"
+  "$signer" "$framework"
+}
+
+finalize_run_broker_payload_metadata() {
+  if [[ ! -x "$RUN_BROKER_EXECUTABLE" ]]; then
+    echo "FAIL: RunBroker payload missing before metadata finalization: $RUN_BROKER_EXECUTABLE" >&2
+    exit 3
+  fi
+  # The digest is intentionally computed only after the nested executable has
+  # its final signature. codesign mutates Mach-O bytes, so hashing the stripped
+  # but unsigned SwiftPM artifact would publish a contract no installer could
+  # satisfy. The outer app signature added below seals this metadata without
+  # touching the nested broker again.
+  /usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE"
+  local digest payload_version
+  digest="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" | /usr/bin/awk '{print $1}')"
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "FAIL: unable to derive RunBroker SHA-256 from final signed payload." >&2
+    exit 3
+  fi
+  # A 128-bit digest prefix prevents different local/dev payload bytes with
+  # the same app version/build from colliding in the immutable Versions store.
+  payload_version="${APP_VERSION}-${APP_BUILD}-${digest:0:32}"
+  if [[ ${#payload_version} -gt 128 || ! "$payload_version" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "FAIL: invalid derived RunBroker payload version '$payload_version'." >&2
+    exit 3
+  fi
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadSchemaVersion integer $RUN_BROKER_PAYLOAD_SCHEMA_VERSION" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadVersion string $payload_version" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadSHA256 string $digest" "$INFO_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :ASTRARunBrokerPayloadExecutable string $RUN_BROKER_EXECUTABLE_NAME" "$INFO_PLIST"
 }
 
 if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
@@ -598,16 +643,30 @@ if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
   # here: --deep stamps this app's own entitlements onto every nested Mach-O,
   # including Sparkle's XPC services and helper app, which invalidates their
   # own signatures. Nested code must be signed first, then the outer bundle.
-  sign_bundled_tools_for_notarization
-  sign_sparkle_framework_for_notarization
-  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  sign_bundled_tools_with sign_developer_id
+  sign_sparkle_framework_with sign_developer_id
 elif [[ -n "$SIGN_IDENTITY" ]]; then
   # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
   # for notarization and would change local runtime behavior vs the ad-hoc build
   # (hardened runtime enables library validation against the bundled tools/helper).
-  /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  sign_bundled_tools_with sign_local_identity
+  sign_sparkle_framework_with sign_local_identity
 else
-  /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
+  sign_bundled_tools_with sign_ad_hoc
+  sign_sparkle_framework_with sign_ad_hoc
+fi
+
+finalize_run_broker_payload_metadata
+
+# Sign only the outer app after finalizing payload metadata. Every nested code
+# object is already signed for the active mode above; omitting --deep here is
+# what guarantees the broker bytes hashed into Info.plist remain unchanged.
+if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+elif [[ -n "$SIGN_IDENTITY" ]]; then
+  /usr/bin/codesign --force "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+else
+  /usr/bin/codesign --force --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 fi
 
 verify_app_bundle() {
@@ -673,6 +732,25 @@ verify_app_bundle() {
       errors=$((errors + 1))
     fi
   done
+
+  local metadata_schema metadata_version metadata_sha metadata_executable actual_broker_sha expected_payload_version
+  metadata_schema="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadSchemaVersion' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_version="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadVersion' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_sha="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadSHA256' "$INFO_PLIST" 2>/dev/null || true)"
+  metadata_executable="$(/usr/libexec/PlistBuddy -c 'Print :ASTRARunBrokerPayloadExecutable' "$INFO_PLIST" 2>/dev/null || true)"
+  actual_broker_sha="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" 2>/dev/null | /usr/bin/awk '{print $1}')"
+  expected_payload_version="${APP_VERSION}-${APP_BUILD}-${actual_broker_sha:0:32}"
+  if [[ "$metadata_schema" != "$RUN_BROKER_PAYLOAD_SCHEMA_VERSION" ||
+        "$metadata_executable" != "$RUN_BROKER_EXECUTABLE_NAME" ||
+        "$metadata_sha" != "$actual_broker_sha" ||
+        "$metadata_version" != "$expected_payload_version" ]]; then
+    echo "FAIL: signed RunBroker payload metadata does not match the final bundled executable." >&2
+    errors=$((errors + 1))
+  fi
+  if ! /usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE" 2>/dev/null; then
+    echo "FAIL: final bundled RunBroker payload signature is invalid." >&2
+    errors=$((errors + 1))
+  fi
 
   if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
     # Distribution builds: catch a broken inside-out signature locally,

@@ -1,0 +1,218 @@
+import Foundation
+import ASTRACore
+
+public struct RunBrokerMonitorDeadline: Codable, Equatable, Hashable, Sendable, Identifiable {
+    public let operationID: RunBrokerOperationID
+    public let authority: RunBrokerAuthority
+    public let dueAt: Date
+    public let recordedAt: Date
+    public let attempt: UInt64
+    public let generation: UUID
+
+    public init(
+        operationID: RunBrokerOperationID,
+        authority: RunBrokerAuthority,
+        dueAt: Date,
+        recordedAt: Date,
+        attempt: UInt64,
+        generation: UUID
+    ) {
+        self.operationID = operationID
+        self.authority = authority
+        self.dueAt = Self.canonicalMilliseconds(dueAt)
+        self.recordedAt = Self.canonicalMilliseconds(recordedAt)
+        self.attempt = attempt
+        self.generation = generation
+    }
+
+    public var id: RunBrokerOperationID { operationID }
+
+    private enum CodingKeys: String, CodingKey {
+        case operationID, authority, dueAt, recordedAt, attempt, generation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            operationID: try container.decode(RunBrokerOperationID.self, forKey: .operationID),
+            authority: try container.decode(RunBrokerAuthority.self, forKey: .authority),
+            dueAt: try container.decode(Date.self, forKey: .dueAt),
+            recordedAt: try container.decode(Date.self, forKey: .recordedAt),
+            attempt: try container.decode(UInt64.self, forKey: .attempt),
+            generation: try container.decode(UUID.self, forKey: .generation)
+        )
+    }
+
+    private static func canonicalMilliseconds(_ date: Date) -> Date {
+        let milliseconds = Int64(
+            (date.timeIntervalSince1970 * 1_000).rounded(.towardZero)
+        )
+        return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+    }
+}
+
+public enum RunBrokerSchedulerCommand: Codable, Equatable, Sendable {
+    case recover
+    case upsert(RunBrokerMonitorDeadline)
+    case remove(RunBrokerOperationID)
+    case wake
+    case status
+}
+
+public enum RunBrokerCommand: Codable, Equatable, Sendable {
+    case negotiate(RunBrokerNegotiationRequest)
+    case health
+    case capabilities
+    case scheduler(RunBrokerSchedulerCommand)
+
+    public var isSafeForEphemeralReplay: Bool {
+        switch self {
+        case .negotiate, .health, .capabilities:
+            true
+        case .scheduler:
+            false
+        }
+    }
+}
+
+public struct RunBrokerRequestAuthentication: Codable, Equatable, Sendable {
+    public let issuedAtMilliseconds: Int64
+    public let nonce: Data
+    public let mac: Data
+
+    public init(issuedAtMilliseconds: Int64, nonce: Data, mac: Data) throws {
+        guard nonce.count == RunBrokerAuthenticationPolicy.nonceByteCount else {
+            throw RunBrokerContractError.invalidNonce
+        }
+        guard mac.count == RunBrokerAuthenticationPolicy.macByteCount else {
+            throw RunBrokerContractError.invalidAuthentication
+        }
+        self.issuedAtMilliseconds = issuedAtMilliseconds
+        self.nonce = nonce
+        self.mac = mac
+    }
+
+    private enum CodingKeys: String, CodingKey { case issuedAtMilliseconds, nonce, mac }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            issuedAtMilliseconds: container.decode(Int64.self, forKey: .issuedAtMilliseconds),
+            nonce: container.decode(Data.self, forKey: .nonce),
+            mac: container.decode(Data.self, forKey: .mac)
+        )
+    }
+}
+
+public struct RunBrokerRequestEnvelope: Codable, Equatable, Sendable {
+    public let protocolVersion: RunBrokerProtocolVersion
+    public let requestID: UUID
+    public let idempotencyKey: UUID
+    public let channel: RunBrokerChannel
+    public let installationID: RunBrokerInstallationID
+    public let command: RunBrokerCommand
+    public let authentication: RunBrokerRequestAuthentication
+
+    public init(
+        protocolVersion: RunBrokerProtocolVersion,
+        requestID: UUID,
+        idempotencyKey: UUID,
+        channel: RunBrokerChannel,
+        installationID: RunBrokerInstallationID,
+        command: RunBrokerCommand,
+        authentication: RunBrokerRequestAuthentication
+    ) {
+        self.protocolVersion = protocolVersion
+        self.requestID = requestID
+        self.idempotencyKey = idempotencyKey
+        self.channel = channel
+        self.installationID = installationID
+        self.command = command
+        self.authentication = authentication
+    }
+}
+
+public enum RunBrokerErrorCode: String, Codable, Sendable {
+    case incompatibleProtocol = "incompatible_protocol"
+    case insecureDowngrade = "insecure_downgrade"
+    case authenticationFailed = "authentication_failed"
+    case replayDetected = "replay_detected"
+    case wrongChannel = "wrong_channel"
+    case wrongInstallation = "wrong_installation"
+    case peerIdentityRejected = "peer_identity_rejected"
+    case invalidRequest = "invalid_request"
+    case frameTooLarge = "frame_too_large"
+    case ledgerUnavailable = "ledger_unavailable"
+    case internalFailure = "internal_failure"
+}
+
+public struct RunBrokerErrorResponse: Codable, Equatable, Sendable {
+    public let code: RunBrokerErrorCode
+    public let message: String
+    public let retryable: Bool
+
+    public init(code: RunBrokerErrorCode, message: String, retryable: Bool = false) {
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+    }
+}
+
+public enum RunBrokerResponsePayload: Codable, Equatable, Sendable {
+    case negotiation(RunBrokerNegotiationResponse)
+    case health(RunBrokerHealth)
+    case capabilities(RunBrokerCapabilities)
+    case schedulerStatus([RunBrokerMonitorDeadline])
+    case accepted
+}
+
+public struct RunBrokerResponseEnvelope: Codable, Equatable, Sendable {
+    public let protocolVersion: RunBrokerProtocolVersion
+    public let requestID: UUID
+    public let result: RunBrokerResponsePayload?
+    public let error: RunBrokerErrorResponse?
+
+    public init(
+        protocolVersion: RunBrokerProtocolVersion,
+        requestID: UUID,
+        result: RunBrokerResponsePayload
+    ) {
+        self.protocolVersion = protocolVersion
+        self.requestID = requestID
+        self.result = result
+        self.error = nil
+    }
+
+    public init(
+        protocolVersion: RunBrokerProtocolVersion,
+        requestID: UUID,
+        error: RunBrokerErrorResponse
+    ) {
+        self.protocolVersion = protocolVersion
+        self.requestID = requestID
+        self.result = nil
+        self.error = error
+    }
+
+    public func validate() throws {
+        guard (result == nil) != (error == nil) else {
+            throw RunBrokerContractError.invalidEnvelope
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolVersion, requestID, result, error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.protocolVersion = try container.decode(
+            RunBrokerProtocolVersion.self,
+            forKey: .protocolVersion
+        )
+        self.requestID = try container.decode(UUID.self, forKey: .requestID)
+        self.result = try container.decodeIfPresent(RunBrokerResponsePayload.self, forKey: .result)
+        self.error = try container.decodeIfPresent(RunBrokerErrorResponse.self, forKey: .error)
+        try validate()
+    }
+}
