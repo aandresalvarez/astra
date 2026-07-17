@@ -6,7 +6,13 @@ public enum RunBrokerTransportError: Error, Equatable, Sendable {
     case socketAlreadyActive
     case peerIdentityUnavailable
     case responseRequestIDMismatch
+    case connectionCapacityExhausted
     case systemCall(operation: String, code: Int32)
+}
+
+public enum RunBrokerTransportPolicy {
+    public static let defaultMaximumConcurrentConnections = 16
+    public static let defaultIOTimeout: TimeInterval = 5
 }
 
 public protocol RunBrokerConnection: AnyObject, Sendable {

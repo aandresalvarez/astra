@@ -129,7 +129,11 @@ struct RunBrokerSchedulerEndpointTests {
             diagnostics: NoOpRunBrokerDiagnostics()
         )
         monitor.onMonitor = {
-            try scheduler.upsert(replacement, idempotencyKey: uuid(999))
+            try scheduler.upsert(
+                replacement,
+                replacing: original,
+                idempotencyKey: uuid(999)
+            )
         }
         try scheduler.recover()
         try scheduler.wake()
@@ -174,6 +178,14 @@ struct RunBrokerSchedulerEndpointTests {
         #expect(throws: RunBrokerSchedulerError.ledgerUnavailable) {
             try scheduler.upsert(
                 deadline(5, dueAt: Date(), attempt: 0),
+                replacing: nil,
+                idempotencyKey: UUID()
+            )
+        }
+        #expect(throws: RunBrokerSchedulerError.ledgerUnavailable) {
+            try scheduler.remove(
+                expected: deadline(6, dueAt: Date(), attempt: 0),
+                occurredAt: Date(),
                 idempotencyKey: UUID()
             )
         }
@@ -223,12 +235,123 @@ struct RunBrokerSchedulerEndpointTests {
             idempotencyKey: uuid(303),
             channel: .development,
             installationID: installationID,
-            command: .scheduler(.upsert(deadline(9, dueAt: now, attempt: 0))),
+            command: .scheduler(.upsert(.init(
+                deadline: deadline(9, dueAt: now, attempt: 0),
+                replacing: nil
+            ))),
             now: now
         )
         let mutationResponse = endpoint.handle(mutation, peer: peer, now: now)
         #expect(mutationResponse.error?.code == .ledgerUnavailable)
         #expect(monitor.monitored.isEmpty)
+    }
+
+    @Test("Endpoint does not claim end-to-end health when monitor backend is unavailable")
+    func endpointMonitorUnavailable() throws {
+        let now = Date(timeIntervalSince1970: 45_000)
+        let secret = try RunBrokerCapabilitySecret(bytes: Data(repeating: 8, count: 32))
+        let installationID = RunBrokerInstallationID(rawValue: uuid(350))
+        let authenticator = RunBrokerRequestAuthenticator(
+            secret: secret,
+            random: SequenceRandom()
+        )
+        let existing = deadline(10, dueAt: now, attempt: 0)
+        let ledger = FakeMonitorLedger(deadlines: [existing])
+        let timer = FakeOneShotTimer()
+        let monitor = FakeMonitor(isAvailable: false)
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: ledger,
+            monitor: monitor,
+            timer: timer
+        )
+        try scheduler.recover()
+        #expect(try scheduler.status() == [existing])
+        #expect(throws: RunBrokerSchedulerError.monitorUnavailable) {
+            try scheduler.wake()
+        }
+        #expect(monitor.monitored.isEmpty)
+        #expect(ledger.attemptKeys.isEmpty)
+        #expect(ledger.deadlines == [existing.operationID: existing])
+        #expect(timer.scheduledDates.isEmpty)
+        let endpoint = RunBrokerRequestEndpoint(
+            channel: .development,
+            installationID: installationID,
+            brokerVersion: "test",
+            authenticator: authenticator,
+            peerPolicy: .init(expectedUserID: 501),
+            scheduler: scheduler
+        )
+        let peer = RunBrokerPeerIdentity(effectiveUserID: 501, processID: 9)
+
+        let healthRequest = try authenticator.authenticatedRequest(
+            requestID: uuid(351),
+            channel: .development,
+            installationID: installationID,
+            command: .health,
+            now: now
+        )
+        #expect(endpoint.handle(healthRequest, peer: peer, now: now).result == .health(
+            .init(status: .degraded, brokerVersion: "test", ledgerAvailable: true)
+        ))
+
+        let capabilitiesRequest = try authenticator.authenticatedRequest(
+            requestID: uuid(352),
+            channel: .development,
+            installationID: installationID,
+            command: .capabilities,
+            now: now
+        )
+        #expect(endpoint.handle(capabilitiesRequest, peer: peer, now: now).result == .capabilities(
+            .init(schedulerRead: true, schedulerMutation: false, durableIdempotency: true)
+        ))
+
+        let expected = deadline(11, dueAt: now.addingTimeInterval(10), attempt: 0)
+        let blockedCommands: [RunBrokerSchedulerCommand] = [
+            .upsert(.init(deadline: expected, replacing: nil)),
+            .remove(.init(expected: expected, occurredAt: now)),
+            .wake
+        ]
+        for (offset, command) in blockedCommands.enumerated() {
+            let request = try authenticator.authenticatedRequest(
+                requestID: uuid(353 + offset),
+                idempotencyKey: uuid(360 + offset),
+                channel: .development,
+                installationID: installationID,
+                command: .scheduler(command),
+                now: now
+            )
+            let response = endpoint.handle(request, peer: peer, now: now)
+            #expect(response.error?.code == .monitorUnavailable)
+            #expect(response.error?.retryable == false)
+        }
+        #expect(ledger.attemptKeys.isEmpty)
+        #expect(ledger.deadlines == [existing.operationID: existing])
+        #expect(monitor.monitored.isEmpty)
+        #expect(timer.scheduledDates.isEmpty)
+
+        let recoverRequest = try authenticator.authenticatedRequest(
+            requestID: uuid(370),
+            channel: .development,
+            installationID: installationID,
+            command: .scheduler(.recover),
+            now: now
+        )
+        #expect(endpoint.handle(recoverRequest, peer: peer, now: now).result == .accepted)
+        let statusRequest = try authenticator.authenticatedRequest(
+            requestID: uuid(371),
+            channel: .development,
+            installationID: installationID,
+            command: .scheduler(.status),
+            now: now
+        )
+        #expect(
+            endpoint.handle(statusRequest, peer: peer, now: now).result
+                == .schedulerStatus([existing])
+        )
+        #expect(ledger.attemptKeys.isEmpty)
+        #expect(ledger.deadlines == [existing.operationID: existing])
+        #expect(monitor.monitored.isEmpty)
+        #expect(timer.scheduledDates.isEmpty)
     }
 
     @Test("Only side-effect-free responses use ephemeral idempotency cache")
@@ -302,16 +425,30 @@ private final class FakeMonitorLedger: RunBrokerMonitorLedger, @unchecked Sendab
 
     func upsertMonitorDeadline(
         _ deadline: RunBrokerMonitorDeadline,
+        replacing expected: RunBrokerMonitorDeadline?,
         idempotencyKey: UUID
-    ) throws {
-        lock.locked { deadlines[deadline.operationID] = deadline }
+    ) throws -> RunBrokerMonitorMutationDisposition {
+        try lock.locked {
+            guard deadlines[deadline.operationID] == expected else {
+                throw RunBrokerLedgerError.monitorScheduleConflict(deadline.operationID)
+            }
+            deadlines[deadline.operationID] = deadline
+            return .appended
+        }
     }
 
     func removeMonitorDeadline(
-        operationID: RunBrokerOperationID,
+        expected: RunBrokerMonitorDeadline,
+        occurredAt: Date,
         idempotencyKey: UUID
-    ) throws {
-        _ = lock.locked { deadlines.removeValue(forKey: operationID) }
+    ) throws -> RunBrokerMonitorMutationDisposition {
+        try lock.locked {
+            guard deadlines[expected.operationID] == expected else {
+                throw RunBrokerLedgerError.monitorScheduleConflict(expected.operationID)
+            }
+            deadlines.removeValue(forKey: expected.operationID)
+            return .appended
+        }
     }
 
     func recordMonitorAttempt(
@@ -348,11 +485,16 @@ private final class FakeMonitorLedger: RunBrokerMonitorLedger, @unchecked Sendab
 
 private final class FakeMonitor: RunBrokerExternalOperationMonitoring, @unchecked Sendable {
     private let disposition: RunBrokerMonitorAttemptDisposition
+    let isAvailable: Bool
     var monitored: [RunBrokerOperationID] = []
     var onMonitor: (() throws -> Void)?
 
-    init(disposition: RunBrokerMonitorAttemptDisposition = .completed) {
+    init(
+        disposition: RunBrokerMonitorAttemptDisposition = .completed,
+        isAvailable: Bool = true
+    ) {
         self.disposition = disposition
+        self.isAvailable = isAvailable
     }
 
     func monitor(operationID: RunBrokerOperationID) throws -> RunBrokerMonitorAttemptResult {

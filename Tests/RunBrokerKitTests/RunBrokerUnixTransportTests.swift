@@ -33,7 +33,11 @@ struct RunBrokerUnixTransportTests {
             secureStore: fixture.secureStore,
             expectedUserID: getuid()
         )
-        let server = RunBrokerServer(listener: listener, endpoint: endpoint)
+        let server = RunBrokerServer(
+            listener: listener,
+            endpoint: endpoint,
+            responseAuthenticator: authenticator
+        )
         let finished = DispatchSemaphore(value: 0)
         let serverResult = SocketServerResult()
         DispatchQueue.global().async {
@@ -63,6 +67,182 @@ struct RunBrokerUnixTransportTests {
         #expect(health.status == .degraded)
         #expect(finished.wait(timeout: .now() + 2) == .success)
         #expect(serverResult.error == nil)
+    }
+
+    @Test("A same-UID replacement socket cannot forge broker or scheduler truth")
+    func sameUIDReplacementCannotForgeResponses() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let authenticator = RunBrokerRequestAuthenticator(
+            secret: secrets.capabilitySecret,
+            random: SocketSequenceRandom()
+        )
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        let finished = DispatchSemaphore(value: 0)
+        let serverResult = SocketServerResult()
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                let wire = RunBrokerWireCodec()
+                for _ in 0..<3 {
+                    let connection = try listener.accept()
+                    defer { connection.close() }
+                    let received = try connection.receiveFrame(using: wire.frameCodec)
+                    let frame = try #require(received)
+                    let request = try wire.decodeRequest(frame: frame)
+                    let result: RunBrokerResponsePayload
+                    switch request.command {
+                    case .health:
+                        result = .health(
+                            .init(status: .healthy, brokerVersion: "forged", ledgerAvailable: true)
+                        )
+                    case .scheduler(.status):
+                        result = .schedulerStatus([])
+                    case .scheduler:
+                        result = .accepted
+                    default:
+                        result = .accepted
+                    }
+                    let body = RunBrokerResponseEnvelope(
+                        protocolVersion: .current,
+                        requestID: request.requestID,
+                        result: result
+                    )
+                    let forged = try RunBrokerAuthenticatedResponseEnvelope(
+                        body: RunBrokerWireCodec.responseBodyData(body),
+                        authentication: Data(
+                            repeating: 0,
+                            count: RunBrokerAuthenticationPolicy.macByteCount
+                        )
+                    )
+                    try connection.send(frame: wire.encode(response: forged))
+                }
+            } catch {
+                serverResult.error = error
+            }
+        }
+
+        let client = fixture.client(secrets: secrets, authenticator: authenticator)
+        for command in [
+            RunBrokerCommand.health,
+            .scheduler(.status),
+            .scheduler(.wake)
+        ] {
+            #expect(throws: RunBrokerAuthenticationError.invalidResponseMAC) {
+                try client.perform(command)
+            }
+        }
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(serverResult.error == nil)
+    }
+
+    @Test("A stalled connection cannot block an independent broker request")
+    func stalledConnectionDoesNotBlockIndependentRequest() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let runtime = try fixture.runtime()
+        let baseListener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        let listener = SocketLimitedListener(base: baseListener, accepts: 2)
+        let workerQueue = DispatchQueue(
+            label: "com.coral.astra.run-broker.tests.connections",
+            attributes: .concurrent
+        )
+        let queueKey = DispatchSpecificKey<String>()
+        workerQueue.setSpecific(key: queueKey, value: "broker-worker")
+        let queueObservation = SocketQueueObservation()
+        let server = RunBrokerServer(
+            listener: listener,
+            endpoint: runtime.endpoint,
+            responseAuthenticator: runtime.authenticator,
+            now: {
+                queueObservation.record(DispatchQueue.getSpecific(key: queueKey))
+                return Date()
+            },
+            maximumConcurrentConnections: 2,
+            workerQueue: workerQueue
+        )
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                try server.runForever()
+            } catch {
+                // The bounded test listener ends the otherwise infinite loop.
+            }
+        }
+
+        let stalledDescriptor = try connectRawSocket(to: fixture.identity.socketURL)
+        defer { Darwin.close(stalledDescriptor) }
+        var partialHeader: UInt8 = 0
+        #expect(Darwin.send(stalledDescriptor, &partialHeader, 1, 0) == 1)
+
+        let started = Date()
+        let response = try fixture.client(
+            secrets: runtime.secrets,
+            authenticator: runtime.authenticator
+        ).perform(.health)
+        #expect(Date().timeIntervalSince(started) < 2)
+        guard case .health(let health) = response.result else {
+            Issue.record("Expected health response")
+            return
+        }
+        #expect(health.brokerVersion == "transport-test")
+        #expect(queueObservation.values == ["broker-worker"])
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test("Connection capacity is bounded and excess clients fail closed")
+    func connectionCapacityIsBounded() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let runtime = try fixture.runtime()
+        let diagnostics = SocketRecordingDiagnostics()
+        let baseListener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        let listener = SocketLimitedListener(base: baseListener, accepts: 2)
+        let server = RunBrokerServer(
+            listener: listener,
+            endpoint: runtime.endpoint,
+            responseAuthenticator: runtime.authenticator,
+            diagnostics: diagnostics,
+            maximumConcurrentConnections: 1
+        )
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                try server.runForever()
+            } catch {
+                // The bounded test listener ends the otherwise infinite loop.
+            }
+        }
+
+        let stalledDescriptor = try connectRawSocket(to: fixture.identity.socketURL)
+        defer { Darwin.close(stalledDescriptor) }
+        var partialHeader: UInt8 = 0
+        #expect(Darwin.send(stalledDescriptor, &partialHeader, 1, 0) == 1)
+
+        let client = fixture.client(
+            secrets: runtime.secrets,
+            authenticator: runtime.authenticator
+        )
+        #expect(throws: (any Error).self) {
+            try client.perform(.health)
+        }
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(diagnostics.events.contains(.connectionSaturated))
     }
 
     @Test("Listener rejects a symlinked socket directory")
@@ -187,6 +367,50 @@ private final class SocketFixture {
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+
+    func runtime() throws -> (
+        secrets: RunBrokerInstallationSecrets,
+        authenticator: RunBrokerRequestAuthenticator,
+        endpoint: RunBrokerRequestEndpoint
+    ) {
+        let secrets = try secureStore.loadOrCreate(identity: identity)
+        let authenticator = RunBrokerRequestAuthenticator(
+            secret: secrets.capabilitySecret,
+            random: SocketSequenceRandom()
+        )
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: UnavailableRunBrokerMonitorLedger(),
+            monitor: UnavailableRunBrokerExternalOperationMonitor(),
+            timer: SocketFakeTimer()
+        )
+        return (
+            secrets,
+            authenticator,
+            RunBrokerRequestEndpoint(
+                channel: .development,
+                installationID: secrets.installationID,
+                brokerVersion: "transport-test",
+                authenticator: authenticator,
+                peerPolicy: .init(expectedUserID: getuid()),
+                scheduler: scheduler
+            )
+        )
+    }
+
+    func client(
+        secrets: RunBrokerInstallationSecrets,
+        authenticator: RunBrokerRequestAuthenticator
+    ) -> RunBrokerClient {
+        RunBrokerClient(
+            connector: RunBrokerUnixSocketConnector(
+                socketURL: identity.socketURL,
+                peerPolicy: .init(expectedUserID: getuid())
+            ),
+            authenticator: authenticator,
+            channel: .development,
+            installationID: secrets.installationID
+        )
+    }
 }
 
 private struct SocketFixedRandom: RunBrokerRandomGenerating {
@@ -218,10 +442,75 @@ private struct SocketFakeTimer: RunBrokerOneShotTimer {
 }
 
 private final class SocketServerResult: @unchecked Sendable {
-    var error: Error?
+    private let lock = NSLock()
+    private var storedError: Error?
+    var error: Error? {
+        get { lock.withLock { storedError } }
+        set { lock.withLock { storedError = newValue } }
+    }
 }
 
 private final class SocketRecordingDiagnostics: RunBrokerDiagnosing, @unchecked Sendable {
-    var events: [RunBrokerDiagnosticEvent] = []
-    func record(_ event: RunBrokerDiagnosticEvent, error: any Error) { events.append(event) }
+    private let lock = NSLock()
+    private var storedEvents: [RunBrokerDiagnosticEvent] = []
+    var events: [RunBrokerDiagnosticEvent] { lock.withLock { storedEvents } }
+    func record(_ event: RunBrokerDiagnosticEvent, error: any Error) {
+        lock.withLock { storedEvents.append(event) }
+    }
+}
+
+private final class SocketQueueObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [String?] = []
+    var values: [String?] { lock.withLock { storedValues } }
+    func record(_ value: String?) { lock.withLock { storedValues.append(value) } }
+}
+
+private final class SocketLimitedListener: RunBrokerListening, @unchecked Sendable {
+    private let base: any RunBrokerListening
+    private let lock = NSLock()
+    private var remaining: Int
+
+    init(base: any RunBrokerListening, accepts: Int) {
+        self.base = base
+        self.remaining = accepts
+    }
+
+    func accept() throws -> any RunBrokerConnection {
+        let mayAccept = lock.withLock {
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
+        guard mayAccept else {
+            throw RunBrokerTransportError.connectionCapacityExhausted
+        }
+        return try base.accept()
+    }
+}
+
+private func connectRawSocket(to socketURL: URL) throws -> Int32 {
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+        throw RunBrokerTransportError.systemCall(operation: "socket-test", code: errno)
+    }
+    do {
+        var address = try runBrokerUnixAddress(path: socketURL.path)
+        let status = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        guard status == 0 else {
+            throw RunBrokerTransportError.systemCall(operation: "connect-test", code: errno)
+        }
+        return descriptor
+    } catch {
+        Darwin.close(descriptor)
+        throw error
+    }
 }

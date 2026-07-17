@@ -24,6 +24,7 @@ struct RunBrokerPathAndInstallerTests {
         #expect(prod.capabilitySecretURL != dev.capabilitySecretURL)
         #expect(prod.installationIDURL != dev.installationIDURL)
         #expect(prod.installerLockURL != dev.installerLockURL)
+        #expect(prod.ledgerDirectoryURL != dev.ledgerDirectoryURL)
         #expect(prod.launchAgentPlistURL != dev.launchAgentPlistURL)
     }
 
@@ -231,6 +232,25 @@ struct RunBrokerPathAndInstallerTests {
         #expect(fixture.launchController.reloadCount == 1)
     }
 
+    @Test("Exact version reinstall rejects hard-linked installed payloads before reload")
+    func exactVersionHardLinkFailsClosed() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.sourceExecutable(name: "sources/hard-link", bytes: "one")
+        let payload = try fixture.payload(
+            source: source,
+            version: "1.0.0-42-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        let result = try fixture.installer.install(payload: payload, identity: fixture.identity)
+        let hardLink = fixture.root.appendingPathComponent("installed-broker-hard-link")
+        #expect(link(result.executableURL.path, hardLink.path) == 0)
+
+        #expect(throws: RunBrokerInstallationError.unsafeExistingPayload) {
+            try fixture.installer.install(payload: payload, identity: fixture.identity)
+        }
+        #expect(fixture.launchController.reloadCount == 1)
+    }
+
     @Test("Installed broker survives source app replacement and plist uses stable external paths")
     func survivesAppReplacement() throws {
         let fixture = try InstallerFixture()
@@ -242,7 +262,14 @@ struct RunBrokerPathAndInstallerTests {
         try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("ASTRA.app"))
 
         #expect(FileManager.default.isExecutableFile(atPath: result.executableURL.path))
+        #expect(FileManager.default.isExecutableFile(atPath: result.supervisorExecutableURL.path))
         #expect(try String(contentsOf: result.executableURL) == "v1")
+        #expect(try String(contentsOf: result.supervisorExecutableURL) == "supervisor")
+        let resolved = try RunBrokerCohortResolver.resolve(
+            brokerExecutableURL: fixture.identity.currentExecutableURL
+        )
+        #expect(resolved.brokerExecutableURL == result.executableURL)
+        #expect(resolved.supervisorExecutableURL == result.supervisorExecutableURL)
         let plist = try #require(
             PropertyListSerialization.propertyList(
                 from: Data(contentsOf: fixture.identity.launchAgentPlistURL),
@@ -254,6 +281,119 @@ struct RunBrokerPathAndInstallerTests {
         #expect(!arguments.joined(separator: " ").contains("ASTRA.app"))
         #expect(plist["KeepAlive"] as? Bool == true)
         #expect(plist["RunAtLoad"] as? Bool == true)
+    }
+
+    @Test("Runtime cohort resolution rejects an incomplete or permission-weakened pair")
+    func runtimeCohortResolutionFailsClosed() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.sourceExecutable(name: "sources/resolver", bytes: "broker")
+        let result = try fixture.installer.install(
+            payload: try fixture.payload(source: source, version: "1"),
+            identity: fixture.identity
+        )
+
+        let cohortDirectory = result.executableURL.deletingLastPathComponent()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: cohortDirectory.path
+        )
+        #expect(throws: RunBrokerInstallationError.installedCohortIncomplete) {
+            try RunBrokerCohortResolver.resolve(
+                brokerExecutableURL: fixture.identity.currentExecutableURL
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: cohortDirectory.path
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: result.supervisorExecutableURL.path
+        )
+        #expect(throws: RunBrokerInstallationError.installedCohortIncomplete) {
+            try RunBrokerCohortResolver.resolve(
+                brokerExecutableURL: fixture.identity.currentExecutableURL
+            )
+        }
+
+        try FileManager.default.removeItem(at: result.supervisorExecutableURL)
+        #expect(throws: RunBrokerInstallationError.installedCohortIncomplete) {
+            try RunBrokerCohortResolver.resolve(
+                brokerExecutableURL: fixture.identity.currentExecutableURL
+            )
+        }
+    }
+
+    @Test("Partial cohort staging is removed without activating or reloading")
+    func partialCohortStagingRollsBack() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let broker = try fixture.sourceExecutable(name: "sources/partial-broker", bytes: "broker")
+        let supervisor = try fixture.sourceExecutable(
+            name: "sources/partial-supervisor",
+            bytes: "supervisor"
+        )
+        let payload = try fixture.payload(
+            source: broker,
+            supervisorSource: supervisor,
+            version: "1"
+        )
+        let installer = RunBrokerInstaller(
+            launchController: fixture.launchController,
+            healthChecker: fixture.healthChecker,
+            secureStore: fixture.secureStore,
+            userID: getuid(),
+            stagingIdentifier: {
+                _ = unlink(supervisor.path)
+                return "partial-cohort"
+            },
+            diagnostics: NoOpRunBrokerDiagnostics()
+        )
+
+        #expect(throws: RunBrokerInstallationError.sourceIsNotRegularExecutable) {
+            try installer.install(payload: payload, identity: fixture.identity)
+        }
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.identity.versionsDirectory.appendingPathComponent("1").path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.identity.versionsDirectory
+                .appendingPathComponent(".installing-partial-cohort").path
+        ))
+        #expect(!FileManager.default.fileExists(atPath: fixture.identity.currentPayloadURL.path))
+        #expect(fixture.launchController.reloadCount == 0)
+    }
+
+    @Test("Exact version rejects a changed supervisor digest")
+    func exactVersionSupervisorCollision() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let broker = try fixture.sourceExecutable(name: "sources/stable-broker", bytes: "broker")
+        let supervisor1 = try fixture.sourceExecutable(name: "sources/supervisor-a", bytes: "one")
+        let supervisor2 = try fixture.sourceExecutable(name: "sources/supervisor-b", bytes: "two")
+        let version = "1.0.0-42-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(
+                source: broker,
+                supervisorSource: supervisor1,
+                version: version
+            ),
+            identity: fixture.identity
+        )
+        #expect(throws: RunBrokerInstallationError.installedDigestMismatch) {
+            try fixture.installer.install(
+                payload: try fixture.payload(
+                    source: broker,
+                    supervisorSource: supervisor2,
+                    version: version
+                ),
+                identity: fixture.identity
+            )
+        }
+        #expect(fixture.launchController.reloadCount == 1)
     }
 
     @Test("Upgrade atomically selects a new immutable version and retains rollback payload")
@@ -277,6 +417,10 @@ struct RunBrokerPathAndInstallerTests {
         )
         #expect(FileManager.default.fileExists(
             atPath: fixture.identity.versionsDirectory.appendingPathComponent("1/astra-run-broker").path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.identity.versionsDirectory
+                .appendingPathComponent("1/astra-run-supervisor").path
         ))
         #expect(fixture.launchController.reloadCount == 2)
     }
@@ -370,23 +514,43 @@ struct RunBrokerPathAndInstallerTests {
         let link = fixture.root.appendingPathComponent("sources/link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
         let digest = try RunBrokerInstaller.sha256(of: source)
+        let supervisor = try fixture.sourceExecutable(
+            name: "sources/supervisor",
+            bytes: "supervisor"
+        )
+        let supervisorDigest = try RunBrokerInstaller.sha256(of: supervisor)
 
         #expect(throws: RunBrokerInstallationError.sourceIsNotRegularExecutable) {
-            try fixture.installer.install(
-                payload: .init(
+            _ = try fixture.installer.install(
+                payload: try .init(
                     sourceExecutableURL: link,
+                    sourceSupervisorExecutableURL: supervisor,
                     version: try .init(rawValue: "link"),
-                    expectedSHA256: digest
+                    expectedSHA256: digest,
+                    expectedSupervisorSHA256: supervisorDigest,
+                    expectedCohortSHA256: try RunBrokerCohort.digest(
+                        brokerSHA256: digest,
+                        supervisorSHA256: supervisorDigest
+                    )
                 ),
                 identity: fixture.identity
             )
         }
         #expect(throws: RunBrokerInstallationError.sourceDigestMismatch) {
-            try fixture.installer.install(
-                payload: .init(
+            let wrongDigest = try RunBrokerSHA256Digest(
+                rawValue: String(repeating: "0", count: 64)
+            )
+            _ = try fixture.installer.install(
+                payload: try .init(
                     sourceExecutableURL: source,
+                    sourceSupervisorExecutableURL: supervisor,
                     version: try .init(rawValue: "bad-digest"),
-                    expectedSHA256: try .init(rawValue: String(repeating: "0", count: 64))
+                    expectedSHA256: wrongDigest,
+                    expectedSupervisorSHA256: supervisorDigest,
+                    expectedCohortSHA256: try RunBrokerCohort.digest(
+                        brokerSHA256: wrongDigest,
+                        supervisorSHA256: supervisorDigest
+                    )
                 ),
                 identity: fixture.identity
             )
@@ -475,11 +639,34 @@ private final class InstallerFixture {
         return url
     }
 
-    func payload(source: URL, version: String) throws -> RunBrokerPayload {
-        .init(
+    func payload(
+        source: URL,
+        supervisorSource: URL? = nil,
+        version: String
+    ) throws -> RunBrokerPayload {
+        let supervisor: URL
+        if let supervisorSource {
+            supervisor = supervisorSource
+        } else {
+            supervisor = source.appendingPathExtension("supervisor")
+            try Data("supervisor".utf8).write(to: supervisor)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: supervisor.path
+            )
+        }
+        let brokerDigest = try RunBrokerInstaller.sha256(of: source)
+        let supervisorDigest = try RunBrokerInstaller.sha256(of: supervisor)
+        return try .init(
             sourceExecutableURL: source,
+            sourceSupervisorExecutableURL: supervisor,
             version: try .init(rawValue: version),
-            expectedSHA256: try RunBrokerInstaller.sha256(of: source)
+            expectedSHA256: brokerDigest,
+            expectedSupervisorSHA256: supervisorDigest,
+            expectedCohortSHA256: try RunBrokerCohort.digest(
+                brokerSHA256: brokerDigest,
+                supervisorSHA256: supervisorDigest
+            )
         )
     }
 

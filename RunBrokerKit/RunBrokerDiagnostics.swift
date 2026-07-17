@@ -13,6 +13,7 @@ public enum RunBrokerDiagnosticEvent: String, Sendable {
     case frameDecodeFailed = "frame_decode_failed"
     case responseEncodeFailed = "response_encode_failed"
     case responseWriteFailed = "response_write_failed"
+    case connectionSaturated = "connection_saturated"
     case socketCleanupSkipped = "socket_cleanup_skipped"
     case schedulerOperationFailed = "scheduler_operation_failed"
     case schedulerRecoveryFailed = "scheduler_recovery_failed"

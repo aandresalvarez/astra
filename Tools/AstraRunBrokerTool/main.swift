@@ -48,6 +48,12 @@ private func run() throws -> Never {
     guard identity.supportDirectory == arguments.supportDirectory else {
         throw BrokerMainError.invalidArguments
     }
+    let cohort = try RunBrokerCohortResolver.resolve(
+        brokerExecutableURL: URL(fileURLWithPath: CommandLine.arguments[0])
+    )
+    let brokerVersion = cohort.brokerExecutableURL
+        .deletingLastPathComponent()
+        .lastPathComponent
 
     let secureStore = RunBrokerSecureStore(expectedUserID: getuid())
     let secrets = try secureStore.loadOrCreate(identity: identity)
@@ -55,17 +61,17 @@ private func run() throws -> Never {
         throw BrokerMainError.installationIdentityMismatch
     }
 
-    let ledger = UnavailableRunBrokerMonitorLedger()
+    let ledger = try RunBrokerRunLedgerAdapter(
+        identity: identity,
+        installationID: secrets.installationID
+    )
     let scheduler = RunBrokerMonitorScheduler(
         ledger: ledger,
         monitor: UnavailableRunBrokerExternalOperationMonitor()
     )
+    try scheduler.recover()
     let authenticator = RunBrokerRequestAuthenticator(secret: secrets.capabilitySecret)
     let peerPolicy = RunBrokerPeerIdentityPolicy(expectedUserID: getuid())
-    let brokerVersion = identity.currentExecutableURL
-        .resolvingSymlinksInPath()
-        .deletingLastPathComponent()
-        .lastPathComponent
     let endpoint = RunBrokerRequestEndpoint(
         channel: arguments.channel,
         installationID: arguments.installationID,
@@ -79,7 +85,11 @@ private func run() throws -> Never {
         secureStore: secureStore,
         expectedUserID: getuid()
     )
-    return try RunBrokerServer(listener: listener, endpoint: endpoint).runForever()
+    return try RunBrokerServer(
+        listener: listener,
+        endpoint: endpoint,
+        responseAuthenticator: authenticator
+    ).runForever()
 }
 
 do {

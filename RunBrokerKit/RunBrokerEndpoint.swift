@@ -95,6 +95,13 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
 
         do {
             try replayProtector.consume(nonce: request.authentication.nonce, now: now)
+        } catch RunBrokerAuthenticationError.replayCapacityExceeded {
+            return failure(
+                request,
+                code: .replayProtectionSaturated,
+                message: "Replay protection is temporarily saturated.",
+                retryable: true
+            )
         } catch {
             return failure(request, code: .replayDetected, message: "Request nonce was already used.")
         }
@@ -162,7 +169,9 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                 requestID: request.requestID,
                 result: .health(
                     .init(
-                        status: scheduler.isOperational ? .healthy : .degraded,
+                        status: scheduler.isOperational && scheduler.monitorAvailable
+                            ? .healthy
+                            : .degraded,
                         brokerVersion: brokerVersion,
                         protocolRange: supportedVersions,
                         ledgerAvailable: scheduler.ledgerAvailable
@@ -180,7 +189,7 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                 result: .capabilities(
                     .init(
                         schedulerRead: scheduler.isOperational,
-                        schedulerMutation: scheduler.isOperational,
+                        schedulerMutation: scheduler.isOperational && scheduler.monitorAvailable,
                         durableIdempotency: scheduler.isOperational
                     )
                 )
@@ -206,17 +215,34 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                     retryable: true
                 )
             }
+            if !scheduler.monitorAvailable {
+                switch command {
+                case .upsert, .remove, .wake:
+                    return failure(
+                        request,
+                        code: .monitorUnavailable,
+                        message: "External-operation monitoring is unavailable."
+                    )
+                case .recover, .status:
+                    break
+                }
+            }
             do {
                 switch command {
                 case .recover:
                     try scheduler.recover()
                     return accepted(request)
-                case .upsert(let deadline):
-                    try scheduler.upsert(deadline, idempotencyKey: request.idempotencyKey)
+                case .upsert(let mutation):
+                    try scheduler.upsert(
+                        mutation.deadline,
+                        replacing: mutation.replacing,
+                        idempotencyKey: request.idempotencyKey
+                    )
                     return accepted(request)
-                case .remove(let operationID):
+                case .remove(let mutation):
                     try scheduler.remove(
-                        operationID: operationID,
+                        expected: mutation.expected,
+                        occurredAt: mutation.occurredAt,
                         idempotencyKey: request.idempotencyKey
                     )
                     return accepted(request)
@@ -230,6 +256,13 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                         result: .schedulerStatus(try scheduler.status())
                     )
                 }
+            } catch RunBrokerSchedulerError.monitorScheduleConflict(_) {
+                return failure(
+                    request,
+                    code: .monitorScheduleConflict,
+                    message: "Monitor schedule changed; refresh its current projection.",
+                    retryable: true
+                )
             } catch {
                 return failure(
                     request,

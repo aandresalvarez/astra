@@ -51,10 +51,44 @@ public struct RunBrokerMonitorDeadline: Codable, Equatable, Hashable, Sendable, 
     }
 }
 
+/// A schedule mutation is an exact compare-and-set. `replacing == nil` means
+/// that no schedule may currently exist; it is not an unconditional upsert.
+public struct RunBrokerMonitorUpsert: Codable, Equatable, Sendable {
+    public let deadline: RunBrokerMonitorDeadline
+    public let replacing: RunBrokerMonitorDeadline?
+
+    public init(
+        deadline: RunBrokerMonitorDeadline,
+        replacing: RunBrokerMonitorDeadline?
+    ) {
+        self.deadline = deadline
+        self.replacing = replacing
+    }
+}
+
+/// Removal carries the complete expected projection and its causal event time.
+/// Operation identity alone cannot fence ABA reschedules or authority changes.
+public struct RunBrokerMonitorRemoval: Codable, Equatable, Sendable {
+    public let expected: RunBrokerMonitorDeadline
+    public let occurredAt: Date
+
+    public init(expected: RunBrokerMonitorDeadline, occurredAt: Date) {
+        self.expected = expected
+        self.occurredAt = Self.canonicalMilliseconds(occurredAt)
+    }
+
+    private static func canonicalMilliseconds(_ date: Date) -> Date {
+        let milliseconds = Int64(
+            (date.timeIntervalSince1970 * 1_000).rounded(.towardZero)
+        )
+        return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+    }
+}
+
 public enum RunBrokerSchedulerCommand: Codable, Equatable, Sendable {
     case recover
-    case upsert(RunBrokerMonitorDeadline)
-    case remove(RunBrokerOperationID)
+    case upsert(RunBrokerMonitorUpsert)
+    case remove(RunBrokerMonitorRemoval)
     case wake
     case status
 }
@@ -137,12 +171,15 @@ public enum RunBrokerErrorCode: String, Codable, Sendable {
     case insecureDowngrade = "insecure_downgrade"
     case authenticationFailed = "authentication_failed"
     case replayDetected = "replay_detected"
+    case replayProtectionSaturated = "replay_protection_saturated"
     case wrongChannel = "wrong_channel"
     case wrongInstallation = "wrong_installation"
     case peerIdentityRejected = "peer_identity_rejected"
     case invalidRequest = "invalid_request"
     case frameTooLarge = "frame_too_large"
     case ledgerUnavailable = "ledger_unavailable"
+    case monitorUnavailable = "monitor_unavailable"
+    case monitorScheduleConflict = "monitor_schedule_conflict"
     case internalFailure = "internal_failure"
 }
 

@@ -73,7 +73,12 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
             guard accepted >= 0 else {
                 throw RunBrokerTransportError.systemCall(operation: "accept", code: errno)
             }
-            return RunBrokerUnixSocketConnection(descriptor: accepted)
+            do {
+                return try RunBrokerUnixSocketConnection(descriptor: accepted)
+            } catch {
+                Darwin.close(accepted)
+                throw error
+            }
         }
     }
 
