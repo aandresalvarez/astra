@@ -67,18 +67,20 @@ The process identity prevents a later cancellation from signaling an unrelated p
 
 ## Bounded observation
 
-`tail` requires an explicit stream and is capped at 500 lines and 64 KiB. Request envelopes are capped at 16 KiB and response envelopes at 96 KiB before JSON parsing. Status and tail are one-shot operations; the protocol contains no polling interval or sleep operation. Scheduling and wake-up ownership remain in ASTRA.
+`tail` requires an explicit stream and is capped at both the caller's requested line count (up to 500) and 64 KiB. Request envelopes are capped at 16 KiB and response envelopes at 96 KiB before JSON parsing. Timestamps use fractional epoch seconds so durable observations do not lose sub-second precision during a wire round trip. Status and tail are one-shot operations; the protocol contains no polling interval or sleep operation. Scheduling and wake-up ownership remain in ASTRA.
 
 ## Fail-closed rules
 
 - Unknown top-level fields are rejected.
 - Oversized envelopes are rejected before JSON parsing.
+- Tail responses that exceed the caller's requested line count are rejected even when they remain below the byte ceiling.
 - Unsupported protocol versions are rejected.
 - Non-finite, zero, negative, or over-30-day timeouts are rejected.
 - Running snapshots without reboot-safe process identity are rejected.
 - Terminal states without completion timestamps are rejected.
 - Response operation IDs, helper digests, job IDs, and generations must match the request; status and tail cannot cross job generations.
 - Cancellation requires the durable generation and will later require the helper to verify its stored process identity before signaling the process group.
+- Decoded deployment manifests must exactly match the security-owned version, digest rules, install paths, modes, and symlink policy.
 
 ## Non-goals of this prerequisite PR
 

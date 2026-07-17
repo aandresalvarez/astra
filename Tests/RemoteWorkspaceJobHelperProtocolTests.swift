@@ -239,6 +239,71 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         }
     }
 
+    @Test("Tail responses cannot exceed the caller's requested line count")
+    func tailResponseHonorsRequestedLines() throws {
+        let request = RemoteWorkspaceJobHelperRequest(
+            operationID: operationID,
+            operation: .tail,
+            jobID: "job-1",
+            generation: generation,
+            stream: .stdout,
+            lines: 2
+        )
+        let accepted = RemoteWorkspaceJobHelperResponse(
+            operationID: operationID,
+            helperSHA256: helperDigest,
+            outcome: .accepted,
+            job: snapshot(process: validProcess()),
+            tail: .init(stream: .stdout, text: "first\nsecond\n", truncated: true)
+        )
+        try RemoteWorkspaceJobHelperProtocol.validate(
+            response: accepted,
+            for: request,
+            expectedHelperSHA256: helperDigest
+        )
+
+        let excessive = RemoteWorkspaceJobHelperResponse(
+            operationID: operationID,
+            helperSHA256: helperDigest,
+            outcome: .accepted,
+            job: snapshot(process: validProcess()),
+            tail: .init(stream: .stdout, text: "first\nsecond\nthird\n", truncated: false)
+        )
+        #expect(throws: RemoteWorkspaceJobHelperProtocolError.tailTooManyLines) {
+            try RemoteWorkspaceJobHelperProtocol.validate(
+                response: excessive,
+                for: request,
+                expectedHelperSHA256: helperDigest
+            )
+        }
+    }
+
+    @Test("Response round trips preserve fractional timestamp precision")
+    func responseRoundTripPreservesFractionalTimestamps() throws {
+        let fractionalAcceptedAt = Date(timeIntervalSince1970: 1_700_000_000.789_123)
+        let fractionalObservedAt = Date(timeIntervalSince1970: 1_700_000_100.456_789)
+        let response = RemoteWorkspaceJobHelperResponse(
+            operationID: operationID,
+            helperSHA256: helperDigest,
+            outcome: .accepted,
+            job: RemoteWorkspaceJobSnapshot(
+                jobID: "job-1",
+                generation: generation,
+                status: .running,
+                observedAt: fractionalObservedAt,
+                acceptedAt: fractionalAcceptedAt,
+                startedAt: fractionalAcceptedAt,
+                lastHeartbeatAt: fractionalObservedAt,
+                process: validProcess()
+            )
+        )
+
+        let encoded = try RemoteWorkspaceJobHelperProtocol.encodeResponse(response)
+        let decoded = try RemoteWorkspaceJobHelperProtocol.decodeResponse(encoded)
+
+        #expect(decoded == response)
+    }
+
     @Test("Deployment manifest pins integrity, private paths, modes, and symlink policy")
     func deploymentManifestIsSecurityOwned() throws {
         let manifest = try RemoteWorkspaceJobHelperDeploymentManifest(helperSHA256: helperDigest)
@@ -249,6 +314,34 @@ struct RemoteWorkspaceJobHelperProtocolTests {
         #expect(manifest.helperFileMode == 0o700)
         #expect(manifest.jobRootMode == 0o700)
         #expect(manifest.rejectsSymlinks)
+    }
+
+    @Test("Decoded deployment manifests cannot override security-owned values")
+    func decodedDeploymentManifestFailsClosed() throws {
+        let valid = try RemoteWorkspaceJobHelperDeploymentManifest(helperSHA256: helperDigest)
+        let encoded = try RemoteWorkspaceJobHelperProtocol.makeEncoder().encode(valid)
+        let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let mutations: [(String, Any)] = [
+            ("protocolVersion", 2),
+            ("helperSHA256", "invalid"),
+            ("helperInstallRelativePath", "../../tmp/helper"),
+            ("jobRootRelativePath", "../../tmp/jobs"),
+            ("helperFileMode", 0o777),
+            ("jobRootMode", 0o777),
+            ("rejectsSymlinks", false)
+        ]
+
+        for (key, value) in mutations {
+            var tampered = object
+            tampered[key] = value
+            let data = try JSONSerialization.data(withJSONObject: tampered)
+            #expect(throws: RemoteWorkspaceJobHelperProtocolError.self, "Accepted tampered field: \(key)") {
+                try RemoteWorkspaceJobHelperProtocol.makeDecoder().decode(
+                    RemoteWorkspaceJobHelperDeploymentManifest.self,
+                    from: data
+                )
+            }
+        }
     }
 
     private func startRequest() -> RemoteWorkspaceJobHelperRequest {

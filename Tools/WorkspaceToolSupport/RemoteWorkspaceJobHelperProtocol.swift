@@ -46,13 +46,15 @@ public enum RemoteWorkspaceJobHelperProtocol {
     public static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
+        // Numeric epoch seconds preserve Date's fractional precision across a
+        // wire round trip; Foundation's ISO-8601 strategy drops sub-seconds.
+        encoder.dateEncodingStrategy = .secondsSince1970
         return encoder
     }
 
     public static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
     }
 
@@ -120,6 +122,10 @@ public enum RemoteWorkspaceJobHelperProtocol {
                   job.jobID == request.jobID, tail.stream == request.stream else {
                 throw RemoteWorkspaceJobHelperProtocolError.responseBindingMismatch
             }
+            guard let requestedLines = request.lines else {
+                throw RemoteWorkspaceJobHelperProtocolError.responseBindingMismatch
+            }
+            try tail.validate(maximumLines: requestedLines)
         }
     }
 
@@ -321,9 +327,25 @@ public struct RemoteWorkspaceJobTailPayload: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
+        try validate(maximumLines: RemoteWorkspaceJobHelperProtocol.maximumTailLines)
+    }
+
+    public func validate(maximumLines: Int) throws {
+        guard (0...RemoteWorkspaceJobHelperProtocol.maximumTailLines).contains(maximumLines),
+              lineCount <= maximumLines else {
+            throw RemoteWorkspaceJobHelperProtocolError.tailTooManyLines
+        }
         guard text.utf8.count <= RemoteWorkspaceJobHelperProtocol.maximumTailBytes else {
             throw RemoteWorkspaceJobHelperProtocolError.tailTooLarge
         }
+    }
+
+    private var lineCount: Int {
+        guard !text.isEmpty else { return 0 }
+        let newlineCount = text.utf8.reduce(into: 0) { count, byte in
+            if byte == 0x0A { count += 1 }
+        }
+        return newlineCount + (text.utf8.last == 0x0A ? 0 : 1)
     }
 }
 
@@ -468,7 +490,6 @@ public struct RemoteWorkspaceJobHelperDeploymentManifest: Codable, Equatable, Se
     public let rejectsSymlinks: Bool
 
     public init(helperSHA256: String) throws {
-        try RemoteWorkspaceJobHelperProtocol.validateSHA256(helperSHA256)
         self.protocolVersion = RemoteWorkspaceJobHelperProtocol.version
         self.helperSHA256 = helperSHA256
         self.helperInstallRelativePath = RemoteWorkspaceJobHelperProtocol.helperInstallRelativePath
@@ -476,6 +497,31 @@ public struct RemoteWorkspaceJobHelperDeploymentManifest: Codable, Equatable, Se
         self.helperFileMode = RemoteWorkspaceJobHelperProtocol.ownerExecutableFileMode
         self.jobRootMode = RemoteWorkspaceJobHelperProtocol.ownerOnlyDirectoryMode
         self.rejectsSymlinks = true
+        try validate()
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        helperSHA256 = try container.decode(String.self, forKey: .helperSHA256)
+        helperInstallRelativePath = try container.decode(String.self, forKey: .helperInstallRelativePath)
+        jobRootRelativePath = try container.decode(String.self, forKey: .jobRootRelativePath)
+        helperFileMode = try container.decode(Int.self, forKey: .helperFileMode)
+        jobRootMode = try container.decode(Int.self, forKey: .jobRootMode)
+        rejectsSymlinks = try container.decode(Bool.self, forKey: .rejectsSymlinks)
+        try validate()
+    }
+
+    public func validate() throws {
+        try RemoteWorkspaceJobHelperProtocol.validateSHA256(helperSHA256)
+        guard protocolVersion == RemoteWorkspaceJobHelperProtocol.version,
+              helperInstallRelativePath == RemoteWorkspaceJobHelperProtocol.helperInstallRelativePath,
+              jobRootRelativePath == RemoteWorkspaceJobHelperProtocol.jobRootRelativePath,
+              helperFileMode == RemoteWorkspaceJobHelperProtocol.ownerExecutableFileMode,
+              jobRootMode == RemoteWorkspaceJobHelperProtocol.ownerOnlyDirectoryMode,
+              rejectsSymlinks else {
+            throw RemoteWorkspaceJobHelperProtocolError.invalidDeploymentManifest
+        }
     }
 }
 
@@ -496,7 +542,9 @@ public enum RemoteWorkspaceJobHelperProtocolError: LocalizedError, Equatable, Se
     case invalidTerminalState
     case invalidOutcome
     case invalidFileLayout
+    case invalidDeploymentManifest
     case tailTooLarge
+    case tailTooManyLines
     case responseBindingMismatch
 
     public var errorDescription: String? {
@@ -517,7 +565,9 @@ public enum RemoteWorkspaceJobHelperProtocolError: LocalizedError, Equatable, Se
         case .invalidTerminalState: "Remote job status and completion timestamp disagree."
         case .invalidOutcome: "Remote job helper response outcome and payload disagree."
         case .invalidFileLayout: "Remote job helper response attempted to override the fixed durable file layout."
+        case .invalidDeploymentManifest: "Remote job helper deployment manifest does not match the security-owned configuration."
         case .tailTooLarge: "Remote job helper tail exceeded the bounded response size."
+        case .tailTooManyLines: "Remote job helper tail exceeded the requested line limit."
         case .responseBindingMismatch: "Remote job helper response does not match the signed request or installed helper."
         }
     }
