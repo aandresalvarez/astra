@@ -1,3 +1,4 @@
+import ASTRACore
 import Foundation
 import Testing
 import WorkspaceToolSupport
@@ -10,6 +11,30 @@ struct RemoteWorkspaceJobHelperProtocolTests {
     private let commandDigest = String(repeating: "b", count: 64)
     private let observedAt = Date(timeIntervalSince1970: 1_700_000_100)
     private let acceptedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+    @Test("Helper snapshots use the canonical managed-job status contract")
+    func helperSnapshotUsesCanonicalManagedJobStatus() throws {
+        let canonicalStatus: WorkspaceManagedJobStatus = .running
+        let snapshot = RemoteWorkspaceJobSnapshot(
+            jobID: "job-1",
+            generation: generation,
+            status: canonicalStatus,
+            observedAt: observedAt,
+            acceptedAt: acceptedAt,
+            startedAt: acceptedAt,
+            completedAt: nil,
+            exitCode: nil,
+            process: .init(
+                pid: 42,
+                processGroupID: 42,
+                bootID: "boot-42",
+                startMarker: "start-42"
+            )
+        )
+
+        try snapshot.validate()
+        #expect(snapshot.status == canonicalStatus)
+    }
 
     @Test("Start request is deterministic and carries no command or path")
     func startRequestIsPathFree() throws {
