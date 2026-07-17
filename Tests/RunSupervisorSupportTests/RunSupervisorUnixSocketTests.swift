@@ -30,6 +30,42 @@ struct RunSupervisorUnixSocketTests {
         #expect(replay.errorCode == "unauthenticated")
     }
 
+    @Test("control requests execute on the supervisor-owned client queue")
+    func controlRequestsUseOwnedQueue() throws {
+        let fixture = try makeFixture()
+        let authenticator = RunSupervisorControlAuthenticator(
+            executionID: fixture.payload.manifest.executionID,
+            capability: fixture.payload.capability
+        )
+        let acceptQueue = DispatchQueue(label: "test.run-supervisor.control.accept")
+        let clientQueue = DispatchQueue(label: "test.run-supervisor.control.client")
+        let clientQueueKey = DispatchSpecificKey<Bool>()
+        clientQueue.setSpecific(key: clientQueueKey, value: true)
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: authenticator,
+            acceptQueue: acceptQueue,
+            clientQueue: clientQueue
+        )
+        try server.start { _ in
+            .init(
+                accepted: DispatchQueue.getSpecific(key: clientQueueKey) == true,
+                lastSequence: 0
+            )
+        }
+        defer { server.stop() }
+
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: fixture.payload.manifest.executionID,
+            action: .init(kind: .status),
+            capability: fixture.payload.capability
+        )
+        #expect(try DarwinRunSupervisorControlClient().send(
+            request,
+            directory: fixture.directory
+        ).accepted)
+    }
+
     @Test("start refuses symlink and regular-file socket substitutions")
     func startRefusesSubstitutions() throws {
         let fixture = try makeFixture()

@@ -22,6 +22,7 @@ struct RunSupervisorEventSpoolTests {
         #expect(try spool!.replay(after: first.sequence).map(\.sequence) == [second.sequence, terminal.sequence])
         try spool!.acknowledge(through: first.sequence)
         let highest = spool!.lastSequence
+        spool?.releaseOwnership()
         spool = nil
 
         let reopened = try RunSupervisorEventSpool(
@@ -57,6 +58,7 @@ struct RunSupervisorEventSpoolTests {
         #expect(spool!.lastSequence == terminalSequence)
         #expect(spool!.lastAcknowledgedSequence == terminalSequence)
         #expect(try spool!.replay(after: 0).isEmpty)
+        spool?.releaseOwnership()
         spool = nil
 
         let reopened = try RunSupervisorEventSpool(
@@ -79,6 +81,7 @@ struct RunSupervisorEventSpoolTests {
             capability: fixture.capability
         )
         let committed = try spool!.appendCritical(.supervisorReady)
+        spool?.releaseOwnership()
         spool = nil
         let path = fixture.url.appendingPathComponent("events.spool").path
         let incomplete = try RunSupervisorSpoolFrameCodec.encode(
@@ -117,6 +120,7 @@ struct RunSupervisorEventSpoolTests {
             capability: fixture.capability
         )
         _ = try spool!.appendCritical(.supervisorReady)
+        spool?.releaseOwnership()
         spool = nil
         let path = fixture.url.appendingPathComponent("events.spool").path
         let originalSize = try #require(
@@ -250,6 +254,7 @@ struct RunSupervisorEventSpoolTests {
                 after: 0
             )
         }
+        spool?.releaseOwnership()
         spool = nil
 
         let wrongCapability = try RunSupervisorCapability(bytes: Data(repeating: 0xF0, count: 32))
@@ -311,6 +316,7 @@ struct RunSupervisorEventSpoolTests {
             capability: fixture.capability
         )
         #expect(initialized != nil)
+        initialized?.releaseOwnership()
         initialized = nil
         let wrongCapability = try RunSupervisorCapability(bytes: Data(repeating: 0xD1, count: 32))
         #expect(throws: RunSupervisorError.corruptCommittedSpool) {
@@ -358,6 +364,7 @@ struct RunSupervisorEventSpoolTests {
         )
         let event = try spool!.appendCritical(.supervisorReady)
         try spool!.acknowledge(through: event.sequence)
+        spool?.releaseOwnership()
         spool = nil
 
         let acknowledgement = fixture.url.appendingPathComponent("events.ack").path
@@ -395,6 +402,7 @@ struct RunSupervisorEventSpoolTests {
             #expect(throws: RunSupervisorError.corruptCommittedSpool) {
                 try spool!.replay(after: 0)
             }
+            spool?.releaseOwnership()
             spool = nil
 
             var recovered: RunSupervisorEventSpool? = try .init(
@@ -414,6 +422,7 @@ struct RunSupervisorEventSpoolTests {
                 #expect(replayed == [terminal])
             }
             try recovered!.acknowledge(through: terminal.sequence)
+            recovered?.releaseOwnership()
             recovered = nil
 
             let final = try RunSupervisorEventSpool(

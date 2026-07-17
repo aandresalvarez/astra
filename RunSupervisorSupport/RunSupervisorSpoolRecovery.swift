@@ -56,6 +56,7 @@ public enum RunSupervisorOfflineSpoolRecovery {
             faultInjector: NoOpRunSupervisorSpoolFaultInjector(),
             createIfMissing: false
         )
+        defer { spool.releaseOwnership() }
         return try .init(
             events: spool.replay(after: sequence, limit: limit),
             lastSequence: spool.lastSequence,
@@ -74,6 +75,7 @@ public enum RunSupervisorOfflineSpoolRecovery {
             faultInjector: NoOpRunSupervisorSpoolFaultInjector(),
             createIfMissing: false
         )
+        defer { spool.releaseOwnership() }
         try spool.acknowledge(through: sequence)
     }
 }
