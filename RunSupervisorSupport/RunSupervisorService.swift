@@ -77,6 +77,7 @@ public final class RunSupervisorService: @unchecked Sendable {
         stateLock.lock(); self.spool = spool; stateLock.unlock()
         defer {
             stateLock.lock(); self.spool = nil; stateLock.unlock()
+            spool.releaseOwnership()
         }
         let authenticator = RunSupervisorControlAuthenticator(
             executionID: payload.manifest.executionID,

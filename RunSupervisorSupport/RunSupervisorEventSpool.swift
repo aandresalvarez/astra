@@ -99,7 +99,24 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         }
     }
 
-    deinit { close(fileDescriptor) }
+    deinit { releaseOwnership() }
+
+    /// Releases the exclusive spool lock at an explicit lifecycle boundary.
+    /// ARC is not a durable resource-management protocol: under contention a
+    /// delayed release must not make completed supervisor evidence look live
+    /// or in doubt to the reconnecting broker.
+    package func releaseOwnership() {
+        lock.lock()
+        let descriptor = fileDescriptor
+        fileDescriptor = -1
+        outputBackpressured = false
+        lock.broadcast()
+        lock.unlock()
+
+        guard descriptor >= 0 else { return }
+        _ = flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
+    }
 
     public var lastSequence: UInt64 {
         lock.lock(); defer { lock.unlock() }
@@ -189,7 +206,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     public func waitForOutputCapacity(deadline: Date) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if persistencePoisoned { return false }
+        if fileDescriptor < 0 || persistencePoisoned { return false }
         while outputBackpressured {
             if !lock.wait(until: deadline) { return false }
         }

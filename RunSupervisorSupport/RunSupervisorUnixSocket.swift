@@ -28,6 +28,8 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     public let socketName = "control.sock"
     private let directory: RunSupervisorRunDirectory
     private let authenticator: RunSupervisorControlAuthenticator
+    private let acceptQueue: DispatchQueue
+    private let clientQueue: DispatchQueue
     private let stateLock = NSLock()
     private let clientSlots = DispatchSemaphore(value: 16)
     private var listener: Int32 = -1
@@ -37,10 +39,21 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
 
     public init(
         directory: RunSupervisorRunDirectory,
-        authenticator: RunSupervisorControlAuthenticator
+        authenticator: RunSupervisorControlAuthenticator,
+        acceptQueue: DispatchQueue = DispatchQueue(
+            label: "com.coral.astra.run-supervisor.control.accept",
+            qos: .userInitiated
+        ),
+        clientQueue: DispatchQueue = DispatchQueue(
+            label: "com.coral.astra.run-supervisor.control.clients",
+            qos: .userInitiated,
+            attributes: .concurrent
+        )
     ) throws {
         self.directory = directory
         self.authenticator = authenticator
+        self.acceptQueue = acceptQueue
+        self.clientQueue = clientQueue
     }
 
     public func start(
@@ -88,7 +101,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         listener = fd
         stopped = false
         stateLock.unlock()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        acceptQueue.async { [weak self] in
             self?.acceptLoop(handler: handler)
         }
     }
@@ -127,7 +140,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 close(client)
                 continue
             }
-            DispatchQueue.global(qos: .utility).async { [weak self] in
+            clientQueue.async { [weak self] in
                 guard let self else { close(client); return }
                 defer { self.clientSlots.signal() }
                 self.handle(client: client, handler: handler)
