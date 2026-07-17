@@ -84,6 +84,36 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(try fixture.context.fetchCount(FetchDescriptor<TaskExternalOperation>()) == 1)
     }
 
+    @Test("terminal backend records register directly into retryable delivery states")
+    func terminalRecordsRegisterIntoDeliveryStates() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        let succeeded = try fixture.createBackendRecord(invocationID: "terminal-success")
+        let failed = try fixture.createBackendRecord(invocationID: "terminal-failure")
+        let store = WorkspaceManagedJobStore(rootPath: fixture.jobRoot.path)
+        _ = try store.mark(jobID: succeeded.jobID, status: .succeeded, exitCode: 0)
+        _ = try store.mark(jobID: failed.jobID, status: .failed, exitCode: 1)
+
+        let outcomes = TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+            task: fixture.task,
+            modelContext: fixture.context,
+            now: Date(timeIntervalSince1970: 9_000)
+        )
+        let operations = try fixture.context.fetch(FetchDescriptor<TaskExternalOperation>())
+        let succeededOperation = try #require(operations.first { $0.backendJobID == succeeded.jobID })
+        let failedOperation = try #require(operations.first { $0.backendJobID == failed.jobID })
+
+        #expect(outcomes.count == 2)
+        #expect(succeededOperation.executionState == .processCompleted)
+        #expect(succeededOperation.monitoringState == .validating)
+        #expect(succeededOperation.nextCheckAt == nil)
+        #expect(succeededOperation.terminalObservedAt == Date(timeIntervalSince1970: 9_000))
+        #expect(failedOperation.executionState == .failed)
+        #expect(failedOperation.monitoringState == .completed)
+        #expect(failedOperation.nextCheckAt == nil)
+        #expect(failedOperation.terminalObservedAt == Date(timeIntervalSince1970: 9_000))
+    }
+
     @Test("untrusted malformed traversal and symlink-substituted results are rejected")
     func rejectsUntrustedAndSubstitutedResults() throws {
         let fixture = try RegistrationFixture()

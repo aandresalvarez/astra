@@ -712,9 +712,9 @@ struct TaskRunLifecycleServiceTests {
             run.typedStopReason = .externalOutcomePending
             let operation = TaskExternalOperation(
                 taskID: task.id,
-                externalIdentity: "docker:\(task.id.uuidString):job-restart",
+                externalIdentity: "\(WorkspaceManagedJobStartReceipt.backend):\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):job-restart",
                 originatingRunID: run.id,
-                backendKindRaw: "workspace_managed_job",
+                backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
                 backendJobID: "job-restart",
                 nextCheckAt: Date(timeIntervalSince1970: 4_100)
             )

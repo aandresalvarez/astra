@@ -89,6 +89,14 @@ public final class MCPServer {
     }
 
     private func handleToolRequest(id: Any?, object: [String: Any]) -> String? {
+        guard let invocationID = stableInvocationID(id) else {
+            diagnostics(.invalidRequest)
+            return encodeError(
+                id: id,
+                code: -32600,
+                message: "tools/call requires a non-empty string or numeric request id"
+            )
+        }
         guard let params = object["params"] as? [String: Any],
               let toolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
@@ -98,7 +106,7 @@ public final class MCPServer {
         switch handleToolCall(MCPToolCall(
             name: toolName,
             arguments: arguments,
-            invocationID: stableInvocationID(id)
+            invocationID: invocationID
         )) {
         case .result(let result):
             return encodeResult(id: id, result: result)
@@ -122,21 +130,32 @@ public final class MCPServer {
     private func normalizedID(_ id: Any?) -> Any {
         switch id {
         case let value as String: return value
-        case let value as NSNumber: return value
+        case let value as NSNumber:
+            return isJSONBoolean(value) ? NSNull() : value
         case .none: return NSNull()
         default: return NSNull()
         }
     }
 
-    private func stableInvocationID(_ id: Any?) -> String {
+    private func stableInvocationID(_ id: Any?) -> String? {
         switch id {
         case let value as String:
-            return value
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && trimmed.count <= 256 ? value : nil
         case let value as NSNumber:
-            return value.stringValue
+            guard !isJSONBoolean(value) else { return nil }
+            let rendered = value.stringValue
+            return rendered.count <= 256 ? rendered : nil
         default:
-            return ""
+            return nil
         }
+    }
+
+    /// JSONSerialization bridges both numbers and booleans through NSNumber.
+    /// Core Foundation type identity keeps numeric 0/1 valid JSON-RPC IDs
+    /// without accidentally admitting JSON true/false as request IDs.
+    private func isJSONBoolean(_ value: NSNumber) -> Bool {
+        CFGetTypeID(value) == CFBooleanGetTypeID()
     }
 
     private func encode(_ object: [String: Any]) -> String? {

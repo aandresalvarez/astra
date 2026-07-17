@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -356,6 +357,92 @@ struct TaskCompletionPolicyTests {
             task: task,
             run: run
         ) != nil)
+    }
+
+    @Test("originating provider run cannot validate its own terminal registration")
+    func originatingRunCannotValidateItsOwnTerminalRegistration() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Validate durable work")
+        task.status = .waitingExternal
+        let run = TaskRun(task: task)
+        let operation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):same-run",
+            originatingRunID: run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "same-run",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating
+        )
+        context.insert(task)
+        context.insert(run)
+        context.insert(operation)
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: run,
+            modelContext: context,
+            successPayload: "Provider turn ended.",
+            permissionPolicy: .autonomous
+        )
+
+        #expect(!completed)
+        #expect(task.status == .waitingExternal)
+        #expect(operation.monitoringState == .validating)
+        #expect(run.typedStopReason == .externalOutcomePending)
+    }
+
+    @Test("validating one operation preserves waiting state for another active operation")
+    func validationPreservesAnotherActiveOperation() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Validate all durable work")
+        task.status = .waitingExternal
+        let validatedOrigin = TaskRun(task: task)
+        let activeOrigin = TaskRun(task: task)
+        let validationRun = TaskRun(task: task)
+        let validating = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(validatedOrigin.id.uuidString.lowercased()):validated",
+            originatingRunID: validatedOrigin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "validated",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating
+        )
+        let active = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(activeOrigin.id.uuidString.lowercased()):active",
+            originatingRunID: activeOrigin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "active",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active
+        )
+        context.insert(task)
+        context.insert(validatedOrigin)
+        context.insert(activeOrigin)
+        context.insert(validationRun)
+        context.insert(validating)
+        context.insert(active)
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: validationRun,
+            modelContext: context,
+            successPayload: "One operation validated.",
+            permissionPolicy: .autonomous
+        )
+
+        #expect(!completed)
+        #expect(validating.monitoringState == .completed)
+        #expect(active.monitoringState == .active)
+        #expect(task.status == .waitingExternal)
+        #expect(validationRun.typedStopReason == .externalOutcomePending)
     }
 
     @Test("publication receipt cannot complete a task whose deliverable is missing")

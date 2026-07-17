@@ -161,6 +161,15 @@ enum TaskExternalOperationRegistrationService {
         let originatingRevision = taskFolder.isEmpty
             ? nil
             : TaskContextStateManager.load(taskFolder: taskFolder)?.updatedAt
+        let initialExecutionState = executionState(for: authoritative.status)
+        let initialMonitoringState: TaskExternalOperationMonitoringState
+        if initialExecutionState == .processCompleted {
+            initialMonitoringState = .validating
+        } else if initialExecutionState.isTerminalObservation {
+            initialMonitoringState = .completed
+        } else {
+            initialMonitoringState = .active
+        }
         let operation = TaskExternalOperation(
             taskID: task.id,
             externalIdentity: receipt.externalIdentity,
@@ -168,12 +177,15 @@ enum TaskExternalOperationRegistrationService {
             backendKindRaw: backendKind,
             backendJobID: authoritative.jobID,
             originatingContextRevision: originatingRevision,
-            executionState: executionState(for: authoritative.status),
+            executionState: initialExecutionState,
             observationHealth: .healthy,
-            monitoringState: .active,
-            nextCheckAt: now,
+            monitoringState: initialMonitoringState,
+            nextCheckAt: initialExecutionState.isTerminalObservation ? nil : now,
             createdAt: now
         )
+        if initialExecutionState.isTerminalObservation {
+            operation.terminalObservedAt = now
+        }
         modelContext.insert(operation)
         AppLogger.audit(.taskStarted, category: "ExternalOperation", taskID: task.id, fields: [
             "operation": "register",

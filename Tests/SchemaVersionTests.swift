@@ -232,9 +232,9 @@ struct SchemaVersionTests {
         let run = TaskRun(task: task)
         let operation = TaskExternalOperation(
             taskID: task.id,
-            externalIdentity: "docker:\(task.id.uuidString):job-1",
+            externalIdentity: "\(WorkspaceManagedJobStartReceipt.backend):\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):job-1",
             originatingRunID: run.id,
-            backendKindRaw: "workspace_managed_job",
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
             backendJobID: "job-1"
         )
         context.insert(task)

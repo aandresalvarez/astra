@@ -35,23 +35,33 @@ enum TaskSuccessfulCompletionService {
             validation.monitoringState = .completed
             validation.updatedAt = Date()
             validation.nextCheckAt = nil
-        } else if let operation = operations.first(where: {
-            $0.originatingRunID == run.id && $0.monitoringState == .active
+        }
+
+        // Completing one validation never supersedes another task-owned
+        // operation. Re-evaluate the full set after the mutation above so a
+        // remaining active or validating row keeps the task waitingExternal.
+        if let operation = operations.first(where: {
+            $0.monitoringState == .active || $0.monitoringState == .validating
         }) {
-            pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
-            return false
-        } else if let operation = operations.first(where: { $0.monitoringState == .active }) {
             // An ambiguity/reasoning wake does not supersede the still-running
             // external operation. A successful explanatory provider turn
             // returns the task to durable monitoring.
             pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
             return false
-        } else if let operation = operations.first(where: {
+        }
+
+        if let operation = operations.first(where: {
             $0.monitoringState == .completed
                 && $0.executionState.isTerminalObservation
                 && $0.executionState != .processCompleted
-                && $0.originatingRunID != run.id
         }) {
+            if operation.originatingRunID == run.id {
+                // The originating provider turn cannot convert an already
+                // terminal external failure into task success. Keep the task
+                // waiting until the operation-specific reasoning wake runs.
+                pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
+                return false
+            }
             // A reasoning wake may explain cancellation/failure/interruption,
             // but successful narration is not successful external work.
             let completedAt = run.completedAt ?? Date()

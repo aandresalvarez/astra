@@ -605,6 +605,7 @@ final class TaskLifecycleCoordinator {
                         }
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
+                    deleteExternalOperationRegistrations(taskIDs: Set(existing.tasks.map(\.id)))
                     modelContext.delete(existing)
                     return WorkspaceConfigManager.importWorkspace(
                         from: config,
@@ -669,6 +670,7 @@ final class TaskLifecycleCoordinator {
                 if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
+                    deleteExternalOperationRegistrations(taskIDs: Set(existing.tasks.map(\.id)))
                     modelContext.delete(existing)
                     return WorkspaceConfigManager.importWorkspace(
                         from: exportedConfig,
@@ -676,6 +678,7 @@ final class TaskLifecycleCoordinator {
                         scheduleTrustPolicy: .preserveEnabledState
                     )
                 }
+                deleteExternalOperationRegistrations(taskIDs: Set(existing.tasks.map(\.id)))
                 modelContext.delete(existing)
                 return insertWorkspaceFromFolder(name: name, path: url.path)
             case .duplicate:

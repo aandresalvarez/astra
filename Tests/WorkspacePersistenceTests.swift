@@ -2243,6 +2243,63 @@ struct WorkspacePersistenceTests {
         #expect(replacedSchedule.isEnabled == false)
     }
 
+    @Test("config replace removes prior active registrations before quarantined import")
+    @MainActor
+    func configReplaceRemovesPriorActiveExternalRegistrations() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_external_operation_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "External Operation Replace", primaryPath: folder.path)
+        let task = AgentTask(title: "External", goal: "Keep imported work quarantined", workspace: workspace)
+        task.status = .waitingExternal
+        let run = TaskRun(task: task)
+        let identity = "\(WorkspaceManagedJobStartReceipt.backend):\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):replace-job"
+        let operation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: identity,
+            originatingRunID: run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "replace-job",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active,
+            nextCheckAt: Date(timeIntervalSince1970: 5_000)
+        )
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        context.insert(operation)
+        try context.save()
+
+        let configURL = folder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let registrations = try context.fetch(FetchDescriptor<TaskExternalOperation>())
+        let importedTask = try #require(replaced.tasks.first)
+        let imported = try #require(registrations.first)
+
+        #expect(registrations.count == 1)
+        #expect(imported.taskID == importedTask.id)
+        #expect(imported.externalIdentity == identity)
+        #expect(imported.monitoringState == .quarantined)
+        #expect(imported.observationHealth == .quarantined)
+        #expect(!registrations.contains { $0.monitoringState == .active })
+    }
+
     @Test("schedule editor saves preserve existing enabled state")
     func scheduleEditorSavesPreserveExistingEnabledState() {
         #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: false) == false)

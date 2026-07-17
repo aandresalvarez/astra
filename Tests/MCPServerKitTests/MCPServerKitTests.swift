@@ -59,10 +59,14 @@ struct MCPServerKitTests {
 
     @Test("server encodes shared protocol errors and JSON-RPC ids consistently")
     func serverEncodesSharedProtocolErrorsAndIDsConsistently() throws {
+        var handledCalls = 0
         let server = MCPServer(
             name: "astra-test",
             tools: { [] },
-            handleToolCall: { _ in .error(code: -32099, message: "handler failed") }
+            handleToolCall: { _ in
+                handledCalls += 1
+                return .error(code: -32099, message: "handler failed")
+            }
         )
 
         let invalid = try parseJSON(try #require(server.handleLine("{")))
@@ -81,11 +85,27 @@ struct MCPServerKitTests {
         #expect(missingToolError["code"] as? Int == -32602)
         #expect(missingToolError["message"] as? String == "Unsupported tool")
 
-        let handlerError = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":{"bad":true},"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
-        #expect(handlerError["id"] is NSNull)
+        let missingID = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
+        #expect(missingID["id"] is NSNull)
+        let missingIDError = try #require(missingID["error"] as? [String: Any])
+        #expect(missingIDError["code"] as? Int == -32600)
+
+        let unsupportedID = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":{"bad":true},"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
+        #expect(unsupportedID["id"] is NSNull)
+        let unsupportedIDError = try #require(unsupportedID["error"] as? [String: Any])
+        #expect(unsupportedIDError["code"] as? Int == -32600)
+
+        let booleanID = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":true,"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
+        #expect(booleanID["id"] is NSNull)
+        let booleanIDError = try #require(booleanID["error"] as? [String: Any])
+        #expect(booleanIDError["code"] as? Int == -32600)
+
+        let handlerError = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
+        #expect(handlerError["id"] as? Int == 1)
         let error = try #require(handlerError["error"] as? [String: Any])
         #expect(error["code"] as? Int == -32099)
         #expect(error["message"] as? String == "handler failed")
+        #expect(handledCalls == 1)
     }
 
     private func parseJSON(_ text: String) throws -> [String: Any] {

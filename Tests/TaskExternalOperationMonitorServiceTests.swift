@@ -328,6 +328,32 @@ struct TaskExternalOperationMonitorServiceTests {
         await service.runDueChecks()
         #expect(await wakeSink.callCount == 2)
     }
+
+    @Test("failed terminal reasoning wake retries until acknowledged")
+    func failedTerminalReasoningWakeRetries() async throws {
+        let fixture = try Fixture()
+        let operation = fixture.insertOperation(
+            executionState: .failed,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        let wakeSink = FlakyOperationWakeSink(results: [false, true])
+        let service = fixture.makeService(
+            observer: SequenceOperationObserver(observations: []),
+            wakeSink: wakeSink
+        )
+
+        await service.runDueChecks()
+        #expect(await wakeSink.callCount == 1)
+        #expect(operation.lastWakeKey == nil)
+
+        await service.runDueChecks()
+        #expect(await wakeSink.callCount == 2)
+        #expect(operation.lastWakeKey == "v1|failed|healthy|user_facing_reasoning")
+
+        await service.runDueChecks()
+        #expect(await wakeSink.callCount == 2)
+    }
 }
 
 @MainActor

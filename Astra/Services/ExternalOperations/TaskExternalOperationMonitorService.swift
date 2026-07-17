@@ -617,21 +617,29 @@ final class TaskExternalOperationMonitorService {
         }
     }
 
-    /// Terminal operations are not polled again, so restart reconciliation
-    /// explicitly redelivers completion validation if a crash happened after
-    /// the observation commit but before the sink acknowledgement commit.
+    /// Terminal operations are not polled again, so scheduler/restart
+    /// reconciliation redelivers every unacknowledged terminal transition.
+    /// Process completion remains validating until a fresh provider proves
+    /// task success; other terminal states remain completed while their
+    /// user-facing reasoning wake is retried independently.
     private func reconcilePendingTerminalDeliveries(
         operations: [TaskExternalOperation]
     ) async {
-        for operation in operations where
-            operation.monitoringState == .validating &&
-            operation.executionState == .processCompleted {
+        for operation in operations {
+            let isPendingProcessValidation = operation.executionState == .processCompleted
+                && operation.monitoringState == .validating
+            let isPendingTerminalReasoning = operation.executionState.isTerminalObservation
+                && operation.executionState != .processCompleted
+                && operation.monitoringState == .completed
+            guard isPendingProcessValidation || isPendingTerminalReasoning else { continue }
+
             let observation = TaskExternalOperationObservation(
                 executionState: operation.executionState,
                 health: operation.observationHealth
             )
+            guard let intent = wakeIntent(for: observation) else { continue }
             let notificationKey = semanticKey(for: observation)
-            let wakeKey = "\(notificationKey)|\(TaskExternalOperationWakeIntent.completionValidation.rawValue)"
+            let wakeKey = "\(notificationKey)|\(intent.rawValue)"
             let notification = operation.lastNotificationKey == notificationKey
                 ? nil
                 : TaskExternalOperationNotification(
@@ -648,7 +656,7 @@ final class TaskExternalOperationMonitorService {
                     originatingContextRevision: operation.originatingContextRevision,
                     latestContext: contextProvider(operation.taskID),
                     observation: observation,
-                    intent: .completionValidation
+                    intent: intent
                 )
             await deliver(AppliedObservation(
                 result: .applied,
