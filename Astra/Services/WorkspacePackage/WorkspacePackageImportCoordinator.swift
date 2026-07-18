@@ -103,18 +103,17 @@ struct WorkspacePackageImportCoordinator {
         // the sender's enabled set verbatim, and the runtime resource matcher
         // exposes enabled capabilities to task runs regardless of governance —
         // so a freshly-imported draft would run immediately, contradicting the
-        // "pending approval" the review UI shows. Strip any embedded capability
-        // that is not already installed-and-approved on this machine from the
-        // imported workspace's enabled set; the recipient re-enables it after
-        // approving. Built-in / already-approved capabilities keep their state.
+        // "pending approval" the review UI shows. These IDs are therefore
+        // stripped from the workspace's enabled set — but only AFTER the apps
+        // are imported (see below), not here: `WorkspaceAppService.createApp`
+        // derives an app's dependency bindings from the workspace's CURRENTLY
+        // enabled capabilities, so the drafts must still be enabled when the
+        // apps are created or their bindings persist unmapped and never recover.
+        // Built-in / already-approved capabilities keep their state.
         let embeddedIDsNeedingApproval = Set(manifest.capabilityEntries.map(\.packageID).filter { id in
             guard let installed = capabilityLibrary.installedPackage(id: id) else { return true }
             return installed.governance.approvalStatus != .approved
         })
-        if !embeddedIDsNeedingApproval.isEmpty {
-            config.enabledCapabilityIDs = (config.enabledCapabilityIDs ?? [])
-                .filter { !embeddedIDsNeedingApproval.contains($0) }
-        }
 
         try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: true)
         var installedCapabilityIDs: [String] = []
@@ -181,6 +180,19 @@ struct WorkspacePackageImportCoordinator {
                 )
             }
             appsImported.append(result.app.name)
+        }
+
+        // Now that every app's dependency bindings have been resolved against
+        // the fully-enabled capability set (mapped, not missing), remove the
+        // still-pending-approval drafts from the workspace's enabled set so the
+        // runtime resource matcher will not expose them to task runs before the
+        // recipient reviews and re-enables them. The mapped binding rows persist
+        // independently of the enabled set, so re-enabling later lights the app
+        // back up without a manual re-bind. Nothing runs between here and the
+        // single commit below, so there is no window where a draft is live.
+        if !embeddedIDsNeedingApproval.isEmpty {
+            workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs
+                .filter { !embeddedIDsNeedingApproval.contains($0) }
         }
 
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(

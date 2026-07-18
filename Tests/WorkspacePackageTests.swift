@@ -317,6 +317,89 @@ struct WorkspacePackageTests {
     }
 
     @MainActor
+    @Test("exported package strips schedule run history and routine paths")
+    func exportedPackageStripsScheduleHistoryAndPaths() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let schedule = TaskSchedule(name: "Nightly", goal: "Summarize new issues", workspace: workspace)
+        schedule.routinePaths = ["/Users/alice/only-on-sender/repo"]
+        schedule.runResultsJSON = "[{\"summary\":\"prior sender-machine output\"}]"
+        schedule.conversationContext = "prior conversation snapshot"
+        schedule.sourceTaskID = UUID()
+        schedule.lastFiredAt = Date(timeIntervalSince1970: 1_700_000_000)
+        schedule.fireCount = 7
+        container.mainContext.insert(schedule)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.canInstall)
+        let exported = try #require(report.workspaceConfig?.schedules?.first)
+        // History and sender-machine paths do not travel with the config-only profile...
+        #expect((exported.routinePaths ?? []).isEmpty)
+        #expect(exported.runResultsJSON == nil)
+        #expect(exported.conversationContext == nil)
+        #expect(exported.sourceTaskID == nil)
+        #expect(exported.lastFiredAt == nil)
+        #expect(exported.fireCount == 0)
+        // ...but the routine's definition still does.
+        #expect(exported.name == "Nightly")
+        #expect(exported.goal == "Summarize new issues")
+        // Belt-and-suspenders: the leaked strings are absent from the raw bytes.
+        let configText = String(
+            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-config.json")),
+            as: UTF8.self
+        )
+        #expect(!configText.contains("only-on-sender"))
+        #expect(!configText.contains("prior sender-machine output"))
+    }
+
+    @MainActor
+    @Test("package validation rejects a capability whose embedded ID differs from its manifest entry")
+    func validationRejectsMismatchedCapabilityID() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        try capabilityLibrary.install(
+            Self.makeCapability(id: "local.tool", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        workspace.enabledCapabilityIDs = ["local.tool"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // The manifest entry still declares "local.tool", but the embedded file
+        // now carries a different package id — a package advertising an innocuous
+        // entry while installing (or overwriting) a different id.
+        let capabilityURL = destination.appendingPathComponent("capabilities/local.tool.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var capability = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        capability.id = "com.acme.github"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(capability).write(to: capabilityURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("does not match its manifest entry ID") })
+    }
+
+    @MainActor
     @Test("exported package downgrades an asset-icon capability to its fallback symbol")
     func exportedPackageDowngradesAssetIcon() throws {
         let root = try Self.temporaryRoot()

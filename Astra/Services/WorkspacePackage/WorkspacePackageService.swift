@@ -197,6 +197,20 @@ struct WorkspacePackageService {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let rawCapability = try? decoder.decode(PluginPackage.self, from: data) else { return }
+        // The manifest entry's declared `packageID` drives the review plan, the
+        // enabled-set draft stripping on import, and the "already installed"
+        // check — but the importer installs the DECODED package, keyed by its
+        // own `PluginPackage.id`. If the two disagree, a package could advertise
+        // an innocuous ID while installing (or overwriting) a different one, and
+        // the enabled-set stripping — which filters by the declared entry ID —
+        // would miss the real installed ID, exposing the draft immediately. Bind
+        // them: the declared entry ID must equal the embedded package's own ID.
+        if rawCapability.id != entry.packageID {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability package ID (\(rawCapability.id)) does not match its manifest entry ID (\(entry.packageID))."
+            ))
+        }
         if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
         }

@@ -76,6 +76,51 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
+    @Test("embedded draft capabilities stay enabled while apps import, then are disabled")
+    func draftCapabilitiesEnabledDuringAppImportThenDisabled() throws {
+        // Regression for the tension between "don't expose an unapproved draft to
+        // task runs" (strip it from the enabled set) and "map the app's
+        // dependency bindings" (createApp derives bindings from the workspace's
+        // CURRENTLY enabled capabilities). The strip must therefore happen AFTER
+        // the apps import, not before — otherwise the binding persists unmapped
+        // and never recovers even after the recipient approves the capability.
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let targetContainer = try Self.makeContainer()
+        let targetLibrary = CapabilityLibrary(directory: root.appendingPathComponent("target-capabilities", isDirectory: true))
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        var enabledDuringAppImport: [String]?
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = targetLibrary
+        coordinator.importAppBundle = { bundleURL, workspace, modelContext in
+            // The moment an app is imported, the embedded draft must still be in
+            // the workspace's enabled set so its dependency bindings can map.
+            enabledDuringAppImport = workspace.enabledCapabilityIDs
+            return try WorkspaceAppPackageService().importPackage(
+                at: bundleURL,
+                into: workspace,
+                modelContext: modelContext,
+                persistence: .deferSave
+            )
+        }
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        #expect(enabledDuringAppImport?.contains("local.tool") == true)
+        // Committed state: the draft is no longer runtime-exposed, matching the
+        // "pending approval" the review UI shows.
+        #expect(!outcome.workspace.enabledCapabilityIDs.contains("local.tool"))
+        #expect(outcome.capabilitiesInstalledAsDraft == ["local.tool"])
+    }
+
+    @MainActor
     @Test("package import drops machine-local paths from the exporting machine")
     func importDropsMachineLocalPaths() throws {
         let root = try Self.temporaryRoot()

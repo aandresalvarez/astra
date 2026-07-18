@@ -90,6 +90,34 @@ struct WorkspacePackageExporter {
             return sanitized
         }
 
+        // Schedules travel (import quarantines them disabled), but the
+        // config-only profile promises no task/run history and no sender-machine
+        // paths — and `WorkspaceConfigManager.scheduleConfig` serializes both.
+        // Sanitize each so a re-enabled routine on the recipient carries only its
+        // definition, not the sender's outputs or absolute paths:
+        //   - `runResultsJSON` / `lastFiredAt` / `fireCount` / `conversationContext`
+        //     are prior-run history (potentially sensitive task results).
+        //   - `routinePaths` are absolute sender-machine paths TaskScheduler would
+        //     otherwise append as task inputs; the recipient re-collects them as
+        //     local setup.
+        //   - `sourceTaskID` references a task that does not travel with this
+        //     profile, so it would dangle.
+        config.schedules = config.schedules?.map { schedule in
+            var sanitized = schedule
+            sanitized.routinePaths = nil
+            // The paths are also embedded in the templateVariables blob — clear
+            // them there too, or the recipient's `routinePaths` getter reads them
+            // straight back out of the restored metadata.
+            sanitized.templateVariablesJSON = TaskSchedule
+                .templateVariablesJSONWithoutRoutinePaths(sanitized.templateVariablesJSON)
+            sanitized.runResultsJSON = nil
+            sanitized.conversationContext = nil
+            sanitized.sourceTaskID = nil
+            sanitized.lastFiredAt = nil
+            sanitized.fireCount = 0
+            return sanitized
+        }
+
         let stagingURL = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".astra-share-staging-\(UUID().uuidString.lowercased())", isDirectory: true)
         var published = false
