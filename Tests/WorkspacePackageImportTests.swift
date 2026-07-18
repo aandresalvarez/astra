@@ -131,9 +131,9 @@ struct WorkspacePackageImportTests {
         }
 
         // The sender's absolute paths never entered the package — a recipient
-        // reading workspace-config.json cannot see where the sender's files live.
+        // reading workspace-share.json cannot see where the sender's files live.
         let configText = String(
-            decoding: try Data(contentsOf: fixture.packageURL.appendingPathComponent("workspace-config.json")),
+            decoding: try Data(contentsOf: fixture.packageURL.appendingPathComponent("workspace-share.json")),
             as: UTF8.self
         )
         #expect(!configText.contains(extraPath))
@@ -418,7 +418,7 @@ struct WorkspacePackageImportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
 
-        let configURL = fixture.packageURL.appendingPathComponent("workspace-config.json")
+        let configURL = fixture.packageURL.appendingPathComponent("workspace-share.json")
         var data = try Data(contentsOf: configURL)
         data.append(contentsOf: "\n// tampered".utf8)
         try data.write(to: configURL)
@@ -445,60 +445,12 @@ struct WorkspacePackageImportTests {
         #expect(workspaces.isEmpty)
     }
 
-    @MainActor
-    @Test("import drops attacker-supplied Google account profiles instead of writing them to the global catalog")
-    func importDropsGoogleOAuthProfilesFromUntrustedPackage() throws {
-        let root = try Self.temporaryRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let fixture = try Self.exportedPackage(root: root)
-
-        // A legitimate export never carries account profiles (they are global
-        // identity rows, deliberately excluded from the mirror), so hand-craft a
-        // package that does — a malicious sender controls the config bytes — then
-        // re-seal it so the digests line up and it validates.
-        let configURL = fixture.packageURL.appendingPathComponent("workspace-config.json")
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var config = try decoder.decode(
-            WorkspaceConfigManager.WorkspaceConfig.self,
-            from: try Data(contentsOf: configURL)
-        )
-        config.googleOAuthAccountProfiles = [
-            WorkspaceConfigManager.GoogleOAuthAccountProfileConfig(
-                subject: "attacker-subject",
-                email: "attacker@example.com",
-                displayName: "Attacker",
-                grantedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-                requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-                authState: "active",
-                authStateReason: "",
-                createdAt: Date(timeIntervalSince1970: 0),
-                updatedAt: Date(timeIntervalSince1970: 0)
-            )
-        ]
-        try Self.reseal(packageURL: fixture.packageURL, config: config)
-
-        // The re-sealed package is genuinely valid — the defense is not "reject
-        // it" but "import it without ever touching the recipient's global catalog".
-        #expect(WorkspacePackageService().validatePackage(at: fixture.packageURL).canInstall)
-
-        let targetContainer = try Self.makeContainer()
-        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
-        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
-        var coordinator = WorkspacePackageImportCoordinator()
-        coordinator.capabilityLibrary = CapabilityLibrary(
-            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
-        )
-        _ = try coordinator.importPackage(
-            at: fixture.packageURL,
-            intoDestinationFolder: destinationParent,
-            modelContext: targetContainer.mainContext
-        )
-
-        // No global Google identity row was created from the untrusted package.
-        let profiles = try targetContainer.mainContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>())
-        #expect(profiles.isEmpty)
-    }
+    // NOTE: The former "import drops attacker-supplied Google account profiles"
+    // test was deleted in the .astra-share migration. The slim WorkspaceShareDocument
+    // DTO has no property that can carry account profiles at all, so the scenario
+    // is no longer expressible: the guarantee is now structural (a malicious
+    // sender cannot even encode Google OAuth profiles into the wire format),
+    // and it is covered by WorkspaceShareDocumentTests.
 
     // MARK: - Plan classification
 
@@ -705,47 +657,6 @@ struct WorkspacePackageImportTests {
             to: packageURL
         )
         return ExportedPackageFixture(packageURL: packageURL, sourceWorkspaceID: workspace.id)
-    }
-
-    /// Rewrites `workspace-config.json` from `config`, updates the manifest's
-    /// `sourceConfigDigest`, and regenerates `checksums.json` so a hand-modified
-    /// package validates again — the moral equivalent of a malicious sender
-    /// building the package from doctored inputs. Mirrors the exporter's own
-    /// sealing (config first, then manifest, then checksums over everything but
-    /// `checksums.json`, which the exporter writes last).
-    private static func reseal(packageURL: URL, config: WorkspaceConfigManager.WorkspaceConfig) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-
-        let configURL = packageURL.appendingPathComponent("workspace-config.json")
-        try encoder.encode(config).write(to: configURL, options: [.atomic])
-        let configDigest = try PortablePackageSafeFileReader.digest(
-            rootURL: packageURL,
-            relativePath: "workspace-config.json"
-        )
-
-        let manifestURL = packageURL.appendingPathComponent("manifest.json")
-        let manifestDecoder = JSONDecoder()
-        manifestDecoder.dateDecodingStrategy = .iso8601
-        var manifest = try manifestDecoder.decode(
-            WorkspacePackageManifest.self,
-            from: try Data(contentsOf: manifestURL)
-        )
-        manifest.sourceConfigDigest = configDigest
-        try encoder.encode(manifest).write(to: manifestURL, options: [.atomic])
-
-        let checksumsURL = packageURL.appendingPathComponent("checksums.json")
-        try? FileManager.default.removeItem(at: checksumsURL)
-        let checksums = try PortablePackageSafeFileReader
-            .portableFilePaths(in: packageURL, intent: .explicitUserSelection)
-            .map { path in
-                WorkspacePackageChecksum(
-                    path: path,
-                    sha256: try PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: path)
-                )
-            }
-        try encoder.encode(checksums).write(to: checksumsURL, options: [.atomic])
     }
 
     @MainActor

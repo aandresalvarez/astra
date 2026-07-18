@@ -54,79 +54,24 @@ struct WorkspacePackageExporter {
         guard !fileManager.fileExists(atPath: packageURL.path) else {
             throw WorkspacePackageExportError.destinationAlreadyExists(packageURL.path)
         }
-        guard var config = WorkspaceConfigManager.export(workspace: workspace, modelContext: modelContext) else {
+        guard let config = WorkspaceConfigManager.export(workspace: workspace, modelContext: modelContext) else {
             throw WorkspacePackageExportError.workspaceConfigUnavailable
         }
-        // Configuration-only profile: history and app-mirror rows live only
-        // in the embedded .astra-app bundles below, never duplicated here —
-        // two representations of the same app that could silently disagree
-        // is worse than one.
-        config.tasks = nil
-        config.workspaceApps = nil
-        config.workspaceAppRuns = nil
-        config.workspaceAppRunEvents = nil
-        config.workspaceAppDependencyBindings = nil
-        config.workspaceAppAutomationStates = nil
-
-        // Domain-3 machine-local state must never leave the sender's machine.
-        // `additionalPaths`/`activeWorkingPath` are dropped on the import side;
-        // these two are dropped here at the source because nothing downstream
-        // sanitizes them and the structural content scan does not inspect them:
-        //   - `activeExecutionEnvironmentJSON` embeds source/Dockerfile/mount
-        //     host paths and credential-projection host paths.
-        //   - each SSH connection's `keyPath` is an absolute private-key path
-        //     that only resolves on the sender's machine.
-        // Capture which SSH connections carried a local key BEFORE blanking, so
-        // the manifest's readiness checklist can still tell the recipient which
-        // connections need a key re-pointed locally.
+        // The portable wire format is the allowlist `WorkspaceShareDocument`, not
+        // the local-recovery `WorkspaceConfig`. Projecting through it IS the
+        // redaction boundary: machine-local/sensitive and local-authority fields
+        // have no property to receive them, so there is no per-field denylist to
+        // maintain and a new sensitive field added to `WorkspaceConfig` cannot
+        // leak here. History/app-mirror arrays, host paths, exec-environment,
+        // SSH key paths, schedule run history + routine paths, `isGlobal` flags,
+        // enabled-global sets, secret env values, and stable resource UUIDs are
+        // all simply absent from the DTO. `config` is retained, unmutated, only
+        // to derive the manifest's readiness inventory below.
         let sshLabelsRequiringLocalKeys = config.sshConnections
             .filter { !$0.keyPath.isEmpty }
             .map(\.displayLabel)
             .sorted()
-        config.activeExecutionEnvironmentJSON = nil
-        config.sshConnections = config.sshConnections.map { connection in
-            var sanitized = connection
-            sanitized.keyPath = ""
-            return sanitized
-        }
-
-        // Schedules travel (import quarantines them disabled), but the
-        // config-only profile promises no task/run history and no sender-machine
-        // paths — and `WorkspaceConfigManager.scheduleConfig` serializes both.
-        // Sanitize each so a re-enabled routine on the recipient carries only its
-        // definition, not the sender's outputs or absolute paths:
-        //   - `runResultsJSON` / `lastFiredAt` / `fireCount` / `conversationContext`
-        //     are prior-run history (potentially sensitive task results).
-        //   - `routinePaths` are absolute sender-machine paths TaskScheduler would
-        //     otherwise append as task inputs; the recipient re-collects them as
-        //     local setup.
-        //   - `sourceTaskID` references a task that does not travel with this
-        //     profile, so it would dangle.
-        config.schedules = config.schedules?.map { schedule in
-            var sanitized = schedule
-            sanitized.routinePaths = nil
-            // The paths are also embedded in the templateVariables blob — clear
-            // them there too, or the recipient's `routinePaths` getter reads them
-            // straight back out of the restored metadata.
-            sanitized.templateVariablesJSON = TaskSchedule
-                .templateVariablesJSONWithoutRoutinePaths(sanitized.templateVariablesJSON)
-            sanitized.runResultsJSON = nil
-            sanitized.conversationContext = nil
-            sanitized.sourceTaskID = nil
-            sanitized.lastFiredAt = nil
-            sanitized.fireCount = 0
-            return sanitized
-        }
-
-        // The sender's own filesystem locations must not travel. The importer
-        // overrides `primaryPath` with the recipient's chosen destination and
-        // ignores the rest — but leaving them in `workspace-config.json` leaks
-        // the sender's absolute paths to anyone who reads the share (the
-        // structural content scan does not inspect these fields). Clear them at
-        // the source; the recipient establishes their own paths after import.
-        config.primaryPath = ""
-        config.additionalPaths = []
-        config.activeWorkingPath = nil
+        let shareDocument = WorkspaceShareProjection.document(from: config)
 
         let stagingURL = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".astra-share-staging-\(UUID().uuidString.lowercased())", isDirectory: true)
@@ -138,10 +83,10 @@ struct WorkspacePackageExporter {
         }
         try fileManager.createDirectory(at: stagingURL, withIntermediateDirectories: true)
 
-        try writeJSON(config, to: stagingURL.appendingPathComponent("workspace-config.json"))
-        let sourceConfigDigest = try PortablePackageSafeFileReader.digest(
+        try writeJSON(shareDocument, to: stagingURL.appendingPathComponent("workspace-share.json"))
+        let sourceShareDigest = try PortablePackageSafeFileReader.digest(
             rootURL: stagingURL,
-            relativePath: "workspace-config.json"
+            relativePath: "workspace-share.json"
         )
 
         let appEntries = try exportAppEntries(
@@ -159,7 +104,7 @@ struct WorkspacePackageExporter {
             packageVersion: packageVersion,
             minimumASTRAVersion: minimumASTRAVersion,
             exportProfile: .configurationOnly,
-            sourceConfigDigest: sourceConfigDigest,
+            sourceShareDigest: sourceShareDigest,
             createdAt: createdAt,
             author: author,
             appEntries: appEntries,
@@ -176,7 +121,7 @@ struct WorkspacePackageExporter {
         // after package.json/manifest.json are already on disk).
         try writeChecksums(in: stagingURL)
 
-        try selfVerify(stagingURL: stagingURL, expectedConfig: config)
+        try selfVerify(stagingURL: stagingURL, expectedDocument: shareDocument)
 
         try fileManager.moveItem(at: stagingURL, to: packageURL)
         published = true
@@ -310,35 +255,21 @@ struct WorkspacePackageExporter {
     /// PR #321 postmortem is exactly the failure mode this closes: a reader
     /// that silently stopped matching its writer, caught only by a fixture
     /// test trusting the old shape on faith.)
-    private func selfVerify(stagingURL: URL, expectedConfig: WorkspaceConfigManager.WorkspaceConfig) throws {
+    private func selfVerify(stagingURL: URL, expectedDocument: WorkspaceShareDocument) throws {
         let report = packageService.validatePackage(at: stagingURL)
-        guard report.canInstall, let decodedConfig = report.workspaceConfig else {
+        guard report.canInstall, let decoded = report.shareDocument else {
             throw WorkspacePackageExportError.selfVerificationFailed(report.blockers)
         }
-
-        var mismatches: [PortablePackageValidationIssue] = []
-        func expect(_ condition: Bool, _ field: String) {
-            guard !condition else { return }
-            mismatches.append(PortablePackageValidationIssue(
-                severity: .blocker,
-                path: "/workspace-config.json/\(field)",
-                message: "Round-trip mismatch: decoded package does not match the in-memory export."
-            ))
-        }
-        expect(decodedConfig.name == expectedConfig.name, "name")
-        expect(decodedConfig.instructions == expectedConfig.instructions, "instructions")
-        expect(
-            Set(decodedConfig.enabledCapabilityIDs ?? []) == Set(expectedConfig.enabledCapabilityIDs ?? []),
-            "enabledCapabilityIDs"
-        )
-        expect(decodedConfig.skills.count == expectedConfig.skills.count, "skills")
-        expect((decodedConfig.connectors ?? []).count == (expectedConfig.connectors ?? []).count, "connectors")
-        expect((decodedConfig.localTools ?? []).count == (expectedConfig.localTools ?? []).count, "localTools")
-        expect(decodedConfig.tasks == nil, "tasks")
-        expect(decodedConfig.workspaceApps == nil, "workspaceApps")
-
-        guard mismatches.isEmpty else {
-            throw WorkspacePackageExportError.selfVerificationFailed(mismatches)
+        // The whole DTO is Equatable, so the round-trip check is a single exact
+        // comparison — no field-by-field list to keep in sync with the format.
+        guard decoded == expectedDocument else {
+            throw WorkspacePackageExportError.selfVerificationFailed([
+                PortablePackageValidationIssue(
+                    severity: .blocker,
+                    path: "/workspace-share.json",
+                    message: "Round-trip mismatch: decoded package does not match the in-memory export."
+                )
+            ])
         }
     }
 

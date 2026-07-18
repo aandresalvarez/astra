@@ -981,7 +981,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift",
             "Astra/Services/WorkspacePackage/WorkspacePackageService.swift",
             "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
-            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift",
+            "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift"
         ]
         // Raw FileManager-prefixed reads are forbidden; `broker.enumerator(`
         // (routed through HostFileAccessBroker) and the O_NOFOLLOW reads in

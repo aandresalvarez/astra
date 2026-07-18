@@ -3,13 +3,9 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-// Not Equatable: `WorkspaceConfigManager.WorkspaceConfig` itself isn't (its
-// v11 schema and ~15 nested config types were never made Equatable, and
-// retrofitting that is out of scope here) — callers compare individual
-// fields (`canInstall`, `blockers`, `manifest`, `workspaceConfig`) instead.
 struct WorkspacePackageValidationReport: Sendable {
     var manifest: WorkspacePackageManifest?
-    var workspaceConfig: WorkspaceConfigManager.WorkspaceConfig?
+    var shareDocument: WorkspaceShareDocument?
     var appReports: [String: WorkspaceAppPackageValidationReport]
     var issues: [PortablePackageValidationIssue]
 
@@ -18,7 +14,7 @@ struct WorkspacePackageValidationReport: Sendable {
     }
 
     var canInstall: Bool {
-        blockers.isEmpty && manifest != nil && workspaceConfig != nil
+        blockers.isEmpty && manifest != nil && shareDocument != nil
     }
 }
 
@@ -39,11 +35,11 @@ struct WorkspacePackageService {
             issuePath: "/manifest.json",
             issues: &issues
         )
-        let workspaceConfig: WorkspaceConfigManager.WorkspaceConfig? = decode(
-            WorkspaceConfigManager.WorkspaceConfig.self,
+        let shareDocument: WorkspaceShareDocument? = decode(
+            WorkspaceShareDocument.self,
             rootURL: packageURL,
-            relativePath: "workspace-config.json",
-            issuePath: "/workspace-config.json",
+            relativePath: "workspace-share.json",
+            issuePath: "/workspace-share.json",
             issues: &issues
         )
         let declaredChecksums: [WorkspacePackageChecksum]? = decode(
@@ -55,21 +51,21 @@ struct WorkspacePackageService {
         )
 
         if let manifest {
-            let actualConfigDigest = (try? PortablePackageSafeFileReader.digest(
+            let actualShareDigest = (try? PortablePackageSafeFileReader.digest(
                 rootURL: packageURL,
-                relativePath: "workspace-config.json"
+                relativePath: "workspace-share.json"
             )) ?? ""
-            if workspaceConfig != nil, manifest.sourceConfigDigest != actualConfigDigest {
-                issues.append(blocker("/manifest.json/sourceConfigDigest", "Manifest digest does not match workspace-config.json."))
+            if shareDocument != nil, manifest.sourceShareDigest != actualShareDigest {
+                issues.append(blocker("/manifest.json/sourceShareDigest", "Manifest digest does not match workspace-share.json."))
             }
             // The review sheet and the destination directory name are derived
             // from `manifest.workspaceName`, but the workspace is actually
-            // created with `workspace-config.json`'s name. Bind them so the
+            // created with `workspace-share.json`'s name. Bind them so the
             // imported workspace's identity can't differ from the one reviewed.
-            if let configName = workspaceConfig?.name, configName != manifest.workspaceName {
+            if let shareName = shareDocument?.name, shareName != manifest.workspaceName {
                 issues.append(blocker(
                     "/manifest.json/workspaceName",
-                    "Manifest workspace name (\(manifest.workspaceName)) does not match workspace-config.json name (\(configName))."
+                    "Manifest workspace name (\(manifest.workspaceName)) does not match workspace-share.json name (\(shareName))."
                 ))
             }
             validateVersionGate(
@@ -92,8 +88,8 @@ struct WorkspacePackageService {
             packageURL: packageURL,
             issues: &issues
         )
-        if let workspaceConfig {
-            validateConfigFreeTextContent(workspaceConfig, issues: &issues)
+        if let shareDocument {
+            validateShareFreeTextContent(shareDocument, issues: &issues)
         }
 
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
@@ -106,7 +102,7 @@ struct WorkspacePackageService {
 
         return WorkspacePackageValidationReport(
             manifest: manifest,
-            workspaceConfig: workspaceConfig,
+            shareDocument: shareDocument,
             appReports: appReports,
             issues: issues
         )
@@ -326,7 +322,7 @@ struct WorkspacePackageService {
         issues: inout [PortablePackageValidationIssue]
     ) {
         let structurallyValidatedPaths = Set(
-            ["workspace-config.json", "manifest.json"]
+            ["workspace-share.json", "manifest.json"]
                 + (manifest?.capabilityEntries.map(\.relativePath) ?? [])
         )
         let appBundlePrefixes = (manifest?.appEntries.map { $0.relativeBundlePath + "/" }) ?? []
@@ -354,8 +350,8 @@ struct WorkspacePackageService {
     /// carry credential-adjacent *names* by design. Names of skills/
     /// connectors/tools are also exempt — "GitHub Token Helper" is a
     /// legitimate name, not a leak.
-    private func validateConfigFreeTextContent(
-        _ config: WorkspaceConfigManager.WorkspaceConfig,
+    private func validateShareFreeTextContent(
+        _ document: WorkspaceShareDocument,
         issues: inout [PortablePackageValidationIssue]
     ) {
         var reported = Set<String>()
@@ -363,36 +359,30 @@ struct WorkspacePackageService {
             guard let text, !text.isEmpty else { return }
             appendForbiddenContentIssues(
                 in: text,
-                path: "/workspace-config.json/\(field)",
+                path: "/workspace-share.json/\(field)",
                 reported: &reported,
                 issues: &issues
             )
         }
 
-        scan(config.instructions, "instructions")
-        for (index, memory) in (config.memories ?? []).enumerated() {
-            scan(memory, "memories[\(index)]")
-        }
-        for (index, skill) in config.skills.enumerated() {
+        scan(document.instructions, "instructions")
+        for (index, skill) in document.skills.enumerated() {
             scan(skill.behaviorInstructions, "skills[\(index)].behaviorInstructions")
             scan(skill.description, "skills[\(index)].description")
             for (valueIndex, value) in skill.environmentValues.enumerated() {
                 scan(value, "skills[\(index)].environmentValues[\(valueIndex)]")
             }
         }
-        for (index, connector) in (config.connectors ?? []).enumerated() {
+        for (index, connector) in document.connectors.enumerated() {
             scan(connector.description, "connectors[\(index)].description")
             scan(connector.notes, "connectors[\(index)].notes")
-            for (valueIndex, value) in connector.configValues.enumerated() {
-                scan(value, "connectors[\(index)].configValues[\(valueIndex)]")
-            }
         }
-        for (index, tool) in (config.localTools ?? []).enumerated() {
+        for (index, tool) in document.localTools.enumerated() {
             scan(tool.description, "localTools[\(index)].description")
             scan(tool.command, "localTools[\(index)].command")
             scan(tool.arguments, "localTools[\(index)].arguments")
         }
-        for (index, template) in (config.templates ?? []).enumerated() {
+        for (index, template) in document.templates.enumerated() {
             scan(template.description, "templates[\(index)].description")
             scan(template.beforeGoal, "templates[\(index)].beforeGoal")
             scan(template.mainGoal, "templates[\(index)].mainGoal")
@@ -400,11 +390,10 @@ struct WorkspacePackageService {
             scan(template.variablesJSON, "templates[\(index)].variablesJSON")
             scan(template.hooksJSON, "templates[\(index)].hooksJSON")
         }
-        for (index, schedule) in (config.schedules ?? []).enumerated() {
+        for (index, schedule) in document.schedules.enumerated() {
             scan(schedule.goal, "schedules[\(index)].goal")
             scan(schedule.routineDescription, "schedules[\(index)].routineDescription")
             scan(schedule.routineInstructions, "schedules[\(index)].routineInstructions")
-            scan(schedule.conversationContext, "schedules[\(index)].conversationContext")
             scan(schedule.templateVariablesJSON, "schedules[\(index)].templateVariablesJSON")
         }
     }

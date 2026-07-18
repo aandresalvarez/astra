@@ -63,7 +63,7 @@ struct WorkspacePackageImportPlanner {
     }
 
     func plan(from report: WorkspacePackageValidationReport) -> WorkspacePackageImportPlan? {
-        guard let manifest = report.manifest, let config = report.workspaceConfig else { return nil }
+        guard let manifest = report.manifest, let document = report.shareDocument else { return nil }
         let installed = installedCapabilityIDs()
 
         let apps = manifest.appEntries.map { entry -> WorkspacePackageImportPlanItem in
@@ -106,7 +106,7 @@ struct WorkspacePackageImportPlanner {
                 status: already ? .alreadyInstalled : .needsApproval
             ))
         }
-        for capabilityID in (config.enabledCapabilityIDs ?? []) where !embeddedIDs.contains(capabilityID) {
+        for capabilityID in document.capabilityIDs where !embeddedIDs.contains(capabilityID) {
             // Referenced but not embedded: built-in or remote-approved on the
             // exporting machine. Ready if this machine has it, missing if not.
             let available = installed.contains(capabilityID)
@@ -120,17 +120,17 @@ struct WorkspacePackageImportPlanner {
             ))
         }
 
-        let connectors = (config.connectors ?? []).map { connector -> WorkspacePackageImportPlanItem in
+        let connectors = document.connectors.map { connector -> WorkspacePackageImportPlanItem in
             if connector.credentialKeys.isEmpty {
                 return WorkspacePackageImportPlanItem(
-                    id: "connector:\(connector.id ?? connector.name)",
+                    id: "connector:\(connector.name)",
                     name: connector.name,
                     detail: "No credentials required.",
                     status: .ready
                 )
             }
             return WorkspacePackageImportPlanItem(
-                id: "connector:\(connector.id ?? connector.name)",
+                id: "connector:\(connector.name)",
                 name: connector.name,
                 detail: "Credential values never travel in a package. Provide: \(connector.credentialKeys.joined(separator: ", "))",
                 status: .needsAuthentication
@@ -155,11 +155,6 @@ struct WorkspacePackageImportPlanner {
             )
         }
 
-        var droppedPaths = config.additionalPaths
-        if let activeWorkingPath = config.activeWorkingPath, !activeWorkingPath.isEmpty {
-            droppedPaths.append(activeWorkingPath)
-        }
-
         return WorkspacePackageImportPlan(
             workspaceName: manifest.workspaceName,
             packageID: manifest.packageID,
@@ -170,9 +165,10 @@ struct WorkspacePackageImportPlanner {
             connectors: connectors,
             accounts: accounts,
             sshConnections: sshConnections,
-            quarantinedScheduleCount: WorkspaceConfigManager.ScheduleImportTrustPolicy
-                .quarantineEnabledSchedules.quarantinedScheduleCount(in: config.schedules),
-            droppedMachinePaths: droppedPaths
+            // Every imported routine is quarantined until re-enabled.
+            quarantinedScheduleCount: document.schedules.count,
+            // Machine-local paths never travel in the share format.
+            droppedMachinePaths: []
         )
     }
 }

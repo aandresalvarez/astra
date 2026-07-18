@@ -46,8 +46,8 @@ struct WorkspacePackageManifest: Codable, Sendable, Equatable {
     /// compared against the running app version).
     var minimumASTRAVersion: String
     var exportProfile: WorkspacePackageExportProfile
-    /// sha256 of `workspace-config.json`, cross-checked at validation time.
-    var sourceConfigDigest: String
+    /// sha256 of `workspace-share.json`, cross-checked at validation time.
+    var sourceShareDigest: String
     var createdAt: Date
     var author: String?
     var appEntries: [WorkspacePackageAppEntry]

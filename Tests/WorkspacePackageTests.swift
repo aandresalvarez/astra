@@ -31,7 +31,7 @@ struct WorkspacePackageTests {
 
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.canInstall)
-        #expect(report.workspaceConfig?.instructions == "Prefer concise summaries.")
+        #expect(report.shareDocument?.instructions == "Prefer concise summaries.")
     }
 
     @MainActor
@@ -52,8 +52,15 @@ struct WorkspacePackageTests {
 
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.canInstall)
-        #expect(report.workspaceConfig?.tasks == nil)
-        #expect(report.workspaceConfig?.workspaceApps == nil)
+        // The slim share DTO has no slot for task history or workspace-app run
+        // data at all, so the guarantee is now structural: those keys never
+        // appear in the on-disk share document.
+        let shareText = String(
+            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-share.json")),
+            as: UTF8.self
+        )
+        #expect(!shareText.contains("\"tasks\""))
+        #expect(!shareText.contains("\"workspaceApps\""))
     }
 
     // MARK: - Capability governance
@@ -139,7 +146,7 @@ struct WorkspacePackageTests {
             to: destination
         )
 
-        let configURL = destination.appendingPathComponent("workspace-config.json")
+        let configURL = destination.appendingPathComponent("workspace-share.json")
         var data = try Data(contentsOf: configURL)
         data.append(contentsOf: "\n// tampered".utf8)
         try data.write(to: configURL)
@@ -284,7 +291,13 @@ struct WorkspacePackageTests {
 
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.canInstall)
-        #expect(report.workspaceConfig?.activeExecutionEnvironmentJSON == nil)
+        // The share DTO cannot express an execution environment at all, so the
+        // sender-only sentinel path never reaches the on-disk share document.
+        let shareText = String(
+            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-share.json")),
+            as: UTF8.self
+        )
+        #expect(!shareText.contains("/opt/only-on-sender"))
     }
 
     @MainActor
@@ -308,9 +321,14 @@ struct WorkspacePackageTests {
         // The sender's absolute private-key path never leaves the machine...
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.canInstall)
-        let ssh = try #require(report.workspaceConfig?.sshConnections)
-        #expect(ssh.count == 1)
-        #expect(ssh.allSatisfy { $0.keyPath.isEmpty })
+        #expect(report.shareDocument?.sshConnections.count == 1)
+        // The share DTO has no key-path slot, so the sender's absolute key path
+        // never reaches the on-disk share document.
+        let shareText = String(
+            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-share.json")),
+            as: UTF8.self
+        )
+        #expect(!shareText.contains("/Users/alice/.ssh/prod_key"))
         // ...but the connection is still flagged so the recipient knows to
         // re-point a key locally.
         #expect(result.manifest.sshConnectionsRequiringLocalKeys == ["prod"])
@@ -341,24 +359,20 @@ struct WorkspacePackageTests {
 
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.canInstall)
-        let exported = try #require(report.workspaceConfig?.schedules?.first)
-        // History and sender-machine paths do not travel with the config-only profile...
-        #expect((exported.routinePaths ?? []).isEmpty)
-        #expect(exported.runResultsJSON == nil)
-        #expect(exported.conversationContext == nil)
-        #expect(exported.sourceTaskID == nil)
-        #expect(exported.lastFiredAt == nil)
-        #expect(exported.fireCount == 0)
-        // ...but the routine's definition still does.
-        #expect(exported.name == "Nightly")
-        #expect(exported.goal == "Summarize new issues")
-        // Belt-and-suspenders: the leaked strings are absent from the raw bytes.
-        let configText = String(
-            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-config.json")),
+        // The ShareSchedule DTO carries only the recurring definition; run
+        // history, timing state, and sender-machine paths have no slot to travel
+        // in — the guarantee is structural, so assert on the raw bytes.
+        let shareText = String(
+            decoding: try Data(contentsOf: destination.appendingPathComponent("workspace-share.json")),
             as: UTF8.self
         )
-        #expect(!configText.contains("only-on-sender"))
-        #expect(!configText.contains("prior sender-machine output"))
+        #expect(!shareText.contains("only-on-sender"))
+        #expect(!shareText.contains("prior sender-machine output"))
+        #expect(!shareText.contains("prior conversation snapshot"))
+        // ...but the routine's definition still does.
+        let exported = try #require(report.shareDocument?.schedules.first)
+        #expect(exported.name == "Nightly")
+        #expect(exported.goal == "Summarize new issues")
     }
 
     @MainActor

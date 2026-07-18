@@ -9,6 +9,7 @@ enum WorkspacePackageImportError: LocalizedError {
     case destinationAlreadyExists(String)
     case packageChangedSinceReview
     case unsafePackageSymlink(String)
+    case packageTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum WorkspacePackageImportError: LocalizedError {
             return "This package changed after you reviewed it. Re-open it to review the new contents before importing."
         case .unsafePackageSymlink(let component):
             return "The package contains a symbolic link (\(component)) and cannot be safely imported."
+        case .packageTooLarge:
+            return "The package is too large to import safely."
         }
     }
 }
@@ -94,16 +97,20 @@ struct WorkspacePackageImportCoordinator {
         try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: stagingRoot) }
         let stagedPackageURL = stagingRoot.appendingPathComponent("package.astra-share", isDirectory: true)
-        try fileManager.copyItem(at: packageURL, to: stagedPackageURL)
-
-        // `copyItem` preserves symlinks rather than dereferencing them, so if the
-        // selected package root — or any entry inside it — is a symlink, the
-        // "staged copy" is still an alias to a location the source machine (or an
-        // attacker) can rewrite after the digest check. That defeats the whole
-        // point of staging. Refuse any symlink in the staged tree so what we
-        // validate and install is a genuinely private, self-contained snapshot.
-        if let symlink = PortablePackageSafeFileReader.firstSymlink(in: stagedPackageURL) {
-            throw WorkspacePackageImportError.unsafePackageSymlink(symlink)
+        // Build the private snapshot with symlink rejection and file-count /
+        // byte budgets enforced during the walk — not a bare recursive copyItem,
+        // which a package swapped for a huge or link-laden tree could exploit to
+        // burn temp disk and block before the fingerprint check runs.
+        do {
+            try PortablePackageSafeFileReader.stageBoundedCopy(
+                from: packageURL,
+                to: stagedPackageURL,
+                fileManager: fileManager
+            )
+        } catch let PortablePackageStagingError.containsSymlink(component) {
+            throw WorkspacePackageImportError.unsafePackageSymlink(component)
+        } catch PortablePackageStagingError.tooManyFiles, PortablePackageStagingError.tooLarge {
+            throw WorkspacePackageImportError.packageTooLarge
         }
 
         // Bind the commit to the reviewed bytes: a package swapped for a
@@ -118,7 +125,7 @@ struct WorkspacePackageImportCoordinator {
         // Re-validate the STAGED copy (callers are not trusted to have validated,
         // and this is the exact byte set that will be installed).
         let report = packageService.validatePackage(at: stagedPackageURL)
-        guard report.canInstall, let manifest = report.manifest, var config = report.workspaceConfig else {
+        guard report.canInstall, let manifest = report.manifest, let document = report.shareDocument else {
             throw WorkspacePackageImportError.validationFailed(report.blockers)
         }
 
@@ -138,54 +145,13 @@ struct WorkspacePackageImportCoordinator {
             throw WorkspacePackageImportError.destinationAlreadyExists(workspaceRootURL.path)
         }
 
-        // The explicit destination is the workspace root — never the folder
-        // the package happens to sit in (the legacy JSON path's Downloads
-        // anchoring bug this format exists to avoid). Machine-local paths
-        // from the exporting machine are dropped, surfaced in the outcome.
-        var droppedPaths = config.additionalPaths
-        if let activeWorkingPath = config.activeWorkingPath, !activeWorkingPath.isEmpty {
-            droppedPaths.append(activeWorkingPath)
-        }
-        config.primaryPath = workspaceRootURL.path
-        config.additionalPaths = []
-        config.activeWorkingPath = nil
-        // A portable share behaves like "duplicate", never "replace": two
-        // recipients of the same package must not collide on workspace
-        // identity, so the source ID is display metadata only.
-        config.id = nil
-
-        // An untrusted share must not mutate the recipient's GLOBAL catalog.
-        // Skill/connector/tool configs can carry `isGlobal: true`, which the
-        // generic importer honors by creating a workspace-less global resource
-        // and adding it to the enabled-global set — so importing one shared
-        // workspace would install globally-reusable definitions across the
-        // recipient's whole install. Force every imported resource to be scoped
-        // to the new workspace and drop the enable-global references, so a share
-        // only ever populates the workspace it creates.
-        config.skills = config.skills.map { var resource = $0; resource.isGlobal = false; return resource }
-        config.connectors = config.connectors?.map { var resource = $0; resource.isGlobal = false; return resource }
-        config.localTools = config.localTools?.map { var resource = $0; resource.isGlobal = false; return resource }
-        config.enabledGlobalSkillIDs = []
-        config.enabledGlobalConnectorIDs = []
-        config.enabledGlobalToolIDs = []
-        // Google account profiles are GLOBAL identity rows (no workspace link),
-        // and `importWorkspaceResult` inserts them unconditionally. Left in place,
-        // a hand-crafted share would create attacker-controlled account rows in
-        // the recipient's global catalog — the exact mutation the block above
-        // guards against, and one the review sheet never surfaces (the manifest's
-        // `googleAccountsRequiringReauth` is the descriptive channel, and a
-        // legitimate export never carries profiles in the first place). Drop them.
-        config.googleOAuthAccountProfiles = nil
-
-        // `config.enabledCapabilityIDs` carries the sender's enabled set
-        // verbatim, and the runtime resource matcher exposes enabled capabilities
-        // to task runs regardless of governance. The set is reconciled AFTER the
-        // apps are imported (see below), not here: `WorkspaceAppService.createApp`
-        // derives an app's dependency bindings from the workspace's CURRENTLY
-        // enabled capabilities, so any capability an app depends on must still be
-        // enabled when the apps are created or the binding persists unmapped and
-        // never recovers.
-
+        // The `WorkspaceShareDocument` carries NO machine-local paths, `isGlobal`
+        // flags, enabled-global refs, Google account rows, or stable resource
+        // UUIDs — the format structurally cannot express them — so none of the
+        // old per-field neutralization is needed. `WorkspaceShareImporter` builds
+        // a fresh, fully workspace-scoped graph (new UUIDs, never the global-reuse
+        // or built-in-name paths), and the destination folder is always the
+        // workspace root (never wherever the package sat).
         try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: true)
         var installedCapabilityIDs: [String] = []
         var committed = false
@@ -199,12 +165,15 @@ struct WorkspacePackageImportCoordinator {
             }
         }
 
-        let configResult = WorkspaceConfigManager.importWorkspaceResult(
-            from: config,
-            modelContext: importContext,
-            scheduleTrustPolicy: .quarantineEnabledSchedules
+        let importResult = WorkspaceShareImporter.makeWorkspace(
+            from: document,
+            primaryPath: workspaceRootURL.path,
+            modelContext: importContext
         )
-        let workspace = configResult.workspace
+        let workspace = importResult.workspace
+        // Enabled-capability intent stays populated through app import so
+        // dependency bindings map against the full set; it is reconciled to
+        // approved-only after the apps are created (see below).
 
         // Install embedded capabilities BEFORE importing the apps. App
         // dependency bindings are resolved by `WorkspaceAppService.createApp`
@@ -224,14 +193,18 @@ struct WorkspacePackageImportCoordinator {
         // Track claimed storage names — seeded from what's already installed and
         // extended as this loop installs — and skip any embedded capability whose
         // storage name is already taken by a DIFFERENT package rather than
-        // destroy the recipient's data.
-        var claimedStorageNames = Set(capabilityLibrary.installedPackages().map { CapabilityLibrary.safeFileName(for: $0.id) })
+        // destroy the recipient's data. Compared case-INSENSITIVELY: the default
+        // macOS filesystem is case-insensitive, so `Foo`/`foo` share one path
+        // (and `CapabilityPackageValidator.validateIdentity` lowercases for the
+        // same reason).
+        func storageKey(_ id: String) -> String { CapabilityLibrary.safeFileName(for: id).lowercased() }
+        var claimedStorageNames = Set(capabilityLibrary.installedPackages().map { storageKey($0.id) })
         for entry in manifest.capabilityEntries {
             if capabilityLibrary.installedPackage(id: entry.packageID) != nil {
                 capabilitiesAlreadyInstalled.append(entry.packageID)
                 continue
             }
-            if claimedStorageNames.contains(CapabilityLibrary.safeFileName(for: entry.packageID)) {
+            if claimedStorageNames.contains(storageKey(entry.packageID)) {
                 capabilitiesSkippedForConflict.append(entry.packageID)
                 continue
             }
@@ -249,7 +222,7 @@ struct WorkspacePackageImportCoordinator {
             try capabilityLibrary.install(capability)
             installedCapabilityIDs.append(entry.packageID)
             capabilitiesInstalledAsDraft.append(entry.packageID)
-            claimedStorageNames.insert(CapabilityLibrary.safeFileName(for: entry.packageID))
+            claimedStorageNames.insert(storageKey(entry.packageID))
         }
 
         var appsImported: [String] = []
@@ -318,16 +291,18 @@ struct WorkspacePackageImportCoordinator {
             capabilitiesInstalledAsDraft: capabilitiesInstalledAsDraft,
             capabilitiesAlreadyInstalled: capabilitiesAlreadyInstalled,
             capabilitiesSkippedForConflict: capabilitiesSkippedForConflict,
-            skillCount: configResult.skillCount,
-            connectorCount: configResult.connectorCount,
-            localToolCount: configResult.localToolCount,
-            quarantinedScheduleCount: configResult.quarantinedScheduleCount,
-            connectorsNeedingCredentials: (config.connectors ?? [])
+            skillCount: importResult.skillCount,
+            connectorCount: importResult.connectorCount,
+            localToolCount: importResult.localToolCount,
+            quarantinedScheduleCount: importResult.scheduleCount,
+            connectorsNeedingCredentials: document.connectors
                 .filter { !$0.credentialKeys.isEmpty }
                 .map(\.name),
             googleAccountsRequiringReauth: manifest.googleAccountsRequiringReauth,
             sshConnectionsRequiringLocalKeys: manifest.sshConnectionsRequiringLocalKeys,
-            droppedMachinePaths: droppedPaths
+            // Machine-local paths never travel in the share format, so there is
+            // nothing dropped on import to report back.
+            droppedMachinePaths: []
         )
     }
 

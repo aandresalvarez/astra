@@ -9,6 +9,12 @@ enum PortablePackageFileError: Error, Equatable {
     case tooLarge(actual: Int, maximum: Int)
 }
 
+enum PortablePackageStagingError: Error, Equatable {
+    case containsSymlink(String)
+    case tooManyFiles(limit: Int)
+    case tooLarge(limit: Int)
+}
+
 /// Safe file access for reading an untrusted, portable package bundle.
 ///
 /// Opens each path one component at a time via `openat(..., O_NOFOLLOW)`, so a
@@ -67,6 +73,104 @@ enum PortablePackageSafeFileReader {
             }
         }
         return nil
+    }
+
+    /// Copies `sourceURL` into `destinationURL` as a private, self-contained
+    /// snapshot, refusing any symbolic link and enforcing a file-count and
+    /// aggregate-byte budget *as it walks* — never a bare `copyItem` of the
+    /// whole tree. A reviewed package sitting in a writable location could be
+    /// swapped for a huge or link-laden tree before confirmation; an unbounded
+    /// recursive copy would burn temp disk and block the main actor before the
+    /// fingerprint check could reject it, and per-file size limits alone don't
+    /// stop a package of many individually-permitted files. POSIX `lstat` walk
+    /// (matches `firstSymlink`), so links are detected without being followed.
+    static func stageBoundedCopy(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        maxFileCount: Int = 10_000,
+        maxTotalBytes: Int = 500 * 1024 * 1024,
+        fileManager: FileManager = .default
+    ) throws {
+        var rootStat = stat()
+        if lstat(sourceURL.path, &rootStat) == 0, (rootStat.st_mode & S_IFMT) == S_IFLNK {
+            throw PortablePackageStagingError.containsSymlink(sourceURL.lastPathComponent)
+        }
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        var remainingFiles = maxFileCount
+        var remainingBytes = maxTotalBytes
+        try copyBounded(
+            fromDirectory: sourceURL.path,
+            toDirectory: destinationURL.path,
+            relativePrefix: "",
+            maxFileCount: maxFileCount,
+            maxTotalBytes: maxTotalBytes,
+            remainingFiles: &remainingFiles,
+            remainingBytes: &remainingBytes,
+            fileManager: fileManager
+        )
+    }
+
+    private static func copyBounded(
+        fromDirectory sourcePath: String,
+        toDirectory destinationPath: String,
+        relativePrefix: String,
+        maxFileCount: Int,
+        maxTotalBytes: Int,
+        remainingFiles: inout Int,
+        remainingBytes: inout Int,
+        fileManager: FileManager
+    ) throws {
+        guard let dir = opendir(sourcePath) else { return }
+        defer { closedir(dir) }
+        while let entry = readdir(dir) {
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in
+                String(cString: Array(raw.bindMemory(to: CChar.self)))
+            }
+            if name == "." || name == ".." { continue }
+            let childSource = "\(sourcePath)/\(name)"
+            let childDestination = "\(destinationPath)/\(name)"
+            let childRelative = relativePrefix.isEmpty ? name : "\(relativePrefix)/\(name)"
+            var childStat = stat()
+            guard lstat(childSource, &childStat) == 0 else { continue }
+            switch childStat.st_mode & S_IFMT {
+            case S_IFLNK:
+                throw PortablePackageStagingError.containsSymlink(childRelative)
+            case S_IFDIR:
+                try fileManager.createDirectory(
+                    at: URL(fileURLWithPath: childDestination, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+                try copyBounded(
+                    fromDirectory: childSource,
+                    toDirectory: childDestination,
+                    relativePrefix: childRelative,
+                    maxFileCount: maxFileCount,
+                    maxTotalBytes: maxTotalBytes,
+                    remainingFiles: &remainingFiles,
+                    remainingBytes: &remainingBytes,
+                    fileManager: fileManager
+                )
+            case S_IFREG:
+                remainingFiles -= 1
+                guard remainingFiles >= 0 else {
+                    throw PortablePackageStagingError.tooManyFiles(limit: maxFileCount)
+                }
+                remainingBytes -= Int(childStat.st_size)
+                guard remainingBytes >= 0 else {
+                    throw PortablePackageStagingError.tooLarge(limit: maxTotalBytes)
+                }
+                // The entry is a confirmed regular file (lstat, not stat), so
+                // copyItem cannot be redirected through a link.
+                try fileManager.copyItem(
+                    at: URL(fileURLWithPath: childSource),
+                    to: URL(fileURLWithPath: childDestination)
+                )
+            default:
+                // Skip anything that is not a directory or a regular file
+                // (fifos, sockets, devices have no place in a package).
+                continue
+            }
+        }
     }
 
     static func openSafeDescriptor(rootURL: URL, relativePath: String) throws -> Int32 {
