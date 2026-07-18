@@ -263,6 +263,44 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(importedOperation.leaseExpiresAt == nil)
     }
 
+    @Test("an imported completed operation stays inert and is not reactivatable")
+    func importPreservesCompletedOperationAsInert() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        let operation = TaskExternalOperation(
+            taskID: fixture.task.id,
+            externalIdentity: "docker_workspace_job:import-completed",
+            originatingRunID: fixture.run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "job-completed",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        fixture.context.insert(operation)
+        let config = try #require(WorkspaceConfigManager.export(
+            workspace: fixture.workspace,
+            modelContext: fixture.context
+        ))
+
+        let importedContainer = try RegistrationFixture.makeContainer()
+        let importedContext = importedContainer.mainContext
+        let importedWorkspace = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContext
+        )
+        let importedTask = try #require(importedWorkspace.tasks.first)
+        let importedOperation = try #require(
+            try importedContext.fetch(FetchDescriptor<TaskExternalOperation>()).first
+        )
+
+        // A completed registration imports as the inert terminal state (never
+        // polled, contacted, or reactivatable) and does not force the task to
+        // wait — so reactivation cannot re-run an already-finished task.
+        #expect(importedOperation.monitoringState == .completed)
+        #expect(importedTask.status != .waitingExternal)
+    }
+
     @Test("adopting a trusted receipt before orphan recovery keeps the task waiting, not cancelled")
     func adoptionBeforeOrphanRecoveryPreservesRunningTask() throws {
         let fixture = try RegistrationFixture()

@@ -61,6 +61,15 @@ extension WorkspaceConfigManager {
                 taskID: task.id,
                 modelContext: modelContext
             )
+            // A registration that already reached `.completed` (its validation
+            // finished) must not import as a reactivatable quarantined row:
+            // reactivation reconstructs a quarantined `processCompleted` op as
+            // `.validating`, which would schedule a fresh wake and let admission
+            // move an already-completed task back to running. Import it as the
+            // inert terminal `.completed` state instead — it is never polled,
+            // contacted, or reactivatable, so the no-contact boundary still holds.
+            let wasCompleted =
+                config.monitoringState == TaskExternalOperationMonitoringState.completed.rawValue
             let operation = TaskExternalOperation(
                 taskID: task.id,
                 externalIdentity: identity,
@@ -70,7 +79,7 @@ extension WorkspaceConfigManager {
                 originatingContextRevision: config.originatingContextRevision,
                 executionState: executionState,
                 observationHealth: .quarantined,
-                monitoringState: .quarantined,
+                monitoringState: wasCompleted ? .completed : .quarantined,
                 nextCheckAt: nil,
                 generation: max(0, config.generation) + 1,
                 createdAt: config.createdAt

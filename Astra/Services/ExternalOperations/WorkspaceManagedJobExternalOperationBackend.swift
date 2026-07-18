@@ -196,6 +196,15 @@ struct WorkspaceManagedJobExternalOperationBackend:
         let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
         let record = manager.cancel(jobID: request.backendJobID)
         let state = Self.executionState(for: record.status)
+        if state.isTerminalObservation {
+            // A confirmed cancellation is terminal and never polled again. The
+            // originating provider's cleanup preserved this task/run executor
+            // container while the job was still nonterminal, so — mirroring the
+            // observed-terminal path above — release it now that it is idle.
+            // cleanupExecutorIfIdle fails closed (keeps the container if it may
+            // still own other trusted work).
+            _ = manager.cleanupExecutorIfIdle()
+        }
         return TaskExternalOperationObservation(
             executionState: state,
             health: record.status == .failed && record.startReceipt == nil ? .malformed : .healthy
