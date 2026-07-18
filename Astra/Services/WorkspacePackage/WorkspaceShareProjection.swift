@@ -19,6 +19,18 @@ import ASTRAPersistence
 ///   never the global-reuse or built-in-name paths — so a share can neither
 ///   collide with the recipient's catalog nor activate anything globally.
 enum WorkspaceShareProjection {
+    /// Returns `baseURL` with any `user[:password]@` userinfo removed. Leaves a
+    /// URL that can't be parsed unchanged (validation catches those separately).
+    static func baseURLWithoutCredentials(_ baseURL: String) -> String {
+        guard var components = URLComponents(string: baseURL),
+              components.user != nil || components.password != nil else {
+            return baseURL
+        }
+        components.user = nil
+        components.password = nil
+        return components.string ?? baseURL
+    }
+
     static func document(from config: WorkspaceConfigManager.WorkspaceConfig) -> WorkspaceShareDocument {
         let connectorNameByID = Dictionary(
             (config.connectors ?? []).compactMap { c in c.id.map { ($0, c.name) } },
@@ -65,7 +77,10 @@ enum WorkspaceShareProjection {
                 serviceType: c.serviceType,
                 icon: c.icon,
                 description: c.description,
-                baseURL: c.baseURL,
+                // A base URL like https://user:pass@host embeds a credential;
+                // strip the userinfo so it never travels (validation also blocks
+                // it as defense in depth for a hand-tampered package).
+                baseURL: Self.baseURLWithoutCredentials(c.baseURL),
                 authMethod: c.authMethod,
                 credentialKeys: c.credentialKeys,
                 notes: c.notes
@@ -98,7 +113,6 @@ enum WorkspaceShareProjection {
                 mainModel: t.mainModel,
                 afterModel: t.afterModel,
                 variablesJSON: t.variablesJSON,
-                hooksJSON: t.hooksJSON,
                 passContextToMain: t.passContextToMain,
                 passContextToAfter: t.passContextToAfter,
                 defaultSkillNames: names(fromIDs: t.defaultSkillIDs, fallback: nil, map: skillNameByID)
@@ -281,7 +295,8 @@ enum WorkspaceShareImporter {
             template.mainModel = share.mainModel
             template.afterModel = share.afterModel
             template.variablesJSON = share.variablesJSON
-            template.hooksJSON = share.hooksJSON
+            // Template hooks are deliberately not carried by the share format;
+            // the imported template keeps the default (no) hooks.
             template.passContextToMain = share.passContextToMain
             template.passContextToAfter = share.passContextToAfter
             template.defaultSkillIDs = share.defaultSkillNames.compactMap { skillsByName[$0]?.id.uuidString }

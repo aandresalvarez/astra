@@ -97,13 +97,27 @@ struct WorkspacePackageImportPlanner {
         let embeddedIDs = Set(manifest.capabilityEntries.map(\.packageID))
         for entry in manifest.capabilityEntries {
             let already = installed.contains(entry.packageID)
+            let requirements = report.capabilityRequirements[entry.packageID]
+            let status: WorkspacePackageImportItemStatus
+            let detail: String
+            if already {
+                status = .alreadyInstalled
+                detail = "A capability with this ID is already in your library; the embedded copy is skipped."
+            } else if let requirements, !requirements.accountRequirements.isEmpty {
+                status = .needsAuthentication
+                detail = "Installs as a draft; sign in to: \(requirements.accountRequirements.joined(separator: ", "))."
+            } else if let requirements, !requirements.cliPrerequisites.isEmpty {
+                status = .needsLocalSetup
+                detail = "Installs as a draft; requires locally: \(requirements.cliPrerequisites.joined(separator: ", "))."
+            } else {
+                status = .needsApproval
+                detail = "Installs as a local draft pending governance review."
+            }
             capabilities.append(WorkspacePackageImportPlanItem(
                 id: "capability:\(entry.packageID)",
                 name: entry.displayName,
-                detail: already
-                    ? "A capability with this ID is already in your library; the embedded copy is skipped."
-                    : "Installs as a local draft pending governance review.",
-                status: already ? .alreadyInstalled : .needsApproval
+                detail: detail,
+                status: status
             ))
         }
         for capabilityID in document.capabilityIDs where !embeddedIDs.contains(capabilityID) {

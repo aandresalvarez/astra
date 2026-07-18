@@ -141,7 +141,18 @@ struct WorkspacePackageImportCoordinator {
             Self.directoryName(for: manifest.workspaceName),
             isDirectory: true
         )
-        guard !fileManager.fileExists(atPath: workspaceRootURL.path) else {
+        // Claim the workspace directory EXCLUSIVELY. A `fileExists` check followed
+        // by `createDirectory(withIntermediateDirectories: true)` is a TOCTOU: the
+        // create silently accepts a directory another process made in between, and
+        // this import would then believe it owns a folder whose files its own
+        // rollback (`removeItem` below) could delete. Creating the parent chain
+        // first, then the leaf with `withIntermediateDirectories: false`, makes the
+        // leaf create fail if it already exists — an atomic claim.
+        try fileManager.createDirectory(at: parentFolder, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: false)
+        } catch let error as NSError
+            where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
             throw WorkspacePackageImportError.destinationAlreadyExists(workspaceRootURL.path)
         }
 
@@ -152,7 +163,6 @@ struct WorkspacePackageImportCoordinator {
         // a fresh, fully workspace-scoped graph (new UUIDs, never the global-reuse
         // or built-in-name paths), and the destination folder is always the
         // workspace root (never wherever the package sat).
-        try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: true)
         var installedCapabilityIDs: [String] = []
         var committed = false
         defer {

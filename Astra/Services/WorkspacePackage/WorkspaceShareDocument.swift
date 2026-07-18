@@ -117,7 +117,10 @@ struct ShareLocalTool: Codable, Sendable, Equatable {
 }
 
 /// A task template. `defaultSkillNames` links by name, not UUID.
-/// No `id`/`origin*`.
+/// No `id`/`origin*`, and no `hooksJSON`: template hooks run shell commands
+/// that `ClaudeSettingsStore.injectTemplateHooks` writes into the workspace's
+/// settings and executes on the next task — executable behavior the review
+/// sheet never surfaces, so an untrusted share must not carry it.
 struct ShareTemplate: Codable, Sendable, Equatable {
     var name: String
     var icon: String
@@ -132,7 +135,6 @@ struct ShareTemplate: Codable, Sendable, Equatable {
     var mainModel: String
     var afterModel: String
     var variablesJSON: String
-    var hooksJSON: String
     var passContextToMain: Bool
     var passContextToAfter: Bool
     var defaultSkillNames: [String]

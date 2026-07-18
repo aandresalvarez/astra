@@ -3,10 +3,19 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
+/// What an embedded capability needs on the recipient machine, surfaced so the
+/// pre-import review can say more than "installs as a draft".
+struct WorkspacePackageCapabilityRequirements: Sendable, Equatable {
+    var cliPrerequisites: [String]
+    var accountRequirements: [String]
+    var isEmpty: Bool { cliPrerequisites.isEmpty && accountRequirements.isEmpty }
+}
+
 struct WorkspacePackageValidationReport: Sendable {
     var manifest: WorkspacePackageManifest?
     var shareDocument: WorkspaceShareDocument?
     var appReports: [String: WorkspaceAppPackageValidationReport]
+    var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
     var issues: [PortablePackageValidationIssue]
 
     var blockers: [PortablePackageValidationIssue] {
@@ -90,20 +99,28 @@ struct WorkspacePackageService {
         )
         if let shareDocument {
             validateShareFreeTextContent(shareDocument, issues: &issues)
+            validateShareResourceSafety(shareDocument, issues: &issues)
         }
 
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
         for entry in manifest?.appEntries ?? [] {
             validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
         }
+        var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
         for entry in manifest?.capabilityEntries ?? [] {
-            validateEmbeddedCapability(entry, packageURL: packageURL, issues: &issues)
+            validateEmbeddedCapability(
+                entry,
+                packageURL: packageURL,
+                requirements: &capabilityRequirements,
+                issues: &issues
+            )
         }
 
         return WorkspacePackageValidationReport(
             manifest: manifest,
             shareDocument: shareDocument,
             appReports: appReports,
+            capabilityRequirements: capabilityRequirements,
             issues: issues
         )
     }
@@ -187,6 +204,7 @@ struct WorkspacePackageService {
     private func validateEmbeddedCapability(
         _ entry: WorkspacePackageCapabilityEntry,
         packageURL: URL,
+        requirements: inout [String: WorkspacePackageCapabilityRequirements],
         issues: inout [PortablePackageValidationIssue]
     ) {
         guard let data = try? PortablePackageSafeFileReader.readData(rootURL: packageURL, relativePath: entry.relativePath) else {
@@ -230,6 +248,22 @@ struct WorkspacePackageService {
         }
         if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
+        }
+        // Surface what this capability will need locally so the review plan can
+        // say "needs the gcloud CLI" / "needs a Google account" rather than a
+        // bare "installs as a draft". Prerequisites are intentionally not
+        // validated as package defects (a missing CLI is a recipient-state
+        // readiness item), so this is the channel the `checkPrerequisites: false`
+        // call above defers them to.
+        let cli = rawCapability.prerequisites.map { $0.displayName.isEmpty ? $0.binary : $0.displayName }
+        let accounts = rawCapability.setupRequirements
+            .filter { $0.kind == .oauthAccount }
+            .map { $0.provider ?? $0.displayName }
+        if !cli.isEmpty || !accounts.isEmpty {
+            requirements[entry.packageID] = WorkspacePackageCapabilityRequirements(
+                cliPrerequisites: cli,
+                accountRequirements: accounts
+            )
         }
     }
 
@@ -388,13 +422,43 @@ struct WorkspacePackageService {
             scan(template.mainGoal, "templates[\(index)].mainGoal")
             scan(template.afterGoal, "templates[\(index)].afterGoal")
             scan(template.variablesJSON, "templates[\(index)].variablesJSON")
-            scan(template.hooksJSON, "templates[\(index)].hooksJSON")
         }
         for (index, schedule) in document.schedules.enumerated() {
             scan(schedule.goal, "schedules[\(index)].goal")
             scan(schedule.routineDescription, "schedules[\(index)].routineDescription")
             scan(schedule.routineInstructions, "schedules[\(index)].routineInstructions")
             scan(schedule.templateVariablesJSON, "schedules[\(index)].templateVariablesJSON")
+        }
+    }
+
+    /// Structural safety gates the dedicated importer applies anyway, hoisted
+    /// to validation so an unsafe resource surfaces as a pre-import blocker
+    /// instead of being silently dropped (leaving dangling name links) or
+    /// installed with an embedded credential the review promised never travels.
+    private func validateShareResourceSafety(
+        _ document: WorkspaceShareDocument,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        for (index, connector) in document.connectors.enumerated() {
+            // A base URL like https://user:pass@host embeds a credential the
+            // review's "credential values never travel" promise would break.
+            if let components = URLComponents(string: connector.baseURL),
+               components.user != nil || components.password != nil {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    "Connector base URL must not embed credentials (user:password@host)."
+                ))
+            }
+        }
+        for (index, tool) in document.localTools.enumerated() {
+            // The importer silently drops a policy-unsafe tool, which would
+            // leave a skill's name link to it unresolved. Reject up front.
+            if !LocalToolSecurityPolicy.isSafe(command: tool.command, arguments: tool.arguments) {
+                issues.append(blocker(
+                    "/workspace-share.json/localTools[\(index)].command",
+                    "Local tool command is not permitted for import."
+                ))
+            }
         }
     }
 
@@ -409,9 +473,35 @@ struct WorkspacePackageService {
         if forbiddenKeys.contains(where: { lowercased.contains($0) }), reported.insert("\(path)#credential").inserted {
             issues.append(blocker(path, "Package content appears to include credential material."))
         }
-        if (text.contains(NSHomeDirectory()) || lowercased.contains("/users/")), reported.insert("\(path)#path").inserted {
+        if containsAbsoluteMachinePath(text), reported.insert("\(path)#path").inserted {
             issues.append(blocker(path, "Package content appears to include an absolute local path."))
         }
+    }
+
+    /// True when `text` embeds an absolute macOS/Unix path. The old check only
+    /// recognized the running user's `NSHomeDirectory()` and `/Users/`, so a
+    /// sender path like `/Volumes/External/...` or `/opt/custom/bin` slipped
+    /// through the free-text scan; this matches the common absolute roots at a
+    /// component boundary.
+    private func containsAbsoluteMachinePath(_ text: String) -> Bool {
+        if text.contains(NSHomeDirectory()) { return true }
+        let lowered = text.lowercased()
+        let roots = ["/users/", "/home/", "/volumes/", "/opt/", "/usr/", "/private/", "/var/", "/applications/", "/library/", "/system/"]
+        // A path-segment character before the root would make it a relative
+        // fragment (e.g. "abc/opt/x"); require the root to begin the string or
+        // follow a non-path delimiter so only genuine absolute paths match.
+        let pathSegmentChars = Set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+        for root in roots {
+            var searchStart = lowered.startIndex
+            while let range = lowered.range(of: root, range: searchStart..<lowered.endIndex) {
+                if range.lowerBound == lowered.startIndex
+                    || !pathSegmentChars.contains(lowered[lowered.index(before: range.lowerBound)]) {
+                    return true
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return false
     }
 
     // MARK: - Decoding

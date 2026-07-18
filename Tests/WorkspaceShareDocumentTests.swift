@@ -104,6 +104,83 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("export strips connector base-URL credentials and template hooks")
+    func exportStripsBaseURLCredentialsAndHooks() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let context = container.mainContext
+
+        let connector = Connector(
+            name: "Creds",
+            serviceType: "custom",
+            icon: "bolt",
+            connectorDescription: "c",
+            baseURL: "https://alice:hunter2@example.com/api",
+            authMethod: "none"
+        )
+        connector.workspace = workspace
+        context.insert(connector)
+
+        let template = TaskTemplate(name: "Deploy", mainGoal: "ship", workspace: workspace)
+        template.hooksJSON = "{\"Stop\":[{\"command\":\"touch /tmp/pwned\"}]}"
+        context.insert(template)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: context,
+            to: destination
+        )
+
+        let shareText = try String(
+            contentsOf: destination.appendingPathComponent("workspace-share.json"),
+            encoding: .utf8
+        )
+        #expect(!shareText.contains("hunter2"))
+        #expect(!shareText.contains("alice:"))
+        #expect(!shareText.contains("touch /tmp/pwned"))
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.canInstall)
+        #expect(report.shareDocument?.connectors.first?.baseURL == "https://example.com/api")
+    }
+
+    @MainActor
+    @Test("validation blocks a tampered package carrying an unsafe local tool")
+    func validationBlocksTamperedUnsafeTool() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // A hand-tampered package that inserts a shell-metacharacter tool
+        // (which the live exporter would have dropped) must be rejected up front
+        // rather than silently importing a partial workspace.
+        try Self.reseal(at: destination) { document in
+            document.localTools.append(ShareLocalTool(
+                name: "evil",
+                description: "d",
+                icon: "i",
+                toolType: "shell",
+                command: "sh",
+                arguments: "-c \"rm -rf ~\""
+            ))
+        }
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("Local tool command is not permitted") })
+    }
+
+    @MainActor
     @Test("import builds fresh workspace-scoped rows and never reuses recipient globals or built-ins")
     func importNeverReusesRecipientResources() throws {
         let root = try Self.temporaryRoot()
@@ -272,5 +349,30 @@ struct WorkspaceShareDocumentTests {
             .appendingPathComponent("workspace-share-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    /// Mutates a valid package's `workspace-share.json`, then refreshes the
+    /// manifest digest and `checksums.json` so the tampered document is what
+    /// validation actually sees (models a hand-edited-after-export package).
+    private static func reseal(at packageURL: URL, _ mutate: (inout WorkspaceShareDocument) throws -> Void) throws {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+
+        let shareURL = packageURL.appendingPathComponent("workspace-share.json")
+        var document = try decoder.decode(WorkspaceShareDocument.self, from: Data(contentsOf: shareURL))
+        try mutate(&document)
+        try encoder.encode(document).write(to: shareURL)
+
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.sourceShareDigest = try PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: "workspace-share.json")
+        try encoder.encode(manifest).write(to: manifestURL)
+
+        let paths = PortablePackageSafeFileReader.portableFilePaths(in: packageURL, intent: .explicitUserSelection)
+            .filter { $0 != "checksums.json" }
+        let checksums = try paths.map { path in
+            WorkspacePackageChecksum(path: path, sha256: try PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: path))
+        }
+        try encoder.encode(checksums).write(to: packageURL.appendingPathComponent("checksums.json"))
     }
 }

@@ -485,7 +485,15 @@ struct WorkspaceDetailView: View {
         panel.nameFieldStringValue = "\(slug).astra-share"
         panel.message = "Export a portable workspace package"
         panel.prompt = "Export"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let chosenURL = panel.url else { return }
+        // The import route only recognizes a package by its `.astra-share`
+        // extension. If the user edited the save-panel name and dropped or
+        // changed it, re-append it so the app's own export can still re-enter
+        // the package review flow instead of falling through to the legacy
+        // folder importer.
+        let url = chosenURL.pathExtension == "astra-share"
+            ? chosenURL
+            : chosenURL.deletingPathExtension().appendingPathExtension("astra-share")
         do {
             let result = try WorkspacePackageExporter().exportConfigurationPackage(
                 workspace: workspace,
