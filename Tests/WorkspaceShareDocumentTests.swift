@@ -641,6 +641,115 @@ struct WorkspaceShareDocumentTests {
         }
     }
 
+    @MainActor
+    @Test("validation rejects an option-like SSH alias, host, or user")
+    func validationRejectsOptionLikeSSHAlias() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // `-oProxyCommand=…` in a field placed before the destination would run an
+        // attacker-selected local command when the connection is tested.
+        try Self.reseal(at: destination) { document in
+            document.sshConnections = [ShareSSHConnection(
+                name: "evil",
+                host: "example.com",
+                user: "deploy",
+                port: 22,
+                remotePath: "",
+                configAlias: "-oProxyCommand=touch /tmp/pwned"
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("must not begin with '-'") })
+    }
+
+    @MainActor
+    @Test("validation rejects a schedule referencing a missing template")
+    func validationRejectsUnresolvedScheduleTemplate() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // A templateName absent from the package would silently degrade the
+        // routine to its effectiveGoal after the recipient enables it.
+        try Self.reseal(at: destination) { document in
+            document.schedules = [ShareSchedule(
+                name: "Nightly",
+                goal: "g",
+                routineDescription: "",
+                routineInstructions: "",
+                templateName: "does-not-exist",
+                templateVariablesJSON: "",
+                model: "",
+                tokenBudget: 0,
+                scheduleType: "interval",
+                intervalSeconds: 3600,
+                dailyHour: 0,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 0,
+                skillNames: [],
+                resultMode: nil,
+                runtimeID: nil
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("does-not-exist") })
+    }
+
+    @MainActor
+    @Test("validation rejects a resource assigned to more than one skill")
+    func validationRejectsResourceSharedAcrossSkills() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // Connector.skill is a to-one inverse; two skills naming it would
+        // silently re-parent the single row to whichever imports last.
+        try Self.reseal(at: destination) { document in
+            let makeSkill: (String) -> ShareSkill = { name in
+                ShareSkill(
+                    name: name, icon: "gear", description: "",
+                    allowedTools: [], disallowedTools: [], customTools: [],
+                    behaviorInstructions: "", environmentKeys: [], environmentValues: [],
+                    connectorNames: ["Shared Connector"], localToolNames: []
+                )
+            }
+            document.skills = [makeSkill("Skill A"), makeSkill("Skill B")]
+            document.connectors = [ShareConnector(
+                name: "Shared Connector", serviceType: "custom", icon: "bolt",
+                description: "", baseURL: "https://example.com", authMethod: "none",
+                credentialKeys: [], notes: ""
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("more than one skill") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

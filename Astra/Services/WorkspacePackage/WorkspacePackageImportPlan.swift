@@ -110,9 +110,15 @@ struct WorkspacePackageImportPlanner {
             let requirements = report.capabilityRequirements[entry.packageID]
             let status: WorkspacePackageImportItemStatus
             let detail: String
-            if already {
+            if already && approved.contains(entry.packageID) {
                 status = .alreadyInstalled
                 detail = "A capability with this ID is already in your library; the embedded copy is skipped."
+            } else if already {
+                // Installed here but NOT approved: the coordinator skips the
+                // embedded copy AND strips the unapproved ID from the enabled
+                // set, so the imported workspace won't have it. Disclose that.
+                status = .needsApproval
+                detail = "A capability with this ID exists locally but isn't approved; approve it, then enable it after import."
             } else if let requirements, !requirements.accountRequirements.isEmpty {
                 status = .needsAuthentication
                 detail = "Installs as a draft; sign in to: \(requirements.accountRequirements.joined(separator: ", "))."

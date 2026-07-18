@@ -281,6 +281,34 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
+    @Test("plan marks a pre-existing but unapproved embedded capability as Needs approval")
+    func planMarksUnapprovedPreExistingEmbeddedCapabilityNeedsApproval() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let report = WorkspacePackageService().validatePackage(at: fixture.packageURL)
+        // The embedded "local.tool" already exists on this machine but is NOT
+        // approved: the coordinator skips the embedded copy AND strips the
+        // unapproved ID, so the workspace won't have it — the plan must disclose
+        // that rather than showing a green "Already installed".
+        var planner = WorkspacePackageImportPlanner()
+        planner.installedCapabilityIDs = { ["local.tool"] }
+        planner.approvedCapabilityIDs = { [] }
+        let plan = try #require(planner.plan(from: report))
+        let item = try #require(plan.capabilities.first { $0.id == "capability:local.tool" })
+        #expect(item.status == .needsApproval)
+
+        // Once approved on this machine, it is correctly "Already installed".
+        var approvedPlanner = WorkspacePackageImportPlanner()
+        approvedPlanner.installedCapabilityIDs = { ["local.tool"] }
+        approvedPlanner.approvedCapabilityIDs = { ["local.tool"] }
+        let approvedPlan = try #require(approvedPlanner.plan(from: report))
+        let approvedItem = try #require(approvedPlan.capabilities.first { $0.id == "capability:local.tool" })
+        #expect(approvedItem.status == .alreadyInstalled)
+    }
+
+    @MainActor
     @Test("import does not activate a recipient-local unapproved capability the package merely names")
     func importDoesNotActivateRecipientLocalUnapprovedCapability() throws {
         let root = try Self.temporaryRoot()
@@ -492,7 +520,9 @@ struct WorkspacePackageImportTests {
         // strip from the enabled set must not be promised as "Ready".
         var installedPlanner = WorkspacePackageImportPlanner()
         installedPlanner.installedCapabilityIDs = { ["local.tool", "missing.builtin"] }
-        installedPlanner.approvedCapabilityIDs = { [] }
+        // local.tool (the embedded entry) is approved here, so it reads as
+        // "Already installed"; missing.builtin is installed but unapproved.
+        installedPlanner.approvedCapabilityIDs = { ["local.tool"] }
         let installedPlan = try #require(installedPlanner.plan(from: report))
         let alreadyItem = try #require(installedPlan.capabilities.first { $0.id == "capability:local.tool" })
         #expect(alreadyItem.status == .alreadyInstalled)

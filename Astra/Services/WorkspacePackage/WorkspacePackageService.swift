@@ -280,6 +280,30 @@ struct WorkspacePackageService {
                 "Embedded capability package ID (\(rawCapability.id)) does not match its manifest entry ID (\(entry.packageID))."
             ))
         }
+        // A curated built-in ID must never be *embedded*: if the recipient lacks
+        // that built-in's library file, the exact-ID lookup finds nothing, the
+        // draft install proceeds, and `CapabilityLibrary.decodeInstalledPackage`
+        // then applies the compiled approved governance for every trusted
+        // built-in ID while retaining the imported payload — auto-approving
+        // attacker-controlled content the review promised was a draft. Built-ins
+        // travel only as references (`capabilityIDs`), never as embedded packages.
+        if CapabilityLibrary.trustedBuiltInPackageIDs.contains(entry.packageID)
+            || CapabilityLibrary.trustedBuiltInPackageIDs.contains(rawCapability.id) {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability may not use the built-in ID '\(entry.packageID)'; built-in capabilities are referenced, not embedded."
+            ))
+        }
+        // The review sheet shows `entry.displayName`, but the coordinator installs
+        // the decoded package's own `name`. A benign display name masking a
+        // different embedded name would let the recipient approve an inventory
+        // that names a different capability than the one added — bind them.
+        if rawCapability.name != entry.displayName {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability name (\(rawCapability.name)) does not match its manifest entry display name (\(entry.displayName))."
+            ))
+        }
         if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
         }
@@ -534,6 +558,7 @@ struct WorkspacePackageService {
         rejectDuplicateNames(document.connectors.map(\.name), kind: "connectors", issues: &issues)
         rejectDuplicateNames(document.localTools.map(\.name), kind: "localTools", issues: &issues)
         rejectDuplicateNames(document.templates.map(\.name), kind: "templates", issues: &issues)
+        let templateNames = Set(document.templates.map(\.name))
         // Apply the schedule editor's domain constraints: an out-of-range value
         // (notably interval <= 0) would make `advanceNextFireDate` place every
         // next fire at/before now, so `TaskScheduler` would relaunch the routine
@@ -556,6 +581,56 @@ struct WorkspacePackageService {
             if let invalid {
                 issues.append(blocker("/workspace-share.json/schedules[\(index)]", "Schedule is invalid: \(invalid)."))
             }
+            // A `templateName` absent from the package's own templates would be
+            // silently stored as a nil `templateID`; the enabled routine then
+            // runs `effectiveGoal` instead of the declared template's behavior.
+            if let templateName = schedule.templateName,
+               !templateName.isEmpty,
+               !templateNames.contains(templateName) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateName",
+                    "Schedule references template '\(templateName)' that is not present in the package."
+                ))
+            }
+        }
+        // An SSH `host`/`user`/`configAlias` that begins with `-` is parsed by
+        // `ssh` as an OPTION, not a destination — e.g. `-oProxyCommand=…` runs an
+        // attacker-selected local command when `SSHConnectionManager.test` places
+        // it on the command line. Reject option-like values up front.
+        for (index, ssh) in document.sshConnections.enumerated() {
+            for (field, value) in [("host", ssh.host), ("user", ssh.user), ("configAlias", ssh.configAlias)]
+            where value.hasPrefix("-") {
+                issues.append(blocker(
+                    "/workspace-share.json/sshConnections[\(index)].\(field)",
+                    "SSH \(field) must not begin with '-' (it would be parsed as an ssh option)."
+                ))
+            }
+        }
+        // Connectors and local tools have a to-ONE inverse `skill` relationship,
+        // so a name referenced by two skills would silently re-parent the single
+        // row to whichever skill is imported last, stripping it from the earlier
+        // one while the review still reports success. Reject a resource claimed by
+        // more than one skill.
+        rejectMultiSkillOwnership(
+            document.skills.flatMap(\.connectorNames), kind: "connector", issues: &issues
+        )
+        rejectMultiSkillOwnership(
+            document.skills.flatMap(\.localToolNames), kind: "local tool", issues: &issues
+        )
+    }
+
+    private func rejectMultiSkillOwnership(
+        _ referencedNames: [String],
+        kind: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var counts: [String: Int] = [:]
+        for name in referencedNames { counts[name, default: 0] += 1 }
+        for name in counts.filter({ $0.value > 1 }).keys.sorted() {
+            issues.append(blocker(
+                "/workspace-share.json/skills",
+                "\(kind.capitalized) '\(name)' is assigned to more than one skill; a shared resource can belong to only one skill."
+            ))
         }
     }
 

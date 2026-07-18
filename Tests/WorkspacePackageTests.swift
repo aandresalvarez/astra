@@ -414,6 +414,79 @@ struct WorkspacePackageTests {
     }
 
     @MainActor
+    @Test("package validation rejects an embedded capability whose name differs from its manifest entry")
+    func validationRejectsMismatchedCapabilityName() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        try capabilityLibrary.install(
+            Self.makeCapability(id: "local.tool", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        workspace.enabledCapabilityIDs = ["local.tool"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // The review shows the manifest entry's displayName, but the coordinator
+        // installs the decoded package's own name — a benign display over a
+        // different embedded name must be rejected.
+        let capabilityURL = destination.appendingPathComponent("capabilities/local.tool.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var capability = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        capability.name = "Totally Different Capability"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(capability).write(to: capabilityURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("does not match its manifest entry display name") })
+    }
+
+    @MainActor
+    @Test("package validation rejects an embedded capability using a trusted built-in ID")
+    func validationRejectsEmbeddedBuiltInCapabilityID() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        try capabilityLibrary.install(
+            Self.makeCapability(id: "local.tool", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        workspace.enabledCapabilityIDs = ["local.tool"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // A share that embeds a draft payload under a curated built-in ID would,
+        // if the built-in's library file is absent, install and then get the
+        // compiled approved governance applied — auto-approving attacker content.
+        let builtInID = try #require(CapabilityLibrary.trustedBuiltInPackageIDs.first)
+        let capabilityURL = destination.appendingPathComponent("capabilities/local.tool.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var capability = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        capability.id = builtInID
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(capability).write(to: capabilityURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("built-in ID") })
+    }
+
+    @MainActor
     @Test("package validation rejects an embedded app whose ID differs from its manifest entry")
     func validationRejectsMismatchedAppID() throws {
         let root = try Self.temporaryRoot()
