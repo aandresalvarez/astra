@@ -506,6 +506,141 @@ struct WorkspaceShareDocumentTests {
         #expect(imported.resultMode != .sameThread)
     }
 
+    @MainActor
+    @Test("validation rejects a share carrying a populated secret environment value")
+    func validationRejectsPopulatedSecretEnv() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // A hand-tampered package that re-populates a secret-keyed env value must
+        // be blocked; credential values never travel.
+        try Self.reseal(at: destination) { document in
+            document.skills = [ShareSkill(
+                name: "Leaky",
+                icon: "gear",
+                description: "d",
+                allowedTools: [],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "",
+                environmentKeys: ["API_TOKEN", "REGION"],
+                environmentValues: ["hunter2", "us-west"],
+                connectorNames: [],
+                localToolNames: []
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("Secret environment value") })
+    }
+
+    @MainActor
+    @Test("validation rejects a credentialed connector over unprotected transport")
+    func validationRejectsUnprotectedConnectorTransport() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // http://host with a declared credential would be silently skipped by the
+        // importer while the plan advertised it as installable; block it up front.
+        try Self.reseal(at: destination) { document in
+            document.connectors = [ShareConnector(
+                name: "Insecure",
+                serviceType: "custom",
+                icon: "bolt",
+                description: "c",
+                baseURL: "http://example.com/api",
+                authMethod: "bearer",
+                credentialKeys: ["TOKEN"],
+                notes: ""
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("HTTPS") })
+    }
+
+    @MainActor
+    @Test("referenced capabilities unavailable on this machine are reported in the outcome")
+    func unavailableReferencedCapabilitiesReportedInOutcome() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
+        senderWorkspace.enabledCapabilityIDs = ["some.uninstalled.capability"]
+
+        let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: senderWorkspace,
+            modelContext: senderContainer.mainContext,
+            to: packageURL
+        )
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("caps", isDirectory: true)
+        )
+        let outcome = try coordinator.importPackage(
+            at: packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        #expect(outcome.capabilitiesUnavailable.contains("some.uninstalled.capability"))
+        #expect(!outcome.workspace.enabledCapabilityIDs.contains("some.uninstalled.capability"))
+    }
+
+    @Test("portable path check allows dotted filenames but rejects traversal components")
+    func portablePathAllowsDottedFilenames() {
+        // Consecutive dots inside a component are valid (app/capability IDs like
+        // com.example..tool); only a whole `..`/`.`/empty component is traversal.
+        #expect(PortablePackageSafeFileReader.isPortableRelativePath("apps/com.example..tool/manifest.json"))
+        #expect(PortablePackageSafeFileReader.isPortableRelativePath("workspace-share.json"))
+        #expect(!PortablePackageSafeFileReader.isPortableRelativePath("a/../b"))
+        #expect(!PortablePackageSafeFileReader.isPortableRelativePath(".."))
+        #expect(!PortablePackageSafeFileReader.isPortableRelativePath("a/./b"))
+        #expect(!PortablePackageSafeFileReader.isPortableRelativePath("a//b"))
+        #expect(!PortablePackageSafeFileReader.isPortableRelativePath("/abs/path"))
+    }
+
+    @Test("bounded staging copy rejects a file that exceeds the byte budget")
+    func boundedStagingCopyEnforcesByteBudget() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        // A file larger than the aggregate budget must be refused mid-copy.
+        let big = Data(repeating: 0x41, count: 4096)
+        try big.write(to: source.appendingPathComponent("payload.bin"))
+        let destination = root.appendingPathComponent("staged", isDirectory: true)
+
+        #expect(throws: PortablePackageStagingError.self) {
+            try PortablePackageSafeFileReader.stageBoundedCopy(
+                from: source,
+                to: destination,
+                maxFileCount: 10,
+                maxTotalBytes: 1024
+            )
+        }
+    }
+
     // MARK: - Fixtures
 
     @MainActor

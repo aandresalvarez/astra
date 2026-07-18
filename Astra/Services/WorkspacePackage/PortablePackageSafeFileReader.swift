@@ -13,6 +13,7 @@ enum PortablePackageStagingError: Error, Equatable {
     case containsSymlink(String)
     case tooManyFiles(limit: Int)
     case tooLarge(limit: Int)
+    case copyFailed(String)
 }
 
 /// Safe file access for reading an untrusted, portable package bundle.
@@ -27,11 +28,17 @@ enum PortablePackageSafeFileReader {
     static let defaultMaximumFileBytes = 10 * 1024 * 1024
 
     static func isPortableRelativePath(_ path: String) -> Bool {
-        !path.isEmpty
-            && !path.hasPrefix("/")
-            && !path.contains("..")
-            && !path.contains("\\")
-            && !path.contains("\0")
+        guard !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.contains("\\"),
+              !path.contains("\0") else { return false }
+        // Reject traversal only when a whole path *component* is `..` — a
+        // substring check would also reject legitimate filenames containing
+        // consecutive dots, e.g. an embedded app/capability ID like
+        // `com.example..tool` that `WorkspaceAppIDPolicy` and the capability
+        // package-ID validator both permit.
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains { $0 == ".." || $0 == "." || $0.isEmpty }
     }
 
     /// Returns the relative path of the first symbolic link found anywhere in
@@ -155,22 +162,73 @@ enum PortablePackageSafeFileReader {
                 guard remainingFiles >= 0 else {
                     throw PortablePackageStagingError.tooManyFiles(limit: maxFileCount)
                 }
-                remainingBytes -= Int(childStat.st_size)
-                guard remainingBytes >= 0 else {
-                    throw PortablePackageStagingError.tooLarge(limit: maxTotalBytes)
-                }
-                // The entry is a confirmed regular file (lstat, not stat), so
-                // copyItem cannot be redirected through a link.
-                try fileManager.copyItem(
-                    at: URL(fileURLWithPath: childSource),
-                    to: URL(fileURLWithPath: childDestination)
+                // The pre-copy `st_size` is advisory only: the source directory
+                // is still attacker-writable, so the file can be grown or swapped
+                // for a larger regular file between this `lstat` and the copy.
+                // Stream through a no-follow reopen, enforcing the *remaining*
+                // byte budget on bytes actually read rather than trusting the
+                // stale size, so a mid-copy growth is rejected before it can burn
+                // arbitrary temp disk.
+                let copied = try copyRegularFileBounded(
+                    fromPath: childSource,
+                    toPath: childDestination,
+                    maxBytes: remainingBytes,
+                    totalLimit: maxTotalBytes
                 )
+                remainingBytes -= copied
             default:
                 // Skip anything that is not a directory or a regular file
                 // (fifos, sockets, devices have no place in a package).
                 continue
             }
         }
+    }
+
+    /// Streams a single regular file from `sourcePath` to `destinationPath`,
+    /// copying at most `maxBytes` and returning the number of bytes written. The
+    /// source is reopened with `O_NOFOLLOW` (so a symlink swapped in after the
+    /// caller's `lstat` fails the open rather than being followed) and reading
+    /// stops the instant the byte budget is exceeded — the copy is bounded by
+    /// bytes actually read, never a pre-measured `st_size`.
+    private static func copyRegularFileBounded(
+        fromPath sourcePath: String,
+        toPath destinationPath: String,
+        maxBytes: Int,
+        totalLimit: Int
+    ) throws -> Int {
+        let sourceFD = Darwin.open(sourcePath, O_RDONLY | O_NOFOLLOW)
+        guard sourceFD >= 0 else { throw PortablePackageStagingError.copyFailed(sourcePath) }
+        defer { close(sourceFD) }
+        var sourceStat = stat()
+        guard fstat(sourceFD, &sourceStat) == 0,
+              (sourceStat.st_mode & S_IFMT) == S_IFREG else {
+            throw PortablePackageStagingError.copyFailed(sourcePath)
+        }
+        let destFD = Darwin.open(destinationPath, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard destFD >= 0 else { throw PortablePackageStagingError.copyFailed(destinationPath) }
+        defer { close(destFD) }
+
+        let bufferSize = 64 * 1024
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var total = 0
+        while true {
+            let readCount = read(sourceFD, &buffer, bufferSize)
+            if readCount < 0 { throw PortablePackageStagingError.copyFailed(sourcePath) }
+            if readCount == 0 { break }
+            total += readCount
+            guard total <= maxBytes else {
+                throw PortablePackageStagingError.tooLarge(limit: totalLimit)
+            }
+            var written = 0
+            while written < readCount {
+                let writeCount = buffer.withUnsafeBytes { raw in
+                    Darwin.write(destFD, raw.baseAddress!.advanced(by: written), readCount - written)
+                }
+                if writeCount <= 0 { throw PortablePackageStagingError.copyFailed(destinationPath) }
+                written += writeCount
+            }
+        }
+        return total
     }
 
     static func openSafeDescriptor(rootURL: URL, relativePath: String) throws -> Int32 {

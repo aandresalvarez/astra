@@ -44,6 +44,11 @@ struct WorkspacePackageImportOutcome {
     var connectorsNeedingCredentials: [String]
     var googleAccountsRequiringReauth: [String]
     var sshConnectionsRequiringLocalKeys: [String]
+    /// Capability IDs the share referenced (built-in or remote-approved on the
+    /// exporting machine) that could not be enabled here because they are not
+    /// installed-and-approved on this machine. The workspace imports without
+    /// them; the recipient must install/approve then enable after import.
+    var capabilitiesUnavailable: [String]
     var droppedMachinePaths: [String]
 }
 
@@ -175,7 +180,7 @@ struct WorkspacePackageImportCoordinator {
             }
         }
 
-        let importResult = WorkspaceShareImporter.makeWorkspace(
+        let importResult = try WorkspaceShareImporter.makeWorkspace(
             from: document,
             primaryPath: workspaceRootURL.path,
             modelContext: importContext
@@ -278,6 +283,16 @@ struct WorkspacePackageImportCoordinator {
         let availablePackIDs = Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
         workspace.enabledPackIDs = workspace.enabledPackIDs.filter { availablePackIDs.contains($0) }
 
+        // Referenced (non-embedded) capabilities the reconciliation just stripped
+        // because they are not installed-and-approved here: the workspace imports
+        // without them, so the outcome must report them rather than let the review
+        // screen claim everything is ready to use.
+        let embeddedCapabilityIDs = Set(manifest.capabilityEntries.map(\.packageID))
+        let enabledAfterReconcile = Set(workspace.enabledCapabilityIDs)
+        let capabilitiesUnavailable = document.capabilityIDs.filter {
+            !embeddedCapabilityIDs.contains($0) && !enabledAfterReconcile.contains($0)
+        }
+
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
             workspace: workspace,
             modelContext: importContext,
@@ -319,6 +334,7 @@ struct WorkspacePackageImportCoordinator {
                 .map(\.name),
             googleAccountsRequiringReauth: manifest.googleAccountsRequiringReauth,
             sshConnectionsRequiringLocalKeys: manifest.sshConnectionsRequiringLocalKeys,
+            capabilitiesUnavailable: capabilitiesUnavailable,
             // Machine-local paths never travel in the share format, so there is
             // nothing dropped on import to report back.
             droppedMachinePaths: []

@@ -191,6 +191,16 @@ struct WorkspacePackageService {
                 "Embedded app ID (\(embeddedAppID)) does not match its manifest entry ID (\(entry.logicalID))."
             ))
         }
+        // The review sheet shows `entry.displayName`, but the coordinator imports
+        // and reports the embedded manifest's own `app.name`. A benign display
+        // name over a different embedded name would let the recipient approve an
+        // app identity other than the one shown — bind the name alongside the ID.
+        if let embeddedAppName = report.manifest?.app.name, embeddedAppName != entry.displayName {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app name (\(embeddedAppName)) does not match its manifest entry display name (\(entry.displayName))."
+            ))
+        }
         // The outer package's own version gate can't mask an embedded app's
         // — check both, so a recipient on an old build can't pass the outer
         // gate and only then discover an inner one silently can't run.
@@ -472,6 +482,37 @@ struct WorkspacePackageService {
                     "/workspace-share.json/connectors[\(index)].baseURL",
                     "Connector base URL must not embed credentials (user:password@host)."
                 ))
+            }
+            // The importer applies the same transport policy and *silently skips*
+            // a connector that declares credentials over an unprotected URL (e.g.
+            // http://host), even though the plan presented it as installable and
+            // skills may keep a name link to it. Surface it as a blocker so the
+            // package is rejected rather than partially imported.
+            if let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+                baseURL: connector.baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialKeys
+            ) {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    violation
+                ))
+            }
+        }
+        // Secret-keyed env values never travel (export blanks them). A tampered
+        // package that re-populates one would otherwise be persisted to the
+        // Keychain/SwiftData by the importer, breaking the review's promise that
+        // credential values never travel.
+        for (index, skill) in document.skills.enumerated() {
+            for (keyIndex, key) in skill.environmentKeys.enumerated()
+            where Skill.isSecretEnvironmentKey(key) {
+                let value = keyIndex < skill.environmentValues.count ? skill.environmentValues[keyIndex] : ""
+                if !value.isEmpty {
+                    issues.append(blocker(
+                        "/workspace-share.json/skills[\(index)].environmentValues[\(keyIndex)]",
+                        "Secret environment value for '\(key)' must not be present in a share (credential values never travel)."
+                    ))
+                }
             }
         }
         for (index, tool) in document.localTools.enumerated() {

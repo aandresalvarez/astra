@@ -94,12 +94,24 @@ public enum SSHConnectionManager {
         workspacePath: String,
         fileWriter: any SSHConnectionFileWriting = defaultFileWriter
     ) {
+        try? saveOrThrow(connections, workspacePath: workspacePath, fileWriter: fileWriter)
+    }
+
+    /// Persists the connections, surfacing an encode or write failure instead of
+    /// swallowing it. Callers with a transactional contract (e.g. the portable
+    /// workspace import, which must roll back if any resource fails to persist)
+    /// use this; the fire-and-forget `save` above delegates here.
+    public static func saveOrThrow(
+        _ connections: [SSHConnection],
+        workspacePath: String,
+        fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+    ) throws {
         WorkspaceFileLayout.ensureSupportDirectory(for: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(connections) else { return }
-        try? fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
+        let data = try encoder.encode(connections)
+        try fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {

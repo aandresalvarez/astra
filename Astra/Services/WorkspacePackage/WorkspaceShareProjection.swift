@@ -191,7 +191,7 @@ enum WorkspaceShareImporter {
         from document: WorkspaceShareDocument,
         primaryPath: String,
         modelContext: ModelContext
-    ) -> WorkspaceShareImportResult {
+    ) throws -> WorkspaceShareImportResult {
         let workspace = Workspace(
             name: document.name,
             primaryPath: primaryPath,
@@ -264,7 +264,14 @@ enum WorkspaceShareImporter {
             )
             skill.environmentKeys = share.environmentKeys
             let values = Array(share.environmentValues.prefix(share.environmentKeys.count))
-            skill.environmentValues = values + Array(repeating: "", count: max(0, share.environmentKeys.count - values.count))
+            let padded = values + Array(repeating: "", count: max(0, share.environmentKeys.count - values.count))
+            // Secret-keyed env values never travel; validation blocks a tampered
+            // package that carries one, but blank them here as well so an
+            // out-of-band import path can never persist a secret to SwiftData or
+            // the Keychain via `migrateSecretsToKeychain()` below.
+            skill.environmentValues = zip(share.environmentKeys, padded).map { key, value in
+                Skill.isSecretEnvironmentKey(key) ? "" : value
+            }
             // Always a fresh, workspace-local skill — never a built-in/global
             // row, so a share cannot reuse or collide with the recipient's
             // built-in skills.
@@ -353,7 +360,11 @@ enum WorkspaceShareImporter {
             )
         }
         if !sshConnections.isEmpty {
-            SSHConnectionManager.save(sshConnections, workspacePath: primaryPath)
+            // Throwing path: a swallowed write failure would let the import commit
+            // its SwiftData rows while the advertised SSH connections are silently
+            // absent, breaking the coordinator's all-or-nothing contract. On throw
+            // the coordinator rolls back the fresh workspace and its destination.
+            try SSHConnectionManager.saveOrThrow(sshConnections, workspacePath: primaryPath)
         }
 
         return WorkspaceShareImportResult(
