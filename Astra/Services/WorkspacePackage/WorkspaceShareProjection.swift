@@ -50,8 +50,23 @@ enum WorkspaceShareProjection {
         )
 
         func names(fromIDs ids: [String]?, fallback names: [String]?, map: [String: String]) -> [String] {
-            let resolved = (ids ?? []).compactMap { map[$0] }
-            let combined = resolved.isEmpty ? (names ?? []) : resolved
+            let ids = ids ?? []
+            let resolved = ids.compactMap { map[$0] }
+            let combined: [String]
+            if ids.isEmpty {
+                // Legacy skills stored only names.
+                combined = names ?? []
+            } else if resolved.count == ids.count {
+                combined = resolved
+            } else {
+                // Some referenced IDs did not resolve — they were filtered from
+                // the export by a security policy (e.g. an unsafe connector/tool).
+                // Merge the saved fallback names so the dropped reference is
+                // preserved and the referential-integrity validation surfaces it,
+                // instead of silently exporting a skill missing part of its
+                // declared behavior.
+                combined = resolved + (names ?? [])
+            }
             return Array(NSOrderedSet(array: combined)).compactMap { $0 as? String }
         }
 

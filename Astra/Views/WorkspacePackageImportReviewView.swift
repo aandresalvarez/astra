@@ -252,6 +252,9 @@ struct WorkspacePackageImportReviewView: View {
         if !plan.connectors.isEmpty {
             section("Connectors") { itemRows(plan.connectors) }
         }
+        if !plan.localTools.isEmpty {
+            section("Local Tools") { itemRows(plan.localTools) }
+        }
         if !plan.accounts.isEmpty {
             section("Accounts") { itemRows(plan.accounts) }
         }
@@ -295,6 +298,12 @@ struct WorkspacePackageImportReviewView: View {
             ForEach(outcome.connectorsNeedingCredentials, id: \.self) { name in
                 infoRow("Connector", "\(name) needs credentials before it can run.")
             }
+            ForEach(outcome.connectorsNeedingConfiguration, id: \.self) { name in
+                infoRow("Connector", "\(name) needs its configuration values re-entered before it can run.")
+            }
+            ForEach(outcome.packsUnavailable, id: \.self) { id in
+                infoRow("Pack", "\(id) isn't installed here — the workspace imported without it.")
+            }
             ForEach(outcome.googleAccountsRequiringReauth, id: \.self) { email in
                 infoRow("Account", "\(email) needs to be signed in on this machine.")
             }
@@ -315,8 +324,10 @@ struct WorkspacePackageImportReviewView: View {
             }
             if outcome.quarantinedScheduleCount == 0,
                outcome.connectorsNeedingCredentials.isEmpty,
+               outcome.connectorsNeedingConfiguration.isEmpty,
                outcome.googleAccountsRequiringReauth.isEmpty,
                outcome.sshConnectionsRequiringLocalKeys.isEmpty,
+               outcome.packsUnavailable.isEmpty,
                outcome.capabilitiesSkippedForConflict.isEmpty,
                outcome.capabilitiesUnavailable.isEmpty,
                outcome.capabilitiesInstalledAsDraft.isEmpty,

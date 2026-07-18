@@ -43,6 +43,7 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var capabilities: [WorkspacePackageImportPlanItem]
     var packs: [WorkspacePackageImportPlanItem]
     var connectors: [WorkspacePackageImportPlanItem]
+    var localTools: [WorkspacePackageImportPlanItem]
     var accounts: [WorkspacePackageImportPlanItem]
     var sshConnections: [WorkspacePackageImportPlanItem]
     var quarantinedScheduleCount: Int
@@ -51,7 +52,7 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var canImport: Bool { blockers.isEmpty }
 
     var allItems: [WorkspacePackageImportPlanItem] {
-        apps + capabilities + packs + connectors + accounts + sshConnections
+        apps + capabilities + packs + connectors + localTools + accounts + sshConnections
     }
 }
 
@@ -126,11 +127,16 @@ struct WorkspacePackageImportPlanner {
         // coordinator skips an embedded package whose storage name matches an
         // installed one, so the review must disclose that rather than promise a
         // draft install that cannot occur.
-        let installedStorageNames = Set(installed.map { CapabilityLibrary.safeFileName(for: $0) })
+        // Match the coordinator's storage key EXACTLY (safeFileName + lowercased),
+        // so a case-only difference like `Local.Tool` vs installed `local.tool`
+        // — which the default case-insensitive macOS filesystem collides and the
+        // coordinator skips — is reported here rather than promised as a draft.
+        let storageKey: (String) -> String = { CapabilityLibrary.safeFileName(for: $0).lowercased() }
+        let installedStorageNames = Set(installed.map(storageKey))
         for entry in manifest.capabilityEntries {
             let already = installed.contains(entry.packageID)
             let storageCollision = !already
-                && installedStorageNames.contains(CapabilityLibrary.safeFileName(for: entry.packageID))
+                && installedStorageNames.contains(storageKey(entry.packageID))
             let requirements = report.capabilityRequirements[entry.packageID]
             let status: WorkspacePackageImportItemStatus
             let detail: String
@@ -146,15 +152,26 @@ struct WorkspacePackageImportPlanner {
             } else if storageCollision {
                 status = .incompatible
                 detail = "Its storage name collides with a capability already on this machine; the embedded copy will be skipped."
-            } else if let requirements, !requirements.accountRequirements.isEmpty {
-                status = .needsAuthentication
-                detail = "Installs as a draft; sign in to: \(requirements.accountRequirements.joined(separator: ", "))."
-            } else if let requirements, !requirements.cliPrerequisites.isEmpty {
-                status = .needsLocalSetup
-                detail = "Installs as a draft; requires locally: \(requirements.cliPrerequisites.joined(separator: ", "))."
             } else {
-                status = .needsApproval
-                detail = "Installs as a local draft pending governance review."
+                // Build the detail from BOTH requirement arrays: a capability can
+                // need an account AND a local CLI, and reporting only one would
+                // let the recipient approve it only to find it still can't run.
+                let accounts = requirements?.accountRequirements ?? []
+                let cli = requirements?.cliPrerequisites ?? []
+                var notes: [String] = []
+                if !accounts.isEmpty { notes.append("sign in to: \(accounts.joined(separator: ", "))") }
+                if !cli.isEmpty { notes.append("requires locally: \(cli.joined(separator: ", "))") }
+                // Badge: authentication takes precedence over local setup.
+                if !accounts.isEmpty {
+                    status = .needsAuthentication
+                } else if !cli.isEmpty {
+                    status = .needsLocalSetup
+                } else {
+                    status = .needsApproval
+                }
+                detail = notes.isEmpty
+                    ? "Installs as a local draft pending governance review."
+                    : "Installs as a draft; " + notes.joined(separator: "; ") + "."
             }
             capabilities.append(WorkspacePackageImportPlanItem(
                 id: "capability:\(entry.packageID)",
@@ -234,6 +251,24 @@ struct WorkspacePackageImportPlanner {
             )
         }
 
+        // Local tools add executable commands (e.g. `curl`, `gh`) that
+        // `TaskCapabilityResolver.allLocalTools` exposes to tasks. Surface them —
+        // with their command — in the review so the recipient sees the tooling a
+        // package adds, not just a post-import count.
+        let localTools = document.localTools.map { tool -> WorkspacePackageImportPlanItem in
+            let invocation = [tool.command, tool.arguments]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return WorkspacePackageImportPlanItem(
+                id: "localTool:\(tool.name)",
+                name: tool.name,
+                detail: invocation.isEmpty
+                    ? "Adds a local tool to this workspace."
+                    : "Adds a local tool that runs: \(invocation)",
+                status: .ready
+            )
+        }
+
         let accounts = manifest.googleAccountsRequiringReauth.map { email in
             WorkspacePackageImportPlanItem(
                 id: "account:\(email)",
@@ -261,6 +296,7 @@ struct WorkspacePackageImportPlanner {
             capabilities: capabilities,
             packs: packs,
             connectors: connectors,
+            localTools: localTools,
             accounts: accounts,
             sshConnections: sshConnections,
             // Every imported routine is quarantined until re-enabled.

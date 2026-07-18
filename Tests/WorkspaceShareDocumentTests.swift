@@ -819,14 +819,51 @@ struct WorkspaceShareDocumentTests {
         )
         #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
 
-        // But an actual credential assignment is still caught.
+        // But an actual credential assignment is still caught, including a
+        // prefixed key like API_TOKEN (the `_` is a word char).
         try Self.reseal(at: destination) { document in
-            document.instructions = "Use password = hunter2supersecret when connecting."
+            document.instructions = "Set API_TOKEN=supersecret123 before connecting."
         }
         let report = WorkspacePackageService().validatePackage(at: destination)
         #expect(!report.canInstall)
         #expect(report.blockers.contains { $0.message.contains("credential material") })
     }
+
+    @MainActor
+    @Test("imported local tools appear in the readiness plan with their command")
+    func localToolsAppearInPlan() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let tool = LocalTool(name: "Fetch", toolDescription: "d", icon: "terminal", toolType: "shell", command: "curl", arguments: "-sSL")
+        tool.workspace = workspace
+        container.mainContext.insert(tool)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let item = try #require(plan.localTools.first { $0.name == "Fetch" })
+        #expect(item.detail.contains("curl"))
+    }
+
+    @Test("review bounds check counts directories against the entry limit")
+    func reviewBoundsCountsDirectories() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pkg = root.appendingPathComponent("pkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: pkg.appendingPathComponent("a/b/c/d"), withIntermediateDirectories: true)
+        // 4 nested directories, no files: a file-only counter would pass at
+        // maxFileCount: 1, but directories now count too.
+        #expect(PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 1, maxTotalBytes: 1_000_000) != nil)
+        #expect(PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 100, maxTotalBytes: 1_000_000) == nil)
+    }
+
+    // MARK: - Fixtures
 
     @MainActor
     @Test("an imported one-time routine is not left immediately due")

@@ -42,8 +42,13 @@ struct WorkspacePackageImportOutcome {
     var localToolCount: Int
     var quarantinedScheduleCount: Int
     var connectorsNeedingCredentials: [String]
+    /// Connectors with no credentials but non-secret config keys whose values do
+    /// not travel — unusable until the recipient re-enters the settings.
+    var connectorsNeedingConfiguration: [String]
     var googleAccountsRequiringReauth: [String]
     var sshConnectionsRequiringLocalKeys: [String]
+    /// Referenced pack IDs the recipient's catalog lacks; imported without them.
+    var packsUnavailable: [String]
     /// Capability IDs the share referenced (built-in or remote-approved on the
     /// exporting machine) that could not be enabled here because they are not
     /// installed-and-approved on this machine. The workspace imports without
@@ -314,6 +319,7 @@ struct WorkspacePackageImportCoordinator {
         // workspace hide pack-addressable shelves and applies an unresolved
         // policy. Missing packs are surfaced in the pre-import review.
         let availablePackIDs = Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
+        let packsUnavailable = workspace.enabledPackIDs.filter { !availablePackIDs.contains($0) }
         workspace.enabledPackIDs = workspace.enabledPackIDs.filter { availablePackIDs.contains($0) }
 
         // Referenced (non-embedded) capabilities the reconciliation just stripped
@@ -365,8 +371,12 @@ struct WorkspacePackageImportCoordinator {
             connectorsNeedingCredentials: document.connectors
                 .filter { !$0.credentialKeys.isEmpty }
                 .map(\.name),
+            connectorsNeedingConfiguration: document.connectors
+                .filter { $0.credentialKeys.isEmpty && !$0.configKeys.isEmpty }
+                .map(\.name),
             googleAccountsRequiringReauth: manifest.googleAccountsRequiringReauth,
             sshConnectionsRequiringLocalKeys: manifest.sshConnectionsRequiringLocalKeys,
+            packsUnavailable: packsUnavailable,
             capabilitiesUnavailable: capabilitiesUnavailable,
             // Machine-local paths never travel in the share format, so there is
             // nothing dropped on import to report back.

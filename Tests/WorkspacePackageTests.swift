@@ -680,6 +680,39 @@ struct WorkspacePackageTests {
     }
 
     @MainActor
+    @Test("package validation rejects duplicate embedded capability entry IDs")
+    func validationRejectsDuplicateCapabilityEntryIDs() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        try capabilityLibrary.install(
+            Self.makeCapability(id: "local.tool", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        workspace.enabledCapabilityIDs = ["local.tool"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // Duplicate the single capability entry.
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        var manifest = try Self.decodeManifest(at: manifestURL)
+        if let first = manifest.capabilityEntries.first {
+            manifest.capabilityEntries = [first, first]
+        }
+        try Self.encodeManifest(manifest, to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.lowercased().contains("duplicate capability") })
+    }
+
+    @MainActor
     @Test("exported embedded capability blanks secret-keyed skill defaults; validation rejects a tampered one")
     func exportBlanksEmbeddedCapabilitySecretDefaults() throws {
         let root = try Self.temporaryRoot()

@@ -166,6 +166,11 @@ struct WorkspacePackageService {
         for entry in manifest?.appEntries ?? [] {
             validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
         }
+        // Requirements are keyed by packageID, so two entries sharing one would
+        // let the second overwrite the first — the planner then shows the last
+        // payload's prerequisites for both while the coordinator installs the
+        // first and skips the rest. Reject duplicate capability entry IDs.
+        rejectDuplicateNames((manifest?.capabilityEntries ?? []).map(\.packageID), kind: "capability entries", issues: &issues)
         var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
         for entry in manifest?.capabilityEntries ?? [] {
             validateEmbeddedCapability(
@@ -772,8 +777,12 @@ struct WorkspacePackageService {
     /// prose ("OAuth flow", "token budget", "password reset", "never reveal
     /// secrets") failed export self-verification even with no credential present.
     private func containsCredentialAssignment(_ text: String) -> Bool {
-        // key (word-boundary) [: or =] value(6+ non-space). Case-insensitive.
-        let pattern = #"(?i)\b(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b\s*[:=]\s*\S{6,}"#
+        // optional prefix segments (e.g. API_, GITHUB_) + credential key +
+        // [: or =] + value(6+ non-space). Case-insensitive. The prefix group lets
+        // `API_TOKEN=…` match (the `_` is a word char, so a bare `\btoken` never
+        // starts inside `API_TOKEN`), without restoring prose false positives —
+        // the required `[:=]` + value keeps "token budget"/"OAuth flow" out.
+        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b\s*[:=]\s*\S{6,}"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.firstMatch(in: text, range: range) != nil

@@ -134,6 +134,11 @@ enum PortablePackageSafeFileReader {
             case S_IFLNK:
                 return .containsSymlink(childRelative)
             case S_IFDIR:
+                // Directories count against the entry budget too — otherwise a
+                // deep tree of empty directories bypasses the file-count bound and
+                // can still exhaust inodes / stall the walk.
+                remainingFiles -= 1
+                if remainingFiles < 0 { return .tooManyFiles(limit: maxFileCount) }
                 if let violation = boundsWalk(
                     dirPath: childPath,
                     relativePrefix: childRelative,
@@ -235,6 +240,12 @@ enum PortablePackageSafeFileReader {
             case S_IFLNK:
                 throw PortablePackageStagingError.containsSymlink(childRelative)
             case S_IFDIR:
+                // Directories count against the entry budget too, so a deep tree
+                // of empty directories can't bypass the file-count bound.
+                remainingFiles -= 1
+                guard remainingFiles >= 0 else {
+                    throw PortablePackageStagingError.tooManyFiles(limit: maxFileCount)
+                }
                 let childFD = openat(sourceDirFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
                 guard childFD >= 0 else { throw PortablePackageStagingError.copyFailed(childRelative) }
                 try fileManager.createDirectory(
