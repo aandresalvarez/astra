@@ -79,21 +79,33 @@ struct WorkspacePackageImportCoordinator {
         modelContext: ModelContext,
         expectedPackageDigest: String? = nil
     ) throws -> WorkspacePackageImportOutcome {
-        // Re-validate at import time: the package may have changed since the
-        // review plan was built (TOCTOU), and callers are not trusted to have
-        // validated at all.
-        let report = packageService.validatePackage(at: packageURL)
+        // Copy the package into a private staging directory and consume ONLY
+        // that copy. The source URL may sit in a shared or attacker-writable
+        // location; validating it and then re-reading capability JSON and app
+        // bundles from it leaves a window where the bytes are swapped between
+        // check and use. Once copied here, nothing outside this process can
+        // change what we validate and install.
+        let stagingRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-share-import-\(UUID().uuidString.lowercased())", isDirectory: true)
+        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: stagingRoot) }
+        let stagedPackageURL = stagingRoot.appendingPathComponent("package.astra-share", isDirectory: true)
+        try fileManager.copyItem(at: packageURL, to: stagedPackageURL)
+
+        // Bind the commit to the reviewed bytes: a package swapped for a
+        // different (still-valid) one between review and confirmation would
+        // otherwise import without its inventory ever being shown. Compare the
+        // staged copy's fingerprint against the one the caller reviewed.
+        if let expectedPackageDigest,
+           Self.packageFingerprint(at: stagedPackageURL) != expectedPackageDigest {
+            throw WorkspacePackageImportError.packageChangedSinceReview
+        }
+
+        // Re-validate the STAGED copy (callers are not trusted to have validated,
+        // and this is the exact byte set that will be installed).
+        let report = packageService.validatePackage(at: stagedPackageURL)
         guard report.canInstall, let manifest = report.manifest, var config = report.workspaceConfig else {
             throw WorkspacePackageImportError.validationFailed(report.blockers)
-        }
-        // Bind the commit to the reviewed bytes: revalidation alone accepts ANY
-        // valid package now at this URL, so a package swapped for a different
-        // (still-valid) one between review and confirmation would import without
-        // its inventory ever being shown. If the caller reviewed a specific
-        // fingerprint, refuse to import anything else.
-        if let expectedPackageDigest,
-           Self.packageFingerprint(at: packageURL) != expectedPackageDigest {
-            throw WorkspacePackageImportError.packageChangedSinceReview
         }
 
         // Do every SwiftData mutation in a dedicated context on the same store,
@@ -128,22 +140,29 @@ struct WorkspacePackageImportCoordinator {
         // identity, so the source ID is display metadata only.
         config.id = nil
 
-        // Embedded custom capabilities land as local drafts pending review (see
-        // the capability loop below). But `config.enabledCapabilityIDs` carries
-        // the sender's enabled set verbatim, and the runtime resource matcher
-        // exposes enabled capabilities to task runs regardless of governance —
-        // so a freshly-imported draft would run immediately, contradicting the
-        // "pending approval" the review UI shows. These IDs are therefore
-        // stripped from the workspace's enabled set — but only AFTER the apps
-        // are imported (see below), not here: `WorkspaceAppService.createApp`
+        // An untrusted share must not mutate the recipient's GLOBAL catalog.
+        // Skill/connector/tool configs can carry `isGlobal: true`, which the
+        // generic importer honors by creating a workspace-less global resource
+        // and adding it to the enabled-global set — so importing one shared
+        // workspace would install globally-reusable definitions across the
+        // recipient's whole install. Force every imported resource to be scoped
+        // to the new workspace and drop the enable-global references, so a share
+        // only ever populates the workspace it creates.
+        config.skills = config.skills.map { var resource = $0; resource.isGlobal = false; return resource }
+        config.connectors = config.connectors?.map { var resource = $0; resource.isGlobal = false; return resource }
+        config.localTools = config.localTools?.map { var resource = $0; resource.isGlobal = false; return resource }
+        config.enabledGlobalSkillIDs = []
+        config.enabledGlobalConnectorIDs = []
+        config.enabledGlobalToolIDs = []
+
+        // `config.enabledCapabilityIDs` carries the sender's enabled set
+        // verbatim, and the runtime resource matcher exposes enabled capabilities
+        // to task runs regardless of governance. The set is reconciled AFTER the
+        // apps are imported (see below), not here: `WorkspaceAppService.createApp`
         // derives an app's dependency bindings from the workspace's CURRENTLY
-        // enabled capabilities, so the drafts must still be enabled when the
-        // apps are created or their bindings persist unmapped and never recover.
-        // Built-in / already-approved capabilities keep their state.
-        let embeddedIDsNeedingApproval = Set(manifest.capabilityEntries.map(\.packageID).filter { id in
-            guard let installed = capabilityLibrary.installedPackage(id: id) else { return true }
-            return installed.governance.approvalStatus != .approved
-        })
+        // enabled capabilities, so any capability an app depends on must still be
+        // enabled when the apps are created or the binding persists unmapped and
+        // never recovers.
 
         try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: true)
         var installedCapabilityIDs: [String] = []
@@ -180,7 +199,7 @@ struct WorkspacePackageImportCoordinator {
                 continue
             }
             let data = try PortablePackageSafeFileReader.readData(
-                rootURL: packageURL,
+                rootURL: stagedPackageURL,
                 relativePath: entry.relativePath
             )
             let decoder = JSONDecoder()
@@ -197,7 +216,7 @@ struct WorkspacePackageImportCoordinator {
 
         var appsImported: [String] = []
         for entry in manifest.appEntries {
-            let bundleURL = packageURL.appendingPathComponent(entry.relativeBundlePath, isDirectory: true)
+            let bundleURL = stagedPackageURL.appendingPathComponent(entry.relativeBundlePath, isDirectory: true)
             let result: WorkspaceAppPackageImportResult
             if let importAppBundle {
                 result = try importAppBundle(bundleURL, workspace, importContext)
@@ -213,16 +232,20 @@ struct WorkspacePackageImportCoordinator {
         }
 
         // Now that every app's dependency bindings have been resolved against
-        // the fully-enabled capability set (mapped, not missing), remove the
-        // still-pending-approval drafts from the workspace's enabled set so the
-        // runtime resource matcher will not expose them to task runs before the
-        // recipient reviews and re-enables them. The mapped binding rows persist
-        // independently of the enabled set, so re-enabling later lights the app
-        // back up without a manual re-bind. Nothing runs between here and the
-        // single commit below, so there is no window where a draft is live.
-        if !embeddedIDsNeedingApproval.isEmpty {
-            workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs
-                .filter { !embeddedIDsNeedingApproval.contains($0) }
+        // the fully-enabled capability set (mapped, not missing), reconcile the
+        // enabled set down to only what is safe to expose immediately: a
+        // capability that is built-in or already approved ON THIS MACHINE. Every
+        // other referenced ID is removed — an embedded draft just installed, a
+        // recipient-local capability with the same ID that was never approved,
+        // or an ID that resolves to nothing here. This closes two holes: an
+        // untrusted share cannot run its own unreviewed draft, and it cannot
+        // silently activate one of the recipient's own unapproved local tools by
+        // merely naming its ID in the enabled set. The mapped binding rows
+        // persist independently, so the recipient re-enables after review without
+        // a manual re-bind. Nothing runs between here and the commit below, so
+        // there is no window where a pending capability is live.
+        workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs.filter { id in
+            capabilityLibrary.installedPackage(id: id)?.governance.approvalStatus == .approved
         }
 
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(

@@ -280,6 +280,101 @@ struct WorkspacePackageImportTests {
         #expect(targetLibrary.installedPackage(id: "local.tool")?.name == "Pre-existing Capability")
     }
 
+    @MainActor
+    @Test("import does not activate a recipient-local unapproved capability the package merely names")
+    func importDoesNotActivateRecipientLocalUnapprovedCapability() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The share enables an ID it does NOT embed — one that happens to exist,
+        // unapproved, in the recipient's own library. Plus its own embedded draft.
+        let fixture = try Self.exportedPackage(root: root) { workspace in
+            workspace.enabledCapabilityIDs = ["local.tool", "recipient.private"]
+        }
+
+        let targetContainer = try Self.makeContainer()
+        let targetLibrary = CapabilityLibrary(directory: root.appendingPathComponent("target-capabilities", isDirectory: true))
+        try targetLibrary.install(
+            Self.makeCapability(id: "recipient.private", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = targetLibrary
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // Neither the package's own just-installed draft nor the recipient's
+        // pre-existing unapproved capability is left enabled by an untrusted share.
+        #expect(!outcome.workspace.enabledCapabilityIDs.contains("local.tool"))
+        #expect(!outcome.workspace.enabledCapabilityIDs.contains("recipient.private"))
+        // The recipient's own capability is untouched, just not auto-enabled.
+        #expect(targetLibrary.installedPackage(id: "recipient.private")?.governance.approvalStatus == .draft)
+    }
+
+    @MainActor
+    @Test("import does not enable recipient global resources named by the share")
+    func importDoesNotEnableRecipientGlobalResources() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root) { workspace in
+            workspace.enabledGlobalConnectorIDs = ["recipient-global-connector"]
+            workspace.enabledGlobalSkillIDs = ["recipient-global-skill"]
+            workspace.enabledGlobalToolIDs = ["recipient-global-tool"]
+        }
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
+        )
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // A shared workspace never reaches into the recipient's global catalog.
+        #expect(outcome.workspace.enabledGlobalConnectorIDs.isEmpty)
+        #expect(outcome.workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(outcome.workspace.enabledGlobalToolIDs.isEmpty)
+    }
+
+    @MainActor
+    @Test("import consumes a private copy and leaves no staging residue")
+    func importConsumesPrivateCopyAndCleansUp() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
+        )
+
+        _ = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // The staged private copy is removed once the import completes.
+        let leftovers = try FileManager.default.contentsOfDirectory(
+            at: FileManager.default.temporaryDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("astra-share-import-") }
+        #expect(leftovers.isEmpty)
+    }
+
     // MARK: - Rollback
 
     @MainActor
