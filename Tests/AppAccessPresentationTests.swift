@@ -26,7 +26,7 @@ struct AppAccessPresentationTests {
         #expect(fromDark.title == "Light mode")
         #expect(fromDark.systemImageName == "sun.max.fill")
         #expect(fromDark.target == .light)
-        #expect(AppAccessMenuPresentation.drawerRowCount(destinationCount: 3) == 4)
+        #expect(AppAccessMenuPresentation.drawerRowCount(destinationCount: 3) == 5)
     }
 
     @Test("App utility windows use stable scene identifiers")
@@ -84,13 +84,31 @@ struct AppAccessPresentationTests {
         #expect(!source.contains("controlStroke"))
         #expect(!source.contains("SidebarLeanPresentation"))
         #expect(source.contains(".contentShape(Rectangle())"))
-        #expect(source.contains("controlFill\n                }"))
+        #expect(source.contains("controlFill"))
         #expect(!source.contains("RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)\n                        .fill(controlFill)"))
         // Gear (VS Code's Manage-menu pattern: the button opens a drawer
         // that itself contains Settings) — ellipsis.circle promised only
         // "more…" and was the vaguest glyph on the rail.
         #expect(AppAccessMenuPresentation.footerIconSystemName == "gearshape")
         #expect(!source.contains("\"app.dashed\""))
+    }
+
+    @Test("Sidebar app access menu owns the manual update check")
+    func sidebarAppAccessMenuOwnsManualUpdateCheck() throws {
+        let appMenuSource = try astraAppSource()
+        let appAccessSource = try appAccessMenuSource()
+        let contentViewSource = try contentViewSource()
+
+        #expect(appAccessSource.contains("AppAccessUpdateCheckButton(appUpdateController: appUpdateController)"))
+        #expect(appAccessSource.contains("appUpdateController.checkForUpdates()"))
+        #expect(appAccessSource.contains(".accessibilityIdentifier(\"AppAccessMenuItem.checkForUpdates\")"))
+        #expect(appAccessSource.contains("AppAccessAvailableUpdateButton(appUpdateController: appUpdateController)"))
+        #expect(appAccessSource.contains(".accessibilityIdentifier(\"AppAccessAvailableUpdateButton\")"))
+        #expect(appAccessSource.contains("if appUpdateController.shouldShowUpdateButton"))
+        #expect(!appMenuSource.contains("CheckForUpdatesMenuItem"))
+        #expect(!appMenuSource.contains("CommandGroup(after: .appInfo)"))
+        #expect(!contentViewSource.contains("AppUpdateButton"))
+        #expect(!contentViewSource.contains("ContentToolbar"))
     }
 
     private func appAccessMenuSource() throws -> String {
@@ -106,6 +124,22 @@ struct AppAccessPresentationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appending(path: "Astra/Views/TaskSidebarView.swift")
+        return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
+
+    private func astraAppSource() throws -> String {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/ASTRAApp.swift")
+        return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
+
+    private func contentViewSource() throws -> String {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/Views/ContentView.swift")
         return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }

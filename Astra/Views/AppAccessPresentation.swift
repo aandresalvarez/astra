@@ -17,7 +17,7 @@ enum AppAccessMenuPresentation {
     /// inset now that the button itself spans the footer.
     static let footerContentHorizontalPadding: CGFloat = 22
     // Gear, not ellipsis: the drawer holds app utilities (Settings, Logs,
-    // Usage), and a gear names that; ellipsis-in-a-circle promised only
+    // Usage, updates), and a gear names that; ellipsis-in-a-circle promised only
     // "more…" and was the vaguest glyph on the rail.
     static let footerIconSystemName = "gearshape"
     static let footerRestFillOpacity = 0.0
@@ -27,9 +27,10 @@ enum AppAccessMenuPresentation {
     static let drawerPadding: CGFloat = 6
     static let drawerRowHeight: CGFloat = 36
     static let drawerRowSpacing: CGFloat = 2
+    static let manualUpdateCheckRowCount = 1
 
     static func drawerRowCount(destinationCount: Int) -> Int {
-        destinationCount + 1
+        destinationCount + manualUpdateCheckRowCount + 1
     }
 
     static func drawerHeight(rowCount: Int) -> CGFloat {

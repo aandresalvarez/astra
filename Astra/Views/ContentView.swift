@@ -499,6 +499,7 @@ struct ContentView: View {
     /// the same `SidebarSurface` so the two never diverge in style.
     private var sidebarContent: some View {
         TaskSidebarContainerView(
+            appUpdateController: appUpdateController,
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
@@ -875,11 +876,6 @@ struct ContentView: View {
             // beside the traffic lights in every layout. It feeds the hover-to-peek
             // state (isSidebarToggleHovered); the native split-view toggle is
             // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
-            ContentToolbar(
-                appUpdateController: appUpdateController,
-                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
-            )
-
             if topRightActions.showsToolbar {
                 ToolbarItem(placement: .primaryAction) {
                     WorkspaceTopRightToolbar(
@@ -2782,24 +2778,6 @@ struct ContentView: View {
             return CopilotCLIRuntime.detectPath()
         case let executableName:
             return RuntimePathResolver.detectExecutablePath(named: executableName)
-        }
-    }
-}
-
-private struct ContentToolbar: ToolbarContent {
-    @ObservedObject var appUpdateController: AppUpdateController
-
-    let onCheckForUpdates: () -> Void
-
-    var body: some ToolbarContent {
-        if appUpdateController.shouldShowUpdateButton {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: onCheckForUpdates) {
-                    Label(appUpdateController.buttonTitle, systemImage: "arrow.down.circle")
-                }
-                .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
-                .accessibilityIdentifier("AppUpdateButton")
-            }
         }
     }
 }
