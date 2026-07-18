@@ -203,6 +203,17 @@ struct WorkspacePackageImportPlanner {
 
         let connectors = document.connectors.map { connector -> WorkspacePackageImportPlanItem in
             if connector.credentialKeys.isEmpty {
+                // A connector with no credentials but non-secret config keys
+                // (values dropped from the share) is not runnable until those
+                // settings are re-entered — surface it as local setup, not Ready.
+                if !connector.configKeys.isEmpty {
+                    return WorkspacePackageImportPlanItem(
+                        id: "connector:\(connector.name)",
+                        name: connector.name,
+                        detail: "Configuration values never travel in a package. Re-enter: \(connector.configKeys.joined(separator: ", "))",
+                        status: .needsLocalSetup
+                    )
+                }
                 return WorkspacePackageImportPlanItem(
                     id: "connector:\(connector.name)",
                     name: connector.name,

@@ -177,10 +177,18 @@ enum PortablePackageSafeFileReader {
             throw PortablePackageStagingError.containsSymlink(sourceURL.lastPathComponent)
         }
         try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        // Open the root as a directory descriptor with O_NOFOLLOW; the whole walk
+        // then resolves children RELATIVE to directory descriptors (openat/fstatat
+        // with O_NOFOLLOW), never by reopening a path by name — so a directory
+        // that passed lstat as S_IFDIR cannot be swapped for a symlink and
+        // followed out of the package between check and open.
+        let rootFD = Darwin.open(sourceURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard rootFD >= 0 else { throw PortablePackageStagingError.copyFailed(sourceURL.lastPathComponent) }
         var remainingFiles = maxFileCount
         var remainingBytes = maxTotalBytes
+        // copyBounded takes ownership of rootFD (closed via fdopendir/closedir).
         try copyBounded(
-            fromDirectory: sourceURL.path,
+            sourceDirFD: rootFD,
             toDirectory: destinationURL.path,
             relativePrefix: "",
             maxFileCount: maxFileCount,
@@ -191,8 +199,14 @@ enum PortablePackageSafeFileReader {
         )
     }
 
+    /// Copies the directory referenced by `sourceDirFD` (ownership transferred:
+    /// closed here). Children are stat'd with `fstatat(..., AT_SYMLINK_NOFOLLOW)`
+    /// and opened with `openat(..., O_NOFOLLOW)` relative to the directory
+    /// descriptor, so no path component is ever re-resolved by name — closing the
+    /// TOCTOU where a checked directory child is replaced by a symlink before the
+    /// recursive descent.
     private static func copyBounded(
-        fromDirectory sourcePath: String,
+        sourceDirFD: Int32,
         toDirectory destinationPath: String,
         relativePrefix: String,
         maxFileCount: Int,
@@ -201,28 +215,34 @@ enum PortablePackageSafeFileReader {
         remainingBytes: inout Int,
         fileManager: FileManager
     ) throws {
-        guard let dir = opendir(sourcePath) else { return }
+        // fdopendir adopts sourceDirFD; closedir closes it. openat/fstatat on the
+        // same fd only use it as a resolution base and don't disturb readdir.
+        guard let dir = fdopendir(sourceDirFD) else {
+            close(sourceDirFD)
+            throw PortablePackageStagingError.copyFailed(relativePrefix.isEmpty ? "." : relativePrefix)
+        }
         defer { closedir(dir) }
         while let entry = readdir(dir) {
             let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in
                 String(cString: Array(raw.bindMemory(to: CChar.self)))
             }
             if name == "." || name == ".." { continue }
-            let childSource = "\(sourcePath)/\(name)"
             let childDestination = "\(destinationPath)/\(name)"
             let childRelative = relativePrefix.isEmpty ? name : "\(relativePrefix)/\(name)"
             var childStat = stat()
-            guard lstat(childSource, &childStat) == 0 else { continue }
+            guard fstatat(sourceDirFD, name, &childStat, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
             switch childStat.st_mode & S_IFMT {
             case S_IFLNK:
                 throw PortablePackageStagingError.containsSymlink(childRelative)
             case S_IFDIR:
+                let childFD = openat(sourceDirFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+                guard childFD >= 0 else { throw PortablePackageStagingError.copyFailed(childRelative) }
                 try fileManager.createDirectory(
                     at: URL(fileURLWithPath: childDestination, isDirectory: true),
                     withIntermediateDirectories: true
                 )
                 try copyBounded(
-                    fromDirectory: childSource,
+                    sourceDirFD: childFD,
                     toDirectory: childDestination,
                     relativePrefix: childRelative,
                     maxFileCount: maxFileCount,
@@ -236,15 +256,17 @@ enum PortablePackageSafeFileReader {
                 guard remainingFiles >= 0 else {
                     throw PortablePackageStagingError.tooManyFiles(limit: maxFileCount)
                 }
-                // The pre-copy `st_size` is advisory only: the source directory
-                // is still attacker-writable, so the file can be grown or swapped
-                // for a larger regular file between this `lstat` and the copy.
-                // Stream through a no-follow reopen, enforcing the *remaining*
-                // byte budget on bytes actually read rather than trusting the
-                // stale size, so a mid-copy growth is rejected before it can burn
+                // Open the file relative to the directory fd with O_NOFOLLOW, so a
+                // symlink swapped in after the fstatat fails the open. The pre-copy
+                // `st_size` is advisory only (the source is still attacker-writable),
+                // so stream and enforce the *remaining* byte budget on bytes
+                // actually read — a mid-copy growth is rejected before it can burn
                 // arbitrary temp disk.
+                let fileFD = openat(sourceDirFD, name, O_RDONLY | O_NOFOLLOW)
+                guard fileFD >= 0 else { throw PortablePackageStagingError.copyFailed(childRelative) }
                 let copied = try copyRegularFileBounded(
-                    fromPath: childSource,
+                    sourceFD: fileFD,
+                    label: childRelative,
                     toPath: childDestination,
                     maxBytes: remainingBytes,
                     totalLimit: maxTotalBytes
@@ -258,25 +280,23 @@ enum PortablePackageSafeFileReader {
         }
     }
 
-    /// Streams a single regular file from `sourcePath` to `destinationPath`,
-    /// copying at most `maxBytes` and returning the number of bytes written. The
-    /// source is reopened with `O_NOFOLLOW` (so a symlink swapped in after the
-    /// caller's `lstat` fails the open rather than being followed) and reading
-    /// stops the instant the byte budget is exceeded — the copy is bounded by
-    /// bytes actually read, never a pre-measured `st_size`.
+    /// Streams the already-open, no-follow source descriptor `sourceFD`
+    /// (ownership transferred: closed here) to `destinationPath`, copying at most
+    /// `maxBytes` and returning the number of bytes written. Reading stops the
+    /// instant the byte budget is exceeded — the copy is bounded by bytes
+    /// actually read, never a pre-measured `st_size`.
     private static func copyRegularFileBounded(
-        fromPath sourcePath: String,
+        sourceFD: Int32,
+        label: String,
         toPath destinationPath: String,
         maxBytes: Int,
         totalLimit: Int
     ) throws -> Int {
-        let sourceFD = Darwin.open(sourcePath, O_RDONLY | O_NOFOLLOW)
-        guard sourceFD >= 0 else { throw PortablePackageStagingError.copyFailed(sourcePath) }
         defer { close(sourceFD) }
         var sourceStat = stat()
         guard fstat(sourceFD, &sourceStat) == 0,
               (sourceStat.st_mode & S_IFMT) == S_IFREG else {
-            throw PortablePackageStagingError.copyFailed(sourcePath)
+            throw PortablePackageStagingError.copyFailed(label)
         }
         let destFD = Darwin.open(destinationPath, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard destFD >= 0 else { throw PortablePackageStagingError.copyFailed(destinationPath) }
@@ -287,7 +307,7 @@ enum PortablePackageSafeFileReader {
         var total = 0
         while true {
             let readCount = read(sourceFD, &buffer, bufferSize)
-            if readCount < 0 { throw PortablePackageStagingError.copyFailed(sourcePath) }
+            if readCount < 0 { throw PortablePackageStagingError.copyFailed(label) }
             if readCount == 0 { break }
             total += readCount
             guard total <= maxBytes else {

@@ -647,6 +647,44 @@ struct WorkspacePackageService {
         rejectMultiSkillOwnership(
             document.skills.flatMap(\.localToolNames), kind: "local tool", issues: &issues
         )
+
+        // Every by-name reference must resolve within the package. A skill that
+        // names a connector/tool the package omits (e.g. the exporter filtered an
+        // unsafe attached resource but the projection fell back to the saved name
+        // list) would silently lose that behavior on import with no warning.
+        let connectorNames = Set(document.connectors.map(\.name))
+        let toolNames = Set(document.localTools.map(\.name))
+        let skillNames = Set(document.skills.map(\.name))
+        for skill in document.skills {
+            for name in skill.connectorNames where !connectorNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/skills",
+                    "Skill '\(skill.name)' references connector '\(name)' that is not present in the package."
+                ))
+            }
+            for name in skill.localToolNames where !toolNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/skills",
+                    "Skill '\(skill.name)' references local tool '\(name)' that is not present in the package."
+                ))
+            }
+        }
+        for template in document.templates {
+            for name in template.defaultSkillNames where !skillNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates",
+                    "Template '\(template.name)' references skill '\(name)' that is not present in the package."
+                ))
+            }
+        }
+        for schedule in document.schedules {
+            for name in schedule.skillNames where !skillNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules",
+                    "Routine '\(schedule.name)' references skill '\(name)' that is not present in the package."
+                ))
+            }
+        }
     }
 
     private func rejectMultiSkillOwnership(
@@ -685,14 +723,26 @@ struct WorkspacePackageService {
         reported: inout Set<String>,
         issues: inout [PortablePackageValidationIssue]
     ) {
-        let lowercased = text.lowercased()
-        let forbiddenKeys = ["api_key", "apikey", "oauth", "password", "secret", "token"]
-        if forbiddenKeys.contains(where: { lowercased.contains($0) }), reported.insert("\(path)#credential").inserted {
+        if containsCredentialAssignment(text), reported.insert("\(path)#credential").inserted {
             issues.append(blocker(path, "Package content appears to include credential material."))
         }
         if containsAbsoluteMachinePath(text), reported.insert("\(path)#path").inserted {
             issues.append(blocker(path, "Package content appears to include an absolute local path."))
         }
+    }
+
+    /// True only when `text` looks like an actual credential ASSIGNMENT — a
+    /// credential key name immediately followed by a `:`/`=` delimiter and a
+    /// non-trivial value. The old check flagged any occurrence of "oauth",
+    /// "password", "secret", "token", etc. anywhere in free text, so ordinary
+    /// prose ("OAuth flow", "token budget", "password reset", "never reveal
+    /// secrets") failed export self-verification even with no credential present.
+    private func containsCredentialAssignment(_ text: String) -> Bool {
+        // key (word-boundary) [: or =] value(6+ non-space). Case-insensitive.
+        let pattern = #"(?i)\b(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b\s*[:=]\s*\S{6,}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.firstMatch(in: text, range: range) != nil
     }
 
     /// True when `text` embeds an absolute macOS/Unix path. The old check only

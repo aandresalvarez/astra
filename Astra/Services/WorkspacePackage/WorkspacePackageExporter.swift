@@ -67,8 +67,12 @@ struct WorkspacePackageExporter {
         // enabled-global sets, secret env values, and stable resource UUIDs are
         // all simply absent from the DTO. `config` is retained, unmutated, only
         // to derive the manifest's readiness inventory below.
+        // A connection needs local setup review if it referenced a key path OR a
+        // config alias: the alias may be absent on the recipient, or resolve
+        // through their `~/.ssh/config` to a different host/ProxyCommand. Neither
+        // the keyPath nor the alias target travels, so both must be flagged.
         let sshLabelsRequiringLocalKeys = config.sshConnections
-            .filter { !$0.keyPath.isEmpty }
+            .filter { !$0.keyPath.isEmpty || !$0.configAlias.isEmpty }
             .map(\.displayLabel)
             .sorted()
         let shareDocument = WorkspaceShareProjection.document(from: config)

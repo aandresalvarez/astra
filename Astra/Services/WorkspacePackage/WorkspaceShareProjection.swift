@@ -83,6 +83,9 @@ enum WorkspaceShareProjection {
                 baseURL: Self.baseURLWithoutCredentials(c.baseURL),
                 authMethod: c.authMethod,
                 credentialKeys: c.credentialKeys,
+                // Key NAMES only; values (which may hold sensitive data) do not
+                // travel — the recipient re-enters them.
+                configKeys: c.configKeys,
                 notes: c.notes
             )
         }
@@ -224,6 +227,10 @@ enum WorkspaceShareImporter {
             )
             connector.credentialKeys = share.credentialKeys
             connector.credentialValues = Array(repeating: "", count: share.credentialKeys.count)
+            // Config key names travel; values do not — the recipient re-enters
+            // them (surfaced as a local-setup item in the review).
+            connector.configKeys = share.configKeys
+            connector.configValues = Array(repeating: "", count: share.configKeys.count)
             connector.isGlobal = false
             connector.notes = share.notes
             connector.workspace = workspace
@@ -345,6 +352,15 @@ enum WorkspaceShareImporter {
             // Recompute the next fire from now instead of trusting a stale
             // sender date; the routine is quarantined regardless.
             schedule.advanceNextFireDate()
+            // A `.once` routine's single fire moment does not travel (no
+            // nextFireDate in the share), and the constructor's fabricated `now`
+            // would make it immediately due the moment the recipient re-enables
+            // it from the routine list without editing. Push it to the far future
+            // so re-enabling never auto-fires the sender's un-set date; the user
+            // must open the routine and choose a new one.
+            if schedule.scheduleType == .once {
+                schedule.nextFireDate = .distantFuture
+            }
             modelContext.insert(schedule)
             scheduleCount += 1
         }

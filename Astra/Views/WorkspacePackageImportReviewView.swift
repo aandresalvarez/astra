@@ -307,6 +307,9 @@ struct WorkspacePackageImportReviewView: View {
             ForEach(outcome.capabilitiesUnavailable, id: \.self) { id in
                 infoRow("Capability", "\(id) isn't installed and approved here — install and approve it, then enable it in this workspace.")
             }
+            ForEach(outcome.capabilitiesInstalledAsDraft, id: \.self) { id in
+                infoRow("Capability", "\(id) installed as a draft pending governance review — approve it, then enable it in this workspace.")
+            }
             if !outcome.droppedMachinePaths.isEmpty {
                 infoRow("Paths", "Not transferred: \(outcome.droppedMachinePaths.joined(separator: ", "))")
             }
@@ -316,6 +319,7 @@ struct WorkspacePackageImportReviewView: View {
                outcome.sshConnectionsRequiringLocalKeys.isEmpty,
                outcome.capabilitiesSkippedForConflict.isEmpty,
                outcome.capabilitiesUnavailable.isEmpty,
+               outcome.capabilitiesInstalledAsDraft.isEmpty,
                outcome.droppedMachinePaths.isEmpty {
                 infoRow("Nothing", "Everything imported ready to use.")
             }

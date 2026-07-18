@@ -102,6 +102,12 @@ struct ShareConnector: Codable, Sendable, Equatable {
     var baseURL: String
     var authMethod: String
     var credentialKeys: [String]
+    /// Non-secret configuration KEY names (e.g. `JIRA_PROJECTS`, a tenant ID).
+    /// Only the names travel — `configValues` is dropped because it can hold
+    /// non-secret-keyed sensitive data — so the recipient re-enters the values.
+    /// Surfaced as a local-setup readiness item so a connector needing config
+    /// isn't shown as immediately Ready.
+    var configKeys: [String]
     var notes: String
 }
 

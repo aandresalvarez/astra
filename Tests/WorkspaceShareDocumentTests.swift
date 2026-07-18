@@ -567,6 +567,7 @@ struct WorkspaceShareDocumentTests {
                 baseURL: "http://example.com/api",
                 authMethod: "bearer",
                 credentialKeys: ["TOKEN"],
+                configKeys: [],
                 notes: ""
             )]
         }
@@ -742,7 +743,7 @@ struct WorkspaceShareDocumentTests {
             document.connectors = [ShareConnector(
                 name: "Shared Connector", serviceType: "custom", icon: "bolt",
                 description: "", baseURL: "https://example.com", authMethod: "none",
-                credentialKeys: [], notes: ""
+                credentialKeys: [], configKeys: [], notes: ""
             )]
         }
         let report = WorkspacePackageService().validatePackage(at: destination)
@@ -798,6 +799,183 @@ struct WorkspaceShareDocumentTests {
         if case .containsSymlink = PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 100, maxTotalBytes: 1_000_000) {
         } else {
             Issue.record("expected a symlink violation")
+        }
+    }
+
+    @MainActor
+    @Test("credential-related words in prose do not block export; an actual assignment does")
+    func credentialWordsInProseDoNotBlockExport() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        workspace.instructions = "Explain the OAuth flow, respect the token budget, handle password reset, and never reveal secrets."
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        // selfVerify runs the same content scan; prose must not fail export.
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // But an actual credential assignment is still caught.
+        try Self.reseal(at: destination) { document in
+            document.instructions = "Use password = hunter2supersecret when connecting."
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("credential material") })
+    }
+
+    @MainActor
+    @Test("an imported one-time routine is not left immediately due")
+    func importedOnceRoutineIsNotImmediatelyDue() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
+        let schedule = TaskSchedule(name: "OneShot", goal: "g", workspace: senderWorkspace, scheduleType: .once)
+        senderContainer.mainContext.insert(schedule)
+
+        let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: senderWorkspace,
+            modelContext: senderContainer.mainContext,
+            to: packageURL
+        )
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("caps", isDirectory: true)
+        )
+        let outcome = try coordinator.importPackage(
+            at: packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        let importedID = outcome.workspace.id
+        let schedules = try targetContainer.mainContext.fetch(
+            FetchDescriptor<TaskSchedule>(predicate: #Predicate { $0.workspace?.id == importedID })
+        )
+        let imported = try #require(schedules.first)
+        #expect(imported.isEnabled == false)
+        // A fabricated "now" would make it due immediately on re-enable.
+        #expect(imported.nextFireDate > Date(timeIntervalSinceNow: 3600))
+    }
+
+    @MainActor
+    @Test("validation rejects a skill referencing a connector the package omits")
+    func validationRejectsUnresolvedConnectorReference() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        try Self.reseal(at: destination) { document in
+            document.skills = [ShareSkill(
+                name: "Dangler", icon: "gear", description: "",
+                allowedTools: [], disallowedTools: [], customTools: [],
+                behaviorInstructions: "", environmentKeys: [], environmentValues: [],
+                connectorNames: ["ghost-connector"], localToolNames: []
+            )]
+            document.connectors = []
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("ghost-connector") })
+    }
+
+    @MainActor
+    @Test("an SSH connection with a config alias is flagged as needing local setup")
+    func sshConfigAliasFlaggedForLocalSetup() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        SSHConnectionManager.save(
+            [SSHConnection(name: "aliased", host: "prod", user: "deploy", configAlias: "prod-alias")],
+            workspacePath: workspace.primaryPath
+        )
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let manifest = try #require(report.manifest)
+        #expect(!manifest.sshConnectionsRequiringLocalKeys.isEmpty)
+    }
+
+    @MainActor
+    @Test("a connector needing only non-secret config is local setup, not Ready")
+    func connectorNeedingConfigIsLocalSetup() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "custom",
+            icon: "bolt",
+            connectorDescription: "j",
+            baseURL: "https://jira.example.com",
+            authMethod: "none"
+        )
+        connector.configKeys = ["JIRA_PROJECTS"]
+        connector.configValues = ["ENG,OPS"]
+        connector.workspace = workspace
+        container.mainContext.insert(connector)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        // The config VALUE never travels.
+        let shareText = try String(contentsOf: destination.appendingPathComponent("workspace-share.json"), encoding: .utf8)
+        #expect(!shareText.contains("ENG,OPS"))
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let item = try #require(plan.connectors.first { $0.name == "Jira" })
+        #expect(item.status == .needsLocalSetup)
+        #expect(item.detail.contains("JIRA_PROJECTS"))
+    }
+
+    @Test("bounded staging copies a nested tree and rejects a nested symlink")
+    func boundedStagingCopiesNestedTreeAndRejectsNestedSymlink() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("src", isDirectory: true)
+        let nested = source.appendingPathComponent("a/b", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("hello".utf8).write(to: nested.appendingPathComponent("file.txt"))
+
+        // Normal nested tree copies through the fd-based walk.
+        let dest = root.appendingPathComponent("staged", isDirectory: true)
+        try PortablePackageSafeFileReader.stageBoundedCopy(from: source, to: dest)
+        let copied = try String(contentsOf: dest.appendingPathComponent("a/b/file.txt"), encoding: .utf8)
+        #expect(copied == "hello")
+
+        // A symlink nested inside a subdirectory is rejected.
+        try FileManager.default.createSymbolicLink(
+            at: nested.appendingPathComponent("link"),
+            withDestinationURL: URL(fileURLWithPath: "/etc/hosts")
+        )
+        let dest2 = root.appendingPathComponent("staged2", isDirectory: true)
+        #expect(throws: PortablePackageStagingError.self) {
+            try PortablePackageSafeFileReader.stageBoundedCopy(from: source, to: dest2)
         }
     }
 

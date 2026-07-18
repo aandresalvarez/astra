@@ -116,7 +116,9 @@ struct WorkspacePackageTests {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (container, workspace) = try Self.makeWorkspace(root: root)
-        workspace.instructions = "Use the api_key stored in ~/.env for local runs."
+        // An actual credential assignment (key + delimiter + value), not merely
+        // prose mentioning "api_key" — the scan is assignment-shaped now.
+        workspace.instructions = "Use api_key=sk-live-supersecret123 for local runs."
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         #expect(throws: WorkspacePackageExportError.self) {
