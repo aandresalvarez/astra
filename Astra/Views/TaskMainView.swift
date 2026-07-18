@@ -5580,7 +5580,7 @@ struct TaskMainView: View {
                 "source": "chat_message"
             ])
             onMoveToDraft?(task)
-        } else if [.pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
+        } else if [.running, .pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
             // Persist the user's turn before waiting for a worker or the
             // workspace lock. The runtime links this existing event to its run
             // on admission instead of inserting a duplicate message.
@@ -5597,17 +5597,19 @@ struct TaskMainView: View {
                 return
             }
             messageText = ""
-            let interruptionSummary = TaskRunLifecycleService.cancelTask(
-                task,
-                modelContext: modelContext,
-                source: .supersededByNewRun
-            )
-            if interruptionSummary.runsUpdated > 0 {
-                AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                    "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                    "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                    "next_action": "continue_session"
-                ], level: .warning)
+            if task.status != .running {
+                let interruptionSummary = TaskRunLifecycleService.cancelTask(
+                    task,
+                    modelContext: modelContext,
+                    source: .supersededByNewRun
+                )
+                if interruptionSummary.runsUpdated > 0 {
+                    AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
+                        "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
+                        "running_runs_cancelled": String(interruptionSummary.runsUpdated),
+                        "next_action": "continue_session"
+                    ], level: .warning)
+                }
             }
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
@@ -5616,6 +5618,7 @@ struct TaskMainView: View {
                     task: task,
                     message: msg,
                     existingMessageEventID: savedTurn.eventID,
+                    turnRequestID: savedTurn.requestID,
                     modelContext: modelContext
                 ) { _ in }
             }

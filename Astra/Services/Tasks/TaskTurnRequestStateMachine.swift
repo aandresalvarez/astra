@@ -29,7 +29,24 @@ enum TaskTurnRequestStateMachine {
     ) -> TransitionResult {
         let current = request.state
         guard current != next else {
-            return TransitionResult(from: current, to: next, changed: false, rejection: nil)
+            let previousRunID = request.runID
+            let previousBlockerID = request.blockingTaskID
+            let previousBlockerSummary = request.blockerSummary
+            if let runID { request.runID = runID }
+            if blockingTaskID != nil || blockerSummary != nil {
+                request.blockingTaskID = blockingTaskID
+                request.blockerSummary = blockerSummary
+            }
+            let changed = previousRunID != request.runID
+                || previousBlockerID != request.blockingTaskID
+                || previousBlockerSummary != request.blockerSummary
+            if changed {
+                request.task?.updatedAt = date
+                if let taskID = request.task?.id {
+                    TaskThreadChangeNotifier.post(taskID: taskID, source: "turn_request_\(next.rawValue)")
+                }
+            }
+            return TransitionResult(from: current, to: next, changed: changed, rejection: nil)
         }
         guard allowedTransitions[current, default: []].contains(next) else {
             return TransitionResult(
@@ -53,6 +70,12 @@ enum TaskTurnRequestStateMachine {
         if next.isTerminal {
             request.terminalAt = date
             request.terminalReason = terminalReason
+        } else if current.isTerminal {
+            // Retrying a failed or cancelled submission reuses the same
+            // durable intent. The linked TaskRun history remains the record
+            // of prior attempts; the request is once again actionable.
+            request.terminalAt = nil
+            request.terminalReason = nil
         }
         request.task?.updatedAt = date
         if let taskID = request.task?.id {
@@ -67,8 +90,8 @@ enum TaskTurnRequestStateMachine {
         .admitted: [.waitingForWorker, .running, .failed, .cancelled],
         .running: [.completed, .failed, .cancelled],
         .completed: [],
-        .failed: [],
-        .cancelled: []
+        .failed: [.waitingForWorker],
+        .cancelled: [.waitingForWorker]
     ]
 }
 
@@ -88,6 +111,13 @@ enum TaskTurnRequestRepository {
 
     static func activeRequests(for task: AgentTask, in modelContext: ModelContext) throws -> [TaskTurnRequest] {
         try requests(for: task, in: modelContext).filter { $0.state.isActive }
+    }
+
+    static func request(id: UUID, in modelContext: ModelContext) throws -> TaskTurnRequest? {
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate { $0.id == id }
+        )
+        return try modelContext.fetch(descriptor).first
     }
 
     static func nextSequence(for task: AgentTask, in modelContext: ModelContext) throws -> Int {

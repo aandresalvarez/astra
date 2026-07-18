@@ -67,7 +67,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func cancelTask(_ task: AgentTask) {
-        taskQueue.cancel(task: task)
+        taskQueue.cancel(task: task, modelContext: modelContext)
         let summary = TaskRunLifecycleService.cancelTask(
             task,
             modelContext: modelContext,
@@ -86,8 +86,12 @@ final class TaskLifecycleCoordinator {
     /// `@discardableResult` — production callers ignore it.
     @discardableResult
     func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
-        let retryFollowUpMessage = Self.latestRetryableFollowUpMessage(for: task)
-        let retryMode = retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up"
+        let retryTurn = latestRetryableTurnRequest(for: task)
+        let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
+            ?? Self.latestRetryableFollowUpMessage(for: task)
+        let retryMode = retryTurn != nil
+            ? "durable_follow_up"
+            : (retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up")
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
             "retry_mode": retryMode
         ])
@@ -115,7 +119,36 @@ final class TaskLifecycleCoordinator {
             ], level: .warning)
         }
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        if let retryFollowUpMessage {
+        if let retryTurn, let retryFollowUpMessage {
+            _ = TaskTurnRequestStateMachine.transition(retryTurn, to: .waitingForWorker)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: [
+                    "operation": "retry_turn_request",
+                    "request_id": retryTurn.id.uuidString
+                ]
+            )
+            AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
+                "source": "retry_durable_follow_up",
+                "request_id": retryTurn.id.uuidString
+            ])
+            return Task {
+                let didStart = await taskQueue.continueSession(
+                    task: task,
+                    message: retryFollowUpMessage,
+                    existingMessageEventID: retryTurn.messageEventID,
+                    turnRequestID: retryTurn.id,
+                    modelContext: modelContext
+                )
+                guard didStart else { return }
+                AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                    "status": task.status.rawValue,
+                    "source": "retry_durable_follow_up"
+                ])
+            }
+        } else if let retryFollowUpMessage {
             AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
                 "source": "retry_latest_follow_up"
             ])
@@ -134,6 +167,20 @@ final class TaskLifecycleCoordinator {
         } else {
             return runSingleTask(task)
         }
+    }
+
+    private func latestRetryableTurnRequest(for task: AgentTask) -> TaskTurnRequest? {
+        guard let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) else {
+            return nil
+        }
+        return requests
+            .filter { $0.state == .failed || $0.state == .cancelled }
+            .last
+    }
+
+    private func message(for request: TaskTurnRequest, task: AgentTask) -> String? {
+        task.events.first(where: { $0.id == request.messageEventID })?.payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @discardableResult

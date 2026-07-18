@@ -1,12 +1,72 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 /// Links a send-boundary event to its admitted run without creating a second
 /// user message. Kept outside the runtime worker so the ownership rule stays
 /// explicit and independently testable.
 @MainActor
 enum PersistedTurnRuntimeEventLinker {
+    /// Starts the persisted turn lifecycle as soon as its runtime attempt has
+    /// a durable `TaskRun`. Kept outside the worker to avoid making provider
+    /// execution own SwiftData turn-state policy.
+    static func beginRuntime(
+        requestID: UUID?,
+        run: TaskRun,
+        task: AgentTask,
+        in modelContext: ModelContext
+    ) -> TaskTurnRequest? {
+        guard let requestID,
+              let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext) else {
+            return nil
+        }
+        let transition = TaskTurnRequestStateMachine.transition(
+            request,
+            to: .running,
+            runID: run.id
+        )
+        if transition.changed {
+            WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "turn_request_running"]
+            )
+        }
+        return request
+    }
+
+    /// Terminalizes the request after every runtime exit path, including
+    /// preflight failures before a provider process starts.
+    static func finishRuntime(
+        request: TaskTurnRequest?,
+        run: TaskRun,
+        task: AgentTask,
+        in modelContext: ModelContext
+    ) {
+        guard let request else { return }
+        let terminalState: TaskTurnRequestState = switch run.status {
+        case .completed: .completed
+        case .cancelled: .cancelled
+        case .running, .failed, .timeout, .budgetExceeded: .failed
+        }
+        let reason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let transition = TaskTurnRequestStateMachine.transition(
+            request,
+            to: terminalState,
+            runID: run.id,
+            terminalReason: reason.isEmpty ? run.status.rawValue : reason
+        )
+        if transition.changed {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "turn_request_\(terminalState.rawValue)"]
+            )
+        }
+    }
+
     @discardableResult
     static func link(
         eventID: UUID?,

@@ -406,12 +406,11 @@ final class AgentRuntimeWorker {
         TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
-
     /// Continue an existing session with a follow-up message (HITL flow).
     @MainActor
     func continueSession(
         task: AgentTask,
-        message: String, existingMessageEventID: UUID? = nil,
+        message: String, existingMessageEventID: UUID? = nil, turnRequestID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
@@ -438,13 +437,13 @@ final class AgentRuntimeWorker {
             startEventType: "user.message",
             startEventPayload: message,
             existingStartEventID: existingMessageEventID,
+            turnRequestID: turnRequestID,
             sessionMessage: message,
             auditPhase: "resume",
             recordingMode: .followUp,
             executionPolicy: executionPolicy
         )
     }
-
     @MainActor
     private func executeRuntimeSession(
         task: AgentTask,
@@ -453,7 +452,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void,
         promptOverride: String? = nil,
         startEventType: String = "task.started",
-        startEventPayload: String? = nil, existingStartEventID: UUID? = nil,
+        startEventPayload: String? = nil, existingStartEventID: UUID? = nil, turnRequestID: UUID? = nil,
         sessionMessage: String? = nil,
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
@@ -556,7 +555,8 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
-
+        let turnRequest = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnRequest, run: run, task: task, in: modelContext) }
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(

@@ -12,6 +12,9 @@ final class TaskQueue {
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
     private var processingScheduleGeneration = 0
+    /// Recovery replays are scheduled once per process. Their durable request
+    /// state, rather than this set, remains the authority after a later restart.
+    private var replayingRecoveredTurnIDs: Set<UUID> = []
 
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
@@ -60,6 +63,47 @@ final class TaskQueue {
 
     var hasProcessingLoop: Bool {
         isProcessing || isProcessingScheduled
+    }
+
+    /// Restarts waiting turns after startup recovery has reconciled stale
+    /// process-local worker/lock ownership. Call only after runtime settings
+    /// have been applied; each replay still passes through normal FIFO and
+    /// resource-lock admission.
+    @MainActor
+    func replayRecoveredTurns(modelContext: ModelContext) {
+        let requests: [TaskTurnRequest]
+        do {
+            requests = try modelContext.fetch(FetchDescriptor<TaskTurnRequest>(
+                sortBy: [SortDescriptor(\.submittedAt), SortDescriptor(\.sequence)]
+            ))
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", fields: [
+                "operation": "replay_recovered_turns_fetch",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return
+        }
+
+        for request in requests where request.state.isActive {
+            guard let task = request.task,
+                  task.events.contains(where: { $0.id == request.messageEventID }),
+                  replayingRecoveredTurnIDs.insert(request.id).inserted else {
+                continue
+            }
+            let requestID = request.id
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.replayingRecoveredTurnIDs.remove(requestID) }
+                _ = await self.continuePersistedTurn(
+                    task: task,
+                    requestID: requestID,
+                    modelContext: modelContext,
+                    executionPolicy: .default,
+                    resourceAccess: self.resourceAccess(for: task),
+                    onEvent: { _ in }
+                )
+            }
+        }
     }
 
     @discardableResult
@@ -375,6 +419,41 @@ final class TaskQueue {
         task: AgentTask,
         message: String,
         existingMessageEventID: UUID? = nil,
+        turnRequestID: UUID? = nil,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        resourceAccess: TaskResourceAccessMode = .write,
+        onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async -> Bool {
+        if let turnRequestID {
+            return await continuePersistedTurn(
+                task: task,
+                requestID: turnRequestID,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy,
+                resourceAccess: resourceAccess,
+                onEvent: onEvent
+            )
+        }
+        return await continueLegacySession(
+            task: task,
+            message: message,
+            existingMessageEventID: existingMessageEventID,
+            modelContext: modelContext,
+            executionPolicy: executionPolicy,
+            resourceAccess: resourceAccess,
+            onEvent: onEvent
+        )
+    }
+
+    /// Legacy continuation entrypoint retained for approval/resume flows that
+    /// are not user-authored conversation turns. New chat submissions must use
+    /// `turnRequestID` so their accepted message is durable before admission.
+    @MainActor
+    private func continueLegacySession(
+        task: AgentTask,
+        message: String,
+        existingMessageEventID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         resourceAccess: TaskResourceAccessMode = .write,
@@ -428,12 +507,226 @@ final class TaskQueue {
             task: task,
             message: message,
             existingMessageEventID: existingMessageEventID,
+            turnRequestID: nil,
             modelContext: modelContext,
             executionPolicy: executionPolicy,
             onEvent: onEvent
         )
         taskWorkerMap.removeValue(forKey: task.id)
         return true
+    }
+
+    /// Admits one already-persisted user turn. The request is FIFO within its
+    /// task and records every wait state before yielding for a worker or shared
+    /// workspace resource. This is intentionally separate from the legacy
+    /// continuation path: a caller cannot accidentally recreate the old
+    /// in-memory message window by passing a raw string.
+    @MainActor
+    private func continuePersistedTurn(
+        task: AgentTask,
+        requestID: UUID,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        resourceAccess: TaskResourceAccessMode,
+        onEvent: @escaping (ParsedEvent) -> Void
+    ) async -> Bool {
+        guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
+              request.task?.id == task.id,
+              request.state.isActive,
+              let message = task.events.first(where: { $0.id == request.messageEventID })?.payload else {
+            return false
+        }
+
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(task, reason: readOnlyReason, modelContext: modelContext)
+            failPersistedTurn(request, reason: "read_only_task", modelContext: modelContext)
+            return false
+        }
+
+        while !Task.isCancelled && request.state.isActive {
+            guard isEarliestActiveTurn(request, for: task, modelContext: modelContext) else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for an earlier message in this task.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionPoll()
+                continue
+            }
+
+            guard hasAvailableWorker else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for an available worker.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionPoll()
+                continue
+            }
+
+            let pendingClaim = TaskResourceLockClaim(
+                taskID: task.id,
+                resourceKey: resourceKey(for: task),
+                accessMode: resourceAccess,
+                runMode: "continue"
+            )
+            let blockingTaskID = activeResourceLocks.first {
+                resourceKeysConflict($0.resourceKey, pendingClaim.resourceKey)
+            }?.taskID
+            _ = transitionPersistedTurn(
+                request,
+                to: .waitingForResource,
+                blockingTaskID: blockingTaskID,
+                blockerSummary: blockingTaskID == nil ? nil : resourceLockBlockerSummary(for: pendingClaim),
+                modelContext: modelContext
+            )
+            guard let resourceClaim = await waitForResourceLock(
+                task: task,
+                accessMode: resourceAccess,
+                runMode: "continue",
+                modelContext: modelContext
+            ) else {
+                if request.state.isActive {
+                    _ = transitionPersistedTurn(
+                        request,
+                        to: .cancelled,
+                        terminalReason: "admission_cancelled",
+                        modelContext: modelContext
+                    )
+                }
+                return false
+            }
+
+            guard request.state.isActive else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                return false
+            }
+            guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Worker became unavailable during workspace admission.",
+                    modelContext: modelContext
+                )
+                continue
+            }
+            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
+                return false
+            }
+
+            _ = transitionPersistedTurn(request, to: .admitted, modelContext: modelContext)
+            taskWorkerMap[task.id] = worker
+            activeTasks.insert(task.id)
+            await worker.continueSession(
+                task: task,
+                message: message,
+                existingMessageEventID: request.messageEventID,
+                turnRequestID: request.id,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy,
+                onEvent: onEvent
+            )
+            taskWorkerMap.removeValue(forKey: task.id)
+            activeTasks.remove(task.id)
+            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+
+            // A worker can reject before it constructs a TaskRun (for example,
+            // when a stale task was no longer admissible). Runtime-created runs
+            // finalize their request in AgentRuntimeWorker's defer.
+            if request.state == .admitted {
+                failPersistedTurn(request, reason: "runtime_not_started", modelContext: modelContext)
+                return false
+            }
+            return request.state == .completed
+        }
+
+        if request.state.isActive {
+            _ = transitionPersistedTurn(
+                request,
+                to: .cancelled,
+                terminalReason: "admission_cancelled",
+                modelContext: modelContext
+            )
+        }
+        return false
+    }
+
+    @MainActor
+    private func isEarliestActiveTurn(
+        _ request: TaskTurnRequest,
+        for task: AgentTask,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard let active = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext) else {
+            return false
+        }
+        return active.first?.id == request.id
+    }
+
+    @MainActor
+    private func failPersistedTurn(
+        _ request: TaskTurnRequest,
+        reason: String,
+        modelContext: ModelContext
+    ) {
+        _ = transitionPersistedTurn(
+            request,
+            to: .failed,
+            terminalReason: reason,
+            modelContext: modelContext
+        )
+    }
+
+    @MainActor
+    @discardableResult
+    private func transitionPersistedTurn(
+        _ request: TaskTurnRequest,
+        to state: TaskTurnRequestState,
+        runID: UUID? = nil,
+        blockingTaskID: UUID? = nil,
+        blockerSummary: String? = nil,
+        terminalReason: String? = nil,
+        modelContext: ModelContext
+    ) -> TaskTurnRequestStateMachine.TransitionResult {
+        let result = TaskTurnRequestStateMachine.transition(
+            request,
+            to: state,
+            runID: runID,
+            blockingTaskID: blockingTaskID,
+            blockerSummary: blockerSummary,
+            terminalReason: terminalReason
+        )
+        guard result.changed else { return result }
+        if state.isTerminal {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: request.task?.workspace,
+                modelContext: modelContext,
+                taskID: request.task?.id,
+                auditFields: ["operation": "turn_request_\(state.rawValue)"]
+            )
+        } else {
+            // Waiting and admission transitions must survive an app quit, but
+            // should not race the later terminal workspace-mirror export.
+            WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: modelContext,
+                taskID: request.task?.id,
+                auditFields: ["operation": "turn_request_\(state.rawValue)"]
+            )
+        }
+        return result
+    }
+
+    private func waitForTurnAdmissionPoll() async {
+        do {
+            try await Task.sleep(for: .milliseconds(100))
+        } catch {
+            // The outer loop observes cancellation and persists it.
+        }
     }
 
     private struct ContinuationLaunchLifecycle {
@@ -738,11 +1031,27 @@ final class TaskQueue {
 
     /// Cancel a specific task's worker
     @MainActor
-    func cancel(task: AgentTask) {
+    func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
         if let worker = taskWorkerMap[task.id] {
             worker.cancel()
             taskWorkerMap.removeValue(forKey: task.id)
             AppLogger.audit(.taskCancelled, category: "Queue", taskID: task.id)
+        }
+        if let modelContext,
+           let requests = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext) {
+            for request in requests {
+                _ = TaskTurnRequestStateMachine.transition(
+                    request,
+                    to: .cancelled,
+                    terminalReason: "cancelled_by_user"
+                )
+            }
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "cancel_turn_requests"]
+            )
         }
     }
 

@@ -861,6 +861,9 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
+        TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+            modelContext: modelContext
+        )
     }
 
     /// Legacy Skill data backfills, gated on the build number so they run once
