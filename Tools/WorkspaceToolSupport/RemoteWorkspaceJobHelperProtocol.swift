@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// Versioned wire contract for a future reviewed remote managed-job helper.
 ///
