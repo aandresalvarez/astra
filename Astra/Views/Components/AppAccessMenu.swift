@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRACore
 
 struct AppAccessMenu: View {
     @ObservedObject var appUpdateController: AppUpdateController
@@ -177,21 +178,107 @@ private struct AppAccessUpdateCheckButton: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button {
-            appUpdateController.checkForUpdates()
-        } label: {
-            AppAccessMenuActionRow(
-                title: "Check for Updates…",
-                systemImageName: "arrow.triangle.2.circlepath",
-                isHovered: isHovered,
-                isEnabled: appUpdateController.canCheckForUpdates
-            )
+        let presentation = AppAccessUpdateCheckPresentation.make(
+            status: appUpdateController.status,
+            canCheckForUpdates: appUpdateController.canCheckForUpdates,
+            appDisplayName: AppChannel.current.displayName
+        )
+
+        Group {
+            if presentation.isEnabled {
+                Button {
+                    appUpdateController.checkForUpdates()
+                } label: {
+                    AppAccessUpdateCheckRow(
+                        presentation: presentation,
+                        isHovered: isHovered
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("AppAccessMenuItem.checkForUpdates")
+                .accessibilityLabel(presentation.title)
+                .accessibilityValue(presentation.detail)
+            } else {
+                // A disabled Button applies system opacity to the whole label,
+                // which made the reason and checking progress unreadable. A
+                // non-interactive status row preserves both semantics and
+                // legibility until Sparkle can accept another check.
+                AppAccessUpdateCheckRow(
+                    presentation: presentation,
+                    isHovered: false
+                )
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("AppAccessMenuItem.checkForUpdates")
+                .accessibilityLabel(presentation.title)
+                .accessibilityValue(presentation.detail)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(!appUpdateController.canCheckForUpdates)
-        .onHover { isHovered = $0 }
-        .help("Check for signed ASTRA updates")
-        .accessibilityIdentifier("AppAccessMenuItem.checkForUpdates")
+        .onHover { isHovered = presentation.isEnabled && $0 }
+        .help(presentation.detail)
+    }
+}
+
+private struct AppAccessUpdateCheckRow: View {
+    let presentation: AppAccessUpdateCheckPresentation
+    let isHovered: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            indicator
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.title)
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(Stanford.black)
+
+                Text(presentation.detail)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: AppAccessMenuPresentation.updateCheckRowHeight,
+            alignment: .leading
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .fill(isHovered && presentation.isEnabled ? Color.primary.opacity(0.055) : Color.clear)
+        }
+    }
+
+    @ViewBuilder
+    private var indicator: some View {
+        if presentation.showsProgress {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Color.accentColor)
+        } else {
+            Image(systemName: presentation.systemImageName)
+                .font(Stanford.ui(13, weight: .medium))
+                .foregroundStyle(indicatorColor)
+        }
+    }
+
+    private var indicatorColor: Color {
+        switch presentation.indicatorTone {
+        case .standard:
+            return Stanford.coolGrey
+        case .accent:
+            return Color.accentColor
+        case .success:
+            return Stanford.paloAltoGreen
+        case .warning:
+            return Stanford.poppy
+        case .disabled:
+            return Stanford.coolGrey.opacity(0.5)
+        }
     }
 }
 
@@ -205,8 +292,7 @@ private struct AppAccessAppearanceToggleButton: View {
             AppAccessMenuActionRow(
                 title: presentation.title,
                 systemImageName: presentation.systemImageName,
-                isHovered: isHovered,
-                isEnabled: true
+                isHovered: isHovered
             )
         }
         .buttonStyle(.plain)
@@ -242,8 +328,7 @@ private struct AppAccessMenuRow: View {
         AppAccessMenuActionRow(
             title: destination.title,
             systemImageName: destination.systemImageName,
-            isHovered: isHovered,
-            isEnabled: true
+            isHovered: isHovered
         )
     }
 }
@@ -252,18 +337,17 @@ private struct AppAccessMenuActionRow: View {
     let title: String
     let systemImageName: String
     let isHovered: Bool
-    let isEnabled: Bool
 
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: systemImageName)
                 .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(isEnabled ? Stanford.coolGrey : Stanford.coolGrey.opacity(0.4))
+                .foregroundStyle(Stanford.coolGrey)
                 .frame(width: 18)
 
             Text(title)
                 .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(isEnabled ? Stanford.black : Stanford.black.opacity(0.4))
+                .foregroundStyle(Stanford.black)
 
             Spacer(minLength: 0)
         }
@@ -272,7 +356,7 @@ private struct AppAccessMenuActionRow: View {
         .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         .background {
             RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                .fill(isHovered && isEnabled ? Color.primary.opacity(0.055) : Color.clear)
+                .fill(isHovered ? Color.primary.opacity(0.055) : Color.clear)
         }
     }
 }

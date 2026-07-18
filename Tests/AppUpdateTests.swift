@@ -7,6 +7,32 @@ import ASTRAModels
 
 @Suite("App Update Safety")
 struct AppUpdateSafetyTests {
+    @Test("distributed channels keep automatic Sparkle checks enabled")
+    func distributedChannelsKeepAutomaticSparkleChecksEnabled() throws {
+        let repoRoot = try TestRepositoryRoot.resolve()
+        let buildScript = try String(
+            contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"),
+            encoding: .utf8
+        )
+        let updateController = try String(
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Settings/AppUpdateController.swift"),
+            encoding: .utf8
+        )
+        let contentView = try String(
+            contentsOf: repoRoot.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(buildScript.contains("<key>SUEnableAutomaticChecks</key>\n  <true/>"))
+        #expect(buildScript.contains("<key>SUAllowsAutomaticUpdates</key>\n  <true/>"))
+        #expect(buildScript.contains("releases/latest/download/appcast.xml"))
+        #expect(buildScript.contains("releases/latest/download/appcast-beta.xml"))
+        #expect(updateController.contains("startingUpdater: true"))
+        #expect(updateController.contains("updater.checkForUpdateInformation()"))
+        #expect(contentView.contains("appUpdateController.probeForUpdatesOnce()"))
+        #expect(contentView.contains("AppChannel.current != .development"))
+    }
+
     @Test("validates Sparkle public EdDSA key format")
     func validatesSparklePublicEDKeyFormat() {
         let validKey = Data(repeating: 0, count: 32).base64EncodedString()
