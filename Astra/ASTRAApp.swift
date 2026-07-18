@@ -846,6 +846,28 @@ public struct ASTRAApp: App {
             approvedPackages: PluginCatalog.builtInPackages
         )
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
+        // Adopt trusted backend receipts BEFORE orphan-run recovery. A task
+        // whose managed job committed its receipt but crashed before SwiftData
+        // registration is still `.running`; recovering orphans first would cancel
+        // it, and the monitor's later adoption would then attach an active
+        // monitored job to a cancelled/retryable task — a duplicate-launch
+        // window. Adoption moves such a task to `.waitingExternal` (and its
+        // originating run to external-outcome-pending), which orphan recovery
+        // leaves untouched. Idempotent with the monitor's own adoption pass.
+        let tasksForExternalOperationAdoption = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
+        for task in tasksForExternalOperationAdoption {
+            TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+                task: task,
+                modelContext: modelContext
+            )
+        }
+        if modelContext.hasChanges {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: nil,
+                modelContext: modelContext,
+                auditFields: ["operation": "external_operation_startup_adoption"]
+            )
+        }
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery

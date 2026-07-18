@@ -125,4 +125,41 @@ enum TaskExternalOperationProviderLifecycleService {
             at: date
         )
     }
+
+    /// Failure-path counterpart to `preserveMonitoringAfterProviderExitIfNeeded`.
+    ///
+    /// A wake or validation run always carries a fresh run id, so the
+    /// originating-run guard above never matches it. Without this, a failed wake
+    /// run (timeout, budget, runtime failure, policy violation) would terminalize
+    /// a task whose external operation is still `.active`/`.validating`, exposing
+    /// a retry that duplicates the live job — and because the wake was already
+    /// acknowledged, terminal reconciliation would not re-fire, stranding the
+    /// task. The success path already returns such runs to monitoring
+    /// (`TaskSuccessfulCompletionService`); this mirrors it for the failure
+    /// branches. Deliberately excludes the originating run so a genuinely failed
+    /// original launch (whose op is not active/validating) still terminalizes.
+    @discardableResult
+    static func returnFailedWakeRunToMonitoringIfNeeded(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        at date: Date = Date()
+    ) -> Bool {
+        guard let operation = TaskExternalOperationRegistrationService.operations(
+            taskID: task.id,
+            modelContext: modelContext
+        ).first(where: {
+            $0.originatingRunID != run.id
+                && [.active, .validating].contains($0.monitoringState)
+        }) else {
+            return false
+        }
+        return returnProviderRunToMonitoring(
+            operation: operation,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            at: date
+        )
+    }
 }

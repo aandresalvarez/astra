@@ -262,6 +262,99 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(importedOperation.leaseOwner == nil)
         #expect(importedOperation.leaseExpiresAt == nil)
     }
+
+    @Test("adopting a trusted receipt before orphan recovery keeps the task waiting, not cancelled")
+    func adoptionBeforeOrphanRecoveryPreservesRunningTask() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        _ = try fixture.createBackendRecord(invocationID: "crash-window-running")
+        // The crash window: the backend receipt is committed but the task and its
+        // run are still Running at next launch, with no SwiftData registration yet.
+        fixture.task.status = .running
+        fixture.run.status = .running
+        try fixture.context.save()
+
+        // Adoption first (the fix's ordering) moves the task to waitingExternal.
+        _ = TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+            task: fixture.task,
+            modelContext: fixture.context
+        )
+        #expect(fixture.task.status == .waitingExternal)
+
+        // Orphan recovery then leaves the adopted task alone (it only cancels
+        // Running/pendingUser). Before the fix it ran first and cancelled it,
+        // then adoption attached a live monitored job to a cancelled task.
+        TaskRunLifecycleService.recoverOrphanedRunningRuns(
+            modelContext: fixture.context,
+            autoExportWorkspaces: false
+        )
+        #expect(fixture.task.status == .waitingExternal)
+    }
+
+    @Test("orphan recovery cancels a running task with an adoptable receipt when adoption has not run first")
+    func orphanRecoveryCancelsUnadoptedRunningTask() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        // Same crash-window state, but this time recovery runs BEFORE adoption —
+        // the pre-fix ordering. It cancels the still-Running task, after which the
+        // monitor's later adoption would attach a live job to a cancelled task.
+        // This is the exact hazard the "adopt before recover" ordering prevents.
+        _ = try fixture.createBackendRecord(invocationID: "crash-window-unadopted")
+        fixture.task.status = .running
+        fixture.run.status = .running
+        try fixture.context.save()
+
+        TaskRunLifecycleService.recoverOrphanedRunningRuns(
+            modelContext: fixture.context,
+            autoExportWorkspaces: false
+        )
+        #expect(fixture.task.status == .cancelled)
+    }
+
+    @Test("a terminal wake never resumes a cancelled task")
+    func wakeAdmissionSuppressesCancelledTasks() {
+        #expect(!TaskExternalOperationWakeAdmission.shouldResume(taskStatus: .cancelled))
+        #expect(TaskExternalOperationWakeAdmission.shouldResume(taskStatus: .waitingExternal))
+        #expect(TaskExternalOperationWakeAdmission.shouldResume(taskStatus: .running))
+    }
+
+    @Test("a failed wake run keeps a task with live external work in monitoring")
+    func failedWakeRunReturnsToMonitoring() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        // An operation registered by the ORIGINATING run, still validating.
+        let operation = TaskExternalOperation(
+            taskID: fixture.task.id,
+            externalIdentity: "docker_workspace_job:wake-run",
+            originatingRunID: fixture.run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "job-wake",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating,
+            nextCheckAt: nil
+        )
+        fixture.context.insert(operation)
+        // A wake/validation run with a DIFFERENT id, currently running.
+        let wakeRun = TaskRun(task: fixture.task)
+        fixture.context.insert(wakeRun)
+        fixture.task.status = .running
+        try fixture.context.save()
+
+        // The originating run is handled by preserveMonitoringAfterProviderExit,
+        // not this failure-path helper, so a failed original launch still fails.
+        #expect(!TaskExternalOperationProviderLifecycleService.returnFailedWakeRunToMonitoringIfNeeded(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context
+        ))
+
+        // A failed wake run keeps the still-live operation monitored instead of
+        // failing the task (which would invite a duplicate-job retry).
+        #expect(TaskExternalOperationProviderLifecycleService.returnFailedWakeRunToMonitoringIfNeeded(
+            task: fixture.task, run: wakeRun, modelContext: fixture.context
+        ))
+        #expect(fixture.task.status == .waitingExternal)
+        #expect(wakeRun.typedStopReason == .externalOutcomePending)
+    }
 }
 
 @MainActor

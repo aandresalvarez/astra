@@ -378,11 +378,26 @@ final class TaskExternalOperationMonitorService {
         }
         let now = clock.now()
         current.generation += 1
-        current.monitoringState = .active
         current.observationHealth = .unknown
-        current.nextCheckAt = now
         current.leaseOwner = nil
         current.leaseExpiresAt = nil
+        // A terminal execution state is never polled again, so restoring it to
+        // `.active` would strand the task: `runDueChecks`/`acquirePoll` skip
+        // terminal rows and `reconcilePendingTerminalDeliveries` only drives
+        // `.validating`/`.completed`. Restore the delivery state that terminal
+        // reconciliation resumes (mirrors registration's initial-state mapping)
+        // so the pending validation/reasoning wake is still delivered; only a
+        // non-terminal operation returns to active polling.
+        if current.executionState == .processCompleted {
+            current.monitoringState = .validating
+            current.nextCheckAt = nil
+        } else if current.executionState.isTerminalObservation {
+            current.monitoringState = .completed
+            current.nextCheckAt = nil
+        } else {
+            current.monitoringState = .active
+            current.nextCheckAt = now
+        }
         current.updatedAt = now
         persist(operation: "external_operation_reactivated")
         return .applied

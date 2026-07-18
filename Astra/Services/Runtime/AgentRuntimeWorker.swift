@@ -1072,6 +1072,11 @@ final class AgentRuntimeWorker {
                 approvalMessage: result.policyApprovalMessage,
                 modelContext: modelContext
             )
+        } else if !processSucceeded, TaskExternalOperationProviderLifecycleService
+                    .returnFailedWakeRunToMonitoringIfNeeded(task: task, run: run, modelContext: modelContext) {
+            // A failed wake/validation run (fresh run id) keeps a still-live
+            // external operation monitored instead of failing the task (a false
+            // failure would invite a duplicate-job retry); success falls through.
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout

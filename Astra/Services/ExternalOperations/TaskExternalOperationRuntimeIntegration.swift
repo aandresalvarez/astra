@@ -12,6 +12,19 @@ struct TaskQueueExternalOperationWakeSink: TaskExternalOperationWakeSinking, @un
     }
 }
 
+/// Decides whether a terminal external-operation wake may resume a task.
+///
+/// Monitoring intentionally continues after a user cancellation (so the terminal
+/// observation is still recorded and notified), but `continueSession` →
+/// `admitContinuationToRuntime` admits from any non-draft status — including
+/// `.cancelled` — so delivering the wake would silently flip an explicitly
+/// cancelled task back to `.running`. Extracted so the invariant is unit-tested.
+enum TaskExternalOperationWakeAdmission {
+    static func shouldResume(taskStatus: TaskStatus) -> Bool {
+        taskStatus != .cancelled
+    }
+}
+
 struct TaskEventExternalOperationNotificationSink:
     TaskExternalOperationNotificationSinking,
     @unchecked Sendable
@@ -85,6 +98,9 @@ extension AppRuntimeController {
             )
             descriptor.fetchLimit = 1
             guard let task = try? modelContext.fetch(descriptor).first else { return false }
+            // Never resurrect an explicitly cancelled task. Return true so the
+            // wake is acknowledged and not retried, while the task stays cancelled.
+            guard TaskExternalOperationWakeAdmission.shouldResume(taskStatus: task.status) else { return true }
             return await taskQueue.continueSession(
                 task: task,
                 message: TaskExternalOperationWakeMessageRenderer.render(request),

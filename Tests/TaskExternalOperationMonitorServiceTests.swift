@@ -195,6 +195,40 @@ struct TaskExternalOperationMonitorServiceTests {
         #expect(await validator.callCount == 2)
     }
 
+    @Test("reactivating a terminal quarantined operation restores its pending wake instead of stranding it")
+    func reactivationRestoresTerminalDeliveryState() async throws {
+        let fixture = try Fixture()
+        // A processCompleted job that was quarantined by import: reactivating it
+        // to `.active` would make it invisible to both polling and terminal
+        // delivery, stranding the task in waitingExternal forever.
+        let operation = fixture.insertOperation(
+            externalIdentity: "docker:reactivate-terminal",
+            executionState: .processCompleted,
+            observationHealth: .quarantined,
+            monitoringState: .quarantined
+        )
+        let validator = SelectiveOwnershipValidator(acceptedIdentity: operation.externalIdentity)
+        let wakeSink = RecordingOperationWakeSink()
+        let observer = SequenceOperationObserver(observations: [])
+        let service = fixture.makeService(
+            observer: observer,
+            ownershipValidator: validator,
+            wakeSink: wakeSink
+        )
+
+        #expect(await service.reactivateQuarantinedOperation(operationID: operation.id) == .applied)
+        // Restored to its delivery state, never re-polled, never re-observed.
+        #expect(operation.monitoringState == .validating)
+        #expect(operation.executionState == .processCompleted)
+        #expect(operation.nextCheckAt == nil)
+        #expect(await observer.callCount == 0)
+
+        // Terminal reconciliation now delivers the pending completion-validation
+        // wake; before the fix (.active) it delivered nothing.
+        await service.runDueChecks()
+        #expect(await wakeSink.requests.count == 1)
+    }
+
     @Test("quarantined registrations never contact an observer")
     func quarantinedRegistrationNeverPolls() async throws {
         let fixture = try Fixture()
