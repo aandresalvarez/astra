@@ -1897,7 +1897,7 @@ struct ArchitectureFitnessTests {
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
             // direction in Finding 2 of the extraction doc is untouched and remains its own
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_250, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_350, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),

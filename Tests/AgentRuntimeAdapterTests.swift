@@ -436,6 +436,109 @@ struct AgentRuntimeAdapterTests {
         ) == "start")
     }
 
+    @Test("Non-native-continuation adapters prefer sessionMessage for connector preflight context")
+    @MainActor
+    func nonNativeContinuationAdaptersPreferSessionMessageForConnectorPreflight() {
+        let workspace = Workspace(name: "Preflight", primaryPath: "/tmp/astra-preflight")
+        let task = AgentTask(
+            title: "Preflight",
+            goal: "Use attached file",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
+        let openCode = AgentRuntimeAdapterRegistry.adapter(for: .openCodeCLI)
+        let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
+        let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
+
+        let sessionMessage = "update the runbook\n\nAttached files:\n- /tmp/astra_paste_AF9F4AD3.txt"
+        let truncatedPrompt = "update the runbook\n\nAttached files:\n- /tmp/astra_paste_AF9"
+        let startPayload = "Copilot started working on: Use attached file"
+
+        for adapter in [copilot, antigravity, cursor, openCode, codex] {
+            let result = adapter.connectorPreflightContextText(
+                task: task,
+                promptOverride: truncatedPrompt,
+                startPayload: startPayload,
+                sessionMessage: sessionMessage,
+                phase: "resume"
+            )
+            #expect(
+                result == sessionMessage,
+                "\(adapter.id) should prefer sessionMessage over truncated promptOverride"
+            )
+        }
+
+        let claudeResult = claude.connectorPreflightContextText(
+            task: task,
+            promptOverride: truncatedPrompt,
+            startPayload: startPayload,
+            sessionMessage: sessionMessage,
+            phase: "resume"
+        )
+        #expect(claudeResult == sessionMessage)
+    }
+
+    @Test("Non-native-continuation adapters fall back to promptOverride when sessionMessage is nil")
+    @MainActor
+    func nonNativeContinuationAdaptersFallBackToPromptOverride() {
+        let workspace = Workspace(name: "Preflight", primaryPath: "/tmp/astra-preflight")
+        let task = AgentTask(
+            title: "Preflight",
+            goal: "Run initial task",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
+        let openCode = AgentRuntimeAdapterRegistry.adapter(for: .openCodeCLI)
+        let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
+
+        let promptOverride = "full initial prompt text"
+        let startPayload = "Copilot started working on: Run initial task"
+
+        for adapter in [copilot, antigravity, cursor, openCode, codex] {
+            let result = adapter.connectorPreflightContextText(
+                task: task,
+                promptOverride: promptOverride,
+                startPayload: startPayload,
+                sessionMessage: nil,
+                phase: "run"
+            )
+            #expect(
+                result == promptOverride,
+                "\(adapter.id) should fall back to promptOverride when sessionMessage is nil"
+            )
+        }
+    }
+
+    @Test("Non-native-continuation adapters fall back to startPayload when both are nil")
+    @MainActor
+    func nonNativeContinuationAdaptersFallBackToStartPayload() {
+        let workspace = Workspace(name: "Preflight", primaryPath: "/tmp/astra-preflight")
+        let task = AgentTask(
+            title: "Preflight",
+            goal: "Run initial task",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+
+        let startPayload = "Copilot started working on: Run initial task"
+
+        let result = copilot.connectorPreflightContextText(
+            task: task,
+            promptOverride: nil,
+            startPayload: startPayload,
+            sessionMessage: nil,
+            phase: "run"
+        )
+        #expect(result == startPayload)
+    }
+
     @Test("Adapters expose one providerRuntimeMessages value backing every diagnostic-copy accessor")
     @MainActor
     func adaptersExposeOneProviderRuntimeMessagesValueBackingDiagnosticCopy() {

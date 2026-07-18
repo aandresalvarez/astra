@@ -263,7 +263,7 @@ struct RunActivityProgressTimelineView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, 7)
-                .padding(.horizontal, isCurrent ? 7 : 0)
+                .padding(.horizontal, 7)
                 .background(isCurrent ? Stanford.lagunita.opacity(0.055) : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
             }
