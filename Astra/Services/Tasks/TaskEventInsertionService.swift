@@ -47,6 +47,13 @@ enum TaskThreadChangeNotifier {
 enum TaskEventInsertionService {
     static func insert(_ event: TaskEvent, into modelContext: ModelContext) {
         modelContext.insert(event)
+        publishInsertion(for: event)
+    }
+
+    /// Publishes only after a caller has made the event durable. Most legacy
+    /// insertions use `insert`; atomic multi-record transactions use this
+    /// method after `ModelContext.save()` succeeds.
+    static func publishInsertion(for event: TaskEvent) {
         guard let taskID = event.task?.id else { return }
         let insertion = DurableTaskEventInsertion(
             taskID: taskID,

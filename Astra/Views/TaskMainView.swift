@@ -5552,7 +5552,6 @@ struct TaskMainView: View {
             return
         }
         if !attachedFiles.isEmpty { attachedFiles = [] }
-        messageText = ""
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
         AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
             "source": isPlanMode ? "task_plan_chat" : "task_continue_chat",
@@ -5564,11 +5563,13 @@ struct TaskMainView: View {
         ])
 
         if isPlanMode {
+            messageText = ""
             sendPlanningMessage(msg, traceID: traceID)
             return
         }
 
         if task.status == .queued {
+            messageText = ""
             TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
@@ -5580,7 +5581,22 @@ struct TaskMainView: View {
             ])
             onMoveToDraft?(task)
         } else if [.pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
-            // Note: don't insert user.message here — continueSession() does it with the TaskRun link
+            // Persist the user's turn before waiting for a worker or the
+            // workspace lock. The runtime links this existing event to its run
+            // on admission instead of inserting a duplicate message.
+            let submission = TaskTurnSubmissionService.submit(
+                message: msg,
+                for: task,
+                into: modelContext
+            )
+            guard case let .success(savedTurn) = submission else {
+                AppLogger.audit(.runtimePersistenceSummary, category: "UI", taskID: task.id, fields: [
+                    "operation": "turn_submission",
+                    "result": "failed"
+                ], level: .error)
+                return
+            }
+            messageText = ""
             let interruptionSummary = TaskRunLifecycleService.cancelTask(
                 task,
                 modelContext: modelContext,
@@ -5596,11 +5612,17 @@ struct TaskMainView: View {
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
             Task {
-                _ = await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
+                _ = await taskQueue.continueSession(
+                    task: task,
+                    message: msg,
+                    existingMessageEventID: savedTurn.eventID,
+                    modelContext: modelContext
+                ) { _ in }
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, into: modelContext)
+            messageText = ""
         }
     }
 

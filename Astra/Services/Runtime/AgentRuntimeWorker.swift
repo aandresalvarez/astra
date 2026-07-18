@@ -411,7 +411,7 @@ final class AgentRuntimeWorker {
     @MainActor
     func continueSession(
         task: AgentTask,
-        message: String,
+        message: String, existingMessageEventID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
@@ -437,6 +437,7 @@ final class AgentRuntimeWorker {
             promptOverride: prompt,
             startEventType: "user.message",
             startEventPayload: message,
+            existingStartEventID: existingMessageEventID,
             sessionMessage: message,
             auditPhase: "resume",
             recordingMode: .followUp,
@@ -452,7 +453,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void,
         promptOverride: String? = nil,
         startEventType: String = "task.started",
-        startEventPayload: String? = nil,
+        startEventPayload: String? = nil, existingStartEventID: UUID? = nil,
         sessionMessage: String? = nil,
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
@@ -557,8 +558,7 @@ final class AgentRuntimeWorker {
         modelContext.insert(run)
 
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
-        let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
-        TaskEventInsertionService.insert(startEvent, into: modelContext)
+        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,

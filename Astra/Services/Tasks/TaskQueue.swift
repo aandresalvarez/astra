@@ -374,6 +374,7 @@ final class TaskQueue {
     func continueSession(
         task: AgentTask,
         message: String,
+        existingMessageEventID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         resourceAccess: TaskResourceAccessMode = .write,
@@ -426,6 +427,7 @@ final class TaskQueue {
         await worker.continueSession(
             task: task,
             message: message,
+            existingMessageEventID: existingMessageEventID,
             modelContext: modelContext,
             executionPolicy: executionPolicy,
             onEvent: onEvent

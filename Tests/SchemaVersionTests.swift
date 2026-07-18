@@ -213,6 +213,29 @@ struct SchemaVersionTests {
         #expect(run.providerLaunchSignatureJSON == nil)
     }
 
+    @MainActor
+    @Test("SchemaV15 adds durable task turn requests")
+    func v15ModelCountAndTurnRequestField() throws {
+        #expect(ASTRASchemaV15.models.count == 19)
+        #expect(ASTRASchemaV15.models.contains { $0 == TaskTurnRequest.self })
+
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [config]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Durable turn", goal: "Persist user intent")
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1)
+        context.insert(request)
+        try context.save()
+
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: context).map(\.id) == [request.id])
+        #expect(request.state == .waitingForWorker)
+    }
+
     @Test("SchemaV12 version identifier is 12.0.0")
     func v12VersionIdentifier() {
         #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
@@ -228,20 +251,25 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(14, 0, 0))
     }
 
+    @Test("SchemaV15 version identifier is 15.0.0")
+    func v15VersionIdentifier() {
+        #expect(ASTRASchemaV15.versionIdentifier == Schema.Version(15, 0, 0))
+    }
+
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 14)
-        #expect(ASTRASchemaV14.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 15)
+        #expect(ASTRASchemaV15.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV14")
+    @Test("Migration plan lists SchemaV1 through SchemaV15")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 14)
+        #expect(ASTRAMigrationPlan.schemas.count == 15)
     }
 
-    @Test("Migration plan has V1 to V14 lightweight stages")
+    @Test("Migration plan has V1 to V15 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 13)
+        #expect(ASTRAMigrationPlan.stages.count == 14)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
@@ -268,7 +296,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 18)
+        #expect(container.schema.entities.count == 19)
     }
 
     @MainActor
