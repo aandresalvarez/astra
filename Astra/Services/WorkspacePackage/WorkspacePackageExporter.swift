@@ -207,6 +207,20 @@ struct WorkspacePackageExporter {
 
             var clamped = package
             CapabilityGovernanceNormalizer.clampToLocalDraft(&clamped)
+            // The governance clamp does not touch skill env DEFAULTS: a
+            // `PluginSkill` with `environmentKeys: ["API_TOKEN"]` and a nonempty
+            // matching value would ship that credential verbatim (capability
+            // paths are excluded from the free-text scan). Blank every
+            // secret-keyed default before serialization, mirroring the
+            // already-blanked `ShareSkill` path.
+            clamped.skills = clamped.skills.map { skill in
+                var redacted = skill
+                redacted.environmentValues = zip(
+                    skill.environmentKeys,
+                    skill.environmentValues + Array(repeating: "", count: max(0, skill.environmentKeys.count - skill.environmentValues.count))
+                ).map { key, value in Skill.isSecretEnvironmentKey(key) ? "" : value }
+                return redacted
+            }
             // An `.asset` icon points at an on-disk image that
             // `CapabilityLibrary.install` copies from an asset root derived from
             // `sourceMetadata.url` — which the draft clamp above just cleared, so

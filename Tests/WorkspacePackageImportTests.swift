@@ -329,6 +329,53 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
+    @Test("a locally-approved custom capability the share references stays enabled after import")
+    func locallyApprovedCustomCapabilityStaysEnabled() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The share enables a capability ID it does not embed but the recipient
+        // has installed AND approved locally (approval lives in a digest-bound
+        // record; the on-disk governance is normalized to draft).
+        let fixture = try Self.exportedPackage(root: root) { workspace in
+            workspace.enabledCapabilityIDs = ["local.tool", "custom.approved"]
+        }
+
+        let targetContainer = try Self.makeContainer()
+        let targetLibrary = CapabilityLibrary(directory: root.appendingPathComponent("target-capabilities", isDirectory: true))
+        try targetLibrary.install(
+            Self.makeCapability(id: "custom.approved", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        let installed = try #require(targetLibrary.installedPackage(id: "custom.approved"))
+        let digest = try CapabilityApprovalDigest.digest(for: installed)
+        let record = CapabilityApprovalRecord(
+            packageID: "custom.approved",
+            packageVersion: installed.version,
+            status: .approved,
+            approvedBy: "tester",
+            approvedAt: Date(timeIntervalSince1970: 1),
+            reviewNotes: "",
+            sourceDigest: digest
+        )
+
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = targetLibrary
+        coordinator.approvalRecords = { [record] }
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // The digest-bound approval is honored: the capability stays enabled and
+        // is not reported as unavailable.
+        #expect(outcome.workspace.enabledCapabilityIDs.contains("custom.approved"))
+        #expect(!outcome.capabilitiesUnavailable.contains("custom.approved"))
+    }
+
+    @MainActor
     @Test("import does not activate a recipient-local unapproved capability the package merely names")
     func importDoesNotActivateRecipientLocalUnapprovedCapability() throws {
         let root = try Self.temporaryRoot()

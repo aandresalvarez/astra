@@ -63,8 +63,13 @@ struct WorkspacePackageImportPlanner {
         Set(CapabilityLibrary().installedPackages().map(\.id))
     }
     var approvedCapabilityIDs: () -> Set<String> = {
-        Set(CapabilityLibrary().installedPackages()
-            .filter { $0.governance.approvalStatus == .approved }
+        // Effective approval, matching runtime exposure: a custom capability's
+        // on-disk governance is normalized to `.draft`, so approval lives in a
+        // digest-bound approval record — a raw `.approved` check would report
+        // every locally-approved custom capability as unapproved.
+        let records = CapabilityApprovalStore().records()
+        return Set(CapabilityLibrary().installedPackages()
+            .filter { WorkspacePackageCapabilityApproval.isEffectivelyApproved($0, records: records) }
             .map(\.id))
     }
     var availablePackIDs: () -> Set<String> = {

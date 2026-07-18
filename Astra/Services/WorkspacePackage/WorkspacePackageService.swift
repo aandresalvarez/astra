@@ -66,6 +66,20 @@ struct WorkspacePackageService {
             return WorkspacePackageValidationReport(manifest: nil, shareDocument: nil, appReports: [:], issues: issues)
         }
 
+        // Capture the whole-package fingerprint (checksums.json digest) BEFORE
+        // decoding anything, and re-verify it hasn't changed at the end of this
+        // call. The package may sit in an attacker-writable location; without this
+        // an attacker could let package A finish validation, then swap
+        // checksums.json (and the rest) for package B before the final digest —
+        // the review would display A while the recorded fingerprint matched B, so
+        // the coordinator (which binds the confirmed import to that fingerprint)
+        // would accept and import B. Binding every read to one stable fingerprint
+        // makes such a mid-validation swap a blocker.
+        let initialFingerprint = try? PortablePackageSafeFileReader.digest(
+            rootURL: packageURL,
+            relativePath: "checksums.json"
+        )
+
         let manifest: WorkspacePackageManifest? = decode(
             WorkspacePackageManifest.self,
             rootURL: packageURL,
@@ -162,19 +176,25 @@ struct WorkspacePackageService {
             )
         }
 
-        // Captured in this same call so the plan and the digest the import binds
-        // to come from one read of the package (see `packageFingerprint` doc).
-        let packageFingerprint = try? PortablePackageSafeFileReader.digest(
+        // Re-read the fingerprint and require it to match the one captured before
+        // decoding: if checksums.json changed under us during validation, the
+        // package was swapped mid-review and every decoded artifact above is
+        // untrustworthy — fail closed rather than pairing this review with a
+        // fingerprint the import would bind to.
+        let finalFingerprint = try? PortablePackageSafeFileReader.digest(
             rootURL: packageURL,
             relativePath: "checksums.json"
         )
+        if initialFingerprint != finalFingerprint {
+            issues.append(blocker("/checksums.json", "Package changed during validation; re-open it to review."))
+        }
 
         return WorkspacePackageValidationReport(
             manifest: manifest,
             shareDocument: shareDocument,
             appReports: appReports,
             capabilityRequirements: capabilityRequirements,
-            packageFingerprint: packageFingerprint,
+            packageFingerprint: initialFingerprint,
             issues: issues
         )
     }
@@ -336,6 +356,20 @@ struct WorkspacePackageService {
         }
         if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
+        }
+        // Capability paths are excluded from the free-text credential scan, so a
+        // hand-tampered package could carry a secret-keyed skill default the
+        // export blanks. Reject any nonempty secret-keyed value here.
+        for skill in rawCapability.skills {
+            for (index, key) in skill.environmentKeys.enumerated() where Skill.isSecretEnvironmentKey(key) {
+                let value = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
+                if !value.isEmpty {
+                    issues.append(blocker(
+                        "/\(entry.relativePath)",
+                        "Embedded capability carries a secret environment value for '\(key)'; credential values never travel."
+                    ))
+                }
+            }
         }
         // Surface what this capability will need locally so the review plan can
         // say "needs the gcloud CLI" / "needs a Google account" rather than a

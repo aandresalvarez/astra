@@ -679,6 +679,50 @@ struct WorkspacePackageTests {
         #expect(report.blockers.contains { $0.message.contains("is not a valid version string") })
     }
 
+    @MainActor
+    @Test("exported embedded capability blanks secret-keyed skill defaults; validation rejects a tampered one")
+    func exportBlanksEmbeddedCapabilitySecretDefaults() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        var capability = Self.makeCapability(id: "secret.cap", governance: .localDraft())
+        capability.skills = [PluginSkill(
+            name: "Secret Skill", icon: "gear", description: "d",
+            allowedTools: [], disallowedTools: [], customTools: [], behaviorInstructions: "",
+            environmentKeys: ["API_TOKEN", "REGION"],
+            environmentValues: ["hunter2-embedded-secret", "us-west"]
+        )]
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["secret.cap"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // The secret value must not appear in the embedded capability JSON.
+        let capabilityURL = destination.appendingPathComponent("capabilities/secret.cap.json")
+        let text = try String(contentsOf: capabilityURL, encoding: .utf8)
+        #expect(!text.contains("hunter2-embedded-secret"))
+        #expect(text.contains("us-west"))
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // A hand-tampered package that re-plants the secret is rejected.
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var tampered = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tampered.skills[0].environmentValues[0] = "hunter2-embedded-secret"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(tampered).write(to: capabilityURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("secret environment value") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

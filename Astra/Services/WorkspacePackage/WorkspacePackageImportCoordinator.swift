@@ -66,12 +66,39 @@ struct WorkspacePackageImportOutcome {
 /// capability-library installs outside the destination are compensated
 /// individually, mirroring `CapabilityInstaller`'s rollback-plus-restore
 /// pattern (`CapabilityInstaller.swift:284-298`).
+/// Whether an installed capability is *effectively* approved for exposure —
+/// the same digest-bound record check the runtime catalog policy uses, not the
+/// on-disk governance (which `CapabilityLibrary.decodeInstalledPackage`
+/// normalizes to `.draft` for every non-built-in, so a raw
+/// `approvalStatus == .approved` check can never recognize a locally-approved
+/// custom capability).
+enum WorkspacePackageCapabilityApproval {
+    static func isEffectivelyApproved(
+        _ package: PluginPackage,
+        records: [CapabilityApprovalRecord]
+    ) -> Bool {
+        // Built-ins carry compiled/curated governance on decode, so an approved
+        // built-in already reads as `.approved` here.
+        if package.governance.approvalStatus == .approved { return true }
+        let versionRecords = records.filter {
+            $0.packageID == package.id && $0.packageVersion == package.version
+        }
+        guard !versionRecords.isEmpty,
+              let digest = try? CapabilityApprovalDigest.digest(for: package) else { return false }
+        return versionRecords.last(where: { $0.sourceDigest == digest })?.status == .approved
+    }
+}
+
 @MainActor
 struct WorkspacePackageImportCoordinator {
     var fileManager: FileManager = .default
     var packageService = WorkspacePackageService()
     var appPackageService = WorkspaceAppPackageService()
     var capabilityLibrary = CapabilityLibrary()
+    /// Digest-bound capability approval records (runtime source of truth for
+    /// local approval); injectable so tests can model an approved custom
+    /// capability without touching the real approvals directory.
+    var approvalRecords: () -> [CapabilityApprovalRecord] = { CapabilityApprovalStore().records() }
     /// Fault-injection seam for tests (`FeedbackEvidenceBuilder`'s injectable
     /// closure pattern) — production always uses the real app import.
     var importAppBundle: (@MainActor (URL, Workspace, ModelContext) throws -> WorkspaceAppPackageImportResult)?
@@ -270,8 +297,14 @@ struct WorkspacePackageImportCoordinator {
         // persist independently, so the recipient re-enables after review without
         // a manual re-bind. Nothing runs between here and the commit below, so
         // there is no window where a pending capability is live.
+        let records = approvalRecords()
         workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs.filter { id in
-            capabilityLibrary.installedPackage(id: id)?.governance.approvalStatus == .approved
+            guard let installed = capabilityLibrary.installedPackage(id: id) else { return false }
+            // Effective approval: a locally-approved CUSTOM capability's on-disk
+            // governance is normalized to `.draft`, so its approval lives only in
+            // a digest-bound approval record — the same source runtime exposure
+            // uses. A raw `.approved` check would wrongly strip it here.
+            return WorkspacePackageCapabilityApproval.isEffectivelyApproved(installed, records: records)
         }
 
         // Packs are referenced by ID only and are never embedded, so a share can
