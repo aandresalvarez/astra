@@ -32,7 +32,8 @@ enum AgentEventCompactor {
         "validation.",
         "verifier.",
         "handoff.",
-        "corrective."
+        "corrective.",
+        "objective."
     ]
 
     /// Validation assertion event types. Grouped by `(planID, assertionID)` when
@@ -278,6 +279,7 @@ enum AgentEventCompactor {
 
         switch event.type {
         case "user.message",
+             "objective.assessment.changed",
              "schedule.result",
              "system.info",
              "recap.result",

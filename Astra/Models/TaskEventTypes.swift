@@ -148,6 +148,13 @@ public enum TaskEventTypes {
         public static let taskCreated: TaskEventType = "corrective.task.created"
     }
 
+    public enum Objective {
+        /// Durable source event for the model-backed active-objective
+        /// assessment. `current_state.json` derives its optional assessment
+        /// projection from the latest event of this type.
+        public static let assessmentChanged: TaskEventType = "objective.assessment.changed"
+    }
+
     public enum ResourceLock {
         public static let requested: TaskEventType = "resource.lock.requested"
         public static let waiting: TaskEventType = "resource.lock.waiting"
@@ -234,6 +241,7 @@ public enum TaskEventTypes {
         Corrective.stepApproved,
         Corrective.stepDismissed,
         Corrective.taskCreated,
+        Objective.assessmentChanged,
         ResourceLock.requested,
         ResourceLock.waiting,
         ResourceLock.acquired,

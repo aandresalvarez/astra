@@ -257,12 +257,11 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = icon
         }
         NSApp.activate(ignoringOtherApps: true)
-        // Runs before the rest of this function's bookkeeping: if the user
-        // accepts, this process relaunches from /Applications and quits
-        // shortly after, making the log/shortcuts calls below moot for it.
-        // Placed after activation (not before) so the alert -- if shown --
-        // is correctly foregrounded with the app's real icon already set.
-        ApplicationsFolderMover.promptAndMoveIfNeeded()
+        // Runs before the rest of this function's bookkeeping: a production
+        // copy outside Applications becomes the guided installer, then quits
+        // and relaunches the installed copy. Placed after activation so the
+        // installer is foregrounded with ASTRA's real icon already set.
+        ApplicationInstallationCoordinator.presentIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
     }
 }
@@ -696,6 +695,25 @@ public struct ASTRAApp: App {
         // with credential projections or reads TaskRoleProfile.runtime — see
         // RuntimeSeamRegistration.swift.
         RuntimeSeamRegistration.registerAll()
+
+        // A production bundle outside Applications is an installer launcher,
+        // not a normal ASTRA session. Give SwiftUI an in-memory container so
+        // scene construction remains valid, but return before logs, bundled
+        // tools, migrations, leases, or the user's production store are
+        // touched. The app delegate presents the modal installer immediately
+        // after AppKit finishes launching.
+        if ApplicationInstallationCoordinator.isInstallerOnlyLaunch {
+            StanfordFontRegistrar.registerBundledFonts(bundle: AstraResourceBundle.current)
+            let startup = AstraStoreStartupCoordinator.start(
+                isUITesting: true,
+                appInfo: AppBuildInfo.current
+            )
+            modelContainer = startup.modelContainer
+            startupBlocker = nil
+            _storeLeaseHolder = StateObject(wrappedValue: StoreLeaseHolder(lease: nil))
+            return
+        }
+
         var defaults = LoggingPreferences.registeredDefaults
         defaults[AppLogger.sensitiveModeKey] = true
         UserDefaults.standard.register(defaults: defaults)
@@ -944,12 +962,23 @@ public struct ASTRAApp: App {
 
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName, id: AppWindowIDs.main) {
-            if let startupBlocker {
-                StoreStartupBlockedView(
-                    blocker: startupBlocker,
-                    appUpdateController: appUpdateController
-                )
-            } else {
+            switch ApplicationLaunchRoot.resolve(
+                isInstallerOnlyLaunch: ApplicationInstallationCoordinator.isInstallerOnlyLaunch,
+                hasStartupBlocker: startupBlocker != nil
+            ) {
+            case .installerPlaceholder:
+                // Never construct ContentView during a disk-image installer
+                // launch: its appearance work loads catalogs and repairs
+                // application state. The app delegate owns the only active UI.
+                ApplicationInstallerLaunchPlaceholder()
+            case .startupBlocked:
+                if let startupBlocker {
+                    StoreStartupBlockedView(
+                        blocker: startupBlocker,
+                        appUpdateController: appUpdateController
+                    )
+                }
+            case .main:
                 ContentView(appUpdateController: appUpdateController, runtime: runtime)
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                     .environmentObject(appSettings)

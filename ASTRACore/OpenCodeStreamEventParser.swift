@@ -6,8 +6,9 @@ public enum OpenCodeStreamEventParser {
     }
 
     public static func parseAll(line: String) -> [ParsedEvent] {
-        let events = openCodeParsedEvents(line: line)
-        return events.isEmpty ? parsePlainText(line: line) : events
+        openCodeParsedEvents(line: line).resolvingUnrecognized(with: {
+            parsePlainText(line: line)
+        })
     }
 
     public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
@@ -27,6 +28,8 @@ public enum OpenCodeStreamEventParser {
 
     private static func agentEvents(from event: ParsedEvent, rawLine: String) -> [AgentEvent] {
         switch event {
+        case .control(let type):
+            return [.control(type: type)]
         case .systemInit(let model, let sessionID):
             return [.started(sessionID: sessionID, model: model)]
         case .thinking(let text):
@@ -77,32 +80,41 @@ public enum OpenCodeStreamEventParser {
         return .unknown(provider: "opencode", type: type, raw: raw)
     }
 
-    private static func openCodeParsedEvents(line: String) -> [ParsedEvent] {
+    private static func openCodeParsedEvents(line: String) -> StructuredStreamParseOutcome<ParsedEvent> {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let data = trimmed.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = object["type"] as? String else {
-            return []
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return .unrecognized
+        }
+        guard let object = json as? [String: Any] else {
+            return .recognized([.unknown(type: "unknown")])
+        }
+        guard let type = object["type"] as? String else {
+            return .recognized([.unknown(type: "unknown")])
         }
 
         switch type {
         case "session", "session.created", "session.updated":
-            return systemInit(from: object)
+            let events = systemInit(from: object)
+            return .recognized(events.isEmpty ? [.control(type: type)] : events)
         case "text":
-            return textEvent(from: object)
+            let events = textEvent(from: object)
+            return .recognized(events.isEmpty ? [.unknown(type: type)] : events)
         case "reasoning":
-            return reasoningEvent(from: object)
+            let events = reasoningEvent(from: object)
+            return .recognized(events.isEmpty ? [.unknown(type: type)] : events)
         case "tool_use":
-            return toolEvents(from: object)
+            let events = toolEvents(from: object)
+            return .recognized(events.isEmpty ? [.unknown(type: type)] : events)
         case "error", "session.error":
-            return errorEvent(from: object)
+            return .recognized(errorEvent(from: object))
         case "permission.asked":
-            return permissionEvent(from: object)
+            return .recognized(permissionEvent(from: object))
         case "session.status":
-            return []
+            return .recognized([.control(type: type)])
         default:
-            return [.unknown(type: type)]
+            return .recognized([.unknown(type: type)])
         }
     }
 

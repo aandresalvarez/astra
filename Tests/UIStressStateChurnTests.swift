@@ -187,13 +187,8 @@ struct UIStressStateChurnTests {
 
     @Test("a docked reveal whose readable-width probe never fires should still recover")
     func dockedRevealWithoutProbeShouldEventuallySettle() async throws {
-        // SidebarPresentationModel.beginSettle's fallback timer refuses to
-        // clear `isSettling` for a docked reveal, so a missed AppKit probe
-        // suppresses compressed-collapse proposals indefinitely. The guard is
-        // protective on purpose, but "armed forever" is not a contract worth
-        // pinning — desired recovery is recorded as a known issue so a
-        // timeout/watchdog fix flips it. The probe-driven release below stays
-        // the hard contract either way.
+        // The AppKit probe is the fast path, but the fallback watchdog must
+        // release the guard when that observation never arrives.
         let model = SidebarPresentationModel(defaults: try scratchDefaults())
         model.setResponsiveWidth(1_500)
         model.toggle() // hide
@@ -202,10 +197,8 @@ struct UIStressStateChurnTests {
         #expect(model.mode == .docked)
         #expect(model.isSettling)
 
-        await withKnownIssue("a missed probe leaves the docked settle guard armed forever") {
-            let recovered = await waitUntil(timeout: .milliseconds(900)) { !model.isSettling }
-            #expect(recovered, "the settle guard should release on its own when the probe never reports")
-        }
+        let recovered = await waitUntil(timeout: .milliseconds(900)) { !model.isSettling }
+        #expect(recovered, "the settle guard should release on its own when the probe never reports")
 
         if model.isSettling {
             // Collapse proposals are suppressed while the guard is armed.

@@ -102,10 +102,28 @@ public enum TaskRunAnswerPresentationPolicy {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("ASTRA_EVENT ") }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        result = replace(pattern: #"([.!?])([A-Z`#])"#, in: result, template: "$1 $2")
-        result = replace(pattern: #"([.!?])(\*\*[A-Za-z])"#, in: result, template: "$1\n\n$2")
+        result = transformUnfencedLines(in: result) { line in
+            var transformed = replace(pattern: #"([.!?])([A-Z`#])"#, in: line, template: "$1 $2")
+            transformed = replace(pattern: #"([.!?])(\*\*[A-Za-z])"#, in: transformed, template: "$1\n\n$2")
+            return transformed
+        }
         result = replace(pattern: #"\n{3,}"#, in: result, template: "\n\n")
         return MarkdownRenderPreparation.prepareForDisplay(result)
+    }
+
+    private static func transformUnfencedLines(
+        in text: String,
+        transform: (String) -> String
+    ) -> String {
+        var fenceTracker = MarkdownFenceTracker()
+        return text.components(separatedBy: "\n").map { line in
+            guard !fenceTracker.protects(line),
+                  !line.hasPrefix("    "),
+                  !line.hasPrefix("\t") else {
+                return line
+            }
+            return transform(line)
+        }.joined(separator: "\n")
     }
 
     private static func strippingProtocolMarkerLines(from text: String) -> String {
@@ -146,6 +164,31 @@ public enum TaskRunAnswerPresentationPolicy {
     /// carry markdown block boundaries such as `### `/`- ` at line starts),
     /// and only true single-line text falls back to sentence-level joining.
     private static func dedupeAdjacentSegments(in text: String) -> String {
+        var fenceTracker = MarkdownFenceTracker()
+        let lines = text.components(separatedBy: "\n")
+        guard lines.contains(where: { fenceTracker.protects($0) }) else {
+            return dedupeUnfencedSegments(in: text)
+        }
+
+        fenceTracker = MarkdownFenceTracker()
+        var chunks: [(protected: Bool, lines: [String])] = []
+        for line in lines {
+            let isProtected = fenceTracker.protects(line)
+            if chunks.last?.protected == isProtected {
+                chunks[chunks.count - 1].lines.append(line)
+            } else {
+                chunks.append((isProtected, [line]))
+            }
+        }
+        return chunks.map { chunk in
+            let value = chunk.lines.joined(separator: "\n")
+            return chunk.protected ? value : dedupeUnfencedSegments(in: value)
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func dedupeUnfencedSegments(in text: String) -> String {
         if text.contains("\n\n") {
             return dedupedSegments(text.components(separatedBy: "\n\n"), joinedBy: "\n\n")
         }

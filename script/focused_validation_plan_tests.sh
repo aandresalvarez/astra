@@ -9,7 +9,10 @@ assert_plan() {
   shift
 
   local actual
-  actual="$(script/focused_validation_plan.sh "$@")"
+  # Keep ordinary-plan fixtures hermetic when this self-test is invoked by the
+  # release workflow, which intentionally exports ASTRA_RELEASE_GATE=1 for its
+  # parent validation plan.
+  actual="$(env -u ASTRA_RELEASE_GATE script/focused_validation_plan.sh "$@")"
   if [[ "$actual" != "$expected" ]]; then
     printf 'Expected validation plan:\n%s\nActual validation plan:\n%s\n' "$expected" "$actual" >&2
     return 1

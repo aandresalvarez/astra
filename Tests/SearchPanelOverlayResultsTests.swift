@@ -60,6 +60,21 @@ struct SearchPanelOverlayResultsTests {
         #expect(SearchPanelOverlayResults.filteredWorkspaces(searchText: " ", workspaces: [amber], taskCount: 0).isEmpty)
     }
 
+    @Test("workspace search is capped for broad matches")
+    func workspaceSearchIsCapped() {
+        let workspaces = (0..<30).map {
+            Workspace(name: "Shared \($0)", primaryPath: "/tmp/shared-\($0)")
+        }
+
+        let results = SearchPanelOverlayResults.filteredWorkspaces(
+            searchText: "shared",
+            workspaces: workspaces,
+            taskCount: 0
+        )
+
+        #expect(results.count == 12)
+    }
+
     private func makeTask(
         title: String,
         goal: String = "",

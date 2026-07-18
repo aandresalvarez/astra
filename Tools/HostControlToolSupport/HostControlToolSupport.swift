@@ -391,6 +391,7 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    private let parentLifetimePipe = Pipe()
     var terminationHandler: ((HostControlScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
@@ -427,6 +428,8 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         Self.setCloseOnExec(stdoutPipe.fileHandleForWriting.fileDescriptor)
         Self.setCloseOnExec(stderrPipe.fileHandleForReading.fileDescriptor)
         Self.setCloseOnExec(stderrPipe.fileHandleForWriting.fileDescriptor)
+        Self.setCloseOnExec(parentLifetimePipe.fileHandleForReading.fileDescriptor)
+        Self.setCloseOnExec(parentLifetimePipe.fileHandleForWriting.fileDescriptor)
     }
 
     private static func setCloseOnExec(_ descriptor: Int32) {
@@ -439,6 +442,21 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         var actions: posix_spawn_file_actions_t? = nil
         var attr: posix_spawnattr_t? = nil
         var childPID = pid_t(0)
+        let lifetimeDescriptor = fcntl(
+            parentLifetimePipe.fileHandleForReading.fileDescriptor,
+            F_DUPFD_CLOEXEC,
+            64
+        )
+        guard lifetimeDescriptor >= 0 else {
+            throw HostControlScopedProcessError(operation: "fcntl(F_DUPFD_CLOEXEC)", code: errno)
+        }
+        defer { close(lifetimeDescriptor) }
+
+        let launchPlan = HostControlParentDeathSupervisor.launchPlan(
+            executablePath: executablePath,
+            arguments: arguments,
+            lifetimeDescriptor: lifetimeDescriptor
+        )
 
         try check(posix_spawn_file_actions_init(&actions), operation: "posix_spawn_file_actions_init")
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -448,6 +466,28 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
         try addPipe(stdoutPipe, targetDescriptor: STDOUT_FILENO, actions: &actions, operation: "stdout")
         try addPipe(stderrPipe, targetDescriptor: STDERR_FILENO, actions: &actions, operation: "stderr")
+        try check(
+            posix_spawn_file_actions_adddup2(
+                &actions,
+                parentLifetimePipe.fileHandleForReading.fileDescriptor,
+                lifetimeDescriptor
+            ),
+            operation: "posix_spawn_file_actions_adddup2(parent_lifetime)"
+        )
+        try check(
+            posix_spawn_file_actions_addclose(
+                &actions,
+                parentLifetimePipe.fileHandleForReading.fileDescriptor
+            ),
+            operation: "posix_spawn_file_actions_addclose(parent_lifetime_read)"
+        )
+        try check(
+            posix_spawn_file_actions_addclose(
+                &actions,
+                parentLifetimePipe.fileHandleForWriting.fileDescriptor
+            ),
+            operation: "posix_spawn_file_actions_addclose(parent_lifetime_write)"
+        )
         if let currentDirectory {
             try currentDirectory.withCString { path in
                 try check(posix_spawn_file_actions_addchdir_np(&actions, path), operation: "posix_spawn_file_actions_addchdir_np")
@@ -457,14 +497,14 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         try check(posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP)), operation: "posix_spawnattr_setflags")
         try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
 
-        var argv = makeCStringArray([executablePath] + arguments)
+        var argv = makeCStringArray([launchPlan.executablePath] + launchPlan.arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
         defer {
             freeCStringArray(argv)
             freeCStringArray(envp)
         }
 
-        let spawnResult = executablePath.withCString { executable in
+        let spawnResult = launchPlan.executablePath.withCString { executable in
             argv.withUnsafeMutableBufferPointer { argvBuffer in
                 envp.withUnsafeMutableBufferPointer { envBuffer in
                     posix_spawn(
@@ -482,6 +522,7 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
+        parentLifetimePipe.fileHandleForReading.closeFile()
 
         lock.lock()
         processID = childPID
