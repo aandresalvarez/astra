@@ -309,6 +309,26 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
+    @Test("plan surfaces a capability storage-name collision instead of promising a draft install")
+    func planSurfacesCapabilityStorageCollision() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let report = WorkspacePackageService().validatePackage(at: fixture.packageURL)
+        // The recipient has "local-tool"; the package embeds "local.tool" — a
+        // different ID that folds to the same case-insensitive storage name, so
+        // the coordinator would skip it. The plan must disclose the collision.
+        var planner = WorkspacePackageImportPlanner()
+        planner.installedCapabilityIDs = { ["local-tool"] }
+        planner.approvedCapabilityIDs = { [] }
+        let plan = try #require(planner.plan(from: report))
+        let item = try #require(plan.capabilities.first { $0.id == "capability:local.tool" })
+        #expect(item.status == .incompatible)
+        #expect(item.detail.contains("storage name collides"))
+    }
+
+    @MainActor
     @Test("import does not activate a recipient-local unapproved capability the package merely names")
     func importDoesNotActivateRecipientLocalUnapprovedCapability() throws {
         let root = try Self.temporaryRoot()

@@ -133,11 +133,17 @@ struct WorkspacePackageImportReviewView: View {
         .frame(minWidth: 600, minHeight: 480)
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspacePackageImportReviewView")
-        .onAppear {
+        .task {
             guard !didLoad else { return }
             didLoad = true
             accessingURL = packageURL.startAccessingSecurityScopedResource() ? packageURL : nil
-            let report = WorkspacePackageService().validatePackage(at: packageURL)
+            // Validation enumerates and hashes an untrusted (bounded) tree; run
+            // that filesystem work off the main actor so a large package can't
+            // hang the review UI. The report is Sendable.
+            let url = packageURL
+            let report = await Task.detached(priority: .userInitiated) {
+                WorkspacePackageService().validatePackage(at: url)
+            }.value
             // Bind the reviewed plan and the fingerprint to the SAME read of the
             // package: `report.packageFingerprint` was captured inside the call
             // that built this plan, so a source swapped between two separate

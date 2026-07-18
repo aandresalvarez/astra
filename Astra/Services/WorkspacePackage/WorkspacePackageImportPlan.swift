@@ -81,16 +81,26 @@ struct WorkspacePackageImportPlanner {
             let status: WorkspacePackageImportItemStatus
             let detail: String
             if let appReport, appReport.canInstall {
-                if appReport.installState == .needsPermissionReview {
+                // Derive permission and dependency warnings INDEPENDENTLY:
+                // `installState` reports only one, so an app that both requests
+                // elevated permissions and has an unresolved dependency would
+                // otherwise hide its permission request behind the dependency
+                // status. Surface both in the detail even though one badge shows.
+                let elevatedPermission = (appReport.manifest?.permissions.defaultMode ?? .readOnly) != .readOnly
+                let needsDependencyMapping = appReport.installState == .needsDependencyMapping
+                var notes: [String] = []
+                if elevatedPermission { notes.append("requests more than read-only permissions") }
+                if needsDependencyMapping { notes.append("has app dependencies that need mapping on this machine") }
+                if elevatedPermission {
                     status = .needsApproval
-                    detail = "Requests more than read-only permissions; review before enabling."
-                } else if appReport.installState == .needsDependencyMapping {
+                } else if needsDependencyMapping {
                     status = .needsLocalSetup
-                    detail = "One or more app dependencies need mapping on this machine."
                 } else {
                     status = .ready
-                    detail = "Imports as a draft app with its manifest and template."
                 }
+                detail = notes.isEmpty
+                    ? "Imports as a draft app with its manifest and template."
+                    : "This app " + notes.joined(separator: ", and ") + "; review before enabling."
             } else {
                 status = .incompatible
                 detail = appReport?.blockers.first?.message ?? "Embedded app package did not validate."
@@ -105,8 +115,17 @@ struct WorkspacePackageImportPlanner {
 
         var capabilities: [WorkspacePackageImportPlanItem] = []
         let embeddedIDs = Set(manifest.capabilityEntries.map(\.packageID))
+        // Installed capabilities keyed by their on-disk storage name: the library
+        // writes each package to `safeFileName(for:)`, which is case-insensitive
+        // and folds separators, so `local.tool` and `local-tool` collide. The
+        // coordinator skips an embedded package whose storage name matches an
+        // installed one, so the review must disclose that rather than promise a
+        // draft install that cannot occur.
+        let installedStorageNames = Set(installed.map { CapabilityLibrary.safeFileName(for: $0) })
         for entry in manifest.capabilityEntries {
             let already = installed.contains(entry.packageID)
+            let storageCollision = !already
+                && installedStorageNames.contains(CapabilityLibrary.safeFileName(for: entry.packageID))
             let requirements = report.capabilityRequirements[entry.packageID]
             let status: WorkspacePackageImportItemStatus
             let detail: String
@@ -119,6 +138,9 @@ struct WorkspacePackageImportPlanner {
                 // set, so the imported workspace won't have it. Disclose that.
                 status = .needsApproval
                 detail = "A capability with this ID exists locally but isn't approved; approve it, then enable it after import."
+            } else if storageCollision {
+                status = .incompatible
+                detail = "Its storage name collides with a capability already on this machine; the embedded copy will be skipped."
             } else if let requirements, !requirements.accountRequirements.isEmpty {
                 status = .needsAuthentication
                 detail = "Installs as a draft; sign in to: \(requirements.accountRequirements.joined(separator: ", "))."

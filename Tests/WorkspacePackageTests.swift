@@ -532,6 +532,48 @@ struct WorkspacePackageTests {
     }
 
     @MainActor
+    @Test("package validation rejects duplicate embedded app logical IDs")
+    func validationRejectsDuplicateAppLogicalIDs() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let sourcePackageURL = root.appendingPathComponent("source.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.minimalAppManifest(id: "notes", name: "Notes"),
+            to: sourcePackageURL
+        )
+        _ = try WorkspaceAppPackageService().importPackage(
+            at: sourcePackageURL,
+            into: workspace,
+            modelContext: container.mainContext
+        )
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // Two entries reusing one logical ID would collapse to a single keyed
+        // report, so a safe bundle could mask a permission-sensitive one while
+        // both import (createApp suffixes the collided ID).
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        if let first = manifest.appEntries.first {
+            manifest.appEntries = [first, first]
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.lowercased().contains("duplicate app") })
+    }
+
+    @MainActor
     @Test("exported package downgrades an asset-icon capability to its fallback symbol")
     func exportedPackageDowngradesAssetIcon() throws {
         let root = try Self.temporaryRoot()

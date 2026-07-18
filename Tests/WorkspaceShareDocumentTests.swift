@@ -750,6 +750,57 @@ struct WorkspaceShareDocumentTests {
         #expect(report.blockers.contains { $0.message.contains("more than one skill") })
     }
 
+    @MainActor
+    @Test("validation rejects a package containing a symlink before confirmation")
+    func validationRejectsPackageSymlink() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // A symlink the import would reject must fail the pre-import review too,
+        // rather than being approved and then rejected on confirm.
+        try FileManager.default.createSymbolicLink(
+            at: destination.appendingPathComponent("aliased.json"),
+            withDestinationURL: URL(fileURLWithPath: "/etc/hosts")
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("symbolic link") })
+    }
+
+    @Test("review bounds check enforces file-count and byte budgets and rejects symlinks")
+    func reviewBoundsCheckEnforcesBudgets() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pkg = root.appendingPathComponent("pkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: pkg, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 4096).write(to: pkg.appendingPathComponent("payload.bin"))
+
+        // Over byte budget.
+        #expect(PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 100, maxTotalBytes: 1024) != nil)
+        // Over file-count budget.
+        #expect(PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 0, maxTotalBytes: 1_000_000) != nil)
+        // Within budget.
+        #expect(PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 100, maxTotalBytes: 1_000_000) == nil)
+        // Symlink surfaced.
+        try FileManager.default.createSymbolicLink(
+            at: pkg.appendingPathComponent("link"),
+            withDestinationURL: URL(fileURLWithPath: "/etc/hosts")
+        )
+        if case .containsSymlink = PortablePackageSafeFileReader.reviewBoundsViolation(in: pkg, maxFileCount: 100, maxTotalBytes: 1_000_000) {
+        } else {
+            Issue.record("expected a symlink violation")
+        }
+    }
+
     // MARK: - Fixtures
 
     @MainActor

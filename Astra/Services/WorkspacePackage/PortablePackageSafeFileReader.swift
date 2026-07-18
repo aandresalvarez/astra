@@ -82,6 +82,80 @@ enum PortablePackageSafeFileReader {
         return nil
     }
 
+    /// Walks the package tree once (POSIX `lstat`, no follow) to enforce the
+    /// review budget *before* any hashing: returns an error if a symlink is
+    /// present anywhere, the regular-file count exceeds `maxFileCount`, or the
+    /// aggregate size exceeds `maxTotalBytes`. Reads nothing — bounds the work
+    /// synchronous validation does on an untrusted package so a crafted huge or
+    /// many-file tree can't hash-hang the UI before a blocker is shown, and
+    /// surfaces the same symlink rejection `stageBoundedCopy` applies at import
+    /// as a pre-confirmation blocker.
+    static func reviewBoundsViolation(
+        in rootURL: URL,
+        maxFileCount: Int = 10_000,
+        maxTotalBytes: Int = 500 * 1024 * 1024
+    ) -> PortablePackageStagingError? {
+        var rootStat = stat()
+        if lstat(rootURL.path, &rootStat) == 0, (rootStat.st_mode & S_IFMT) == S_IFLNK {
+            return .containsSymlink(rootURL.lastPathComponent)
+        }
+        var remainingFiles = maxFileCount
+        var remainingBytes = maxTotalBytes
+        return boundsWalk(
+            dirPath: rootURL.path,
+            relativePrefix: "",
+            maxFileCount: maxFileCount,
+            maxTotalBytes: maxTotalBytes,
+            remainingFiles: &remainingFiles,
+            remainingBytes: &remainingBytes
+        )
+    }
+
+    private static func boundsWalk(
+        dirPath: String,
+        relativePrefix: String,
+        maxFileCount: Int,
+        maxTotalBytes: Int,
+        remainingFiles: inout Int,
+        remainingBytes: inout Int
+    ) -> PortablePackageStagingError? {
+        guard let dir = opendir(dirPath) else { return nil }
+        defer { closedir(dir) }
+        while let entry = readdir(dir) {
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in
+                String(cString: Array(raw.bindMemory(to: CChar.self)))
+            }
+            if name == "." || name == ".." { continue }
+            let childPath = "\(dirPath)/\(name)"
+            let childRelative = relativePrefix.isEmpty ? name : "\(relativePrefix)/\(name)"
+            var childStat = stat()
+            guard lstat(childPath, &childStat) == 0 else { continue }
+            switch childStat.st_mode & S_IFMT {
+            case S_IFLNK:
+                return .containsSymlink(childRelative)
+            case S_IFDIR:
+                if let violation = boundsWalk(
+                    dirPath: childPath,
+                    relativePrefix: childRelative,
+                    maxFileCount: maxFileCount,
+                    maxTotalBytes: maxTotalBytes,
+                    remainingFiles: &remainingFiles,
+                    remainingBytes: &remainingBytes
+                ) {
+                    return violation
+                }
+            case S_IFREG:
+                remainingFiles -= 1
+                if remainingFiles < 0 { return .tooManyFiles(limit: maxFileCount) }
+                remainingBytes -= Int(childStat.st_size)
+                if remainingBytes < 0 { return .tooLarge(limit: maxTotalBytes) }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
     /// Copies `sourceURL` into `destinationURL` as a private, self-contained
     /// snapshot, refusing any symbolic link and enforcing a file-count and
     /// aggregate-byte budget *as it walks* — never a bare `copyItem` of the

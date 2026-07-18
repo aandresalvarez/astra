@@ -43,6 +43,29 @@ struct WorkspacePackageService {
     func validatePackage(at packageURL: URL) -> WorkspacePackageValidationReport {
         var issues: [PortablePackageValidationIssue] = []
 
+        // Bound the untrusted package BEFORE hashing anything: a crafted tree of
+        // many files (or a few near-limit files) would otherwise be enumerated
+        // and digested in full during review — the staging budget only applies
+        // after the user confirms. This single lstat walk also surfaces the
+        // symlink rejection `stageBoundedCopy` applies at import as a
+        // pre-confirmation blocker, so the review never approves a package the
+        // import will reject.
+        if let violation = PortablePackageSafeFileReader.reviewBoundsViolation(in: packageURL) {
+            let message: String
+            switch violation {
+            case .containsSymlink(let path):
+                message = "Package contains a symbolic link (\(path)); links are not allowed in a portable package."
+            case .tooManyFiles(let limit):
+                message = "Package exceeds the \(limit)-file limit for import review."
+            case .tooLarge(let limit):
+                message = "Package exceeds the \(limit / (1024 * 1024))MB size limit for import review."
+            case .copyFailed(let path):
+                message = "Package could not be read (\(path))."
+            }
+            issues.append(blocker("/", message))
+            return WorkspacePackageValidationReport(manifest: nil, shareDocument: nil, appReports: [:], issues: issues)
+        }
+
         let manifest: WorkspacePackageManifest? = decode(
             WorkspacePackageManifest.self,
             rootURL: packageURL,
@@ -118,6 +141,13 @@ struct WorkspacePackageService {
             validateShareResourceSafety(shareDocument, issues: &issues)
         }
 
+        // Reports are keyed by logical ID, so two entries sharing one would make
+        // the later report overwrite the earlier — and the planner would then
+        // show a safe bundle's status for a permission-sensitive one while the
+        // coordinator imports both (`createApp` suffixes the collided ID). Reject
+        // duplicate app logical IDs so the reviewed status stays bound to the
+        // bundle that installs.
+        rejectDuplicateNames((manifest?.appEntries ?? []).map(\.logicalID), kind: "app entries", issues: &issues)
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
         for entry in manifest?.appEntries ?? [] {
             validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
