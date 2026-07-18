@@ -138,9 +138,13 @@ struct WorkspacePackageImportReviewView: View {
             didLoad = true
             accessingURL = packageURL.startAccessingSecurityScopedResource() ? packageURL : nil
             let report = WorkspacePackageService().validatePackage(at: packageURL)
+            // Bind the reviewed plan and the fingerprint to the SAME read of the
+            // package: `report.packageFingerprint` was captured inside the call
+            // that built this plan, so a source swapped between two separate
+            // reads can't pair this package's inventory with another's digest.
             state.planLoaded(
                 WorkspacePackageImportPlanner().plan(from: report),
-                packageDigest: WorkspacePackageImportCoordinator.packageFingerprint(at: packageURL)
+                packageDigest: report.packageFingerprint
             )
         }
         .onDisappear {
@@ -235,6 +239,9 @@ struct WorkspacePackageImportReviewView: View {
         }
         if !plan.capabilities.isEmpty {
             section("Capabilities") { itemRows(plan.capabilities) }
+        }
+        if !plan.packs.isEmpty {
+            section("Packs") { itemRows(plan.packs) }
         }
         if !plan.connectors.isEmpty {
             section("Connectors") { itemRows(plan.connectors) }

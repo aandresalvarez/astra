@@ -269,6 +269,15 @@ struct WorkspacePackageImportCoordinator {
             capabilityLibrary.installedPackage(id: id)?.governance.approvalStatus == .approved
         }
 
+        // Packs are referenced by ID only and are never embedded, so a share can
+        // name a pack this machine does not have. Reconcile the enabled-pack set
+        // down to packs that actually resolve in the recipient's catalog rather
+        // than trusting arbitrary IDs: an unresolved enabled pack makes the
+        // workspace hide pack-addressable shelves and applies an unresolved
+        // policy. Missing packs are surfaced in the pre-import review.
+        let availablePackIDs = Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
+        workspace.enabledPackIDs = workspace.enabledPackIDs.filter { availablePackIDs.contains($0) }
+
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
             workspace: workspace,
             modelContext: importContext,

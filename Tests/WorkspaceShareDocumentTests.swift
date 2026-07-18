@@ -323,6 +323,189 @@ struct WorkspaceShareDocumentTests {
         #expect(imported.nextFireDate > Date(timeIntervalSinceNow: -60))
     }
 
+    @MainActor
+    @Test("validation rejects a share whose format version is newer than this build")
+    func validationRejectsNewerFormatVersion() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // A package authored by a newer build carries fields this build cannot
+        // interpret safely; it must be blocked rather than partially decoded.
+        try Self.reseal(at: destination) { document in
+            document.formatVersion = WorkspaceShareDocument.currentFormatVersion + 1
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("newer than this build") })
+    }
+
+    @MainActor
+    @Test("validation rejects a share carrying duplicate resource names")
+    func validationRejectsDuplicateNames() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // Two skills with the same name would make by-name links (skill→connector,
+        // template→skill, schedule→skill) ambiguous on import.
+        try Self.reseal(at: destination) { document in
+            let skill = ShareSkill(
+                name: "Duplicate",
+                icon: "gear",
+                description: "d",
+                allowedTools: [],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "",
+                environmentKeys: [],
+                environmentValues: [],
+                connectorNames: [],
+                localToolNames: []
+            )
+            document.skills = [skill, skill]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.lowercased().contains("duplicate") })
+    }
+
+    @MainActor
+    @Test("validation rejects a schedule with an out-of-range recurrence")
+    func validationRejectsBadScheduleDomain() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // A non-positive interval would produce a schedule that never fires (or
+        // busy-loops); reject it at review instead of importing a broken routine.
+        try Self.reseal(at: destination) { document in
+            document.schedules = [ShareSchedule(
+                name: "Bad",
+                goal: "g",
+                routineDescription: "",
+                routineInstructions: "",
+                templateName: nil,
+                templateVariablesJSON: "",
+                model: "",
+                tokenBudget: 0,
+                scheduleType: "interval",
+                intervalSeconds: 0,
+                dailyHour: 0,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 0,
+                skillNames: [],
+                resultMode: nil,
+                runtimeID: nil
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+    }
+
+    @MainActor
+    @Test("unresolved referenced packs are surfaced as missing and never enabled")
+    func unresolvedPacksAreSurfacedAndNotEnabled() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
+        senderWorkspace.enabledPackIDs = ["totally.unknown.pack"]
+
+        let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: senderWorkspace,
+            modelContext: senderContainer.mainContext,
+            to: packageURL
+        )
+
+        // Plan: a referenced pack absent from the recipient's catalog is Missing.
+        let report = WorkspacePackageService().validatePackage(at: packageURL)
+        var planner = WorkspacePackageImportPlanner()
+        planner.availablePackIDs = { [] }
+        let plan = try #require(planner.plan(from: report))
+        let packItem = try #require(plan.packs.first { $0.id == "pack:totally.unknown.pack" })
+        #expect(packItem.status == .missing)
+
+        // Import: the enabled-pack set is reconciled to the recipient's real
+        // catalog, so an unresolved pack is never left enabled.
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("caps", isDirectory: true)
+        )
+        let outcome = try coordinator.importPackage(
+            at: packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+        #expect(!outcome.workspace.enabledPackIDs.contains("totally.unknown.pack"))
+    }
+
+    @MainActor
+    @Test("an imported same-thread routine is normalized to a fresh-task result mode")
+    func importedSameThreadRoutineIsNormalized() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
+        let schedule = TaskSchedule(name: "SameThread", goal: "g", workspace: senderWorkspace, scheduleType: .interval)
+        schedule.intervalSeconds = 3600
+        schedule.resultMode = .sameThread
+        senderContainer.mainContext.insert(schedule)
+
+        let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: senderWorkspace,
+            modelContext: senderContainer.mainContext,
+            to: packageURL
+        )
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("caps", isDirectory: true)
+        )
+        let outcome = try coordinator.importPackage(
+            at: packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // sameThread would rejoin the sender's original conversation, which does
+        // not exist on the recipient; import rewrites it to a fresh task.
+        let importedID = outcome.workspace.id
+        let schedules = try targetContainer.mainContext.fetch(
+            FetchDescriptor<TaskSchedule>(predicate: #Predicate { $0.workspace?.id == importedID })
+        )
+        let imported = try #require(schedules.first)
+        #expect(imported.resultMode != .sameThread)
+    }
+
     // MARK: - Fixtures
 
     @MainActor

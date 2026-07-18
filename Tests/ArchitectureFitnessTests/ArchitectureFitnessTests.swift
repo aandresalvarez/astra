@@ -68,14 +68,21 @@ struct ArchitectureFitnessTests {
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()
         let serviceRoot = root.appendingPathComponent("Astra/Services")
-        let allowedWorkspaceAppPackAdapters: Set<String> = [
-            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift"
+        // Adapters that legitimately consume the pack catalog without owning it:
+        // the WorkspaceApps template-pack bridge, and the portable-workspace
+        // import flow, which must reconcile a share's referenced pack IDs against
+        // the recipient's real catalog (surface missing packs, drop unresolved
+        // ones from the enabled set) rather than trusting arbitrary IDs.
+        let allowedPackAdapters: Set<String> = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"
         ]
         let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
             .compactMap { file -> String? in
                 let path = relativePath(for: file, root: root)
                 guard path.contains("/Packs/") == false else { return nil }
-                guard allowedWorkspaceAppPackAdapters.contains(path) == false else { return nil }
+                guard allowedPackAdapters.contains(path) == false else { return nil }
                 let text = try String(contentsOf: file, encoding: .utf8)
                 return text.contains("AstraPack") ? path : nil
             }

@@ -487,13 +487,25 @@ struct WorkspacePackageImportTests {
         #expect(connectorItem.status == .needsAuthentication)
         #expect(connectorItem.detail.contains("API_TOKEN"))
 
-        // Same package on a machine that already has the capability.
+        // Same package on a machine that has the capability installed but NOT
+        // approved: a referenced (non-embedded) capability that the importer will
+        // strip from the enabled set must not be promised as "Ready".
         var installedPlanner = WorkspacePackageImportPlanner()
         installedPlanner.installedCapabilityIDs = { ["local.tool", "missing.builtin"] }
+        installedPlanner.approvedCapabilityIDs = { [] }
         let installedPlan = try #require(installedPlanner.plan(from: report))
         let alreadyItem = try #require(installedPlan.capabilities.first { $0.id == "capability:local.tool" })
         #expect(alreadyItem.status == .alreadyInstalled)
-        let readyItem = try #require(installedPlan.capabilities.first { $0.id == "capability:missing.builtin" })
+        let unapprovedItem = try #require(installedPlan.capabilities.first { $0.id == "capability:missing.builtin" })
+        #expect(unapprovedItem.status == .needsApproval)
+
+        // And on a machine where the referenced capability is installed AND
+        // approved, it surfaces as immediately Ready.
+        var approvedPlanner = WorkspacePackageImportPlanner()
+        approvedPlanner.installedCapabilityIDs = { ["local.tool", "missing.builtin"] }
+        approvedPlanner.approvedCapabilityIDs = { ["missing.builtin"] }
+        let approvedPlan = try #require(approvedPlanner.plan(from: report))
+        let readyItem = try #require(approvedPlan.capabilities.first { $0.id == "capability:missing.builtin" })
         #expect(readyItem.status == .ready)
     }
 

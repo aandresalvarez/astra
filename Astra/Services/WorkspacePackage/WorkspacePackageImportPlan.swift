@@ -41,6 +41,7 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var blockers: [PortablePackageValidationIssue]
     var apps: [WorkspacePackageImportPlanItem]
     var capabilities: [WorkspacePackageImportPlanItem]
+    var packs: [WorkspacePackageImportPlanItem]
     var connectors: [WorkspacePackageImportPlanItem]
     var accounts: [WorkspacePackageImportPlanItem]
     var sshConnections: [WorkspacePackageImportPlanItem]
@@ -50,7 +51,7 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var canImport: Bool { blockers.isEmpty }
 
     var allItems: [WorkspacePackageImportPlanItem] {
-        apps + capabilities + connectors + accounts + sshConnections
+        apps + capabilities + packs + connectors + accounts + sshConnections
     }
 }
 
@@ -61,10 +62,19 @@ struct WorkspacePackageImportPlanner {
     var installedCapabilityIDs: () -> Set<String> = {
         Set(CapabilityLibrary().installedPackages().map(\.id))
     }
+    var approvedCapabilityIDs: () -> Set<String> = {
+        Set(CapabilityLibrary().installedPackages()
+            .filter { $0.governance.approvalStatus == .approved }
+            .map(\.id))
+    }
+    var availablePackIDs: () -> Set<String> = {
+        Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
+    }
 
     func plan(from report: WorkspacePackageValidationReport) -> WorkspacePackageImportPlan? {
         guard let manifest = report.manifest, let document = report.shareDocument else { return nil }
         let installed = installedCapabilityIDs()
+        let approved = approvedCapabilityIDs()
 
         let apps = manifest.appEntries.map { entry -> WorkspacePackageImportPlanItem in
             let appReport = report.appReports[entry.logicalID]
@@ -122,16 +132,45 @@ struct WorkspacePackageImportPlanner {
         }
         for capabilityID in document.capabilityIDs where !embeddedIDs.contains(capabilityID) {
             // Referenced but not embedded: built-in or remote-approved on the
-            // exporting machine. Ready if this machine has it, missing if not.
-            let available = installed.contains(capabilityID)
+            // exporting machine. Ready only if installed AND approved here — the
+            // importer strips installed-but-unapproved IDs from the enabled set,
+            // so classifying by installation alone would promise "Ready" for a
+            // capability the imported workspace silently won't have.
+            let status: WorkspacePackageImportItemStatus
+            let detail: String
+            if approved.contains(capabilityID) {
+                status = .ready
+                detail = "Referenced capability is available on this machine."
+            } else if installed.contains(capabilityID) {
+                status = .needsApproval
+                detail = "Referenced capability is installed but not approved; approve it, then enable after import."
+            } else {
+                status = .missing
+                detail = "Referenced capability is not installed on this machine; enable or install it after import."
+            }
             capabilities.append(WorkspacePackageImportPlanItem(
                 id: "capability:\(capabilityID)",
                 name: capabilityID,
-                detail: available
-                    ? "Referenced capability is available on this machine."
-                    : "Referenced capability is not installed on this machine; enable or install it after import.",
-                status: available ? .ready : .missing
+                detail: detail,
+                status: status
             ))
+        }
+
+        // Packs are referenced by ID only. An enabled-but-unresolved pack makes
+        // the workspace hide pack-addressable shelves and applies an unresolved
+        // policy, so surface which referenced packs this machine lacks (the
+        // importer only enables the ones it can resolve).
+        let availablePacks = availablePackIDs()
+        let packs = document.packIDs.map { packID -> WorkspacePackageImportPlanItem in
+            let available = availablePacks.contains(packID)
+            return WorkspacePackageImportPlanItem(
+                id: "pack:\(packID)",
+                name: packID,
+                detail: available
+                    ? "Referenced pack is available on this machine."
+                    : "Referenced pack is not installed on this machine; it will not be enabled.",
+                status: available ? .ready : .missing
+            )
         }
 
         let connectors = document.connectors.map { connector -> WorkspacePackageImportPlanItem in
@@ -176,6 +215,7 @@ struct WorkspacePackageImportPlanner {
             blockers: report.blockers,
             apps: apps,
             capabilities: capabilities,
+            packs: packs,
             connectors: connectors,
             accounts: accounts,
             sshConnections: sshConnections,

@@ -199,8 +199,9 @@ enum WorkspaceShareImporter {
             instructions: document.instructions
         )
         // Enable-intent only; the caller reconciles capabilities to
-        // installed-and-approved after apps import. Enabled-GLOBAL sets are
-        // intentionally never populated — the DTO cannot express them.
+        // installed-and-approved and packs to the recipient's catalog after apps
+        // import. Enabled-GLOBAL sets are intentionally never populated — the DTO
+        // cannot express them.
         workspace.enabledCapabilityIDs = document.capabilityIDs
         workspace.enabledPackIDs = document.packIDs
         modelContext.insert(workspace)
@@ -328,7 +329,12 @@ enum WorkspaceShareImporter {
             schedule.dailyMinute = share.dailyMinute
             schedule.weeklyDayOfWeek = share.weeklyDayOfWeek
             schedule.skillIDs = share.skillNames.compactMap { skillsByName[$0]?.id.uuidString }
-            schedule.resultMode = share.resultMode.flatMap(ScheduleResultMode.init(rawValue:)) ?? .sameThread
+            // A `.sameThread` routine posts results back to its source task, but
+            // that task does not travel with the share (no `sourceTaskID`). Left
+            // as-is the run would silently behave as `.newTask` while the config
+            // claims same-thread; normalize to `.newTask` so behavior matches.
+            let requested = share.resultMode.flatMap(ScheduleResultMode.init(rawValue:)) ?? .newTask
+            schedule.resultMode = requested == .sameThread ? .newTask : requested
             // Recompute the next fire from now instead of trusting a stale
             // sender date; the routine is quarantined regardless.
             schedule.advanceNextFireDate()

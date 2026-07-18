@@ -16,6 +16,12 @@ struct WorkspacePackageValidationReport: Sendable {
     var shareDocument: WorkspaceShareDocument?
     var appReports: [String: WorkspaceAppPackageValidationReport]
     var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
+    /// Whole-package fingerprint (digest of `checksums.json`) captured in the
+    /// SAME validation call that built the plan, so the review's displayed
+    /// inventory and the digest the import is bound to come from one read of the
+    /// package — a source swapped between two separate reads can't pair one
+    /// package's plan with another's accepted digest.
+    var packageFingerprint: String?
     var issues: [PortablePackageValidationIssue]
 
     var blockers: [PortablePackageValidationIssue] {
@@ -98,6 +104,16 @@ struct WorkspacePackageService {
             issues: &issues
         )
         if let shareDocument {
+            // Reject a future/unsupported format up front: Swift's decoder
+            // ignores unknown fields, so a newer additive format would otherwise
+            // decode and import with the semantics this build doesn't understand
+            // silently dropped.
+            if shareDocument.formatVersion > WorkspaceShareDocument.currentFormatVersion {
+                issues.append(blocker(
+                    "/workspace-share.json/formatVersion",
+                    "Package format version \(shareDocument.formatVersion) is newer than this build supports (\(WorkspaceShareDocument.currentFormatVersion))."
+                ))
+            }
             validateShareFreeTextContent(shareDocument, issues: &issues)
             validateShareResourceSafety(shareDocument, issues: &issues)
         }
@@ -116,11 +132,19 @@ struct WorkspacePackageService {
             )
         }
 
+        // Captured in this same call so the plan and the digest the import binds
+        // to come from one read of the package (see `packageFingerprint` doc).
+        let packageFingerprint = try? PortablePackageSafeFileReader.digest(
+            rootURL: packageURL,
+            relativePath: "checksums.json"
+        )
+
         return WorkspacePackageValidationReport(
             manifest: manifest,
             shareDocument: shareDocument,
             appReports: appReports,
             capabilityRequirements: capabilityRequirements,
+            packageFingerprint: packageFingerprint,
             issues: issues
         )
     }
@@ -459,6 +483,53 @@ struct WorkspacePackageService {
                     "Local tool command is not permitted for import."
                 ))
             }
+        }
+        // Resource links are resolved by NAME within the package, so a duplicate
+        // name is ambiguous: the importer would keep only the last row under a
+        // name, and any skill/schedule/template link to the others would rebind
+        // to the wrong one (e.g. a routine running a different template's goal).
+        // Reject duplicate names per resource type.
+        rejectDuplicateNames(document.skills.map(\.name), kind: "skills", issues: &issues)
+        rejectDuplicateNames(document.connectors.map(\.name), kind: "connectors", issues: &issues)
+        rejectDuplicateNames(document.localTools.map(\.name), kind: "localTools", issues: &issues)
+        rejectDuplicateNames(document.templates.map(\.name), kind: "templates", issues: &issues)
+        // Apply the schedule editor's domain constraints: an out-of-range value
+        // (notably interval <= 0) would make `advanceNextFireDate` place every
+        // next fire at/before now, so `TaskScheduler` would relaunch the routine
+        // on every ~0.5s iteration once the recipient enabled it.
+        for (index, schedule) in document.schedules.enumerated() {
+            let type = ScheduleType(rawValue: schedule.scheduleType)
+            let invalid: String?
+            switch type {
+            case .interval where schedule.intervalSeconds <= 0:
+                invalid = "interval must be a positive number of seconds"
+            case .daily where !(0...23).contains(schedule.dailyHour) || !(0...59).contains(schedule.dailyMinute):
+                invalid = "daily hour/minute is out of range"
+            case .weekly where !(1...7).contains(schedule.weeklyDayOfWeek):
+                invalid = "weekly day-of-week is out of range"
+            case .none:
+                invalid = "unknown schedule type '\(schedule.scheduleType)'"
+            default:
+                invalid = nil
+            }
+            if let invalid {
+                issues.append(blocker("/workspace-share.json/schedules[\(index)]", "Schedule is invalid: \(invalid)."))
+            }
+        }
+    }
+
+    private func rejectDuplicateNames(
+        _ names: [String],
+        kind: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var seen = Set<String>()
+        var reported = Set<String>()
+        for name in names where !seen.insert(name).inserted && reported.insert(name).inserted {
+            issues.append(blocker(
+                "/workspace-share.json/\(kind)",
+                "Duplicate \(kind) name '\(name)' — resource names must be unique because links resolve by name."
+            ))
         }
     }
 
