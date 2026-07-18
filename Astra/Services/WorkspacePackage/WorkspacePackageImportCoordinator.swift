@@ -168,6 +168,14 @@ struct WorkspacePackageImportCoordinator {
         config.enabledGlobalSkillIDs = []
         config.enabledGlobalConnectorIDs = []
         config.enabledGlobalToolIDs = []
+        // Google account profiles are GLOBAL identity rows (no workspace link),
+        // and `importWorkspaceResult` inserts them unconditionally. Left in place,
+        // a hand-crafted share would create attacker-controlled account rows in
+        // the recipient's global catalog — the exact mutation the block above
+        // guards against, and one the review sheet never surfaces (the manifest's
+        // `googleAccountsRequiringReauth` is the descriptive channel, and a
+        // legitimate export never carries profiles in the first place). Drop them.
+        config.googleOAuthAccountProfiles = nil
 
         // `config.enabledCapabilityIDs` carries the sender's enabled set
         // verbatim, and the runtime resource matcher exposes enabled capabilities
