@@ -8,6 +8,7 @@ enum WorkspacePackageImportError: LocalizedError {
     case validationFailed([PortablePackageValidationIssue])
     case destinationAlreadyExists(String)
     case packageChangedSinceReview
+    case unsafePackageSymlink(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum WorkspacePackageImportError: LocalizedError {
             return "A folder already exists at \(path). Choose a different destination."
         case .packageChangedSinceReview:
             return "This package changed after you reviewed it. Re-open it to review the new contents before importing."
+        case .unsafePackageSymlink(let component):
+            return "The package contains a symbolic link (\(component)) and cannot be safely imported."
         }
     }
 }
@@ -30,6 +33,7 @@ struct WorkspacePackageImportOutcome {
     var appsImported: [String]
     var capabilitiesInstalledAsDraft: [String]
     var capabilitiesAlreadyInstalled: [String]
+    var capabilitiesSkippedForConflict: [String]
     var skillCount: Int
     var connectorCount: Int
     var localToolCount: Int
@@ -91,6 +95,16 @@ struct WorkspacePackageImportCoordinator {
         defer { try? fileManager.removeItem(at: stagingRoot) }
         let stagedPackageURL = stagingRoot.appendingPathComponent("package.astra-share", isDirectory: true)
         try fileManager.copyItem(at: packageURL, to: stagedPackageURL)
+
+        // `copyItem` preserves symlinks rather than dereferencing them, so if the
+        // selected package root — or any entry inside it — is a symlink, the
+        // "staged copy" is still an alias to a location the source machine (or an
+        // attacker) can rewrite after the digest check. That defeats the whole
+        // point of staging. Refuse any symlink in the staged tree so what we
+        // validate and install is a genuinely private, self-contained snapshot.
+        if let symlink = PortablePackageSafeFileReader.firstSymlink(in: stagedPackageURL) {
+            throw WorkspacePackageImportError.unsafePackageSymlink(symlink)
+        }
 
         // Bind the commit to the reviewed bytes: a package swapped for a
         // different (still-valid) one between review and confirmation would
@@ -193,9 +207,24 @@ struct WorkspacePackageImportCoordinator {
         // recipient approves the capability.
         var capabilitiesInstalledAsDraft: [String] = []
         var capabilitiesAlreadyInstalled: [String] = []
+        var capabilitiesSkippedForConflict: [String] = []
+        // The library stores each package at `<safeFileName(id)>.json`, and
+        // `safeFileName` is lossy — distinct IDs like `a.b` and `a-b` both map to
+        // `a-b.json`. An exact-ID lookup misses that, so installing an embedded
+        // `a.b` would overwrite a recipient's existing `a-b`, and rollback (which
+        // only removes what it installed) could not restore the clobbered file.
+        // Track claimed storage names — seeded from what's already installed and
+        // extended as this loop installs — and skip any embedded capability whose
+        // storage name is already taken by a DIFFERENT package rather than
+        // destroy the recipient's data.
+        var claimedStorageNames = Set(capabilityLibrary.installedPackages().map { CapabilityLibrary.safeFileName(for: $0.id) })
         for entry in manifest.capabilityEntries {
             if capabilityLibrary.installedPackage(id: entry.packageID) != nil {
                 capabilitiesAlreadyInstalled.append(entry.packageID)
+                continue
+            }
+            if claimedStorageNames.contains(CapabilityLibrary.safeFileName(for: entry.packageID)) {
+                capabilitiesSkippedForConflict.append(entry.packageID)
                 continue
             }
             let data = try PortablePackageSafeFileReader.readData(
@@ -212,6 +241,7 @@ struct WorkspacePackageImportCoordinator {
             try capabilityLibrary.install(capability)
             installedCapabilityIDs.append(entry.packageID)
             capabilitiesInstalledAsDraft.append(entry.packageID)
+            claimedStorageNames.insert(CapabilityLibrary.safeFileName(for: entry.packageID))
         }
 
         var appsImported: [String] = []
@@ -279,6 +309,7 @@ struct WorkspacePackageImportCoordinator {
             appsImported: appsImported,
             capabilitiesInstalledAsDraft: capabilitiesInstalledAsDraft,
             capabilitiesAlreadyInstalled: capabilitiesAlreadyInstalled,
+            capabilitiesSkippedForConflict: capabilitiesSkippedForConflict,
             skillCount: configResult.skillCount,
             connectorCount: configResult.connectorCount,
             localToolCount: configResult.localToolCount,
@@ -299,6 +330,7 @@ struct WorkspacePackageImportCoordinator {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return sanitized.isEmpty ? "Imported Workspace" : sanitized
     }
+
 }
 
 /// Routing shim for the shared "Import Workspace…" entry point: `.astra-share`

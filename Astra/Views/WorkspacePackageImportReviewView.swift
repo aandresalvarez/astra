@@ -288,6 +288,9 @@ struct WorkspacePackageImportReviewView: View {
             ForEach(outcome.sshConnectionsRequiringLocalKeys, id: \.self) { label in
                 infoRow("SSH", "\(label) references a key path that must exist here.")
             }
+            ForEach(outcome.capabilitiesSkippedForConflict, id: \.self) { id in
+                infoRow("Capability", "\(id) was skipped — it conflicts with a capability you already have.")
+            }
             if !outcome.droppedMachinePaths.isEmpty {
                 infoRow("Paths", "Not transferred: \(outcome.droppedMachinePaths.joined(separator: ", "))")
             }
@@ -295,6 +298,7 @@ struct WorkspacePackageImportReviewView: View {
                outcome.connectorsNeedingCredentials.isEmpty,
                outcome.googleAccountsRequiringReauth.isEmpty,
                outcome.sshConnectionsRequiringLocalKeys.isEmpty,
+               outcome.capabilitiesSkippedForConflict.isEmpty,
                outcome.droppedMachinePaths.isEmpty {
                 infoRow("Nothing", "Everything imported ready to use.")
             }

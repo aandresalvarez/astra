@@ -490,6 +490,103 @@ struct WorkspacePackageImportTests {
         #expect(readyItem.status == .ready)
     }
 
+    @MainActor
+    @Test("import rejects a package reached through a symlinked root")
+    func importRejectsSymlinkedPackageRoot() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        // A symlink standing in for the package: `copyItem` would preserve it, so
+        // the "staged copy" would still be an alias to the real (swappable) bytes.
+        let symlinkedPackage = root.appendingPathComponent("aliased.astra-share")
+        try FileManager.default.createSymbolicLink(at: symlinkedPackage, withDestinationURL: fixture.packageURL)
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
+        )
+
+        #expect(throws: WorkspacePackageImportError.self) {
+            try coordinator.importPackage(
+                at: symlinkedPackage,
+                intoDestinationFolder: destinationParent,
+                modelContext: targetContainer.mainContext
+            )
+        }
+        // Nothing was created from the rejected package.
+        #expect(!FileManager.default.fileExists(atPath: destinationParent.appendingPathComponent("Package Export").path))
+    }
+
+    @MainActor
+    @Test("validation rejects a manifest whose workspace name differs from the config")
+    func validationRejectsMismatchedWorkspaceName() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        // Rewrite manifest.json to advertise a benign name while the config keeps
+        // the real one; the review sheet reads the manifest, the import creates
+        // the config's workspace, so the two must be bound.
+        let manifestURL = fixture.packageURL.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.workspaceName = "Totally Benign Workspace"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: fixture.packageURL)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.path.contains("workspaceName") })
+    }
+
+    @MainActor
+    @Test("import skips an embedded capability that would overwrite a storage-name collision")
+    func importSkipsCapabilityStorageCollision() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The share embeds `local.tool`; the recipient already has `local-tool`,
+        // which maps to the SAME on-disk file name. Installing would clobber it.
+        let fixture = try Self.exportedPackage(root: root)
+
+        let targetLibraryDir = root.appendingPathComponent("target-capabilities", isDirectory: true)
+        let targetLibrary = CapabilityLibrary(directory: targetLibraryDir)
+        try targetLibrary.install(
+            Self.makeCapability(id: "local-tool", governance: .localDraft()),
+            sourceMetadata: .localLibrary()
+        )
+        // `local-tool` and the embedded `local.tool` both map to `local-tool.json`.
+        let storageURL = targetLibraryDir
+            .appendingPathComponent(CapabilityLibrary.safeFileName(for: "local-tool"))
+            .appendingPathExtension("json")
+        let existingBytes = try Data(contentsOf: storageURL)
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = targetLibrary
+
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+
+        // The embedded capability was skipped, not installed, and the recipient's
+        // colliding capability is byte-for-byte intact.
+        #expect(outcome.capabilitiesSkippedForConflict == ["local.tool"])
+        #expect(outcome.capabilitiesInstalledAsDraft.isEmpty)
+        let afterBytes = try Data(contentsOf: storageURL)
+        #expect(afterBytes == existingBytes)
+    }
+
     // MARK: - Fixtures
 
     struct ExportedPackageFixture {

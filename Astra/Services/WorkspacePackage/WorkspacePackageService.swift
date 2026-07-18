@@ -62,6 +62,16 @@ struct WorkspacePackageService {
             if workspaceConfig != nil, manifest.sourceConfigDigest != actualConfigDigest {
                 issues.append(blocker("/manifest.json/sourceConfigDigest", "Manifest digest does not match workspace-config.json."))
             }
+            // The review sheet and the destination directory name are derived
+            // from `manifest.workspaceName`, but the workspace is actually
+            // created with `workspace-config.json`'s name. Bind them so the
+            // imported workspace's identity can't differ from the one reviewed.
+            if let configName = workspaceConfig?.name, configName != manifest.workspaceName {
+                issues.append(blocker(
+                    "/manifest.json/workspaceName",
+                    "Manifest workspace name (\(manifest.workspaceName)) does not match workspace-config.json name (\(configName))."
+                ))
+            }
             validateVersionGate(
                 minimumASTRAVersion: manifest.minimumASTRAVersion,
                 path: "/manifest.json/minimumASTRAVersion",
