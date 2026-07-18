@@ -75,4 +75,28 @@ struct AgentRuntimeAttachmentProjectionTests {
 
         #expect(paths == ["/tmp/one.md"])
     }
+
+    @Test("Budget-truncated context produces truncated attachment path")
+    func budgetTruncatedContextProducesTruncatedAttachmentPath() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("astra-trunc-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let realFile = root.appendingPathComponent("astra_paste_AF9F4AD3.txt")
+        try "coworker note".write(to: realFile, atomically: true, encoding: .utf8)
+
+        let fullMessage = "update the runbook\n\nAttached files:\n- \(realFile.path)"
+
+        let truncatedMessage = String(fullMessage.prefix(fullMessage.count - 9))
+        #expect(truncatedMessage.hasSuffix("AF9F4AD3.txt") == false)
+
+        let truncatedPaths = AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: truncatedMessage)
+        #expect(truncatedPaths.count == 1)
+        #expect(fm.fileExists(atPath: truncatedPaths[0]) == false)
+
+        let fullPaths = AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: fullMessage)
+        #expect(fullPaths.count == 1)
+        #expect(fm.fileExists(atPath: fullPaths[0]))
+    }
 }
