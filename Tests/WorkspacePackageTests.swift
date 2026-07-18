@@ -756,6 +756,44 @@ struct WorkspacePackageTests {
         #expect(report.blockers.contains { $0.message.contains("secret environment value") })
     }
 
+    @MainActor
+    @Test("exported embedded capability strips credential-carrying connector URLs; validation rejects a tampered one")
+    func exportStripsEmbeddedCapabilityConnectorCredentials() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        var capability = Self.makeCapability(id: "conn.cap", governance: .localDraft())
+        capability.connectors = [PluginConnector(
+            name: "API", serviceType: "custom", icon: "bolt", description: "d",
+            baseURL: "https://api.example.com/v1?api_token=supersecret123", authMethod: "none",
+            credentialHints: [], configHints: [], notes: ""
+        )]
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["conn.cap"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let capabilityURL = destination.appendingPathComponent("capabilities/conn.cap.json")
+        let text = try String(contentsOf: capabilityURL, encoding: .utf8)
+        #expect(!text.contains("supersecret123"))
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // Re-plant the credential in the embedded capability connector URL.
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var tampered = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tampered.connectors[0].baseURL = "https://api.example.com/v1?api_token=supersecret123"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(tampered).write(to: capabilityURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("carries a credential") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

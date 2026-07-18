@@ -10,6 +10,7 @@ enum WorkspacePackageImportError: LocalizedError {
     case packageChangedSinceReview
     case unsafePackageSymlink(String)
     case packageTooLarge
+    case capabilityStorageUncapturable(String)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,8 @@ enum WorkspacePackageImportError: LocalizedError {
             return "The package contains a symbolic link (\(component)) and cannot be safely imported."
         case .packageTooLarge:
             return "The package is too large to import safely."
+        case .capabilityStorageUncapturable(let id):
+            return "A capability (\(id)) already exists on this machine and its storage could not be safely backed up, so the import was stopped to avoid losing it."
         }
     }
 }
@@ -124,6 +127,10 @@ struct WorkspacePackageImportCoordinator {
         var stagedPackageURL: URL
         var manifest: WorkspacePackageManifest
         var document: WorkspaceShareDocument
+        /// Embedded-app validation reports produced during the off-main staging
+        /// pass, keyed by logical ID — reused at import so the nested bundles
+        /// aren't enumerated and hashed a second time on the main actor.
+        var appReports: [String: WorkspaceAppPackageValidationReport]
     }
 
     /// Stages a private, bounded copy of `packageURL` and re-validates it —
@@ -186,7 +193,8 @@ struct WorkspacePackageImportCoordinator {
             stagingRoot: stagingRoot,
             stagedPackageURL: stagedPackageURL,
             manifest: manifest,
-            document: document
+            document: document,
+            appReports: report.appReports
         )
     }
 
@@ -321,7 +329,15 @@ struct WorkspacePackageImportCoordinator {
             // anyway so a future validation regression can't turn this write
             // into a self-approved install.
             CapabilityGovernanceNormalizer.clampToLocalDraft(&capability)
-            capabilityStorageSnapshots.append(capabilityLibrary.makePackageStorageSnapshot(for: entry.packageID))
+            let snapshot = capabilityLibrary.makePackageStorageSnapshot(for: entry.packageID)
+            // If the storage path is occupied but the snapshot copy failed
+            // (existingStorageURL set, snapshotURL nil), `restorePackageStorage`
+            // can't bring the prior bytes back — installing would overwrite them
+            // irrecoverably on a later rollback. Refuse rather than risk data loss.
+            if snapshot.existingStorageURL != nil, snapshot.snapshotURL == nil {
+                throw WorkspacePackageImportError.capabilityStorageUncapturable(entry.packageID)
+            }
+            capabilityStorageSnapshots.append(snapshot)
             try capabilityLibrary.install(capability)
             capabilitiesInstalledAsDraft.append(entry.packageID)
             claimedStorageNames.insert(storageKey(entry.packageID))
@@ -333,6 +349,17 @@ struct WorkspacePackageImportCoordinator {
             let result: WorkspaceAppPackageImportResult
             if let importAppBundle {
                 result = try importAppBundle(bundleURL, workspace, importContext)
+            } else if let stagedReport = staged.appReports[entry.logicalID] {
+                // Reuse the report the off-main staging pass already produced,
+                // rather than re-enumerating and re-hashing the bundle on the
+                // main actor via the self-validating overload.
+                result = try appPackageService.importPackage(
+                    at: bundleURL,
+                    validatedBy: stagedReport,
+                    into: workspace,
+                    modelContext: importContext,
+                    persistence: .deferSave
+                )
             } else {
                 result = try appPackageService.importPackage(
                     at: bundleURL,
@@ -387,6 +414,11 @@ struct WorkspacePackageImportCoordinator {
             !embeddedCapabilityIDs.contains($0) && !enabledAfterReconcile.contains($0)
         }
 
+        // Last chance to abort before any domain mutation is committed: if the
+        // caller (the review sheet) was dismissed/cancelled during the import, do
+        // not silently commit a workspace the user walked away from. Throwing here
+        // runs the rollback defer (nothing is persisted).
+        try Task.checkCancellation()
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
             workspace: workspace,
             modelContext: importContext,

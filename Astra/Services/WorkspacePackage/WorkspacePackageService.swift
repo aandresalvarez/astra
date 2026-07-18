@@ -362,6 +362,21 @@ struct WorkspacePackageService {
         if rawCapability.governance.approvalStatus != .draft {
             issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
         }
+        // An embedded capability connector baseURL that carries a credential
+        // (userinfo, or a credential-like query param) is excluded from the
+        // free-text scan; the export sanitizes it, so a nonempty one here means a
+        // tampered package. Reject it.
+        for (connectorIndex, connector) in rawCapability.connectors.enumerated() {
+            if let components = URLComponents(string: connector.baseURL),
+               components.user != nil
+                || components.password != nil
+                || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability connector[\(connectorIndex)] base URL carries a credential; credential values never travel."
+                ))
+            }
+        }
         // Capability paths are excluded from the free-text credential scan, so a
         // hand-tampered package could carry a secret-keyed skill default the
         // export blanks. Reject any nonempty secret-keyed value here.

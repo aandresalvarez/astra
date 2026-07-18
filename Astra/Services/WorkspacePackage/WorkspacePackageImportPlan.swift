@@ -285,12 +285,23 @@ struct WorkspacePackageImportPlanner {
             )
         }
 
-        let sshConnections = manifest.sshConnectionsRequiringLocalKeys.map { label in
-            WorkspacePackageImportPlanItem(
+        // Every shared SSH connection is imported and injected into task prompts
+        // (host/user/remotePath), so the review must list them ALL — not only the
+        // ones the manifest flags as needing local keys/aliases. The manifest set
+        // (and a nonempty configAlias) chooses the setup status; the rest import
+        // ready but still appear so the recipient sees what remote hosts a package
+        // adds.
+        let sshRequiringSetup = Set(manifest.sshConnectionsRequiringLocalKeys)
+        let sshConnections = document.sshConnections.map { ssh -> WorkspacePackageImportPlanItem in
+            let label = ssh.name.isEmpty ? "\(ssh.user)@\(ssh.host):\(ssh.remotePath)" : ssh.name
+            let needsSetup = sshRequiringSetup.contains(label) || !ssh.configAlias.isEmpty
+            return WorkspacePackageImportPlanItem(
                 id: "ssh:\(label)",
                 name: label,
-                detail: "Uses an SSH key path that must exist on this machine.",
-                status: .needsLocalSetup
+                detail: needsSetup
+                    ? "Uses an SSH key path or config alias that must exist on this machine."
+                    : "Adds an SSH connection to \(ssh.user)@\(ssh.host).",
+                status: needsSetup ? .needsLocalSetup : .ready
             )
         }
 

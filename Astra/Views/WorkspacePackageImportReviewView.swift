@@ -110,6 +110,8 @@ struct WorkspacePackageImportReviewView: View {
     @State private var state = WorkspacePackageImportReviewState()
     @State private var didLoad = false
     @State private var accessingURL: URL?
+    @State private var importTask: Task<Void, Never>?
+    @State private var isImporting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -154,6 +156,10 @@ struct WorkspacePackageImportReviewView: View {
             )
         }
         .onDisappear {
+            // Safety net: if the sheet is dismissed while an import is running,
+            // cancel it so it unwinds before committing (the coordinator checks
+            // cancellation before any domain mutation).
+            importTask?.cancel()
             accessingURL?.stopAccessingSecurityScopedResource()
             accessingURL = nil
         }
@@ -185,13 +191,25 @@ struct WorkspacePackageImportReviewView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("PackageImportOpenWorkspaceButton")
             } else {
-                Button("Cancel") { onComplete(nil) }
-                    .buttonStyle(.borderless)
-                Button(action: { Task { await runImport() } }) {
+                // Cancel: if an import is in flight, cancel the task and let it
+                // unwind (the coordinator checks cancellation before committing,
+                // so nothing is persisted) rather than closing over a running
+                // import that could commit a workspace the user walked away from.
+                Button("Cancel") {
+                    if isImporting {
+                        importTask?.cancel()
+                    } else {
+                        onComplete(nil)
+                    }
+                }
+                .buttonStyle(.borderless)
+                Button(action: { startImport() }) {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.canImport)
+                // Disable while an import is running so repeated clicks can't
+                // start concurrent attempts.
+                .disabled(!state.canImport || isImporting)
                 .help(importHelp)
                 .accessibilityIdentifier("PackageImportConfirmButton")
             }
@@ -352,6 +370,16 @@ struct WorkspacePackageImportReviewView: View {
         }
     }
 
+    private func startImport() {
+        guard !isImporting else { return }
+        isImporting = true
+        importTask = Task {
+            await runImport()
+            isImporting = false
+            importTask = nil
+        }
+    }
+
     private func runImport() async {
         guard let destinationParentURL = state.destinationParentURL else { return }
         do {
@@ -361,7 +389,11 @@ struct WorkspacePackageImportReviewView: View {
                 modelContext: modelContext,
                 expectedPackageDigest: state.reviewedPackageDigest
             )
+            try Task.checkCancellation()
             state.importFinished(.success(outcome))
+        } catch is CancellationError {
+            // The user cancelled during staging/import; the coordinator rolled
+            // back before committing. Leave the review as-is (no outcome).
         } catch {
             state.importFinished(.failure(error))
         }

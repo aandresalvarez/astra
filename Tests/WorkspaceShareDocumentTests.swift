@@ -1017,6 +1017,30 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("every imported SSH connection appears in the plan, even without local setup")
+    func allSSHConnectionsAppearInPlan() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        // A plain connection: default auth, no key path, no config alias — still
+        // imported and injected into task prompts, so it must be reviewable.
+        SSHConnectionManager.save(
+            [SSHConnection(name: "plain", host: "build.example.com", user: "ci")],
+            workspacePath: workspace.primaryPath
+        )
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let item = try #require(plan.sshConnections.first { $0.name == "plain" })
+        #expect(item.status == .ready)
+        #expect(item.detail.contains("ci@build.example.com"))
+    }
+
+    @MainActor
     @Test("validation catches a JSON-encoded credential assignment")
     func validationCatchesJSONCredential() throws {
         let root = try Self.temporaryRoot()

@@ -221,6 +221,16 @@ struct WorkspacePackageExporter {
                 ).map { key, value in Skill.isSecretEnvironmentKey(key) ? "" : value }
                 return redacted
             }
+            // An embedded capability's connector baseURL can carry a credential in
+            // userinfo or a query param (`?api_token=…`); capability paths are
+            // excluded from the free-text scan, so strip them here — the same
+            // sanitization the share-connector projection applies. Validation
+            // additionally rejects a tampered one.
+            clamped.connectors = clamped.connectors.map { connector in
+                var sanitized = connector
+                sanitized.baseURL = WorkspaceShareProjection.baseURLWithoutCredentials(connector.baseURL)
+                return sanitized
+            }
             // An `.asset` icon points at an on-disk image that
             // `CapabilityLibrary.install` copies from an asset root derived from
             // `sourceMetadata.url` — which the draft clamp above just cleared, so
