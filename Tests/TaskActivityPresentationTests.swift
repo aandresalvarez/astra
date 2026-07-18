@@ -1,0 +1,166 @@
+import Testing
+import ASTRAModels
+@testable import ASTRA
+
+@Suite("Task activity presentation")
+struct TaskActivityPresentationTests {
+    private func request(
+        for task: AgentTask,
+        eventID: UUID = UUID(),
+        sequence: Int,
+        state: TaskTurnRequestState,
+        blockerSummary: String? = nil,
+        terminalReason: String? = nil
+    ) -> TaskTurnRequestSnapshot {
+        let request = TaskTurnRequest(
+            task: task,
+            messageEventID: eventID,
+            sequence: sequence,
+            state: state,
+            submittedAt: Date(timeIntervalSince1970: TimeInterval(sequence))
+        )
+        request.blockerSummary = blockerSummary
+        request.terminalReason = terminalReason
+        return request.snapshot!
+    }
+
+    @Test("Running wins task-level presentation while queued turns retain their own state")
+    func taskActivityUsesDeterministicPrecedence() {
+        let task = makeTask(status: .completed)
+        let resourceWait = request(
+            for: task,
+            sequence: 1,
+            state: .waitingForResource,
+            blockerSummary: "Build task is using this workspace"
+        )
+        let running = request(for: task, sequence: 2, state: .running)
+
+        let activity = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: [resourceWait, running]
+        )
+
+        #expect(activity.kind == .running)
+        #expect(activity.request?.id == running.id)
+        #expect(activity.showsPersistentSidebarGlyph)
+
+        let waitingOnly = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: [resourceWait]
+        )
+        #expect(waitingOnly.kind == .waitingForResource)
+        #expect(waitingOnly.sidebarSubtitle == "Build task is using this workspace")
+        #expect(waitingOnly.dockTitle == "Waiting for workspace")
+    }
+
+    @Test("Message lifecycle resolves by durable event identity, never message text or timestamp")
+    func messageLifecycleUsesEventID() {
+        let task = makeTask(status: .completed)
+        let firstEventID = UUID()
+        let secondEventID = UUID()
+        let first = request(for: task, eventID: firstEventID, sequence: 1, state: .waitingForWorker)
+        let second = request(
+            for: task,
+            eventID: secondEventID,
+            sequence: 2,
+            state: .waitingForResource,
+            blockerSummary: "Report task is using this workspace"
+        )
+
+        let firstChip = TaskTurnMessageLifecyclePresentation.resolve(
+            messageEventID: firstEventID,
+            requests: [first, second]
+        )
+        let secondChip = TaskTurnMessageLifecyclePresentation.resolve(
+            messageEventID: secondEventID,
+            requests: [first, second]
+        )
+
+        #expect(firstChip?.title == "Queued")
+        #expect(secondChip?.title == "Waiting for workspace")
+        #expect(secondChip?.detail == "Report task is using this workspace")
+        #expect(TaskTurnMessageLifecyclePresentation.resolve(messageEventID: UUID(), requests: [first, second]) == nil)
+    }
+
+    @Test("Conversation snapshot carries the durable event ID into its user bubble")
+    func conversationSnapshotPreservesUserMessageEventID() {
+        let task = makeTask(goal: "Original request")
+        let event = makeEvent(
+            task: task,
+            type: TaskEventTypes.Conversation.userMessage,
+            payload: "Same text can be submitted twice",
+            timestamp: Date(timeIntervalSince1970: 100)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [event],
+            runs: []
+        )
+        guard case let .userMessage(eventID, text, _) = snapshot.conversationItems.last else {
+            Issue.record("Expected durable user-message bubble")
+            return
+        }
+        #expect(eventID == event.id)
+        #expect(text == event.payload)
+    }
+
+    @Test("Waiting and terminal states carry visible, accessible labels")
+    func waitingAndTerminalStatesStayExplainable() {
+        let task = makeTask(status: .completed)
+        let eventID = UUID()
+        let waiting = request(for: task, eventID: eventID, sequence: 1, state: .waitingForWorker)
+        let activity = TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [waiting])
+
+        #expect(activity.sidebarDescription == "Waiting for a worker")
+        #expect(
+            SidebarThreadRowLayout.showsStatusIcon(
+                for: .completed,
+                isUnread: false,
+                isHovered: false,
+                isSelected: false,
+                activity: activity
+            )
+        )
+
+        let failed = request(
+            for: task,
+            eventID: UUID(),
+            sequence: 2,
+            state: .failed,
+            terminalReason: "Workspace became unavailable"
+        )
+        let cancelled = request(for: task, eventID: UUID(), sequence: 3, state: .cancelled)
+        let failedChip = TaskTurnMessageLifecyclePresentation.resolve(messageEventID: failed.messageEventID, requests: [failed])
+        let cancelledChip = TaskTurnMessageLifecyclePresentation.resolve(messageEventID: cancelled.messageEventID, requests: [cancelled])
+
+        #expect(failedChip?.isVisible == true)
+        #expect(failedChip?.accessibilityLabel == "Couldn’t start. Workspace became unavailable")
+        #expect(cancelledChip?.isVisible == true)
+        #expect(cancelledChip?.accessibilityLabel == "Cancelled")
+    }
+
+    @Test("Workspace index counts waiting work independently from running work")
+    func workspaceActivityCountsAreDistinct() {
+        let workspace = makeWorkspace()
+        let runningTask = makeTask(status: .running, workspace: workspace)
+        let waitingTask = makeTask(status: .completed, workspace: workspace)
+        let waiting = request(for: waitingTask, sequence: 1, state: .waitingForResource)
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: [runningTask, waitingTask],
+            requests: [waiting]
+        )
+
+        let index = SidebarTaskIndex(
+            tasks: [runningTask, waitingTask],
+            searchText: "",
+            taskActivities: activities
+        )
+        #expect(index.runningTaskCount(in: workspace) == 1)
+        #expect(index.waitingTaskCount(in: workspace) == 1)
+        #expect(index.reviewTasks(for: workspace).map(\.id) == [runningTask.id, waitingTask.id])
+    }
+}

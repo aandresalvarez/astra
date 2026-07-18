@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
-
 enum TaskComposerPresentation {
     static let usesCompactInputSpacing = true
     static let usesForcedExpandedInputHeight = false
@@ -33,12 +32,10 @@ enum TaskComposerPresentation {
     static let inputTopPaddingWithAttachments: CGFloat = 8
     static let inputBottomPadding: CGFloat = 9
 }
-
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
 }
-
 private struct ScheduleSourceContext {
     let taskID: UUID
     let title: String
@@ -48,7 +45,6 @@ private struct ScheduleSourceContext {
     let tokenBudget: Int
     let conversationContext: String
 }
-
 // ChatBottomPositionPreferenceKey lives in ChatScrollSupport.swift, shared with
 // ChatPanelView. ChatTopPositionPreferenceKey stays private here — it drives this
 // view's older-runs window expansion, which has no analogue in ChatPanelView.
@@ -59,12 +55,10 @@ private struct ChatTopPositionPreferenceKey: PreferenceKey {
         value = nextValue()
     }
 }
-
 private enum RunNoticeProminence {
     case actionable
     case detail
 }
-
 private extension View {
     @ViewBuilder
     func taskAnswerTextSelection(_ isSelectable: Bool) -> some View {
@@ -75,7 +69,6 @@ private extension View {
         }
     }
 }
-
 /// Streaming agent text rendered through the shared markdown block pipeline so
 /// headings, lists, and code style while the run is live instead of popping in
 /// at completion. Isolated into its own `View` so SwiftUI can diff this subtree
@@ -1439,7 +1432,7 @@ struct TaskMainView: View {
 
         for item in currentThreadSnapshot.conversationItems.dropFirst().suffix(24) {
             switch item {
-            case .userMessage(let text, _):
+            case .userMessage(_, let text, _):
                 lines.append("User: \(text)")
             case .planUserMessage(let text, _):
                 if includePlanningAndSystem {
@@ -2129,10 +2122,17 @@ struct TaskMainView: View {
     @ViewBuilder
     private func conversationItemView(_ item: TaskConversationItem, decisionDockVisible: Bool) -> some View {
         switch item {
-        case .userMessage(let text, let timestamp):
-            chatUserBubble(text: text, timestamp: timestamp)
+        case .userMessage(let eventID, let text, let timestamp):
+            chatUserBubble(
+                text: text,
+                timestamp: timestamp,
+                lifecycle: eventID.flatMap { TaskTurnMessageLifecyclePresentation.resolve(
+                    messageEventID: $0,
+                    requests: taskTurnRequestSnapshots
+                ) }
+            )
         case .planUserMessage(let text, let timestamp):
-            chatUserBubble(text: text, timestamp: timestamp)
+            chatUserBubble(text: text, timestamp: timestamp, lifecycle: nil)
         case .planAssistantMessage(let text, let timestamp):
             planAssistantBubble(text: text, timestamp: timestamp)
         case .agentResponse(let run):
@@ -2318,13 +2318,27 @@ struct TaskMainView: View {
 
     // MARK: - Chat Bubbles
 
-    private func chatUserBubble(text: String, timestamp _: Date) -> some View {
-        ChatTranscriptUserBubble(
-            attributedText: MarkdownTextView.markdownAttributed(text),
-            style: .task
-        )
+    private func chatUserBubble(
+        text: String,
+        timestamp _: Date,
+        lifecycle: TaskTurnMessageLifecyclePresentation?
+    ) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            ChatTranscriptUserBubble(
+                attributedText: MarkdownTextView.markdownAttributed(text),
+                style: .task
+            )
+
+            if let lifecycle, lifecycle.isVisible {
+                TaskTurnMessageLifecycleChip(presentation: lifecycle)
+                    .padding(.trailing, 4)
+            }
+        }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Your message: \(text)")
+        .accessibilityLabel(
+            lifecycle.map { "Your message: \(text). \($0.accessibilityLabel)" }
+                ?? "Your message: \(text)"
+        )
     }
 
     private func scheduleResultBubble(text: String, timestamp _: Date) -> some View {
@@ -3888,7 +3902,10 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
-        TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
+        if let waitingPresentation = taskTurnWaitingDockPresentation {
+            return waitingPresentation
+        }
+        return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
@@ -5749,7 +5766,7 @@ struct TaskMainView: View {
         ]
         messages.append(contentsOf: recentSnapshotItems.compactMap { item in
             switch item {
-            case .userMessage(let text, _), .planUserMessage(let text, _):
+            case .userMessage(_, let text, _), .planUserMessage(let text, _):
                 return (role: "user", content: text)
             case .planAssistantMessage(let text, _):
                 return (role: "assistant", content: text)

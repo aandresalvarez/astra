@@ -8,6 +8,7 @@ import ASTRACore
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
     @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
+    @Query(sort: \TaskTurnRequest.submittedAt, order: .reverse) private var turnRequests: [TaskTurnRequest]
 
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -30,6 +31,13 @@ struct TaskSidebarContainerView: View {
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     var selectedWorkspaceApp: WorkspaceApp?
 
+    private var taskActivities: [UUID: TaskActivityPresentation] {
+        TaskActivityPresentation.resolveByTaskID(
+            tasks: tasks,
+            requests: turnRequests.compactMap(\.snapshot)
+        )
+    }
+
     var body: some View {
         TaskSidebarView(
             tasks: tasks,
@@ -37,6 +45,7 @@ struct TaskSidebarContainerView: View {
             taskQueue: taskQueue,
             workspaces: workspaces,
             selectedWorkspace: $selectedWorkspace,
+            taskActivities: taskActivities,
             onNewTask: onNewTask,
             onRunQueue: onRunQueue,
             onRunTask: onRunTask,
@@ -68,12 +77,11 @@ enum SidebarLeanPresentation {
     static let workspaceMetadataAndActionsShareTrailingSlot = true
     static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
-    // Status is a leading glyph, never a second text line: rows stay
-    // single-height so the list scans as navigation, and one status
-    // vocabulary replaces the old icon-vs-subtitle split. Unreads retain a
-    // workspace-name subtitle for cross-workspace context; pinned rows move
-    // that context to hover so the curated list stays compact.
-    static let sidebarTaskStatusesNeverAddSecondLine = true
+    // A durable wait reason earns one compact second line. This is the narrow
+    // exception to the scan-first row rule: a queued turn must not look like a
+    // completed task merely because its spinner is elsewhere. Unreads retain
+    // their workspace-name context; pinned rows move that context to hover.
+    static let sidebarTaskStatusesNeverAddSecondLine = false
     // Workspace rows expose expansion with a rest-state chevron; the
     // folder icon's fill tracks selection only, so icon fill no longer
     // does double duty as a collapsed/expanded signal.
@@ -192,12 +200,21 @@ enum SidebarThreadRowLayout {
         isUnread: Bool,
         isHovered: Bool,
         isKeyboardFocused: Bool = false,
-        isSelected: Bool
+        isSelected: Bool,
+        activity: TaskActivityPresentation? = nil
     ) -> Bool {
-        isHovered || isKeyboardFocused || isSelected || showsRestStateGlyph(for: status, isUnread: isUnread)
+        isHovered || isKeyboardFocused || isSelected || showsRestStateGlyph(
+            for: status,
+            isUnread: isUnread,
+            activity: activity
+        )
     }
 
-    static func isActionableStatus(_ status: TaskStatus) -> Bool {
+    static func isActionableStatus(
+        _ status: TaskStatus,
+        activity: TaskActivityPresentation? = nil
+    ) -> Bool {
+        if activity?.showsPersistentSidebarGlyph == true { return true }
         switch status {
         case .running, .pendingUser, .failed, .budgetExceeded:
             return true
@@ -209,8 +226,12 @@ enum SidebarThreadRowLayout {
     /// The states that earn a glyph at rest: work that is moving or needs
     /// the user (actionable), plus finished-but-unseen results (unread) so
     /// "what needs my eyes" is answerable from the sidebar alone.
-    static func showsRestStateGlyph(for status: TaskStatus, isUnread: Bool) -> Bool {
-        isActionableStatus(status) || isUnread
+    static func showsRestStateGlyph(
+        for status: TaskStatus,
+        isUnread: Bool,
+        activity: TaskActivityPresentation? = nil
+    ) -> Bool {
+        isActionableStatus(status, activity: activity) || isUnread
     }
 
     /// Status-independent by design: the row always reserves the glyph
@@ -313,6 +334,9 @@ struct TaskSidebarView: View {
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
     @Binding var selectedWorkspace: Workspace?
+    /// Derived from `TaskTurnRequest` snapshots by the container. The sidebar
+    /// never mutates turn state and never needs an inverse on `AgentTask`.
+    var taskActivities: [UUID: TaskActivityPresentation] = [:]
     let onNewTask: () -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
@@ -426,7 +450,11 @@ struct TaskSidebarView: View {
     }
 
     private func rebuildTaskIndex() {
-        taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
+        taskIndex = SidebarTaskIndex(
+            tasks: tasks,
+            searchText: searchText,
+            taskActivities: taskActivities
+        )
     }
 
     private func rebuildSchedules() {
@@ -437,6 +465,17 @@ struct TaskSidebarView: View {
     // Avoids rebuilding the index when unrelated fields (output, tokens) change.
     private var sidebarTasksVersion: Int {
         SidebarTaskIndexInvalidation.signature(for: tasks, searchText: searchText)
+            ^ taskActivitySignature
+    }
+
+    private var taskActivitySignature: Int {
+        taskActivities.values.reduce(0) { signature, activity in
+            signature
+                ^ activity.taskID.hashValue
+                ^ activity.kind.hashValue
+                ^ (activity.request?.id.hashValue ?? 0)
+                ^ (activity.request?.blockerSummary?.hashValue ?? 0)
+        }
     }
 
     private var schedulesVersion: Int {
@@ -813,6 +852,7 @@ struct TaskSidebarView: View {
                     isSelected: isSelected,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
+                    activity: taskActivities[task.id],
                     titleHelp: workspaceHoverHelp,
                     showsPinIndicator: false
                 )
@@ -935,7 +975,8 @@ struct TaskSidebarView: View {
                     isSelected: selectedTask?.id == task.id,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
-                    subtitle: task.workspace?.name
+                    subtitle: task.workspace?.name,
+                    activity: taskActivities[task.id]
                 )
             }
             .buttonStyle(.plain)
@@ -1139,8 +1180,16 @@ struct TaskSidebarView: View {
         // Liveness invariant: running work whose own row is hidden (section
         // collapsed, or workspace filtered out by star/search) signals from
         // the header instead, so it is never invisible.
-        let headerRunningTaskCount = SidebarLivenessSignal.headerRunningTaskCount(
-            runningCounts: workspaces.map { (workspaceID: $0.id, count: taskIndex.runningTaskCount(in: $0)) },
+        let headerActivityCounts = SidebarLivenessSignal.headerActivityCounts(
+            activityCounts: workspaces.map { workspace in
+                (
+                    workspaceID: workspace.id,
+                    counts: SidebarWorkspaceActivityCounts(
+                        running: taskIndex.runningTaskCount(in: workspace),
+                        waiting: taskIndex.waitingTaskCount(in: workspace)
+                    )
+                )
+            },
             visibleWorkspaceIDs: Set(visibleWorkspaces.map(\.id)),
             isSectionExpanded: isWorkspacesExpanded
         )
@@ -1182,8 +1231,8 @@ struct TaskSidebarView: View {
                         if !visibleWorkspaces.isEmpty {
                             SidebarCountBadge(count: visibleWorkspaces.count)
                         }
-                        if headerRunningTaskCount > 0 {
-                            WorkspaceRunningIndicator(count: headerRunningTaskCount)
+                        if !headerActivityCounts.isEmpty {
+                            WorkspaceActivityIndicator(counts: headerActivityCounts)
                         }
                         // Hover-only disclosure cue. Lives next to the
                         // label rather than at the right edge so the
@@ -1510,7 +1559,12 @@ struct TaskSidebarView: View {
         // accordion keeping one drawer open, running work elsewhere would
         // otherwise be invisible. Expanded drawers show the spinner on the
         // task row itself, so the badge would just double the signal there.
-        let runningTaskCount = isExpanded ? 0 : taskIndex.runningTaskCount(in: workspace)
+        let activityCounts = isExpanded
+            ? SidebarWorkspaceActivityCounts()
+            : SidebarWorkspaceActivityCounts(
+                running: taskIndex.runningTaskCount(in: workspace),
+                waiting: taskIndex.waitingTaskCount(in: workspace)
+            )
 
         return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
             if workspaceSortMode == .manual {
@@ -1572,7 +1626,7 @@ struct TaskSidebarView: View {
             workspaceRowActions(
                 for: workspace,
                 isHovered: isHovered,
-                runningTaskCount: runningTaskCount
+                activityCounts: activityCounts
             )
         }
         .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
@@ -1672,12 +1726,12 @@ struct TaskSidebarView: View {
     private func workspaceRowActions(
         for workspace: Workspace,
         isHovered: Bool,
-        runningTaskCount: Int
+        activityCounts: SidebarWorkspaceActivityCounts
     ) -> some View {
         WorkspaceRowActions(
             workspace: workspace,
             isRowHovered: isHovered,
-            runningTaskCount: runningTaskCount,
+            activityCounts: activityCounts,
             onNewTask: { startNewTask(in: workspace) },
             onToggleStarred: { toggleStarred(for: workspace) },
             onEdit: {
@@ -1811,7 +1865,8 @@ struct TaskSidebarView: View {
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     contentLeadingPadding: contentLeadingPadding,
-                    attemptCount: attemptCount
+                    attemptCount: attemptCount,
+                    activity: taskActivities[task.id]
                 )
             }
             .buttonStyle(.plain)
@@ -2272,123 +2327,6 @@ private struct SidebarTaskFocusGroup<Primary: View, Accessory: View>: View {
     }
 }
 
-/// Trailing accessory cluster on each workspace row. At rest it shows
-/// navigational metadata (running-task signal + star). On hover that same
-/// slot becomes the row's controls, so hidden settings/new-task icons do
-/// not steal extra width from the workspace title.
-private struct WorkspaceRowActions: View {
-    let workspace: Workspace
-    let isRowHovered: Bool
-    /// Live tasks inside a *closed* drawer — callers pass 0 for expanded
-    /// rows, where the task rows' own spinners already carry the signal.
-    let runningTaskCount: Int
-    let onNewTask: () -> Void
-    let onToggleStarred: () -> Void
-    let onEdit: () -> Void
-    let onRename: () -> Void
-    let onDelete: () -> Void
-
-    @State private var isEllipsisHovered = false
-    @State private var isNewTaskHovered = false
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var hoverAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.10)
-    }
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            metadata
-                .opacity(isRowHovered ? 0 : 1)
-                .accessibilityHidden(isRowHovered)
-
-            actions
-                .opacity(isRowHovered ? 1 : 0)
-                .allowsHitTesting(isRowHovered)
-                // Stays in the accessibility tree at rest: VoiceOver can't
-                // hover, so the options/new-task controls must be reachable
-                // without the pointer.
-        }
-        .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth, alignment: .trailing)
-        .animation(hoverAnimation, value: isRowHovered)
-    }
-
-    private var metadata: some View {
-        HStack(spacing: 7) {
-            if runningTaskCount > 0 {
-                WorkspaceRunningIndicator(count: runningTaskCount)
-            }
-
-            if workspace.isStarred {
-                SidebarWorkspaceStarIcon(role: .workspaceStatus)
-                    .accessibilityLabel("Starred")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private var actions: some View {
-        HStack(spacing: 2) {
-            Menu {
-                Button(action: onToggleStarred) {
-                    Label(
-                        workspace.isStarred ? "Unstar Workspace" : "Star Workspace",
-                        systemImage: workspace.isStarred ? "star.slash" : "star"
-                    )
-                }
-
-                Divider()
-
-                Button(action: onEdit) {
-                    Label("Workspace Details", systemImage: "info.circle")
-                }
-                Button(action: onRename) {
-                    Label("Rename", systemImage: "pencil")
-                }
-
-                Divider()
-
-                Button(role: .destructive, action: onDelete) {
-                    Label("Remove", systemImage: "trash")
-                }
-            } label: {
-                accessoryGlyph("ellipsis", size: 14, weight: .semibold, isHovered: isEllipsisHovered)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .tint(Stanford.lagunita)
-            .fixedSize()
-            .onHover { isEllipsisHovered = $0 }
-            .help("Workspace options")
-            .accessibilityLabel("Options for \(workspace.name)")
-
-            Button(action: onNewTask) {
-                accessoryGlyph("square.and.pencil", size: 13, weight: .medium, isHovered: isNewTaskHovered)
-            }
-            .buttonStyle(.plain)
-            .onHover { isNewTaskHovered = $0 }
-            .help("Start new chat in Astra")
-            .accessibilityLabel("Start new chat in \(workspace.name)")
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    @ViewBuilder
-    private func accessoryGlyph(_ symbol: String, size: CGFloat, weight: Font.Weight, isHovered: Bool) -> some View {
-        Image(systemName: symbol)
-            .font(Stanford.ui(size, weight: weight))
-            .foregroundStyle(Stanford.lagunita)
-            .frame(width: 24, height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: Stanford.radiusSmall - 1, style: .continuous)
-                    .fill(Stanford.lagunita.opacity(isHovered ? 0.14 : 0))
-            )
-            .contentShape(Rectangle())
-            .animation(hoverAnimation, value: isHovered)
-    }
-}
-
 private struct NewTaskNudgePopover: View {
     let onDismiss: () -> Void
 
@@ -2418,43 +2356,6 @@ private struct NewTaskNudgePopover: View {
         .padding(14)
         .frame(width: 260)
         .background(Stanford.cardBackground)
-    }
-}
-
-/// Quiet liveness signal on a collapsed workspace row: a small lagunita dot
-/// with a slow breathing pulse, meaning "an agent is working inside this
-/// closed drawer". Lagunita matches the running spinner's tint so "teal =
-/// running" stays one vocabulary, distinct from the cardinal unread dot.
-/// Under Reduce Motion the dot holds steady — presence alone carries it.
-private struct WorkspaceRunningIndicator: View {
-    let count: Int
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isPulsing = false
-
-    private var label: String {
-        count == 1 ? "1 task running" : "\(count) tasks running"
-    }
-
-    var body: some View {
-        Circle()
-            .fill(Stanford.lagunita)
-            .frame(width: 6, height: 6)
-            .opacity(isPulsing ? 0.35 : 1)
-            .animation(
-                reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
-                value: isPulsing
-            )
-            .frame(width: 10, height: 22)
-            .onAppear { isPulsing = !reduceMotion }
-            // Reduce Motion can flip while the dot is on screen. Rewriting
-            // `isPulsing` under the new setting replaces the in-flight
-            // repeatForever animation (animation is nil once RM is on), so
-            // the dot settles steady — or starts breathing — immediately
-            // instead of waiting to be recreated.
-            .onChange(of: reduceMotion) { isPulsing = !reduceMotion }
-            .help(label)
-            .accessibilityLabel(label)
     }
 }
 
