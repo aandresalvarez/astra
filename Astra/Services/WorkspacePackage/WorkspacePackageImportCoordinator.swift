@@ -112,17 +112,30 @@ struct WorkspacePackageImportCoordinator {
     /// content-hashes every portable file, so any change to any file changes it.
     /// The review flow captures this when it builds the plan and passes it back
     /// as `expectedPackageDigest` so the import can prove it is committing the
-    /// bytes the user actually reviewed.
-    static func packageFingerprint(at packageURL: URL) -> String? {
+    /// bytes the user actually reviewed. `nonisolated` — pure filesystem read,
+    /// and `stageAndValidate` below (running off the main actor) needs to call
+    /// it without an actor hop.
+    nonisolated static func packageFingerprint(at packageURL: URL) -> String? {
         try? PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: "checksums.json")
     }
 
-    func importPackage(
-        at packageURL: URL,
-        intoDestinationFolder parentFolder: URL,
-        modelContext: ModelContext,
-        expectedPackageDigest: String? = nil
-    ) throws -> WorkspacePackageImportOutcome {
+    private struct StagedPackage: Sendable {
+        var stagingRoot: URL
+        var stagedPackageURL: URL
+        var manifest: WorkspacePackageManifest
+        var document: WorkspaceShareDocument
+    }
+
+    /// Stages a private, bounded copy of `packageURL` and re-validates it —
+    /// pure filesystem/CPU work with no SwiftData involvement. `nonisolated`
+    /// so the `Task.detached` in `importPackage` genuinely runs this off the
+    /// main actor instead of hopping straight back for it.
+    nonisolated private static func stageAndValidate(
+        packageURL: URL,
+        expectedPackageDigest: String?,
+        fileManager: FileManager,
+        packageService: WorkspacePackageService
+    ) throws -> StagedPackage {
         // Copy the package into a private staging directory and consume ONLY
         // that copy. The source URL may sit in a shared or attacker-writable
         // location; validating it and then re-reading capability JSON and app
@@ -132,7 +145,9 @@ struct WorkspacePackageImportCoordinator {
         let stagingRoot = fileManager.temporaryDirectory
             .appendingPathComponent("astra-share-import-\(UUID().uuidString.lowercased())", isDirectory: true)
         try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: stagingRoot) }
+        var succeeded = false
+        defer { if !succeeded { try? fileManager.removeItem(at: stagingRoot) } }
+
         let stagedPackageURL = stagingRoot.appendingPathComponent("package.astra-share", isDirectory: true)
         // Build the private snapshot with symlink rejection and file-count /
         // byte budgets enforced during the walk — not a bare recursive copyItem,
@@ -165,6 +180,40 @@ struct WorkspacePackageImportCoordinator {
         guard report.canInstall, let manifest = report.manifest, let document = report.shareDocument else {
             throw WorkspacePackageImportError.validationFailed(report.blockers)
         }
+
+        succeeded = true
+        return StagedPackage(
+            stagingRoot: stagingRoot,
+            stagedPackageURL: stagedPackageURL,
+            manifest: manifest,
+            document: document
+        )
+    }
+
+    func importPackage(
+        at packageURL: URL,
+        intoDestinationFolder parentFolder: URL,
+        modelContext: ModelContext,
+        expectedPackageDigest: String? = nil
+    ) async throws -> WorkspacePackageImportOutcome {
+        // Stage and re-validate off the main actor: a package near the 500MB
+        // review limit would otherwise freeze the UI for the whole bounded
+        // copy, checksum validation, and nested app validation. Only the
+        // SwiftData mutation phase below needs the main actor.
+        let fileManager = self.fileManager
+        let packageService = self.packageService
+        let staged = try await Task.detached(priority: .userInitiated) {
+            try Self.stageAndValidate(
+                packageURL: packageURL,
+                expectedPackageDigest: expectedPackageDigest,
+                fileManager: fileManager,
+                packageService: packageService
+            )
+        }.value
+        defer { try? fileManager.removeItem(at: staged.stagingRoot) }
+        let stagedPackageURL = staged.stagedPackageURL
+        let manifest = staged.manifest
+        let document = staged.document
 
         // Do every SwiftData mutation in a dedicated context on the same store,
         // never the caller's shared UI context. Otherwise a rollback on failure
@@ -200,13 +249,19 @@ struct WorkspacePackageImportCoordinator {
         // a fresh, fully workspace-scoped graph (new UUIDs, never the global-reuse
         // or built-in-name paths), and the destination folder is always the
         // workspace root (never wherever the package sat).
-        var installedCapabilityIDs: [String] = []
+        // Snapshot each capability's storage BEFORE installing, so rollback can
+        // restore the prior bytes — including a malformed/unreadable package that
+        // `installedPackages()` omits (so `claimedStorageNames` misses it) and the
+        // install would otherwise overwrite with no way back. `restorePackageStorage`
+        // removes the new install when the snapshot was empty (== the old
+        // remove-package behavior) and restores the captured bytes when it wasn't.
+        var capabilityStorageSnapshots: [CapabilityLibrary.PackageStorageSnapshot] = []
         var committed = false
         defer {
             if !committed {
                 importContext.rollback()
-                for id in installedCapabilityIDs {
-                    try? capabilityLibrary.removePackage(id: id)
+                for snapshot in capabilityStorageSnapshots.reversed() {
+                    capabilityLibrary.restorePackageStorage(snapshot)
                 }
                 try? fileManager.removeItem(at: workspaceRootURL)
             }
@@ -266,8 +321,8 @@ struct WorkspacePackageImportCoordinator {
             // anyway so a future validation regression can't turn this write
             // into a self-approved install.
             CapabilityGovernanceNormalizer.clampToLocalDraft(&capability)
+            capabilityStorageSnapshots.append(capabilityLibrary.makePackageStorageSnapshot(for: entry.packageID))
             try capabilityLibrary.install(capability)
-            installedCapabilityIDs.append(entry.packageID)
             capabilitiesInstalledAsDraft.append(entry.packageID)
             claimedStorageNames.insert(storageKey(entry.packageID))
         }
@@ -372,7 +427,7 @@ struct WorkspacePackageImportCoordinator {
                 .filter { !$0.credentialKeys.isEmpty }
                 .map(\.name),
             connectorsNeedingConfiguration: document.connectors
-                .filter { $0.credentialKeys.isEmpty && !$0.configKeys.isEmpty }
+                .filter { !$0.configKeys.isEmpty }
                 .map(\.name),
             googleAccountsRequiringReauth: manifest.googleAccountsRequiringReauth,
             sshConnectionsRequiringLocalKeys: manifest.sshConnectionsRequiringLocalKeys,
@@ -389,7 +444,13 @@ struct WorkspacePackageImportCoordinator {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return sanitized.isEmpty ? "Imported Workspace" : sanitized
+        // `.` / `..` (or any all-dots name) are nonempty and pass name validation,
+        // but as a directory component they resolve to the parent chain — import
+        // would target the selected parent itself. Fall back for those.
+        if sanitized.isEmpty || sanitized.allSatisfy({ $0 == "." }) {
+            return "Imported Workspace"
+        }
+        return sanitized
     }
 
 }
@@ -399,7 +460,10 @@ struct WorkspacePackageImportCoordinator {
 /// folder/JSON path untouched.
 enum WorkspacePackageImportRouting {
     static func isPackageURL(_ url: URL) -> Bool {
-        url.pathExtension == "astra-share"
+        // Case-insensitive: a package renamed `Workspace.ASTRA-SHARE` must still
+        // route to the readiness review, not be misclassified as a legacy folder
+        // (which would import the bundle itself as a bare workspace).
+        url.pathExtension.lowercased() == "astra-share"
     }
 
     static func partition(_ urls: [URL]) -> (packageURLs: [URL], legacyURLs: [URL]) {

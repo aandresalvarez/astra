@@ -187,7 +187,7 @@ struct WorkspacePackageImportReviewView: View {
             } else {
                 Button("Cancel") { onComplete(nil) }
                     .buttonStyle(.borderless)
-                Button(action: runImport) {
+                Button(action: { Task { await runImport() } }) {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
@@ -352,16 +352,19 @@ struct WorkspacePackageImportReviewView: View {
         }
     }
 
-    private func runImport() {
+    private func runImport() async {
         guard let destinationParentURL = state.destinationParentURL else { return }
-        state.importFinished(Result {
-            try WorkspacePackageImportCoordinator().importPackage(
+        do {
+            let outcome = try await WorkspacePackageImportCoordinator().importPackage(
                 at: packageURL,
                 intoDestinationFolder: destinationParentURL,
                 modelContext: modelContext,
                 expectedPackageDigest: state.reviewedPackageDigest
             )
-        })
+            state.importFinished(.success(outcome))
+        } catch {
+            state.importFinished(.failure(error))
+        }
     }
 
     private func destinationSummary(_ plan: WorkspacePackageImportPlan) -> String {

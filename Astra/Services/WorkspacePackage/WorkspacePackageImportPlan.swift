@@ -243,10 +243,17 @@ struct WorkspacePackageImportPlanner {
                     status: .ready
                 )
             }
+            // Credential-bearing: also disclose any config keys (their values are
+            // blanked too), so a connector needing an API token AND a tenant ID
+            // isn't reported as needing only authentication.
+            var detail = "Credential values never travel in a package. Provide: \(connector.credentialKeys.joined(separator: ", "))"
+            if !connector.configKeys.isEmpty {
+                detail += ". Also re-enter configuration: \(connector.configKeys.joined(separator: ", "))"
+            }
             return WorkspacePackageImportPlanItem(
                 id: "connector:\(connector.name)",
                 name: connector.name,
-                detail: "Credential values never travel in a package. Provide: \(connector.credentialKeys.joined(separator: ", "))",
+                detail: detail,
                 status: .needsAuthentication
             )
         }

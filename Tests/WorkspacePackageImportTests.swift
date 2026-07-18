@@ -13,7 +13,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("package import round trips into a clean container with a fresh workspace identity")
-    func importRoundTripsIntoCleanContainer() throws {
+    func importRoundTripsIntoCleanContainer() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -25,7 +25,7 @@ struct WorkspacePackageImportTests {
 
         var coordinator = WorkspacePackageImportCoordinator()
         coordinator.capabilityLibrary = targetLibrary
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -77,7 +77,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("embedded draft capabilities stay enabled while apps import, then are disabled")
-    func draftCapabilitiesEnabledDuringAppImportThenDisabled() throws {
+    func draftCapabilitiesEnabledDuringAppImportThenDisabled() async throws {
         // Regression for the tension between "don't expose an unapproved draft to
         // task runs" (strip it from the enabled set) and "map the app's
         // dependency bindings" (createApp derives bindings from the workspace's
@@ -107,7 +107,7 @@ struct WorkspacePackageImportTests {
                 persistence: .deferSave
             )
         }
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -122,7 +122,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("export omits machine-local paths so the package never carries them")
-    func exportOmitsMachineLocalPaths() throws {
+    func exportOmitsMachineLocalPaths() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let extraPath = root.appendingPathComponent("elsewhere", isDirectory: true).path
@@ -146,7 +146,7 @@ struct WorkspacePackageImportTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -161,7 +161,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("a failed import does not roll back the caller context's unrelated pending edits")
-    func failedImportPreservesUnrelatedPendingEdits() throws {
+    func failedImportPreservesUnrelatedPendingEdits() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -189,8 +189,8 @@ struct WorkspacePackageImportTests {
         struct ImportBoom: Error {}
         coordinator.importAppBundle = { _, _, _ in throw ImportBoom() }
 
-        #expect(throws: (any Error).self) {
-            _ = try coordinator.importPackage(
+        await #expect(throws: (any Error).self) {
+            _ = try await coordinator.importPackage(
                 at: fixture.packageURL,
                 intoDestinationFolder: destinationParent,
                 modelContext: callerContext
@@ -210,7 +210,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import refuses a package whose bytes changed after the reviewed fingerprint")
-    func importRefusesPackageChangedSinceReview() throws {
+    func importRefusesPackageChangedSinceReview() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -226,8 +226,8 @@ struct WorkspacePackageImportTests {
         // A fingerprint that does not match the package now at the URL (as if a
         // different package were swapped in after review).
         let staleDigest = String(repeating: "0", count: 64)
-        #expect(throws: WorkspacePackageImportError.self) {
-            _ = try coordinator.importPackage(
+        await #expect(throws: WorkspacePackageImportError.self) {
+            _ = try await coordinator.importPackage(
                 at: fixture.packageURL,
                 intoDestinationFolder: destinationParent,
                 modelContext: targetContainer.mainContext,
@@ -241,7 +241,7 @@ struct WorkspacePackageImportTests {
 
         // The genuine fingerprint of the reviewed bytes imports normally.
         let realDigest = try #require(WorkspacePackageImportCoordinator.packageFingerprint(at: fixture.packageURL))
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext,
@@ -252,7 +252,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("package import skips already-installed capabilities without overwriting them")
-    func importSkipsAlreadyInstalledCapabilities() throws {
+    func importSkipsAlreadyInstalledCapabilities() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -268,7 +268,7 @@ struct WorkspacePackageImportTests {
 
         var coordinator = WorkspacePackageImportCoordinator()
         coordinator.capabilityLibrary = targetLibrary
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -330,7 +330,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("a locally-approved custom capability the share references stays enabled after import")
-    func locallyApprovedCustomCapabilityStaysEnabled() throws {
+    func locallyApprovedCustomCapabilityStaysEnabled() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         // The share enables a capability ID it does not embed but the recipient
@@ -363,7 +363,7 @@ struct WorkspacePackageImportTests {
         var coordinator = WorkspacePackageImportCoordinator()
         coordinator.capabilityLibrary = targetLibrary
         coordinator.approvalRecords = { [record] }
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -377,7 +377,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import does not activate a recipient-local unapproved capability the package merely names")
-    func importDoesNotActivateRecipientLocalUnapprovedCapability() throws {
+    func importDoesNotActivateRecipientLocalUnapprovedCapability() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         // The share enables an ID it does NOT embed — one that happens to exist,
@@ -397,7 +397,7 @@ struct WorkspacePackageImportTests {
 
         var coordinator = WorkspacePackageImportCoordinator()
         coordinator.capabilityLibrary = targetLibrary
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -413,7 +413,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import does not enable recipient global resources named by the share")
-    func importDoesNotEnableRecipientGlobalResources() throws {
+    func importDoesNotEnableRecipientGlobalResources() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root) { workspace in
@@ -429,7 +429,7 @@ struct WorkspacePackageImportTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -443,7 +443,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import consumes a private copy and leaves no staging residue")
-    func importConsumesPrivateCopyAndCleansUp() throws {
+    func importConsumesPrivateCopyAndCleansUp() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -456,7 +456,7 @@ struct WorkspacePackageImportTests {
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
 
-        _ = try coordinator.importPackage(
+        _ = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -474,7 +474,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("failed app import rolls back workspace rows, files, and installed capabilities")
-    func failedImportRollsBackEverything() throws {
+    func failedImportRollsBackEverything() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -489,8 +489,8 @@ struct WorkspacePackageImportTests {
         coordinator.capabilityLibrary = targetLibrary
         coordinator.importAppBundle = { _, _, _ in throw InjectedFailure() }
 
-        #expect(throws: InjectedFailure.self) {
-            _ = try coordinator.importPackage(
+        await #expect(throws: InjectedFailure.self) {
+            _ = try await coordinator.importPackage(
                 at: fixture.packageURL,
                 intoDestinationFolder: destinationParent,
                 modelContext: targetContainer.mainContext
@@ -508,7 +508,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import rejects a tampered package before creating anything")
-    func importRejectsTamperedPackageBeforeMutation() throws {
+    func importRejectsTamperedPackageBeforeMutation() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -526,8 +526,8 @@ struct WorkspacePackageImportTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
-        #expect(throws: WorkspacePackageImportError.self) {
-            _ = try coordinator.importPackage(
+        await #expect(throws: WorkspacePackageImportError.self) {
+            _ = try await coordinator.importPackage(
                 at: fixture.packageURL,
                 intoDestinationFolder: destinationParent,
                 modelContext: targetContainer.mainContext
@@ -608,7 +608,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import rejects a package reached through a symlinked root")
-    func importRejectsSymlinkedPackageRoot() throws {
+    func importRejectsSymlinkedPackageRoot() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root)
@@ -626,8 +626,8 @@ struct WorkspacePackageImportTests {
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
 
-        #expect(throws: WorkspacePackageImportError.self) {
-            try coordinator.importPackage(
+        await #expect(throws: WorkspacePackageImportError.self) {
+            try await coordinator.importPackage(
                 at: symlinkedPackage,
                 intoDestinationFolder: destinationParent,
                 modelContext: targetContainer.mainContext
@@ -664,7 +664,7 @@ struct WorkspacePackageImportTests {
 
     @MainActor
     @Test("import skips an embedded capability that would overwrite a storage-name collision")
-    func importSkipsCapabilityStorageCollision() throws {
+    func importSkipsCapabilityStorageCollision() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         // The share embeds `local.tool`; the recipient already has `local-tool`,
@@ -689,7 +689,7 @@ struct WorkspacePackageImportTests {
         var coordinator = WorkspacePackageImportCoordinator()
         coordinator.capabilityLibrary = targetLibrary
 
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: fixture.packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext

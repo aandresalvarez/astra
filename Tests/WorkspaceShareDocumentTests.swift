@@ -182,7 +182,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("import builds fresh workspace-scoped rows and never reuses recipient globals or built-ins")
-    func importNeverReusesRecipientResources() throws {
+    func importNeverReusesRecipientResources() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -253,7 +253,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: target
@@ -283,7 +283,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("imported routines are quarantined with a recomputed future fire date")
-    func importedSchedulesAreQuarantinedAndRefreshed() throws {
+    func importedSchedulesAreQuarantinedAndRefreshed() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
@@ -308,7 +308,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -427,7 +427,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("unresolved referenced packs are surfaced as missing and never enabled")
-    func unresolvedPacksAreSurfacedAndNotEnabled() throws {
+    func unresolvedPacksAreSurfacedAndNotEnabled() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
@@ -457,7 +457,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -467,7 +467,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("an imported same-thread routine is normalized to a fresh-task result mode")
-    func importedSameThreadRoutineIsNormalized() throws {
+    func importedSameThreadRoutineIsNormalized() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
@@ -490,7 +490,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -578,7 +578,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("referenced capabilities unavailable on this machine are reported in the outcome")
-    func unavailableReferencedCapabilitiesReportedInOutcome() throws {
+    func unavailableReferencedCapabilitiesReportedInOutcome() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
@@ -598,7 +598,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -867,7 +867,7 @@ struct WorkspaceShareDocumentTests {
 
     @MainActor
     @Test("an imported one-time routine is not left immediately due")
-    func importedOnceRoutineIsNotImmediatelyDue() throws {
+    func importedOnceRoutineIsNotImmediatelyDue() async throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
@@ -888,7 +888,7 @@ struct WorkspaceShareDocumentTests {
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("caps", isDirectory: true)
         )
-        let outcome = try coordinator.importPackage(
+        let outcome = try await coordinator.importPackage(
             at: packageURL,
             intoDestinationFolder: destinationParent,
             modelContext: targetContainer.mainContext
@@ -1014,6 +1014,124 @@ struct WorkspaceShareDocumentTests {
         #expect(throws: PortablePackageStagingError.self) {
             try PortablePackageSafeFileReader.stageBoundedCopy(from: source, to: dest2)
         }
+    }
+
+    @MainActor
+    @Test("validation catches a JSON-encoded credential assignment")
+    func validationCatchesJSONCredential() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        try Self.reseal(at: destination) { document in
+            document.instructions = #"Config: {"API_TOKEN":"supersecret123"}"#
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("credential material") })
+    }
+
+    @MainActor
+    @Test("export strips credential-like query parameters from a connector base URL")
+    func exportStripsBaseURLQueryCredentials() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let connector = Connector(
+            name: "Q", serviceType: "custom", icon: "bolt", connectorDescription: "c",
+            baseURL: "https://api.example.com/v1?api_token=supersecret123&region=us", authMethod: "none"
+        )
+        connector.workspace = workspace
+        container.mainContext.insert(connector)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let shareText = try String(contentsOf: destination.appendingPathComponent("workspace-share.json"), encoding: .utf8)
+        #expect(!shareText.contains("supersecret123"))
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let baseURL = try #require(report.shareDocument?.connectors.first?.baseURL)
+        #expect(!baseURL.contains("api_token"))
+        #expect(baseURL.contains("region=us"))
+    }
+
+    @MainActor
+    @Test("validation rejects a weekly routine with an out-of-range clock")
+    func validationRejectsWeeklyBadClock() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        try Self.reseal(at: destination) { document in
+            document.schedules = [ShareSchedule(
+                name: "W", goal: "g", routineDescription: "", routineInstructions: "",
+                templateName: nil, templateVariablesJSON: "", model: "", tokenBudget: 0,
+                scheduleType: "weekly", intervalSeconds: 0, dailyHour: 99, dailyMinute: 0,
+                weeklyDayOfWeek: 3, skillNames: [], resultMode: nil, runtimeID: nil
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+    }
+
+    @MainActor
+    @Test("validation catches a /tmp absolute path in free text")
+    func validationCatchesTmpPath() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        workspace.instructions = "Read the config from /tmp/astra/secret-config.json first."
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        #expect(throws: WorkspacePackageExportError.self) {
+            _ = try WorkspacePackageExporter().exportConfigurationPackage(
+                workspace: workspace, modelContext: container.mainContext, to: destination
+            )
+        }
+    }
+
+    @MainActor
+    @Test("a credential-bearing connector also discloses its configuration keys")
+    func credentialedConnectorDisclosesConfig() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let connector = Connector(
+            name: "Jira", serviceType: "custom", icon: "bolt", connectorDescription: "j",
+            baseURL: "https://jira.example.com", authMethod: "bearer"
+        )
+        connector.credentialKeys = ["API_TOKEN"]
+        connector.configKeys = ["JIRA_PROJECTS"]
+        connector.configValues = ["ENG"]
+        connector.workspace = workspace
+        container.mainContext.insert(connector)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let item = try #require(plan.connectors.first { $0.name == "Jira" })
+        #expect(item.detail.contains("API_TOKEN"))
+        #expect(item.detail.contains("JIRA_PROJECTS"))
+    }
+
+    @MainActor
+    @Test("package extension routing and dot-only directory names are normalized")
+    func extensionAndDirectoryNameNormalization() {
+        #expect(WorkspacePackageImportRouting.isPackageURL(URL(fileURLWithPath: "/x/Workspace.ASTRA-SHARE")))
+        #expect(WorkspacePackageImportRouting.isPackageURL(URL(fileURLWithPath: "/x/w.astra-share")))
+        #expect(!WorkspacePackageImportRouting.isPackageURL(URL(fileURLWithPath: "/x/w.folder")))
+        #expect(WorkspacePackageImportCoordinator.directoryName(for: "..") == "Imported Workspace")
+        #expect(WorkspacePackageImportCoordinator.directoryName(for: ".") == "Imported Workspace")
+        #expect(WorkspacePackageImportCoordinator.directoryName(for: "My WS") == "My WS")
     }
 
     // MARK: - Fixtures

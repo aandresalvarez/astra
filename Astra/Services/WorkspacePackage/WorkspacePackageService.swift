@@ -576,6 +576,19 @@ struct WorkspacePackageService {
                     "Connector base URL must not embed credentials (user:password@host)."
                 ))
             }
+            // Mirrors the userinfo check above: the exporter strips a
+            // credential-like query item (`WorkspaceShareProjection.
+            // baseURLWithoutCredentials`), but a hand-tampered package could
+            // reintroduce one — reject it here too rather than trust the
+            // exporter as a security boundary.
+            if let components = URLComponents(string: connector.baseURL),
+               let items = components.queryItems,
+               items.contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    "Connector base URL must not embed a credential-like query parameter."
+                ))
+            }
             // The importer applies the same transport policy and *silently skips*
             // a connector that declares credentials over an unprotected URL (e.g.
             // http://host), even though the plan presented it as installable and
@@ -642,6 +655,12 @@ struct WorkspacePackageService {
                 invalid = "daily hour/minute is out of range"
             case .weekly where !(1...7).contains(schedule.weeklyDayOfWeek):
                 invalid = "weekly day-of-week is out of range"
+            // A weekly routine also carries an hour/minute (reused from the daily
+            // fields); an out-of-range clock makes `Calendar.nextDate` return nil
+            // and the importer silently falls back to one week from now, so the
+            // enabled routine fires at a different time than declared.
+            case .weekly where !(0...23).contains(schedule.dailyHour) || !(0...59).contains(schedule.dailyMinute):
+                invalid = "weekly hour/minute is out of range"
             case .none:
                 invalid = "unknown schedule type '\(schedule.scheduleType)'"
             default:
@@ -782,7 +801,10 @@ struct WorkspacePackageService {
         // `API_TOKEN=…` match (the `_` is a word char, so a bare `\btoken` never
         // starts inside `API_TOKEN`), without restoring prose false positives —
         // the required `[:=]` + value keeps "token budget"/"OAuth flow" out.
-        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b\s*[:=]\s*\S{6,}"#
+        // Optional quotes around the key and value catch the JSON form
+        // `{"API_TOKEN":"supersecret123"}` (variablesJSON is scanned verbatim),
+        // where a closing quote sits between the key and the `:`.
+        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b["']?\s*[:=]\s*["']?\S{6,}"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.firstMatch(in: text, range: range) != nil
@@ -796,7 +818,7 @@ struct WorkspacePackageService {
     private func containsAbsoluteMachinePath(_ text: String) -> Bool {
         if text.contains(NSHomeDirectory()) { return true }
         let lowered = text.lowercased()
-        let roots = ["/users/", "/home/", "/volumes/", "/opt/", "/usr/", "/private/", "/var/", "/applications/", "/library/", "/system/"]
+        let roots = ["/users/", "/home/", "/volumes/", "/opt/", "/usr/", "/private/", "/var/", "/applications/", "/library/", "/system/", "/tmp/", "/etc/", "/mnt/", "/srv/"]
         // A path-segment character before the root would make it a relative
         // fragment (e.g. "abc/opt/x"); require the root to begin the string or
         // follow a non-path delimiter so only genuine absolute paths match.

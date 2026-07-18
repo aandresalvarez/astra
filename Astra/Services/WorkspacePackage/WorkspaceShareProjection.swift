@@ -22,13 +22,31 @@ enum WorkspaceShareProjection {
     /// Returns `baseURL` with any `user[:password]@` userinfo removed. Leaves a
     /// URL that can't be parsed unchanged (validation catches those separately).
     static func baseURLWithoutCredentials(_ baseURL: String) -> String {
-        guard var components = URLComponents(string: baseURL),
-              components.user != nil || components.password != nil else {
-            return baseURL
-        }
+        guard var components = URLComponents(string: baseURL) else { return baseURL }
+        // Strip userinfo (`user:pass@host`) AND any credential-like query item
+        // (e.g. `?api_token=…`), both of which would otherwise carry a secret in
+        // the base URL — the free-text scan does not cover `baseURL`.
+        let hadUserinfo = components.user != nil || components.password != nil
         components.user = nil
         components.password = nil
+        var strippedQuery = false
+        if let items = components.queryItems {
+            let kept = items.filter { !isCredentialLikeKey($0.name) }
+            if kept.count != items.count {
+                strippedQuery = true
+                components.queryItems = kept.isEmpty ? nil : kept
+            }
+        }
+        guard hadUserinfo || strippedQuery else { return baseURL }
         return components.string ?? baseURL
+    }
+
+    /// A query-parameter/env key name that names a credential value.
+    static func isCredentialLikeKey(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return ["token", "secret", "password", "passwd", "apikey", "api_key", "api-key",
+                "access_key", "auth", "bearer", "credential", "client_secret"]
+            .contains { lowered.contains($0) }
     }
 
     static func document(from config: WorkspaceConfigManager.WorkspaceConfig) -> WorkspaceShareDocument {
