@@ -1847,7 +1847,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // External-operation wakes disable reuse at the private continuation decision boundary.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_086, .owner("Runtime worker execution")),
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_090, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -1868,7 +1868,7 @@ struct ArchitectureFitnessTests {
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Durable job trust, restart, cleanup, and filesystem attacks stay at the tool boundary.
-            "Tests/WorkspaceToolSupportTests.swift": .init(2_400, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
+            "Tests/WorkspaceToolSupportTests.swift": .init(2_419, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).

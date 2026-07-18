@@ -24,6 +24,15 @@ final class TaskQueue {
     private(set) var activeResourceLocks: [TaskResourceLockClaim] = []
     private(set) var waitingResourceLocks: [UUID: TaskResourceLockClaim] = [:]
 
+    /// Resource roots held by active, nonterminal external operations whose
+    /// detached job keeps writing the execution root even though the provider
+    /// run already returned to durable monitoring (in-memory locks are empty in
+    /// that window, and entirely empty after an app restart). Injected so the
+    /// conflict check can exclude other tasks from those roots until the
+    /// external work is terminal. Each entry is `(resourceKey, owningTaskID)`;
+    /// the owning task is never blocked from re-acquiring its own root.
+    var externalOperationResourceHolders: @MainActor () -> [(resourceKey: String, taskID: UUID)] = { [] }
+
     /// Track tasks that have been dispatched but may not yet be marked as .running.
     /// Prevents the queue loop from double-dispatching a task during the brief
     /// window between dispatch and the worker setting isRunning = true.
@@ -964,7 +973,19 @@ final class TaskQueue {
         return nil
     }
 
+    @MainActor
     private func canAcquireResourceLock(_ claim: TaskResourceLockClaim) -> Bool {
+        // A nonterminal external operation's detached job keeps writing its
+        // execution root after its provider run returned to durable monitoring,
+        // so treat that root as an exclusive holder even though no in-memory
+        // lock exists (and after a restart, in-memory locks are empty entirely).
+        // The owning task may still re-acquire — its own validation/reasoning
+        // wake must run — but any other task is blocked until the work terminates.
+        if externalOperationResourceHolders().contains(where: {
+            $0.taskID != claim.taskID && resourceKeysConflict($0.resourceKey, claim.resourceKey)
+        }) {
+            return false
+        }
         let sameResourceLocks = activeResourceLocks.filter {
             resourceKeysConflict($0.resourceKey, claim.resourceKey)
         }

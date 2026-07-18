@@ -1261,6 +1261,67 @@ struct WorkspaceToolSupportTests {
         executor.cleanup()
     }
 
+    @Test("cancel does not mark a job cancelled when the kill command fails")
+    func cancelDoesNotFinalizeOnExecFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-fail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+        let created = try store.create(
+            command: "sleep 60",
+            timeoutSeconds: 7200,
+            label: "cancel target",
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            invocationID: "cancel-fail-invocation",
+            containerName: "astra-test-job-cancel-fail"
+        )
+        // Still running when the cancel is attempted.
+        try #"{"status":"running","timestamp":"2026-07-16T12:00:00Z"}"#
+            .write(to: URL(fileURLWithPath: created.heartbeatPath), atomically: true, encoding: .utf8)
+
+        // A docker whose `exec` (the kill command) fails transiently while the
+        // container/job remain alive.
+        let docker = root.appendingPathComponent("docker")
+        try """
+        #!/bin/sh
+        case "$1" in
+          exec) exit 1 ;;
+          *) exit 0 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel-fail",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let result = manager.cancel(jobID: created.jobID)
+
+        // A failed kill must not be rewritten to .cancelled — the process may
+        // still be running, and a false terminal status would stop monitoring.
+        #expect(result.status != .cancelled)
+        #expect(try store.load(jobID: created.jobID).status != .cancelled)
+        executor.cleanup()
+    }
+
     @Test("Queued receipt is reconciled without relaunch after an interrupted start")
     func queuedReceiptIsReconciledWithoutRelaunch() throws {
         let root = FileManager.default.temporaryDirectory

@@ -1155,7 +1155,8 @@ final class AgentRuntimeWorker {
                             run: run,
                             modelContext: modelContext,
                             successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                            permissionPolicy: launchPermissionPolicy
+                            permissionPolicy: launchPermissionPolicy,
+                            validatingOperationID: executionPolicy.externalOperationID
                         )
                         if completed {
                             await Self.applyAutomaticBaselineVerificationIfNeeded(
@@ -1175,7 +1176,8 @@ final class AgentRuntimeWorker {
                                 run: run,
                                 modelContext: modelContext,
                                 successPayload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))",
-                                permissionPolicy: launchPermissionPolicy
+                                permissionPolicy: launchPermissionPolicy,
+                                validatingOperationID: executionPolicy.externalOperationID
                             )
                         case .failed(let details):
                             TaskStateMachine.failFromValidation(task, modelContext: modelContext)
@@ -1208,7 +1210,8 @@ final class AgentRuntimeWorker {
                                 run: run,
                                 modelContext: modelContext,
                                 successPayload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))",
-                                permissionPolicy: launchPermissionPolicy
+                                permissionPolicy: launchPermissionPolicy,
+                                validatingOperationID: executionPolicy.externalOperationID
                             )
                         case .failed(let details):
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
@@ -1226,7 +1229,8 @@ final class AgentRuntimeWorker {
                         run: run,
                         modelContext: modelContext,
                         successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                        permissionPolicy: launchPermissionPolicy
+                        permissionPolicy: launchPermissionPolicy,
+                        validatingOperationID: executionPolicy.externalOperationID
                     )
                     if completed {
                         await Self.applyAutomaticBaselineVerificationIfNeeded(

@@ -194,6 +194,12 @@ final class TaskExternalOperationMonitorService {
     private var schedulerTask: Task<Void, Never>?
     private var inFlightPolls: [UUID: InFlightPoll] = [:]
     private var inFlightCancellations: [UUID: InFlightPoll] = [:]
+    /// Set by `stop()` so an in-flight poll that was already awaiting a backend
+    /// read cannot deliver a wake/notification after the monitor was stopped
+    /// (e.g. for a pending update install). Delivery is what launches provider
+    /// work; suppressing it here leaves the transition unacknowledged so it is
+    /// redelivered on the next `start()`.
+    private var isStopped = false
 
     init(
         modelContext: ModelContext,
@@ -223,6 +229,7 @@ final class TaskExternalOperationMonitorService {
 
     func start() {
         guard schedulerTask == nil else { return }
+        isStopped = false
         schedulerTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await reconcileAfterRestart()
@@ -249,8 +256,18 @@ final class TaskExternalOperationMonitorService {
     }
 
     func stop() {
+        isStopped = true
         schedulerTask?.cancel()
         schedulerTask = nil
+        // A due poll or cancellation may already be running in an unstructured
+        // task. Cancelling only the scheduler would let it finish and invoke the
+        // wake sink after a pre-install safety check; cancel and drop them too.
+        // (The `isStopped` guard in `deliver` is the authoritative stop — task
+        // cancellation is cooperative and may not interrupt synchronous work.)
+        for poll in inFlightPolls.values { poll.task.cancel() }
+        for cancellation in inFlightCancellations.values { cancellation.task.cancel() }
+        inFlightPolls.removeAll()
+        inFlightCancellations.removeAll()
     }
 
     func reconcileAfterRestart() async {
@@ -604,6 +621,11 @@ final class TaskExternalOperationMonitorService {
     }
 
     private func deliver(_ applied: AppliedObservation) async {
+        // The monitor was stopped (e.g. for a pending update install) while this
+        // observation was in flight. Do not launch provider work or post
+        // notifications during shutdown; leave the transition unacknowledged so
+        // it is redelivered on the next start.
+        guard !isStopped else { return }
         if let notification = applied.notification,
            let notificationKey = applied.notificationKey,
            isCurrentNotificationKey(

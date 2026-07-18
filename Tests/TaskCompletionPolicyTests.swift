@@ -435,7 +435,8 @@ struct TaskCompletionPolicyTests {
             run: validationRun,
             modelContext: context,
             successPayload: "One operation validated.",
-            permissionPolicy: .autonomous
+            permissionPolicy: .autonomous,
+            validatingOperationID: validating.id
         )
 
         #expect(!completed)
@@ -443,6 +444,46 @@ struct TaskCompletionPolicyTests {
         #expect(active.monitoringState == .active)
         #expect(task.status == .waitingExternal)
         #expect(validationRun.typedStopReason == .externalOutcomePending)
+    }
+
+    @Test("a run not dispatched to validate an operation cannot consume its validation")
+    func unrelatedRunDoesNotConsumeValidation() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Validate durable work")
+        task.status = .waitingExternal
+        let origin = TaskRun(task: task)
+        // A run that was NOT launched as this operation's validation wake — e.g.
+        // a user follow-up sent while validation is pending (no validatingOperationID).
+        let followUp = TaskRun(task: task)
+        let validating = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(origin.id.uuidString.lowercased()):validated",
+            originatingRunID: origin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "validated",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating
+        )
+        context.insert(task)
+        context.insert(origin)
+        context.insert(followUp)
+        context.insert(validating)
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: followUp,
+            modelContext: context,
+            successPayload: "Follow-up, not a validation.",
+            permissionPolicy: .autonomous
+        )
+
+        // The operation is not consumed by an unrelated run; the task stays
+        // waiting until its real validation wake runs.
+        #expect(!completed)
+        #expect(validating.monitoringState == .validating)
+        #expect(task.status == .waitingExternal)
     }
 
     @Test("publication receipt cannot complete a task whose deliverable is missing")

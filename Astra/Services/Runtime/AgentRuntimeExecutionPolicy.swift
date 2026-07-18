@@ -10,6 +10,12 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// process. The Context Capsule remains authoritative, so native provider
     /// continuation is an optimization that callers may explicitly disable.
     var allowsNativeContinuation: Bool
+    /// When this run was launched to validate a specific external operation, its
+    /// ID. Completion consumes an operation's `.validating` state only for the
+    /// operation it was dispatched to validate — so an unrelated user follow-up,
+    /// or a wake for a different operation, cannot complete the task without
+    /// actually validating that operation.
+    var externalOperationID: UUID?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -18,13 +24,15 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         allowedToolsOverride: [String]? = nil,
         permissionGrantsOverride: [PermissionGrant]? = nil,
         providerRenderOverride: ProviderPolicyRender? = nil,
-        allowsNativeContinuation: Bool = true
+        allowsNativeContinuation: Bool = true,
+        externalOperationID: UUID? = nil
     ) {
         self.permissionPolicyOverride = permissionPolicyOverride
         self.allowedToolsOverride = allowedToolsOverride
         self.permissionGrantsOverride = permissionGrantsOverride
         self.providerRenderOverride = providerRenderOverride
         self.allowsNativeContinuation = allowsNativeContinuation
+        self.externalOperationID = externalOperationID
     }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
@@ -41,13 +49,17 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             allowedToolsOverride: render.allowedTools,
             permissionGrantsOverride: permissionGrantsOverride,
             providerRenderOverride: render,
-            allowsNativeContinuation: allowsNativeContinuation
+            allowsNativeContinuation: allowsNativeContinuation,
+            externalOperationID: externalOperationID
         )
     }
 
-    static let externalOperationWake = AgentRuntimeExecutionPolicy(
-        allowsNativeContinuation: false
-    )
+    static func externalOperationWake(operationID: UUID? = nil) -> AgentRuntimeExecutionPolicy {
+        AgentRuntimeExecutionPolicy(
+            allowsNativeContinuation: false,
+            externalOperationID: operationID
+        )
+    }
 
     static func approvedPlan(
         runtime _: AgentRuntimeID,

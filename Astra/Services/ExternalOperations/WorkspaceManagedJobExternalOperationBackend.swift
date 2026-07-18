@@ -32,7 +32,10 @@ struct DockerCLIContainerReachabilityProbe: DockerContainerReachabilityProbing {
         return info.exitCode == 0 ? .stoppedOrMissing : .unreachable
     }
 
-    private func run(arguments: [String]) async -> (exitCode: Int32, stdout: String) {
+    private func run(
+        arguments: [String],
+        timeout: TimeInterval = 15
+    ) async -> (exitCode: Int32, stdout: String) {
         await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -43,12 +46,25 @@ struct DockerCLIContainerReachabilityProbe: DockerContainerReachabilityProbing {
             process.standardError = stderr
             do {
                 try process.run()
-                process.waitUntilExit()
-                let data = stdout.fileHandleForReading.readDataToEndOfFile().prefix(4_096)
-                return (process.terminationStatus, String(decoding: data, as: UTF8.self))
             } catch {
                 return (127, "")
             }
+            // Bound the wait. `docker inspect`/`docker info` can hang
+            // indefinitely when the daemon or socket is unresponsive, and
+            // `runDueChecks` awaits every spawned probe — so one hung probe would
+            // stall the whole scheduler and leave every operation unreconciled.
+            // Terminate the subprocess after the timeout and report failure; the
+            // caller maps a non-zero exit to `.unreachable`.
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            guard !process.isRunning else {
+                process.terminate()
+                return (124, "")
+            }
+            let data = stdout.fileHandleForReading.readDataToEndOfFile().prefix(4_096)
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
         }.value
     }
 }

@@ -875,7 +875,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         do {
             let record = try store.load(jobID: jobID)
             let directory = containerJobDirectory(jobID: record.jobID)
-            _ = executor.runDockerCommand(
+            let cancelResult = executor.runDockerCommand(
                 arguments: [
                     "exec", configuration.containerName,
                     "sh", "-c",
@@ -1037,6 +1037,16 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 commandLabel: "workspace_job_cancel \(record.jobID)",
                 timeoutSeconds: 10
             )
+            // A transient exec failure (daemon/socket hiccup, container briefly
+            // unreachable, or a timed-out kill) must NOT be rewritten to
+            // `.cancelled`: the managed process may still be running, and a false
+            // terminal status would stop all monitoring while the job continues.
+            // Only finalize cancellation when the kill command actually
+            // succeeded; otherwise return the unmodified record so the caller
+            // keeps observing the still-live job and can retry.
+            guard cancelResult.exitCode == 0, !cancelResult.timedOut else {
+                return record
+            }
             return try store.mark(jobID: record.jobID, status: .cancelled, message: "Cancelled by ASTRA.")
         } catch {
             return failedSynthetic(command: "", jobID: jobID, message: error.localizedDescription)

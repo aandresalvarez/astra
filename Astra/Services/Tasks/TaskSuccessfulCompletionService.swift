@@ -11,7 +11,8 @@ enum TaskSuccessfulCompletionService {
         run: TaskRun,
         modelContext: ModelContext,
         successPayload: String,
-        permissionPolicy: PermissionPolicy
+        permissionPolicy: PermissionPolicy,
+        validatingOperationID: UUID? = nil
     ) -> Bool {
         // Registration is normally created at the exact typed tool-result
         // boundary. Reconciliation here closes the process-crash window where
@@ -26,12 +27,20 @@ enum TaskSuccessfulCompletionService {
             taskID: task.id,
             modelContext: modelContext
         )
-        if let validation = operations.first(where: {
-            $0.monitoringState == .validating && $0.originatingRunID != run.id
-        }) {
-            // A successful fresh provider run is the validation boundary.
-            // Process exit 0 only moved the operation to `validating`; it did
-            // not complete the task by itself.
+        if let validatingOperationID,
+           let validation = operations.first(where: {
+               $0.id == validatingOperationID
+                   && $0.monitoringState == .validating
+                   && $0.originatingRunID != run.id
+           }) {
+            // A successful fresh provider run is the validation boundary — but
+            // only for the operation whose wake actually launched this run.
+            // Without the ID match, any successful non-originating run (a user
+            // follow-up sent while validation is pending, or a wake for a
+            // different operation) would consume this operation's validating
+            // state and let the task complete without validating it. Process
+            // exit 0 only moved the operation to `validating`; it did not
+            // complete the task by itself.
             validation.monitoringState = .completed
             validation.updatedAt = Date()
             validation.nextCheckAt = nil

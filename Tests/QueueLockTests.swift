@@ -36,6 +36,37 @@ struct QueueLockTests {
         #expect(queue.activeTasks.isEmpty)
     }
 
+    @Test("an active external operation holds its root against other tasks but not its owner")
+    func externalOperationHoldsResourceRoot() throws {
+        let queue = TaskQueue(poolSize: 2)
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared", primaryPath: "/tmp/astra-shared-\(UUID().uuidString)")
+        let owner = AgentTask(title: "Owner", goal: "Owns durable external work", workspace: workspace)
+        let other = AgentTask(title: "Other", goal: "Wants the same checkout", workspace: workspace)
+        context.insert(workspace)
+        context.insert(owner)
+        context.insert(other)
+
+        // Both tasks resolve to the same execution root, and with no external
+        // holder either may acquire it.
+        #expect(queue.resourceKey(for: owner) == queue.resourceKey(for: other))
+        #expect(queue.canAcquireResourceLock(for: other, accessMode: .write))
+
+        // The owner now has a nonterminal external operation whose detached job
+        // keeps writing that root (no in-memory lock exists — the provider run
+        // returned to durable monitoring, or the app just restarted).
+        let ownerKey = queue.resourceKey(for: owner)
+        let ownerID = owner.id
+        queue.externalOperationResourceHolders = { [(resourceKey: ownerKey, taskID: ownerID)] }
+
+        // Another task must not run against the still-written root...
+        #expect(!queue.canAcquireResourceLock(for: other, accessMode: .write))
+        #expect(!queue.canAcquireResourceLock(for: other, accessMode: .readOnly))
+        // ...but the owning task may re-acquire it (its own validation wake runs).
+        #expect(queue.canAcquireResourceLock(for: owner, accessMode: .write))
+    }
+
     @Test("cancelAll clears active tasks")
     @MainActor
     func cancelAllClearsActive() {

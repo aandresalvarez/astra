@@ -229,6 +229,31 @@ struct TaskExternalOperationMonitorServiceTests {
         #expect(await wakeSink.requests.count == 1)
     }
 
+    @Test("stopping the monitor suppresses an in-flight poll's wake")
+    func stopSuppressesInFlightWake() async throws {
+        let fixture = try Fixture()
+        let operation = fixture.insertOperation(executionState: .running)
+        // Blocks mid-poll, then returns a terminal (wake-worthy) observation.
+        let observer = BlockingOperationObserver(
+            observation: TaskExternalOperationObservation(executionState: .processCompleted, health: .healthy)
+        )
+        let wakeSink = RecordingOperationWakeSink()
+        let service = fixture.makeService(observer: observer, wakeSink: wakeSink)
+
+        let poll = Task { @MainActor in await service.poll(operationID: operation.id) }
+        await observer.waitUntilCalled()
+        // The monitor stops (e.g. for a pending update install) while the poll is
+        // still awaiting its backend read.
+        service.stop()
+        await observer.release()
+        _ = await poll.value
+
+        // The in-flight poll must not launch provider work after stop; the
+        // transition stays unacknowledged for redelivery on the next start.
+        #expect(await wakeSink.requests.isEmpty)
+        #expect(operation.lastWakeKey == nil)
+    }
+
     @Test("quarantined registrations never contact an observer")
     func quarantinedRegistrationNeverPolls() async throws {
         let fixture = try Fixture()

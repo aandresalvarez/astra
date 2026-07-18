@@ -58,6 +58,25 @@ enum TaskExternalOperationWakeMessageRenderer {
 @MainActor
 extension AppRuntimeController {
     func startExternalOperationMonitoring(modelContext: ModelContext) {
+        // Keep active external operations participating in resource-lock
+        // admission. Their detached Docker job keeps writing the execution root
+        // after the provider run returned to durable monitoring, and in-memory
+        // locks are empty after a restart — so admission must derive exclusion
+        // from the durable operation rows, not just live locks.
+        taskQueue.externalOperationResourceHolders = { [weak taskQueue] in
+            guard let taskQueue else { return [] }
+            let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+            let active = operations.filter {
+                $0.monitoringState == .active && !$0.executionState.isTerminalObservation
+            }
+            guard !active.isEmpty else { return [] }
+            let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
+            let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return active.compactMap { operation in
+                guard let task = tasksByID[operation.taskID] else { return nil }
+                return (resourceKey: taskQueue.resourceKey(for: task), taskID: operation.taskID)
+            }
+        }
         if let externalOperationMonitor {
             externalOperationMonitor.start()
             return
@@ -105,7 +124,7 @@ extension AppRuntimeController {
                 task: task,
                 message: TaskExternalOperationWakeMessageRenderer.render(request),
                 modelContext: modelContext,
-                executionPolicy: .externalOperationWake
+                executionPolicy: .externalOperationWake(operationID: request.operationID)
             )
         }
         let notificationSink = TaskEventExternalOperationNotificationSink { notification in
