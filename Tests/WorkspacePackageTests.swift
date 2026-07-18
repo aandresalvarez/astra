@@ -400,6 +400,51 @@ struct WorkspacePackageTests {
     }
 
     @MainActor
+    @Test("package validation rejects an embedded app whose ID differs from its manifest entry")
+    func validationRejectsMismatchedAppID() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let sourcePackageURL = root.appendingPathComponent("source.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.minimalAppManifest(id: "notes", name: "Notes"),
+            to: sourcePackageURL
+        )
+        _ = try WorkspaceAppPackageService().importPackage(
+            at: sourcePackageURL,
+            into: workspace,
+            modelContext: container.mainContext
+        )
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace,
+            modelContext: container.mainContext,
+            to: destination
+        )
+
+        // The embedded bundle is still a valid "notes" app, but the outer entry
+        // now claims a different logical ID than the bundle actually installs.
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.appEntries = manifest.appEntries.map { entry in
+            var mutated = entry
+            mutated.logicalID = "spoofed"
+            return mutated
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: manifestURL)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("does not match its manifest entry ID") })
+    }
+
+    @MainActor
     @Test("exported package downgrades an asset-icon capability to its fallback symbol")
     func exportedPackageDowngradesAssetIcon() throws {
         let root = try Self.temporaryRoot()

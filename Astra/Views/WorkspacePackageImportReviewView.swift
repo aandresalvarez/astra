@@ -63,13 +63,17 @@ struct WorkspacePackageImportReviewState {
     private(set) var outcome: WorkspacePackageImportOutcome?
     private(set) var destinationParentURL: URL?
     private(set) var statusMessage = ""
+    /// Fingerprint of the package bytes the plan was built from, so the import
+    /// can refuse to commit a package that was swapped after review (TOCTOU).
+    private(set) var reviewedPackageDigest: String?
 
     init() {}
 
     var canImport: Bool { plan?.canImport == true && destinationParentURL != nil }
 
-    mutating func planLoaded(_ plan: WorkspacePackageImportPlan?) {
+    mutating func planLoaded(_ plan: WorkspacePackageImportPlan?, packageDigest: String? = nil) {
         self.plan = plan
+        self.reviewedPackageDigest = packageDigest
         if plan == nil {
             statusMessage = "This does not look like a valid workspace package."
         }
@@ -134,7 +138,10 @@ struct WorkspacePackageImportReviewView: View {
             didLoad = true
             accessingURL = packageURL.startAccessingSecurityScopedResource() ? packageURL : nil
             let report = WorkspacePackageService().validatePackage(at: packageURL)
-            state.planLoaded(WorkspacePackageImportPlanner().plan(from: report))
+            state.planLoaded(
+                WorkspacePackageImportPlanner().plan(from: report),
+                packageDigest: WorkspacePackageImportCoordinator.packageFingerprint(at: packageURL)
+            )
         }
         .onDisappear {
             accessingURL?.stopAccessingSecurityScopedResource()
@@ -315,7 +322,8 @@ struct WorkspacePackageImportReviewView: View {
             try WorkspacePackageImportCoordinator().importPackage(
                 at: packageURL,
                 intoDestinationFolder: destinationParentURL,
-                modelContext: modelContext
+                modelContext: modelContext,
+                expectedPackageDigest: state.reviewedPackageDigest
             )
         })
     }

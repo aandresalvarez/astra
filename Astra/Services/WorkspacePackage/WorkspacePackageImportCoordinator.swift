@@ -7,6 +7,7 @@ import ASTRAPersistence
 enum WorkspacePackageImportError: LocalizedError {
     case validationFailed([PortablePackageValidationIssue])
     case destinationAlreadyExists(String)
+    case packageChangedSinceReview
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ enum WorkspacePackageImportError: LocalizedError {
             return "The package did not validate.\n\(messages)"
         case .destinationAlreadyExists(let path):
             return "A folder already exists at \(path). Choose a different destination."
+        case .packageChangedSinceReview:
+            return "This package changed after you reviewed it. Re-open it to review the new contents before importing."
         }
     }
 }
@@ -61,10 +64,20 @@ struct WorkspacePackageImportCoordinator {
     /// closure pattern) — production always uses the real app import.
     var importAppBundle: (@MainActor (URL, Workspace, ModelContext) throws -> WorkspaceAppPackageImportResult)?
 
+    /// A whole-package fingerprint: the digest of `checksums.json`, which itself
+    /// content-hashes every portable file, so any change to any file changes it.
+    /// The review flow captures this when it builds the plan and passes it back
+    /// as `expectedPackageDigest` so the import can prove it is committing the
+    /// bytes the user actually reviewed.
+    static func packageFingerprint(at packageURL: URL) -> String? {
+        try? PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: "checksums.json")
+    }
+
     func importPackage(
         at packageURL: URL,
         intoDestinationFolder parentFolder: URL,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        expectedPackageDigest: String? = nil
     ) throws -> WorkspacePackageImportOutcome {
         // Re-validate at import time: the package may have changed since the
         // review plan was built (TOCTOU), and callers are not trusted to have
@@ -73,6 +86,23 @@ struct WorkspacePackageImportCoordinator {
         guard report.canInstall, let manifest = report.manifest, var config = report.workspaceConfig else {
             throw WorkspacePackageImportError.validationFailed(report.blockers)
         }
+        // Bind the commit to the reviewed bytes: revalidation alone accepts ANY
+        // valid package now at this URL, so a package swapped for a different
+        // (still-valid) one between review and confirmation would import without
+        // its inventory ever being shown. If the caller reviewed a specific
+        // fingerprint, refuse to import anything else.
+        if let expectedPackageDigest,
+           Self.packageFingerprint(at: packageURL) != expectedPackageDigest {
+            throw WorkspacePackageImportError.packageChangedSinceReview
+        }
+
+        // Do every SwiftData mutation in a dedicated context on the same store,
+        // never the caller's shared UI context. Otherwise a rollback on failure
+        // would discard the user's unrelated pending edits in the open workspace,
+        // and the final save would persist them — this operation must own exactly
+        // its own rows. The committed workspace is re-fetched into the caller's
+        // context at the end so the UI receives a usable object.
+        let importContext = ModelContext(modelContext.container)
 
         let workspaceRootURL = parentFolder.appendingPathComponent(
             Self.directoryName(for: manifest.workspaceName),
@@ -120,7 +150,7 @@ struct WorkspacePackageImportCoordinator {
         var committed = false
         defer {
             if !committed {
-                modelContext.rollback()
+                importContext.rollback()
                 for id in installedCapabilityIDs {
                     try? capabilityLibrary.removePackage(id: id)
                 }
@@ -130,7 +160,7 @@ struct WorkspacePackageImportCoordinator {
 
         let configResult = WorkspaceConfigManager.importWorkspaceResult(
             from: config,
-            modelContext: modelContext,
+            modelContext: importContext,
             scheduleTrustPolicy: .quarantineEnabledSchedules
         )
         let workspace = configResult.workspace
@@ -170,12 +200,12 @@ struct WorkspacePackageImportCoordinator {
             let bundleURL = packageURL.appendingPathComponent(entry.relativeBundlePath, isDirectory: true)
             let result: WorkspaceAppPackageImportResult
             if let importAppBundle {
-                result = try importAppBundle(bundleURL, workspace, modelContext)
+                result = try importAppBundle(bundleURL, workspace, importContext)
             } else {
                 result = try appPackageService.importPackage(
                     at: bundleURL,
                     into: workspace,
-                    modelContext: modelContext,
+                    modelContext: importContext,
                     persistence: .deferSave
                 )
             }
@@ -197,13 +227,13 @@ struct WorkspacePackageImportCoordinator {
 
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
             workspace: workspace,
-            modelContext: modelContext,
+            modelContext: importContext,
             auditFields: ["operation": "workspace_package_import"]
         )
         committed = true
         // Post-commit: write the new workspace's own recovery mirror into the
         // destination, matching the legacy import orchestrator's behavior.
-        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: importContext)
         AppLogger.audit(.workspaceImported, category: "App", fields: [
             "source": "portable_package",
             "workspace_id": workspace.id.uuidString,
@@ -211,8 +241,17 @@ struct WorkspacePackageImportCoordinator {
             "capability_count": String(capabilitiesInstalledAsDraft.count)
         ])
 
+        // The workspace above belongs to the dedicated import context. Re-fetch
+        // it into the caller's context so the UI (selection, @Query) receives an
+        // object it owns; fall back to the import-context object if the caller's
+        // context can't see the just-committed row for any reason.
+        let importedID = workspace.id
+        let outcomeWorkspace = (try? modelContext.fetch(
+            FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == importedID })
+        ).first) ?? workspace
+
         return WorkspacePackageImportOutcome(
-            workspace: workspace,
+            workspace: outcomeWorkspace,
             workspaceRootURL: workspaceRootURL,
             appsImported: appsImported,
             capabilitiesInstalledAsDraft: capabilitiesInstalledAsDraft,

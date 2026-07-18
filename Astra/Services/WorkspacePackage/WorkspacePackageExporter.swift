@@ -118,6 +118,16 @@ struct WorkspacePackageExporter {
             return sanitized
         }
 
+        // The sender's own filesystem locations must not travel. The importer
+        // overrides `primaryPath` with the recipient's chosen destination and
+        // ignores the rest — but leaving them in `workspace-config.json` leaks
+        // the sender's absolute paths to anyone who reads the share (the
+        // structural content scan does not inspect these fields). Clear them at
+        // the source; the recipient establishes their own paths after import.
+        config.primaryPath = ""
+        config.additionalPaths = []
+        config.activeWorkingPath = nil
+
         let stagingURL = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".astra-share-staging-\(UUID().uuidString.lowercased())", isDirectory: true)
         var published = false

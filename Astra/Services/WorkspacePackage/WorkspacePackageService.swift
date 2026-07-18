@@ -133,6 +133,17 @@ struct WorkspacePackageService {
         if !report.canInstall {
             issues.append(blocker("/\(entry.relativeBundlePath)", "Embedded workspace app package did not validate."))
         }
+        // The outer entry's declared `logicalID`/`displayName` drive the review
+        // plan, but the coordinator imports the nested bundle's OWN manifest. If
+        // the entry advertises one identity while the bundle validates to a
+        // different `app.id`, the reviewed inventory names an app other than the
+        // one installed. Bind them, mirroring the embedded-capability ID check.
+        if let embeddedAppID = report.manifest?.app.id, embeddedAppID != entry.logicalID {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app ID (\(embeddedAppID)) does not match its manifest entry ID (\(entry.logicalID))."
+            ))
+        }
         // The outer package's own version gate can't mask an embedded app's
         // — check both, so a recipient on an old build can't pass the outer
         // gate and only then discover an inner one silently can't run.

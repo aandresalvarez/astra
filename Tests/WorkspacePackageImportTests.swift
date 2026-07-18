@@ -121,14 +121,22 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
-    @Test("package import drops machine-local paths from the exporting machine")
-    func importDropsMachineLocalPaths() throws {
+    @Test("export omits machine-local paths so the package never carries them")
+    func exportOmitsMachineLocalPaths() throws {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let extraPath = root.appendingPathComponent("elsewhere", isDirectory: true).path
         let fixture = try Self.exportedPackage(root: root) { workspace in
             workspace.additionalPaths = [extraPath]
         }
+
+        // The sender's absolute paths never entered the package — a recipient
+        // reading workspace-config.json cannot see where the sender's files live.
+        let configText = String(
+            decoding: try Data(contentsOf: fixture.packageURL.appendingPathComponent("workspace-config.json")),
+            as: UTF8.self
+        )
+        #expect(!configText.contains(extraPath))
 
         let targetContainer = try Self.makeContainer()
         let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
@@ -144,9 +152,102 @@ struct WorkspacePackageImportTests {
             modelContext: targetContainer.mainContext
         )
 
-        #expect(outcome.droppedMachinePaths.contains(extraPath))
+        // Nothing to drop on import because nothing traveled; the checklist does
+        // not re-expose sender paths either.
+        #expect(outcome.droppedMachinePaths.isEmpty)
         #expect(outcome.workspace.additionalPaths.isEmpty)
         #expect(outcome.workspace.activeWorkingPath == nil)
+    }
+
+    @MainActor
+    @Test("a failed import does not roll back the caller context's unrelated pending edits")
+    func failedImportPreservesUnrelatedPendingEdits() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let callerContainer = try Self.makeContainer()
+        let callerContext = callerContainer.mainContext
+
+        // An unrelated workspace already open in the UI: saved baseline, then a
+        // pending (unsaved) edit the user is in the middle of making.
+        let other = Workspace(
+            name: "Original",
+            primaryPath: root.appendingPathComponent("other", isDirectory: true).path
+        )
+        callerContext.insert(other)
+        try callerContext.save()
+        other.name = "Pending edit"
+
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
+        )
+        struct ImportBoom: Error {}
+        coordinator.importAppBundle = { _, _, _ in throw ImportBoom() }
+
+        #expect(throws: (any Error).self) {
+            _ = try coordinator.importPackage(
+                at: fixture.packageURL,
+                intoDestinationFolder: destinationParent,
+                modelContext: callerContext
+            )
+        }
+
+        // The import rolled back only its own dedicated context — the caller's
+        // unrelated pending edit is untouched (a shared-context rollback would
+        // have reverted it to "Original").
+        #expect(other.name == "Pending edit")
+        // ...and nothing from the failed import leaked into the caller context.
+        let leaked = try callerContext.fetch(
+            FetchDescriptor<Workspace>(predicate: #Predicate { $0.name == "Package Export" })
+        )
+        #expect(leaked.isEmpty)
+    }
+
+    @MainActor
+    @Test("import refuses a package whose bytes changed after the reviewed fingerprint")
+    func importRefusesPackageChangedSinceReview() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(
+            directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
+        )
+
+        // A fingerprint that does not match the package now at the URL (as if a
+        // different package were swapped in after review).
+        let staleDigest = String(repeating: "0", count: 64)
+        #expect(throws: WorkspacePackageImportError.self) {
+            _ = try coordinator.importPackage(
+                at: fixture.packageURL,
+                intoDestinationFolder: destinationParent,
+                modelContext: targetContainer.mainContext,
+                expectedPackageDigest: staleDigest
+            )
+        }
+        #expect(try targetContainer.mainContext.fetch(FetchDescriptor<Workspace>()).isEmpty)
+        #expect(!FileManager.default.fileExists(
+            atPath: destinationParent.appendingPathComponent("Package Export").path
+        ))
+
+        // The genuine fingerprint of the reviewed bytes imports normally.
+        let realDigest = try #require(WorkspacePackageImportCoordinator.packageFingerprint(at: fixture.packageURL))
+        let outcome = try coordinator.importPackage(
+            at: fixture.packageURL,
+            intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext,
+            expectedPackageDigest: realDigest
+        )
+        #expect(outcome.appsImported == ["Notes"])
     }
 
     @MainActor
