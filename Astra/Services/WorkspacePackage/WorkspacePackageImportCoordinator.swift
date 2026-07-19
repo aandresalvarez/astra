@@ -61,6 +61,11 @@ struct WorkspacePackageImportOutcome {
     /// them; the recipient must install/approve then enable after import.
     var capabilitiesUnavailable: [String]
     var droppedMachinePaths: [String]
+    /// Names of imported skills that declared local tools in the package. Those
+    /// tools import DETACHED (a skill→tool link would auto-grant the tool command
+    /// + Bash), so the recipient must re-attach them or a template bound to the
+    /// skill runs without the declared tool.
+    var skillsNeedingToolReattachment: [String]
 }
 
 /// Transactional import of a `.astra-share` package.
@@ -506,7 +511,10 @@ struct WorkspacePackageImportCoordinator {
             capabilitiesUnavailable: capabilitiesUnavailable,
             // Machine-local paths never travel in the share format, so there is
             // nothing dropped on import to report back.
-            droppedMachinePaths: []
+            droppedMachinePaths: [],
+            skillsNeedingToolReattachment: document.skills
+                .filter { !$0.localToolNames.isEmpty }
+                .map(\.name)
         )
     }
 

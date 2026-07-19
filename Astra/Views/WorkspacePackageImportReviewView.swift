@@ -374,6 +374,9 @@ struct WorkspacePackageImportReviewView: View {
             ForEach(outcome.sshConnectionsRequiringLocalKeys, id: \.self) { label in
                 infoRow("SSH", "\(label) references a key path that must exist here.")
             }
+            ForEach(outcome.skillsNeedingToolReattachment, id: \.self) { name in
+                infoRow("Skill", "\(name) named local tools that imported detached — re-attach them so a template bound to it has the tool.")
+            }
             ForEach(outcome.capabilitiesSkippedForConflict, id: \.self) { id in
                 infoRow("Capability", "\(id) was skipped — it conflicts with a capability you already have.")
             }
@@ -395,7 +398,8 @@ struct WorkspacePackageImportReviewView: View {
                outcome.capabilitiesSkippedForConflict.isEmpty,
                outcome.capabilitiesUnavailable.isEmpty,
                outcome.capabilitiesInstalledAsDraft.isEmpty,
-               outcome.droppedMachinePaths.isEmpty {
+               outcome.droppedMachinePaths.isEmpty,
+               outcome.skillsNeedingToolReattachment.isEmpty {
                 infoRow("Nothing", "Everything imported ready to use.")
             }
         }

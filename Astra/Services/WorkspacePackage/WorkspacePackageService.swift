@@ -171,6 +171,9 @@ struct WorkspacePackageService {
         // covers `workspace-share.json` arrays): a sub-limit manifest could still
         // hold hundreds of thousands of short account/entry values that the
         // planner maps into rows rendered in a non-lazy stack.
+        let manifestInventoryLimit = 1000
+        var appEntriesWithinLimit = true
+        var capabilityEntriesWithinLimit = true
         if let manifest {
             let manifestCounts: [(String, Int)] = [
                 ("appEntries", manifest.appEntries.count),
@@ -179,14 +182,24 @@ struct WorkspacePackageService {
                 ("sshConnectionsRequiringLocalKeys", manifest.sshConnectionsRequiringLocalKeys.count),
                 ("requiredConnectorServiceTypes", manifest.requiredConnectorServiceTypes.count)
             ]
-            for (kind, count) in manifestCounts where count > 1000 {
-                issues.append(blocker("/manifest.json/\(kind)", "Package declares \(count) \(kind), exceeding the 1000 limit for import review."))
+            for (kind, count) in manifestCounts where count > manifestInventoryLimit {
+                issues.append(blocker("/manifest.json/\(kind)", "Package declares \(count) \(kind), exceeding the \(manifestInventoryLimit) limit for import review."))
             }
+            appEntriesWithinLimit = manifest.appEntries.count <= manifestInventoryLimit
+            capabilityEntriesWithinLimit = manifest.capabilityEntries.count <= manifestInventoryLimit
         }
         rejectDuplicateNames((manifest?.appEntries ?? []).map(\.logicalID), kind: "app entries", issues: &issues)
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
-        for entry in manifest?.appEntries ?? [] {
-            validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
+        // Skip the per-entry enumerate+hash loop once the app inventory is over
+        // the limit: the package is already rejected, and a sub-10MB manifest can
+        // repeat tens of thousands of entries pointing at the same large embedded
+        // bundle, so re-validating each would re-enumerate and re-hash that bundle
+        // for nothing. (Duplicate-ID rejection does not bound this — repeats can
+        // carry distinct IDs.)
+        if appEntriesWithinLimit {
+            for entry in manifest?.appEntries ?? [] {
+                validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
+            }
         }
         // Requirements are keyed by packageID, so two entries sharing one would
         // let the second overwrite the first — the planner then shows the last
@@ -204,13 +217,18 @@ struct WorkspacePackageService {
             issues: &issues
         )
         var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
-        for entry in manifest?.capabilityEntries ?? [] {
-            validateEmbeddedCapability(
-                entry,
-                packageURL: packageURL,
-                requirements: &capabilityRequirements,
-                issues: &issues
-            )
+        // Same guard as the app loop: skip re-reading+hashing every embedded
+        // capability once the inventory is over the limit and the package is
+        // already rejected.
+        if capabilityEntriesWithinLimit {
+            for entry in manifest?.capabilityEntries ?? [] {
+                validateEmbeddedCapability(
+                    entry,
+                    packageURL: packageURL,
+                    requirements: &capabilityRequirements,
+                    issues: &issues
+                )
+            }
         }
 
         // Re-read the fingerprint and require it to match the one captured before
@@ -1013,6 +1031,17 @@ struct WorkspacePackageService {
                 issues.append(blocker(
                     "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
                     "Routine templateVariablesJSON must decode as a name→value map; a malformed blob bypasses the routine-path and secret scrubs."
+                ))
+            }
+            // A nil resultMode is accepted (import defaults it), but a NON-nil
+            // unknown value would be silently coerced to `.newTask` by the import
+            // mapper — routing results differently than the package declares (e.g. a
+            // misspelled `schedule_log` fragments run history into separate tasks).
+            // Reject an unrecognized value so the mismatch surfaces at review.
+            if let mode = schedule.resultMode, ScheduleResultMode(rawValue: mode) == nil {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].resultMode",
+                    "Routine resultMode '\(mode)' is not a recognized result mode."
                 ))
             }
         }

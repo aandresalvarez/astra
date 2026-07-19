@@ -941,6 +941,50 @@ struct WorkspacePackageTests {
         #expect(report.blockers.contains { $0.message.contains("prerequisite install URL must not embed credentials") })
     }
 
+    @MainActor
+    @Test("validation stops enumerating embedded entries once the manifest inventory limit is exceeded")
+    func validationSkipsEntryLoopsOverInventoryLimit() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+
+        // Rewrite manifest.json with 1001 app entries all pointing at the same
+        // (absent) bundle path, then refresh checksums so the tampered manifest is
+        // what validation reads. A per-entry loop would emit a "missing bundle"
+        // blocker 1001 times (and re-stat that path each time); the guard should
+        // emit only the cardinality blocker.
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.appEntries = (0..<1001).map {
+            WorkspacePackageAppEntry(
+                logicalID: "app-\($0)", displayName: "App \($0)",
+                relativeBundlePath: "apps/missing.astra-app", packageDigest: "deadbeef"
+            )
+        }
+        try encoder.encode(manifest).write(to: manifestURL)
+        let paths = PortablePackageSafeFileReader.portableFilePaths(in: destination, intent: .explicitUserSelection)
+            .filter { $0 != "checksums.json" }
+        let checksums = try paths.map {
+            WorkspacePackageChecksum(path: $0, sha256: try PortablePackageSafeFileReader.digest(rootURL: destination, relativePath: $0))
+        }
+        try encoder.encode(checksums).write(to: destination.appendingPathComponent("checksums.json"))
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("exceeding the 1000 limit") })
+        // The per-entry loop was skipped: no embedded-app reports were produced and
+        // the 1001 entries did not each contribute a per-bundle blocker.
+        #expect(report.appReports.isEmpty)
+        #expect(report.blockers.count < 10)
+    }
+
     // MARK: - Fixtures
 
     @MainActor

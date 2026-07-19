@@ -1521,6 +1521,85 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("a named SSH connection still discloses its remote path in the review")
+    func namedSSHConnectionDisclosesRemotePath() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        // A tilde-relative remote path (an absolute one is rejected by the
+        // machine-path content scan — a separate, intentional guard).
+        SSHConnectionManager.save(
+            [SSHConnection(name: "prod-box", host: "prod.example.com", user: "deploy", remotePath: "~/app/releases")],
+            workspacePath: workspace.primaryPath
+        )
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        // The row title is the friendly name, which hides the path — the detail
+        // must still spell out the remote path the importer injects into prompts.
+        let item = try #require(plan.sshConnections.first { $0.name == "prod-box" })
+        #expect(item.detail.contains("~/app/releases"))
+    }
+
+    @MainActor
+    @Test("a skill naming a local tool is flagged as needing re-attachment, not Ready")
+    func skillNamingLocalToolIsFlaggedNeedsSetup() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let tool = LocalTool(name: "Fetch", toolDescription: "d", icon: "terminal", toolType: "shell", command: "curl", arguments: "-sSL")
+        tool.workspace = workspace
+        container.mainContext.insert(tool)
+        let skill = Skill(
+            name: "Uses Tool", icon: "gear", skillDescription: "s",
+            allowedTools: [], disallowedTools: [], customTools: [], behaviorInstructions: "hi"
+        )
+        skill.workspace = workspace
+        skill.localTools = [tool]
+        container.mainContext.insert(skill)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let item = try #require(plan.skills.first { $0.name == "Uses Tool" })
+        #expect(item.status == .needsLocalSetup)
+        #expect(item.detail.contains("Fetch"))
+    }
+
+    @MainActor
+    @Test("validation rejects a routine whose resultMode is a non-nil unknown value")
+    func validationRejectsUnknownResultMode() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let schedule = TaskSchedule(name: "Nightly", goal: "run", scheduleType: .daily)
+        schedule.workspace = workspace
+        container.mainContext.insert(schedule)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        // nil resultMode is accepted for compatibility.
+        try Self.reseal(at: destination) { document in
+            document.schedules = document.schedules.map { s in var m = s; m.resultMode = nil; return m }
+        }
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+        // A non-nil unknown value is rejected (would silently coerce to .newTask).
+        try Self.reseal(at: destination) { document in
+            document.schedules = document.schedules.map { s in var m = s; m.resultMode = "schedule_lug"; return m }
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("not a recognized result mode") })
+    }
+
+    @MainActor
     private static func makeWorkspace(root: URL, name: String = "Share Source") throws -> (ModelContainer, Workspace) {
         let container = try makeContainer()
         let workspaceURL = root.appendingPathComponent("workspace-\(name)", isDirectory: true)

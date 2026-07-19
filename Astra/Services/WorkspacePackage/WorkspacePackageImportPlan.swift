@@ -338,14 +338,27 @@ struct WorkspacePackageImportPlanner {
             let instructionsPreview = behavior.isEmpty
                 ? ""
                 : " Instructions: \(behavior.count > 200 ? String(behavior.prefix(200)) + "…" : behavior)"
+            // Imported skills are DETACHED from their named local tools on purpose
+            // (a skill→tool link auto-grants the tool command + Bash in
+            // SkillResolver). Disclose that so the recipient knows a template bound
+            // to this skill won't have the declared tool until they re-attach it —
+            // otherwise the skill looks "Ready / no tool grants" while silently
+            // dropping a package-declared relationship.
+            let toolLinks = skill.localToolNames
+            let toolNote = toolLinks.isEmpty
+                ? ""
+                : " Names local tool(s) that import detached — re-attach to restore: \(toolLinks.joined(separator: ", "))."
             let detail: String
             let status: WorkspacePackageImportItemStatus
-            if grants.isEmpty {
+            if !grants.isEmpty {
+                detail = "Adds an agent skill that requests tools (re-grant after review): \(grants.joined(separator: ", ")).\(toolNote)\(instructionsPreview)"
+                status = .needsApproval
+            } else if !toolLinks.isEmpty {
+                detail = "Adds an agent skill.\(toolNote)\(instructionsPreview)"
+                status = .needsLocalSetup
+            } else {
                 detail = "Adds an agent skill (no tool grants).\(instructionsPreview)"
                 status = .ready
-            } else {
-                detail = "Adds an agent skill that requests tools (re-grant after review): \(grants.joined(separator: ", ")).\(instructionsPreview)"
-                status = .needsApproval
             }
             return WorkspacePackageImportPlanItem(
                 id: "skill:\(skill.name)",
@@ -388,6 +401,13 @@ struct WorkspacePackageImportPlanner {
         let sshConnections = document.sshConnections.enumerated().map { index, ssh -> WorkspacePackageImportPlanItem in
             let label = ssh.name.isEmpty ? "\(ssh.user)@\(ssh.host):\(ssh.remotePath)" : ssh.name
             let needsSetup = sshRequiringSetup.contains(label) || !ssh.configAlias.isEmpty
+            // Always spell out the endpoint INCLUDING remotePath: the importer
+            // persists it and `AgentPromptBuilder` injects it into task prompts, so
+            // a named connection (whose label hides the path) must still disclose it
+            // or the recipient approves package-authored prompt content unseen.
+            let endpoint = ssh.remotePath.isEmpty
+                ? "\(ssh.user)@\(ssh.host)"
+                : "\(ssh.user)@\(ssh.host):\(ssh.remotePath)"
             return WorkspacePackageImportPlanItem(
                 // SSH connections aren't name-deduped (nothing links to them by
                 // name), so two can share a label — index the id so the review's
@@ -395,8 +415,8 @@ struct WorkspacePackageImportPlanner {
                 id: "ssh:\(index):\(label)",
                 name: label,
                 detail: needsSetup
-                    ? "Uses an SSH key path or config alias that must exist on this machine."
-                    : "Adds an SSH connection to \(ssh.user)@\(ssh.host).",
+                    ? "Uses an SSH key path or config alias that must exist on this machine. Connects to \(endpoint)."
+                    : "Adds an SSH connection to \(endpoint).",
                 status: needsSetup ? .needsLocalSetup : .ready
             )
         }
