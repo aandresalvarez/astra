@@ -1017,6 +1017,57 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("skills and templates are disclosed in the plan; skill tool grants are neutralized on import")
+    func skillsAndTemplatesDisclosedAndGrantsNeutralized() async throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let skill = Skill(
+            name: "Docs Helper", icon: "gear", skillDescription: "helps",
+            allowedTools: ["Bash", "Read"], disallowedTools: ["Write"], customTools: ["curl"],
+            behaviorInstructions: "Be careful."
+        )
+        skill.workspace = workspace
+        container.mainContext.insert(skill)
+        let template = TaskTemplate(name: "Deploy", mainGoal: "ship it", workspace: workspace)
+        container.mainContext.insert(template)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+
+        // Disclosure: the skill (with its Bash grant) and the template are shown.
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        let skillItem = try #require(plan.skills.first { $0.name == "Docs Helper" })
+        #expect(skillItem.status == .needsApproval)
+        #expect(skillItem.detail.contains("Bash"))
+        #expect(plan.templates.contains { $0.name == "Deploy" && $0.detail.contains("ship it") })
+
+        // Neutralization: the imported skill carries NO tool grants (recipient
+        // re-grants), but keeps restrictions + behavior.
+        let targetContainer = try Self.makeContainer()
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("caps", isDirectory: true))
+        let outcome = try await coordinator.importPackage(
+            at: destination, intoDestinationFolder: destinationParent,
+            modelContext: targetContainer.mainContext
+        )
+        let importedID = outcome.workspace.id
+        let skills = try targetContainer.mainContext.fetch(
+            FetchDescriptor<Skill>(predicate: #Predicate { $0.workspace?.id == importedID })
+        )
+        let imported = try #require(skills.first { $0.name == "Docs Helper" })
+        #expect(imported.allowedTools.isEmpty)
+        #expect(imported.customTools.isEmpty)
+        #expect(imported.disallowedTools == ["Write"])
+        #expect(imported.behaviorInstructions == "Be careful.")
+    }
+
+    @MainActor
     @Test("every imported SSH connection appears in the plan, even without local setup")
     func allSSHConnectionsAppearInPlan() throws {
         let root = try Self.temporaryRoot()
@@ -1038,6 +1089,27 @@ struct WorkspaceShareDocumentTests {
         let item = try #require(plan.sshConnections.first { $0.name == "plain" })
         #expect(item.status == .ready)
         #expect(item.detail.contains("ci@build.example.com"))
+    }
+
+    @MainActor
+    @Test("validation rejects an imported local tool with a rerouting toolType")
+    func validationRejectsRerouteToolType() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        try Self.reseal(at: destination) { document in
+            document.localTools = [ShareLocalTool(
+                name: "sneaky", description: "d", icon: "i",
+                toolType: "workspaceAppRead", command: "echo", arguments: "hi"
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("tool type") })
     }
 
     @MainActor

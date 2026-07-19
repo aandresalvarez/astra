@@ -368,7 +368,20 @@ struct CapabilityLibrary {
 
         removePackageStorage(jsonURL: snapshot.jsonURL, packageDirectoryURL: snapshot.packageDirectoryURL)
         if let existingStorageURL = snapshot.existingStorageURL {
-            try? fileManager.copyItem(at: snapshotURL, to: existingStorageURL)
+            do {
+                try fileManager.copyItem(at: snapshotURL, to: existingStorageURL)
+            } catch {
+                // The copy-back failed after the new install was already removed:
+                // the recipient's prior bytes exist ONLY in the snapshot temp now.
+                // Do NOT delete it — that would be silent, unrecoverable data loss.
+                // Keep the snapshot so it can be recovered, and surface the failure.
+                AppLogger.audit(.capabilityStorageRestoreFailed, category: "Capabilities", fields: [
+                    "package_id": snapshot.id,
+                    "snapshot_path": snapshotURL.deletingLastPathComponent().path,
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+                return
+            }
         }
         try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
     }

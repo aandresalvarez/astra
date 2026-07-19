@@ -231,6 +231,19 @@ struct WorkspacePackageExporter {
                 sanitized.baseURL = WorkspaceShareProjection.baseURLWithoutCredentials(connector.baseURL)
                 return sanitized
             }
+            // An embedded capability's MCP servers are executable configuration
+            // the review never surfaces, and their `url` can carry a credential
+            // (`https://user:tok@host`, `?api_key=…`) just like a connector. Strip
+            // url credentials here; validation additionally rejects a tampered
+            // url, an absolute machine path, or a literal secret in the
+            // command/arguments (also excluded from the free-text scan).
+            clamped.mcpServers = clamped.mcpServers.map { server in
+                var sanitized = server
+                if let url = server.url {
+                    sanitized.url = URL(string: WorkspaceShareProjection.baseURLWithoutCredentials(url.absoluteString)) ?? url
+                }
+                return sanitized
+            }
             // An `.asset` icon points at an on-disk image that
             // `CapabilityLibrary.install` copies from an asset root derived from
             // `sourceMetadata.url` — which the draft clamp above just cleared, so

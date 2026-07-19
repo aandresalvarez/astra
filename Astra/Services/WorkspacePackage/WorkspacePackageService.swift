@@ -40,6 +40,12 @@ struct WorkspacePackageValidationReport: Sendable {
 struct WorkspacePackageService {
     var appPackageService = WorkspaceAppPackageService()
 
+    /// Local-tool `toolType`s an untrusted imported tool may use: plain
+    /// command-executing types that `LocalToolSecurityPolicy` actually vets.
+    /// Excludes `mcp` (reroutes runtime handling) and the `workspaceAppRead`
+    /// sentinel (changes exposure), and anything unknown. Empty defaults to CLI.
+    static let allowedImportedLocalToolTypes: Set<String> = ["", "cli", "script", "shell"]
+
     func validatePackage(at packageURL: URL) -> WorkspacePackageValidationReport {
         var issues: [PortablePackageValidationIssue] = []
 
@@ -377,6 +383,37 @@ struct WorkspacePackageService {
                 ))
             }
         }
+        // MCP servers are executable configuration the review never surfaces and
+        // are excluded from the free-text scan. Reject a `url` carrying a
+        // credential (userinfo or credential-like query — the export strips it, so
+        // a residual one means tampering), and any absolute machine path or
+        // literal credential assignment in the `command`/`arguments` (sender
+        // machine-local data or a secret that must not travel).
+        for (serverIndex, server) in rawCapability.mcpServers.enumerated() {
+            if let urlString = server.url?.absoluteString,
+               let components = URLComponents(string: urlString),
+               components.user != nil
+                || components.password != nil
+                || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] URL carries a credential; credential values never travel."
+                ))
+            }
+            let invocation = ([server.command].compactMap { $0 } + server.arguments).joined(separator: " ")
+            if containsAbsoluteMachinePath(invocation) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] command/arguments contain an absolute machine path; local paths never travel."
+                ))
+            }
+            if containsCredentialAssignment(invocation) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] command/arguments contain a credential; credential values never travel."
+                ))
+            }
+        }
         // Capability paths are excluded from the free-text credential scan, so a
         // hand-tampered package could carry a secret-keyed skill default the
         // export blanks. Reject any nonempty secret-keyed value here.
@@ -643,6 +680,18 @@ struct WorkspacePackageService {
                 issues.append(blocker(
                     "/workspace-share.json/localTools[\(index)].command",
                     "Local tool command is not permitted for import."
+                ))
+            }
+            // `toolType` routes runtime behavior: `LocalToolSecurityPolicy.isSafe`
+            // is toolType-agnostic (it only vets command/arguments), but `mcp`
+            // reroutes the tool out of CLI-command handling and the
+            // `workspaceAppRead` sentinel exposes it as an app-readable connector
+            // read. An untrusted imported tool must stay a plain, command-safety-
+            // vetted CLI/script/shell tool — allow only those.
+            if !Self.allowedImportedLocalToolTypes.contains(tool.toolType) {
+                issues.append(blocker(
+                    "/workspace-share.json/localTools[\(index)].toolType",
+                    "Local tool type '\(tool.toolType)' is not permitted for import."
                 ))
             }
         }

@@ -794,6 +794,54 @@ struct WorkspacePackageTests {
         #expect(report.blockers.contains { $0.message.contains("carries a credential") })
     }
 
+    @MainActor
+    @Test("exported embedded capability strips MCP server URL credentials; validation rejects tampered MCP creds/paths")
+    func exportSanitizesEmbeddedCapabilityMCPServers() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        var capability = Self.makeCapability(id: "mcp.cap", governance: .localDraft())
+        capability.mcpServers = [PluginMCPServer(
+            id: "srv", displayName: "Srv", transport: .http,
+            url: URL(string: "https://api.example.com/mcp?api_token=supersecret123")
+        )]
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["mcp.cap"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let capabilityURL = destination.appendingPathComponent("capabilities/mcp.cap.json")
+        let text = try String(contentsOf: capabilityURL, encoding: .utf8)
+        #expect(!text.contains("supersecret123"))
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+
+        // Re-plant a credential in the MCP url → rejected.
+        var tamperedURL = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tamperedURL.mcpServers[0].url = URL(string: "https://user:tok@api.example.com/mcp")
+        try encoder.encode(tamperedURL).write(to: capabilityURL)
+        var report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("MCP server") && $0.message.contains("credential") })
+
+        // A stdio command with an absolute machine path → rejected.
+        var tamperedPath = tamperedURL
+        tamperedPath.mcpServers = [PluginMCPServer(
+            id: "srv", displayName: "Srv", transport: .stdio,
+            command: "/Users/alice/.local/bin/my-mcp", arguments: ["--token", "hunter2secret"]
+        )]
+        try encoder.encode(tamperedPath).write(to: capabilityURL)
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("MCP server") && $0.message.contains("machine path") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

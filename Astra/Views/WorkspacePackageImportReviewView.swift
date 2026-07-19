@@ -196,7 +196,12 @@ struct WorkspacePackageImportReviewView: View {
                 // so nothing is persisted) rather than closing over a running
                 // import that could commit a workspace the user walked away from.
                 Button("Cancel") {
-                    if isImporting {
+                    if let outcome = state.outcome {
+                        // Race: the import already committed in the instant before
+                        // the button could swap to "Open Workspace". Honor the
+                        // committed workspace instead of discarding it.
+                        onComplete(outcome.workspace)
+                    } else if isImporting {
                         importTask?.cancel()
                     } else {
                         onComplete(nil)
@@ -272,6 +277,12 @@ struct WorkspacePackageImportReviewView: View {
         }
         if !plan.localTools.isEmpty {
             section("Local Tools") { itemRows(plan.localTools) }
+        }
+        if !plan.skills.isEmpty {
+            section("Skills") { itemRows(plan.skills) }
+        }
+        if !plan.templates.isEmpty {
+            section("Templates") { itemRows(plan.templates) }
         }
         if !plan.accounts.isEmpty {
             section("Accounts") { itemRows(plan.accounts) }
@@ -389,11 +400,16 @@ struct WorkspacePackageImportReviewView: View {
                 modelContext: modelContext,
                 expectedPackageDigest: state.reviewedPackageDigest
             )
-            try Task.checkCancellation()
+            // No post-import cancellation check here: the coordinator gates the
+            // commit on `Task.checkCancellation()` internally, and the whole
+            // post-staging phase is synchronous on the main actor, so if we have
+            // an outcome the import genuinely committed — honor it. A later
+            // cancel/commit race is handled in the Cancel button (it opens a
+            // committed workspace rather than discarding it).
             state.importFinished(.success(outcome))
         } catch is CancellationError {
-            // The user cancelled during staging/import; the coordinator rolled
-            // back before committing. Leave the review as-is (no outcome).
+            // The user cancelled during staging; the coordinator threw before any
+            // commit and rolled back. Leave the review as-is (no outcome).
         } catch {
             state.importFinished(.failure(error))
         }

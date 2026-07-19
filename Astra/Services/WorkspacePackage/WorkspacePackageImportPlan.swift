@@ -44,6 +44,8 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var packs: [WorkspacePackageImportPlanItem]
     var connectors: [WorkspacePackageImportPlanItem]
     var localTools: [WorkspacePackageImportPlanItem]
+    var skills: [WorkspacePackageImportPlanItem]
+    var templates: [WorkspacePackageImportPlanItem]
     var accounts: [WorkspacePackageImportPlanItem]
     var sshConnections: [WorkspacePackageImportPlanItem]
     var quarantinedScheduleCount: Int
@@ -52,7 +54,7 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var canImport: Bool { blockers.isEmpty }
 
     var allItems: [WorkspacePackageImportPlanItem] {
-        apps + capabilities + packs + connectors + localTools + accounts + sshConnections
+        apps + capabilities + packs + connectors + localTools + skills + templates + accounts + sshConnections
     }
 }
 
@@ -276,6 +278,44 @@ struct WorkspacePackageImportPlanner {
             )
         }
 
+        // Skills carry agent behavior instructions and tool GRANTS. The importer
+        // neutralizes the grants (they must be re-granted after review), but the
+        // review must still disclose what the skill requested — a skill asking for
+        // high-risk tools (e.g. Bash) is surfaced as needs-approval, mirroring an
+        // app that requests more than read-only permissions.
+        let skills = document.skills.map { skill -> WorkspacePackageImportPlanItem in
+            let grants = skill.allowedTools + skill.customTools
+            let detail: String
+            let status: WorkspacePackageImportItemStatus
+            if grants.isEmpty {
+                detail = "Adds an agent skill (behavior instructions only; no tool grants)."
+                status = .ready
+            } else {
+                detail = "Adds an agent skill that requests tools (re-grant after review): \(grants.joined(separator: ", "))."
+                status = .needsApproval
+            }
+            return WorkspacePackageImportPlanItem(
+                id: "skill:\(skill.name)",
+                name: skill.name,
+                detail: detail,
+                status: status
+            )
+        }
+
+        // Templates carry agent goals and import ready-to-use (not quarantined),
+        // so disclose them.
+        let templates = document.templates.map { template -> WorkspacePackageImportPlanItem in
+            let goals = [template.beforeGoal, template.mainGoal, template.afterGoal]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+            return WorkspacePackageImportPlanItem(
+                id: "template:\(template.name)",
+                name: template.name,
+                detail: goals.isEmpty ? "Adds a task template." : "Adds a task template — goal: \(goals)",
+                status: .ready
+            )
+        }
+
         let accounts = manifest.googleAccountsRequiringReauth.map { email in
             WorkspacePackageImportPlanItem(
                 id: "account:\(email)",
@@ -315,6 +355,8 @@ struct WorkspacePackageImportPlanner {
             packs: packs,
             connectors: connectors,
             localTools: localTools,
+            skills: skills,
+            templates: templates,
             accounts: accounts,
             sshConnections: sshConnections,
             // Every imported routine is quarantined until re-enabled.

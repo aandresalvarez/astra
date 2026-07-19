@@ -293,13 +293,21 @@ enum WorkspaceShareImporter {
 
         var skillsByName: [String: Skill] = [:]
         for share in document.skills {
+            // Neutralize tool AUTO-APPROVAL from an untrusted sender: `allowedTools`
+            // + `customTools` flow into the agent's provider allow-list
+            // (`Skill.allAllowedTools` → `--allowedTools`), which SKIPS the
+            // permission prompt. An imported skill must not silently pre-authorize
+            // e.g. `Bash` — the recipient re-grants after review (the plan
+            // discloses what was requested). Restrictions (`disallowedTools`) are
+            // safe to carry; only grants are stripped. Mirrors schedules importing
+            // disabled and capabilities importing as drafts.
             let skill = Skill(
                 name: share.name,
                 icon: share.icon,
                 skillDescription: share.description,
-                allowedTools: share.allowedTools,
+                allowedTools: [],
                 disallowedTools: share.disallowedTools,
-                customTools: share.customTools,
+                customTools: [],
                 behaviorInstructions: share.behaviorInstructions
             )
             skill.environmentKeys = share.environmentKeys
