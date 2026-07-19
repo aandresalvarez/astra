@@ -495,6 +495,14 @@ struct WorkspaceDetailView: View {
             ? chosenURL
             : chosenURL.deletingPathExtension().appendingPathExtension("astra-share")
         do {
+            // The exporter refuses to overwrite (it creates the package dir
+            // fresh). NSSavePanel already got the user's explicit Replace
+            // confirmation when they chose an existing name, so honor it by
+            // removing the prior item first — otherwise Replace silently fails
+            // with "destination already exists".
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
             let result = try WorkspacePackageExporter().exportConfigurationPackage(
                 workspace: workspace,
                 modelContext: modelContext,

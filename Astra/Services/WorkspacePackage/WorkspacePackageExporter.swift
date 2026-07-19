@@ -237,11 +237,18 @@ struct WorkspacePackageExporter {
             // url credentials here; validation additionally rejects a tampered
             // url, an absolute machine path, or a literal secret in the
             // command/arguments (also excluded from the free-text scan).
+            let sanitizeURL: (URL?) -> URL? = { url in
+                guard let url else { return nil }
+                return URL(string: WorkspaceShareProjection.baseURLWithoutCredentials(url.absoluteString)) ?? url
+            }
             clamped.mcpServers = clamped.mcpServers.map { server in
                 var sanitized = server
-                if let url = server.url {
-                    sanitized.url = URL(string: WorkspaceShareProjection.baseURLWithoutCredentials(url.absoluteString)) ?? url
-                }
+                sanitized.url = sanitizeURL(server.url)
+                // Nested metadata URLs (private registry / docs endpoints) can
+                // carry credentials too, and are excluded from every scan.
+                sanitized.installSource?.registryURL = sanitizeURL(server.installSource?.registryURL)
+                sanitized.installSource?.documentationURL = sanitizeURL(server.installSource?.documentationURL)
+                sanitized.remoteRegistry?.endpoint = sanitizeURL(server.remoteRegistry?.endpoint)
                 return sanitized
             }
             // An `.asset` icon points at an on-disk image that

@@ -1111,6 +1111,59 @@ struct WorkspaceShareDocumentTests {
         }
     }
 
+    @Test("credential-like key matching is boundary-based, not substring")
+    func credentialKeyMatchingIsBoundaryBased() {
+        // Real credential keys match…
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("api_token"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("API-KEY"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("client_secret"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("token"))
+        // …but words that merely CONTAIN them do not (no silent query stripping).
+        #expect(!WorkspaceShareProjection.isCredentialLikeKey("author"))
+        #expect(!WorkspaceShareProjection.isCredentialLikeKey("tokenizer"))
+        #expect(!WorkspaceShareProjection.isCredentialLikeKey("secretary"))
+        #expect(!WorkspaceShareProjection.isCredentialLikeKey("region"))
+    }
+
+    @MainActor
+    @Test("validation rejects out-of-range SSH ports, negative budgets, and oversized collections")
+    func validationRejectsDomainAndCardinalityViolations() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+
+        // SSH port out of range.
+        try Self.reseal(at: destination) { document in
+            document.sshConnections = [ShareSSHConnection(name: "x", host: "h", user: "u", port: 0, remotePath: "", configAlias: "")]
+        }
+        var report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("port") })
+
+        // Negative template budget.
+        try Self.reseal(at: destination) { document in
+            document.sshConnections = []
+            document.templates = [ShareTemplate(
+                name: "T", icon: "i", description: "", beforeGoal: "", mainGoal: "g", afterGoal: "",
+                beforeBudget: -5, mainBudget: 0, afterBudget: 0, beforeModel: "", mainModel: "", afterModel: "",
+                variablesJSON: "", passContextToMain: false, passContextToAfter: false, defaultSkillNames: []
+            )]
+        }
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("beforeBudget") })
+
+        // Oversized collection (cardinality bound).
+        try Self.reseal(at: destination) { document in
+            document.templates = []
+            document.packIDs = (0..<1001).map { "pack-\($0)" }
+        }
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("exceeding") })
+    }
+
     @MainActor
     @Test("validation rejects an imported local tool with a rerouting toolType")
     func validationRejectsRerouteToolType() throws {

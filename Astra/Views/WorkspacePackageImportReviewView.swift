@@ -112,6 +112,7 @@ struct WorkspacePackageImportReviewView: View {
     @State private var accessingURL: URL?
     @State private var importTask: Task<Void, Never>?
     @State private var isImporting = false
+    @State private var reviewStagingRoot: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -143,16 +144,33 @@ struct WorkspacePackageImportReviewView: View {
             // that filesystem work off the main actor so a large package can't
             // hang the review UI. The report is Sendable.
             let url = packageURL
-            let report = await Task.detached(priority: .userInitiated) {
-                WorkspacePackageService().validatePackage(at: url)
-            }.value
-            // Bind the reviewed plan and the fingerprint to the SAME read of the
-            // package: `report.packageFingerprint` was captured inside the call
-            // that built this plan, so a source swapped between two separate
-            // reads can't pair this package's inventory with another's digest.
+            // Stage a private bounded snapshot FIRST, then validate THAT — so the
+            // decoded plan AND the fingerprint come from immutable bytes an
+            // attacker who can write the source can't swap between the decode and
+            // the checksum read (the confirm step re-stages and re-binds the
+            // fingerprint independently, so importing bytes other than the
+            // reviewed snapshot is still rejected).
+            let staged: (report: WorkspacePackageValidationReport, stagingRoot: URL?) =
+                await Task.detached(priority: .userInitiated) {
+                    let fm = FileManager.default
+                    let stagingRoot = fm.temporaryDirectory
+                        .appendingPathComponent("astra-share-review-\(UUID().uuidString.lowercased())", isDirectory: true)
+                    let stagedPackage = stagingRoot.appendingPathComponent("package.astra-share", isDirectory: true)
+                    do {
+                        try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+                        try PortablePackageSafeFileReader.stageBoundedCopy(from: url, to: stagedPackage)
+                        return (WorkspacePackageService().validatePackage(at: stagedPackage), stagingRoot)
+                    } catch {
+                        // Staging failed (symlink / oversize / unreadable) — the
+                        // live-package validation surfaces the same blocker.
+                        try? fm.removeItem(at: stagingRoot)
+                        return (WorkspacePackageService().validatePackage(at: url), nil)
+                    }
+                }.value
+            reviewStagingRoot = staged.stagingRoot
             state.planLoaded(
-                WorkspacePackageImportPlanner().plan(from: report),
-                packageDigest: report.packageFingerprint
+                WorkspacePackageImportPlanner().plan(from: staged.report),
+                packageDigest: staged.report.packageFingerprint
             )
         }
         .onDisappear {
@@ -160,6 +178,10 @@ struct WorkspacePackageImportReviewView: View {
             // cancel it so it unwinds before committing (the coordinator checks
             // cancellation before any domain mutation).
             importTask?.cancel()
+            if let root = reviewStagingRoot {
+                try? FileManager.default.removeItem(at: root)
+                reviewStagingRoot = nil
+            }
             accessingURL?.stopAccessingSecurityScopedResource()
             accessingURL = nil
         }

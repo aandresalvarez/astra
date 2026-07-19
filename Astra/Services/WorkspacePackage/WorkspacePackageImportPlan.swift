@@ -332,11 +332,14 @@ struct WorkspacePackageImportPlanner {
         // ready but still appear so the recipient sees what remote hosts a package
         // adds.
         let sshRequiringSetup = Set(manifest.sshConnectionsRequiringLocalKeys)
-        let sshConnections = document.sshConnections.map { ssh -> WorkspacePackageImportPlanItem in
+        let sshConnections = document.sshConnections.enumerated().map { index, ssh -> WorkspacePackageImportPlanItem in
             let label = ssh.name.isEmpty ? "\(ssh.user)@\(ssh.host):\(ssh.remotePath)" : ssh.name
             let needsSetup = sshRequiringSetup.contains(label) || !ssh.configAlias.isEmpty
             return WorkspacePackageImportPlanItem(
-                id: "ssh:\(label)",
+                // SSH connections aren't name-deduped (nothing links to them by
+                // name), so two can share a label — index the id so the review's
+                // ForEach identity stays unique and both rows render.
+                id: "ssh:\(index):\(label)",
                 name: label,
                 detail: needsSetup
                     ? "Uses an SSH key path or config alias that must exist on this machine."

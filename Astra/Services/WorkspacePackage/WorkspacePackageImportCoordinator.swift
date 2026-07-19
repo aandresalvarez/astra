@@ -404,14 +404,18 @@ struct WorkspacePackageImportCoordinator {
         let packsUnavailable = workspace.enabledPackIDs.filter { !availablePackIDs.contains($0) }
         workspace.enabledPackIDs = workspace.enabledPackIDs.filter { availablePackIDs.contains($0) }
 
-        // Referenced (non-embedded) capabilities the reconciliation just stripped
-        // because they are not installed-and-approved here: the workspace imports
-        // without them, so the outcome must report them rather than let the review
-        // screen claim everything is ready to use.
-        let embeddedCapabilityIDs = Set(manifest.capabilityEntries.map(\.packageID))
+        // Every enable-intent capability that the reconciliation stripped and that
+        // isn't otherwise disclosed (freshly installed as a draft, or skipped for
+        // a storage conflict) is unavailable in the imported workspace — the
+        // outcome must report it rather than let the review say everything is
+        // ready. This covers a referenced non-embedded capability that isn't
+        // approved here AND an embedded capability whose ID already existed
+        // locally but lacks effective approval (recorded as already-installed,
+        // yet stripped from the enabled set).
         let enabledAfterReconcile = Set(workspace.enabledCapabilityIDs)
+        let otherwiseDisclosed = Set(capabilitiesInstalledAsDraft).union(capabilitiesSkippedForConflict)
         let capabilitiesUnavailable = document.capabilityIDs.filter {
-            !embeddedCapabilityIDs.contains($0) && !enabledAfterReconcile.contains($0)
+            !enabledAfterReconcile.contains($0) && !otherwiseDisclosed.contains($0)
         }
 
         // Last chance to abort before any domain mutation is committed: if the
@@ -425,6 +429,14 @@ struct WorkspacePackageImportCoordinator {
             auditFields: ["operation": "workspace_package_import"]
         )
         committed = true
+        // The capability-storage snapshots existed only to enable rollback; the
+        // import committed, so remove their temp directories now (the rollback
+        // defer won't run on the committed path, which would otherwise leak them).
+        for snapshot in capabilityStorageSnapshots {
+            if let snapshotURL = snapshot.snapshotURL {
+                try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
+            }
+        }
         // Post-commit: write the new workspace's own recovery mirror into the
         // destination, matching the legacy import orchestrator's behavior.
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: importContext)

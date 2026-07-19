@@ -41,12 +41,19 @@ enum WorkspaceShareProjection {
         return components.string ?? baseURL
     }
 
-    /// A query-parameter/env key name that names a credential value.
+    /// A query-parameter/env key name that names a credential value. Matches at
+    /// component boundaries (splitting on `_`/`-`/`.`), NOT as a substring — so
+    /// `author`, `tokenizer`, `secretary` (which merely contain `auth`/`token`/
+    /// `secret`) are not misclassified and silently stripped.
     static func isCredentialLikeKey(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        return ["token", "secret", "password", "passwd", "apikey", "api_key", "api-key",
-                "access_key", "auth", "bearer", "credential", "client_secret"]
-            .contains { lowered.contains($0) }
+        let credentialWords: Set<String> = [
+            "token", "secret", "password", "passwd", "apikey", "key", "auth",
+            "bearer", "credential", "credentials"
+        ]
+        let components = name.lowercased()
+            .split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." || $0 == " " })
+            .map(String.init)
+        return components.contains { credentialWords.contains($0) }
     }
 
     static func document(from config: WorkspaceConfigManager.WorkspaceConfig) -> WorkspaceShareDocument {

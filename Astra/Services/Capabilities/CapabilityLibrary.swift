@@ -315,10 +315,16 @@ struct CapabilityLibrary {
         let manifestURL = packageManifestURL(for: id)
         let packageDirectoryURL = manifestURL.deletingLastPathComponent()
         let existingStorageURL: URL?
+        var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: manifestURL.path) {
             existingStorageURL = packageDirectoryURL
         } else if fileManager.fileExists(atPath: jsonURL.path) {
             existingStorageURL = jsonURL
+        } else if fileManager.fileExists(atPath: packageDirectoryURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            // A package directory occupying this storage name but MISSING its
+            // manifest is still occupied storage: installing over it removes it,
+            // and a rollback could not restore it. Snapshot the directory.
+            existingStorageURL = packageDirectoryURL
         } else {
             existingStorageURL = nil
         }

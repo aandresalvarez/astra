@@ -241,6 +241,17 @@ struct WorkspacePackageService {
         if !report.canInstall {
             issues.append(blocker("/\(entry.relativeBundlePath)", "Embedded workspace app package did not validate."))
         }
+        // The `.astra-share` profile is configuration-only: an embedded app must
+        // carry ONLY its manifest + template, never app-owned data. A
+        // `templatePlusSeedData`/`fullAppExport` bundle would have its
+        // `storage/data/exports.json` records persisted by the app importer —
+        // undisclosed data entering through this package. Require template-only.
+        if let exportMode = report.package?.exportMode, exportMode != .templateOnly {
+            issues.append(blocker(
+                "/\(entry.relativeBundlePath)",
+                "Embedded app export mode '\(exportMode.rawValue)' is not permitted; a shared package may embed template-only apps."
+            ))
+        }
         // The outer entry's declared `logicalID`/`displayName` drive the review
         // plan, but the coordinator imports the nested bundle's OWN manifest. If
         // the entry advertises one identity while the bundle validates to a
@@ -390,11 +401,19 @@ struct WorkspacePackageService {
         // literal credential assignment in the `command`/`arguments` (sender
         // machine-local data or a secret that must not travel).
         for (serverIndex, server) in rawCapability.mcpServers.enumerated() {
-            if let urlString = server.url?.absoluteString,
-               let components = URLComponents(string: urlString),
-               components.user != nil
-                || components.password != nil
-                || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+            let urlsToCheck: [URL?] = [
+                server.url,
+                server.installSource?.registryURL,
+                server.installSource?.documentationURL,
+                server.remoteRegistry?.endpoint
+            ]
+            if urlsToCheck.contains(where: { url in
+                guard let urlString = url?.absoluteString,
+                      let components = URLComponents(string: urlString) else { return false }
+                return components.user != nil
+                    || components.password != nil
+                    || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) })
+            }) {
                 issues.append(blocker(
                     "/\(entry.relativePath)",
                     "Embedded capability MCP server[\(serverIndex)] URL carries a credential; credential values never travel."
@@ -412,6 +431,29 @@ struct WorkspacePackageService {
                     "/\(entry.relativePath)",
                     "Embedded capability MCP server[\(serverIndex)] command/arguments contain a credential; credential values never travel."
                 ))
+            }
+        }
+        // Capability JSON is excluded from the free-text scan (it legitimately
+        // carries credential KEY NAMES as structure), but its human-authored PROSE
+        // can still hold a real credential assignment (`API_TOKEN=…` in a skill's
+        // behaviorInstructions, a template goal, variablesJSON, a setup guide).
+        // Scan just those prose fields for a credential assignment or absolute
+        // machine path — not the structural key-name fields.
+        var proseFields: [String] = [rawCapability.description, rawCapability.setupGuide]
+        proseFields += rawCapability.skills.flatMap { [$0.behaviorInstructions, $0.description] }
+        proseFields += rawCapability.templates.flatMap { [$0.beforeGoal, $0.mainGoal, $0.afterGoal, $0.variablesJSON, $0.description] }
+        proseFields += rawCapability.localTools.flatMap { [$0.command, $0.arguments, $0.description] }
+        proseFields += rawCapability.connectors.flatMap { [$0.description, $0.notes] }
+        for text in proseFields {
+            if containsCredentialAssignment(text) {
+                issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include credential material."))
+                break
+            }
+        }
+        for text in proseFields {
+            if containsAbsoluteMachinePath(text) {
+                issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include an absolute local path."))
+                break
             }
         }
         // Capability paths are excluded from the free-text credential scan, so a
@@ -618,6 +660,24 @@ struct WorkspacePackageService {
         _ document: WorkspaceShareDocument,
         issues: inout [PortablePackageValidationIssue]
     ) {
+        // Bound collection cardinality: the per-file/byte limits don't constrain
+        // how many SHORT resources a below-limit JSON can hold. Hundreds of
+        // thousands of pack IDs / skills / etc. would each become a plan item
+        // rendered in a non-lazy stack, freezing the review UI merely by opening
+        // the package. Reject an unreasonable per-kind count up front.
+        let perKindLimit = 1000
+        let counts: [(String, Int)] = [
+            ("skills", document.skills.count), ("connectors", document.connectors.count),
+            ("localTools", document.localTools.count), ("templates", document.templates.count),
+            ("schedules", document.schedules.count), ("sshConnections", document.sshConnections.count),
+            ("capabilityIDs", document.capabilityIDs.count), ("packIDs", document.packIDs.count)
+        ]
+        for (kind, count) in counts where count > perKindLimit {
+            issues.append(blocker(
+                "/workspace-share.json/\(kind)",
+                "Package declares \(count) \(kind), exceeding the \(perKindLimit) limit for import review."
+            ))
+        }
         for (index, connector) in document.connectors.enumerated() {
             // A base URL like https://user:pass@host embeds a credential the
             // review's "credential values never travel" promise would break.
@@ -733,6 +793,12 @@ struct WorkspacePackageService {
             if let invalid {
                 issues.append(blocker("/workspace-share.json/schedules[\(index)]", "Schedule is invalid: \(invalid)."))
             }
+            if schedule.tokenBudget < 0 {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].tokenBudget",
+                    "Routine token budget must not be negative."
+                ))
+            }
             // A `templateName` absent from the package's own templates would be
             // silently stored as a nil `templateID`; the enabled routine then
             // runs `effectiveGoal` instead of the declared template's behavior.
@@ -755,6 +821,23 @@ struct WorkspacePackageService {
                 issues.append(blocker(
                     "/workspace-share.json/sshConnections[\(index)].\(field)",
                     "SSH \(field) must not begin with '-' (it would be parsed as an ssh option)."
+                ))
+            }
+            if !(1...65535).contains(ssh.port) {
+                issues.append(blocker(
+                    "/workspace-share.json/sshConnections[\(index)].port",
+                    "SSH port \(ssh.port) is out of range (1–65535)."
+                ))
+            }
+        }
+        // Template token budgets feed task launch unbounded and templates import
+        // ready-to-use (not quarantined), so reject a negative budget.
+        for (index, template) in document.templates.enumerated() {
+            for (field, value) in [("beforeBudget", template.beforeBudget), ("mainBudget", template.mainBudget), ("afterBudget", template.afterBudget)]
+            where value < 0 {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].\(field)",
+                    "Template \(field) must not be negative."
                 ))
             }
         }
