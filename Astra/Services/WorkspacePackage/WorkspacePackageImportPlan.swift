@@ -315,13 +315,19 @@ struct WorkspacePackageImportPlanner {
         // app that requests more than read-only permissions.
         let skills = document.skills.map { skill -> WorkspacePackageImportPlanItem in
             let grants = skill.allowedTools + skill.customTools
+            // Show the actual package-authored agent behavior (a template can bind
+            // this skill and run it), truncated — not just generic text.
+            let behavior = skill.behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            let instructionsPreview = behavior.isEmpty
+                ? ""
+                : " Instructions: \(behavior.count > 200 ? String(behavior.prefix(200)) + "…" : behavior)"
             let detail: String
             let status: WorkspacePackageImportItemStatus
             if grants.isEmpty {
-                detail = "Adds an agent skill (behavior instructions only; no tool grants)."
+                detail = "Adds an agent skill (no tool grants).\(instructionsPreview)"
                 status = .ready
             } else {
-                detail = "Adds an agent skill that requests tools (re-grant after review): \(grants.joined(separator: ", "))."
+                detail = "Adds an agent skill that requests tools (re-grant after review): \(grants.joined(separator: ", ")).\(instructionsPreview)"
                 status = .needsApproval
             }
             return WorkspacePackageImportPlanItem(

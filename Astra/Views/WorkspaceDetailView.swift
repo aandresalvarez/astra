@@ -516,8 +516,14 @@ struct WorkspaceDetailView: View {
                 modelContext: modelContext,
                 to: tempURL
             )
-            if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
-            try fm.moveItem(at: tempURL, to: url)
+            if fm.fileExists(atPath: url.path) {
+                // Atomic exchange — never leave a window where neither the old nor
+                // the new export exists (a remove-then-move loses the prior export
+                // if the move fails).
+                _ = try fm.replaceItemAt(url, withItemAt: tempURL)
+            } else {
+                try fm.moveItem(at: tempURL, to: url)
+            }
             withAnimation {
                 exportMessage = "Exported \(result.manifest.appEntries.count) app(s), " +
                     "\(result.manifest.capabilityEntries.count) capability(ies) to \(url.lastPathComponent)"

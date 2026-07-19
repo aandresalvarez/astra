@@ -411,7 +411,12 @@ enum WorkspaceShareImporter {
             // them (the sender's on/off state is not transferable authority).
             schedule.isEnabled = false
             schedule.templateID = share.templateName.flatMap { templatesByName[$0]?.id }
-            schedule.templateVariablesJSON = share.templateVariablesJSON
+            // Strip any hidden `__astra_routine_paths_json` blob on import too:
+            // export removes it, but a tampered package could smuggle relative /
+            // tilde-prefixed paths the absolute-path scan doesn't catch, which
+            // would reactivate `TaskSchedule.routinePaths` once the recipient
+            // re-enables the routine.
+            schedule.templateVariablesJSON = TaskSchedule.templateVariablesJSONWithoutRoutinePaths(share.templateVariablesJSON)
             schedule.routineDescription = share.routineDescription
             schedule.routineInstructions = share.routineInstructions
             schedule.intervalSeconds = share.intervalSeconds
