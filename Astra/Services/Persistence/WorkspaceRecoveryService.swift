@@ -315,7 +315,8 @@ public enum WorkspaceRecoveryService {
                     WHERE ZSTATUS IS NULL
                        OR ZSTATUS NOT IN (
                           'draft', 'queued', 'running', 'pending_user',
-                          'completed', 'failed', 'cancelled', 'budget_exceeded'
+                          'completed', 'failed', 'cancelled', 'budget_exceeded',
+                          'waiting_external'
                        )
                     """
                 )

@@ -58,13 +58,66 @@ struct QueueLockTests {
         // returned to durable monitoring, or the app just restarted).
         let ownerKey = queue.resourceKey(for: owner)
         let ownerID = owner.id
-        queue.externalOperationResourceHolders = { [(resourceKey: ownerKey, taskID: ownerID)] }
+        let operationID = UUID()
+        queue.externalOperationResourceHolders = { [(resourceKey: ownerKey, taskID: ownerID, operationID: operationID)] }
 
         // Another task must not run against the still-written root...
         #expect(!queue.canAcquireResourceLock(for: other, accessMode: .write))
         #expect(!queue.canAcquireResourceLock(for: other, accessMode: .readOnly))
-        // ...but the owning task may re-acquire it (its own validation wake runs).
-        #expect(queue.canAcquireResourceLock(for: owner, accessMode: .write))
+        // ...but a claim FOR that exact operation may re-acquire it (its own
+        // validation/reasoning wake must run).
+        let ownClaim = TaskResourceLockClaim(
+            taskID: ownerID,
+            resourceKey: ownerKey,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: operationID
+        )
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: operationID
+        ) != nil)
+        queue.releaseResourceLock(ownClaim, task: owner, modelContext: nil)
+    }
+
+    @Test("a different nonterminal operation on the same task is NOT bypassed")
+    func differentOperationOnSameTaskStillExcluded() throws {
+        let queue = TaskQueue(poolSize: 2)
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared", primaryPath: "/tmp/astra-shared-\(UUID().uuidString)")
+        let owner = AgentTask(title: "Owner", goal: "Owns two durable external operations", workspace: workspace)
+        context.insert(workspace)
+        context.insert(owner)
+
+        let ownerKey = queue.resourceKey(for: owner)
+        let ownerID = owner.id
+        let holdingOperationID = UUID()
+        let claimingOperationID = UUID()
+        queue.externalOperationResourceHolders = {
+            [(resourceKey: ownerKey, taskID: ownerID, operationID: holdingOperationID)]
+        }
+
+        // Ordinary task work (no operationID) must not bypass exclusion just
+        // because it shares a taskID with the holder.
+        #expect(!queue.canAcquireResourceLock(for: owner, accessMode: .write))
+        // A continuation for a DIFFERENT operation on the SAME task must not
+        // bypass exclusion either — only the exact holding operation's own
+        // continuation may.
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: claimingOperationID
+        ) == nil)
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: holdingOperationID
+        ) != nil)
     }
 
     @Test("cancelAll clears active tasks")

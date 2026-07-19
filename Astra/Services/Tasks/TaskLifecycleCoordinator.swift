@@ -478,7 +478,35 @@ final class TaskLifecycleCoordinator {
         TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
-    func deleteTask(_ task: AgentTask) -> Workspace? {
+    /// `cancelExternalWork` lets the caller wire in the live monitor's cancel
+    /// action (`AppRuntimeController.externalOperationMonitor?.cancelExternalWork`).
+    /// Deletion here is intentionally metadata-only (see the doc comment on
+    /// `deleteExternalOperationRegistrations`): it does NOT cancel the backend
+    /// job by itself. Without this, a task deleted while its job is still
+    /// nonterminal leaves that job running completely unsupervised — the
+    /// registration row (the only durable record of it, and the only resource
+    /// exclusion for its execution root) is gone the moment deletion runs, so
+    /// a new task can immediately start writing the same root.
+    ///
+    /// MUST await cancellation before deleting the registration row: the
+    /// monitor's cancel path re-fetches the operation by ID to claim a lease
+    /// and persist the outcome, so firing it as fire-and-forget AFTER deletion
+    /// (or via an unstructured `Task` that only runs once this synchronous
+    /// method returns — by which point deletion has already happened) would
+    /// always see a missing row and do nothing.
+    func deleteTask(
+        _ task: AgentTask,
+        cancelExternalWork: (@MainActor (UUID) async -> Void)? = nil
+    ) async -> Workspace? {
+        if let cancelExternalWork {
+            let nonterminalOperationIDs = TaskExternalOperationRegistrationService
+                .operations(taskID: task.id, modelContext: modelContext)
+                .filter { !$0.executionState.isTerminalObservation }
+                .map(\.id)
+            for operationID in nonterminalOperationIDs {
+                await cancelExternalWork(operationID)
+            }
+        }
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
         deleteExternalOperationRegistrations(taskIDs: Set([task.id]))
@@ -628,10 +656,27 @@ final class TaskLifecycleCoordinator {
                     // let e.g. WorkspaceAppService.deleteApp on the duplicate's
                     // copy affect the original's rows too.
                     dupConfig = WorkspaceConfigManager.remappingWorkspaceAppIdentities(in: dupConfig)
+                    // Task/run ids are NOT remapped on duplicate (unlike the
+                    // WorkspaceApp family above) — the duplicate's AgentTask/
+                    // TaskRun rows keep the original's ids. TaskExternalOperation
+                    // is queried globally by a raw taskID (no relationship, no
+                    // uniqueness constraint, no workspace scoping — see
+                    // TaskExternalOperationControlsView's @Query and
+                    // WorkspaceManagedJobBackendLocatorResolver's fetchLimit=1
+                    // lookup), so importing a task's operations unchanged would
+                    // let the duplicate's UI observe or cancel the ORIGINAL
+                    // workspace's still-live external job. Drop them: a
+                    // duplicate didn't actually start that job, so it shouldn't
+                    // inherit "there's a live job running" state at all.
                     if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             dupConfig.tasks = freshExport.tasks
                         }
+                    }
+                    dupConfig.tasks = dupConfig.tasks?.map { task in
+                        var task = task
+                        task.externalOperations = nil
+                        return task
                     }
                     return WorkspaceConfigManager.importWorkspace(from: dupConfig, modelContext: modelContext)
                 }

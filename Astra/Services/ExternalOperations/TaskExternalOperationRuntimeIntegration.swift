@@ -80,7 +80,7 @@ extension AppRuntimeController {
             let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             return holding.compactMap { operation in
                 guard let task = tasksByID[operation.taskID] else { return nil }
-                return (resourceKey: taskQueue.resourceKey(for: task), taskID: operation.taskID)
+                return (resourceKey: taskQueue.resourceKey(for: task), taskID: operation.taskID, operationID: operation.id)
             }
         }
     }
@@ -129,7 +129,33 @@ extension AppRuntimeController {
             guard let task = try? modelContext.fetch(descriptor).first else { return false }
             // Never resurrect an explicitly cancelled task. Return true so the
             // wake is acknowledged and not retried, while the task stays cancelled.
-            guard TaskExternalOperationWakeAdmission.shouldResume(taskStatus: task.status) else { return true }
+            guard TaskExternalOperationWakeAdmission.shouldResume(taskStatus: task.status) else {
+                // The suppressed wake is the operation's ONLY path out of
+                // `.validating`/`.active` (terminal reconciliation only retries
+                // UNacknowledged deliveries). Finalize it here or the row is
+                // orphaned forever: the UI shows "ASTRA is validating" forever,
+                // and TaskSuccessfulCompletionService's active/validating check
+                // then silently re-parks every future unrelated successful run
+                // on this task back into waitingExternal.
+                let operationID = request.operationID
+                var operationDescriptor = FetchDescriptor<TaskExternalOperation>(
+                    predicate: #Predicate<TaskExternalOperation> { $0.id == operationID }
+                )
+                operationDescriptor.fetchLimit = 1
+                if let operation = try? modelContext.fetch(operationDescriptor).first,
+                   operation.monitoringState != .completed {
+                    operation.monitoringState = .completed
+                    operation.nextCheckAt = nil
+                    operation.updatedAt = Date()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(
+                        workspace: task.workspace,
+                        modelContext: modelContext,
+                        taskID: task.id,
+                        auditFields: ["operation": "external_operation_wake_suppressed_cancelled"]
+                    )
+                }
+                return true
+            }
             return await taskQueue.continueSession(
                 task: task,
                 message: TaskExternalOperationWakeMessageRenderer.render(request),

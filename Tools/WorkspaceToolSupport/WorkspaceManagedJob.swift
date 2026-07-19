@@ -848,8 +848,24 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             record.status = .running
             record.startedAt = Date()
             record.updatedAt = record.startedAt ?? record.updatedAt
-            try store.save(record)
-            return try store.load(jobID: record.jobID)
+            do {
+                try store.save(record)
+                return try store.load(jobID: record.jobID)
+            } catch {
+                // `docker exec -d` already returned exit 0 — the command is live
+                // in the container and the queued receipt from `store.create`
+                // above is already durably persisted. Falling through to the
+                // outer catch's `failedSynthetic` here would discard the real
+                // jobID/receipt for a generic "unstarted" record: the event
+                // recorder treats that as an error and skips registration
+                // entirely, and trusted-record reconciliation only runs at
+                // startup or successful completion — so a later provider
+                // timeout/crash would leave this live job permanently
+                // unregistered. Return the in-memory record (real jobID,
+                // receipt, optimistic `.running`) instead; the next observation
+                // re-reads the store and self-corrects.
+                return record
+            }
         } catch {
             return failedSynthetic(command: command, message: error.localizedDescription)
         }

@@ -174,6 +174,11 @@ final class TaskExternalOperationMonitorService {
         let task: Task<TaskExternalOperationPollResult, Never>
     }
 
+    private struct InFlightDelivery {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+
     private struct AcquiredPoll {
         let request: TaskExternalOperationBackendRequest
         let generation: Int
@@ -202,6 +207,7 @@ final class TaskExternalOperationMonitorService {
     private var schedulerTask: Task<Void, Never>?
     private var inFlightPolls: [UUID: InFlightPoll] = [:]
     private var inFlightCancellations: [UUID: InFlightPoll] = [:]
+    private var inFlightTerminalDeliveries: [UUID: InFlightDelivery] = [:]
     /// Set by `stop()` so an in-flight poll that was already awaiting a backend
     /// read cannot deliver a wake/notification after the monitor was stopped
     /// (e.g. for a pending update install). Delivery is what launches provider
@@ -274,8 +280,10 @@ final class TaskExternalOperationMonitorService {
         // cancellation is cooperative and may not interrupt synchronous work.)
         for poll in inFlightPolls.values { poll.task.cancel() }
         for cancellation in inFlightCancellations.values { cancellation.task.cancel() }
+        for delivery in inFlightTerminalDeliveries.values { delivery.task.cancel() }
         inFlightPolls.removeAll()
         inFlightCancellations.removeAll()
+        inFlightTerminalDeliveries.removeAll()
     }
 
     func reconcileAfterRestart() async {
@@ -303,7 +311,16 @@ final class TaskExternalOperationMonitorService {
         // Terminal operations are intentionally not polled. Retry any
         // unacknowledged terminal notification/wake delivery on every scheduler
         // pass so temporary worker unavailability cannot lose the transition.
-        await reconcilePendingTerminalDeliveries(operations: fetchOperations())
+        // Dispatched CONCURRENTLY (not sequentially): a wake dispatch can run a
+        // full provider session (potentially minutes), and the prior design's
+        // sequential `for operation in operations { await deliver(...) }` loop
+        // meant one slow operation's delivery blocked every OTHER operation's
+        // delivery from even starting, for the rest of this pass. Each is still
+        // awaited before `runDueChecks` returns (below) — callers (including
+        // `reconcileAfterRestart` and tests) rely on that — but concurrently
+        // with each other and with this pass's regular polls, not serialized
+        // behind one another.
+        let terminalDeliveryTasks = reconcilePendingTerminalDeliveries(operations: fetchOperations())
         let now = clock.now()
         let operationIDs = fetchOperations()
             .filter { operation in
@@ -320,6 +337,9 @@ final class TaskExternalOperationMonitorService {
             Task { @MainActor [weak self] in
                 await self?.poll(operationID: operationID, trigger: trigger) ?? .missing
             }
+        }
+        for task in terminalDeliveryTasks {
+            await task.value
         }
         for task in tasks {
             _ = await task.value
@@ -594,6 +614,12 @@ final class TaskExternalOperationMonitorService {
         let shouldNotify = operation.lastNotificationKey != notificationKey
 
         let intent = wakeIntent(for: effectiveObservation)
+        // A healthy, non-wake observation clears the dedupe key. Without this, a
+        // wake→healthy→identical-wake-again cycle (e.g. two separate ambiguous
+        // observations with a healthy reading in between) reproduces the exact
+        // same semantic key and the second, genuinely-new incident is silently
+        // suppressed as if already delivered.
+        if intent == nil { operation.lastWakeKey = nil }
         let wakeKey = intent.map { "\(notificationKey)|\($0.rawValue)" }
         let shouldWake = wakeKey.map { operation.lastWakeKey != $0 } ?? false
         persist(operation: "external_operation_observation_applied")
@@ -668,51 +694,101 @@ final class TaskExternalOperationMonitorService {
     /// Process completion remains validating until a fresh provider proves
     /// task success; other terminal states remain completed while their
     /// user-facing reasoning wake is retried independently.
+    private func isPendingTerminalDelivery(_ operation: TaskExternalOperation) -> Bool {
+        let isPendingProcessValidation = operation.executionState == .processCompleted
+            && operation.monitoringState == .validating
+        // A quarantined-import row (observationHealth == .quarantined) landed
+        // as `.completed` because its ALREADY-PROCESSED terminal state was
+        // inherited from another machine's export, not because a fresh
+        // reasoning wake was ever delivered here. Treating it as pending
+        // would launch a brand-new provider continuation on a task the user
+        // believes is finished, merely because the workspace was imported.
+        let isPendingTerminalReasoning = operation.executionState.isTerminalObservation
+            && operation.executionState != .processCompleted
+            && operation.monitoringState == .completed
+            && operation.observationHealth != .quarantined
+        return isPendingProcessValidation || isPendingTerminalReasoning
+    }
+
+    /// Returns the dispatched (or already in-flight/coalesced) delivery task
+    /// for every pending operation, so `runDueChecks` can await them all
+    /// CONCURRENTLY — preserving "this pass's terminal deliveries are done by
+    /// the time `runDueChecks` returns" (callers, including
+    /// `reconcileAfterRestart` and tests, rely on that) while no longer
+    /// serializing one operation's delivery behind another's.
+    @discardableResult
     private func reconcilePendingTerminalDeliveries(
         operations: [TaskExternalOperation]
-    ) async {
-        for operation in operations {
-            let isPendingProcessValidation = operation.executionState == .processCompleted
-                && operation.monitoringState == .validating
-            let isPendingTerminalReasoning = operation.executionState.isTerminalObservation
-                && operation.executionState != .processCompleted
-                && operation.monitoringState == .completed
-            guard isPendingProcessValidation || isPendingTerminalReasoning else { continue }
+    ) -> [Task<Void, Never>] {
+        operations
+            .filter(isPendingTerminalDelivery)
+            .map { dispatchTerminalDeliveryIfNeeded(operationID: $0.id) }
+    }
 
-            let observation = TaskExternalOperationObservation(
-                executionState: operation.executionState,
-                health: operation.observationHealth
-            )
-            guard let intent = wakeIntent(for: observation) else { continue }
-            let notificationKey = semanticKey(for: observation)
-            let wakeKey = "\(notificationKey)|\(intent.rawValue)"
-            let notification = operation.lastNotificationKey == notificationKey
-                ? nil
-                : TaskExternalOperationNotification(
-                    operationID: operation.id,
-                    taskID: operation.taskID,
-                    observation: observation
-                )
-            let wakeRequest = operation.lastWakeKey == wakeKey
-                ? nil
-                : TaskExternalOperationWakeRequest(
-                    operationID: operation.id,
-                    taskID: operation.taskID,
-                    originatingRunID: operation.originatingRunID,
-                    backendJobID: operation.backendJobID,
-                    originatingContextRevision: operation.originatingContextRevision,
-                    latestContext: contextProvider(operation.taskID),
-                    observation: observation,
-                    intent: intent
-                )
-            await deliver(AppliedObservation(
-                result: .applied,
-                notification: notification,
-                notificationKey: notification == nil ? nil : notificationKey,
-                wakeRequest: wakeRequest,
-                wakeKey: wakeRequest == nil ? nil : wakeKey
-            ))
+    /// Dispatches one operation's terminal-delivery attempt as its own
+    /// independently-tracked Task instead of sequentially awaiting it inline
+    /// (the prior design). A single wake dispatch can run a full provider
+    /// session — potentially minutes — and awaiting it in the scheduler loop
+    /// blocked every other operation's polling/notification/wake-retry for the
+    /// rest of that pass. Tracked in `inFlightTerminalDeliveries` so `stop()`
+    /// can cancel it, mirroring `inFlightPolls`/`inFlightCancellations`.
+    @discardableResult
+    private func dispatchTerminalDeliveryIfNeeded(operationID: UUID) -> Task<Void, Never> {
+        if let existing = inFlightTerminalDeliveries[operationID] {
+            return existing.task
         }
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            await self?.performTerminalDelivery(operationID: operationID)
+            if self?.inFlightTerminalDeliveries[operationID]?.token == token {
+                self?.inFlightTerminalDeliveries.removeValue(forKey: operationID)
+            }
+        }
+        inFlightTerminalDeliveries[operationID] = InFlightDelivery(token: token, task: task)
+        return task
+    }
+
+    /// Re-fetches the operation fresh (rather than closing over the object
+    /// passed to `reconcilePendingTerminalDeliveries`) so a delivery that was
+    /// dispatched, then suspended for a while before actually running,
+    /// observes any concurrent mutation instead of acting on stale state —
+    /// matching `performPoll`'s existing re-fetch-by-ID pattern.
+    private func performTerminalDelivery(operationID: UUID) async {
+        guard let operation = fetchOperation(id: operationID), isPendingTerminalDelivery(operation) else { return }
+
+        let observation = TaskExternalOperationObservation(
+            executionState: operation.executionState,
+            health: operation.observationHealth
+        )
+        guard let intent = wakeIntent(for: observation) else { return }
+        let notificationKey = semanticKey(for: observation)
+        let wakeKey = "\(notificationKey)|\(intent.rawValue)"
+        let notification = operation.lastNotificationKey == notificationKey
+            ? nil
+            : TaskExternalOperationNotification(
+                operationID: operation.id,
+                taskID: operation.taskID,
+                observation: observation
+            )
+        let wakeRequest = operation.lastWakeKey == wakeKey
+            ? nil
+            : TaskExternalOperationWakeRequest(
+                operationID: operation.id,
+                taskID: operation.taskID,
+                originatingRunID: operation.originatingRunID,
+                backendJobID: operation.backendJobID,
+                originatingContextRevision: operation.originatingContextRevision,
+                latestContext: contextProvider(operation.taskID),
+                observation: observation,
+                intent: intent
+            )
+        await deliver(AppliedObservation(
+            result: .applied,
+            notification: notification,
+            notificationKey: notification == nil ? nil : notificationKey,
+            wakeRequest: wakeRequest,
+            wakeKey: wakeRequest == nil ? nil : wakeKey
+        ))
     }
 
     private func acknowledgeNotification(operationID: UUID, semanticKey deliveredKey: String) {

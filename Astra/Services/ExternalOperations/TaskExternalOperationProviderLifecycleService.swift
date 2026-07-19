@@ -11,6 +11,42 @@ import ASTRAModels
 /// authoritative and never cancels the backend job implicitly.
 @MainActor
 enum TaskExternalOperationProviderLifecycleService {
+    /// Resolves a completion-validation wake's OWN target operation out of
+    /// `.validating` the moment its process succeeds — independent of what
+    /// ASTRA's own downstream review (deliverable verification / runTests /
+    /// aiCheck) decides next. The operation's job is "observe the external
+    /// process until it finishes and deliver exactly one review wake"; that is
+    /// done once the process has succeeded. A validation FAILURE is a
+    /// task-level review decision, not a reason to leave the operation
+    /// dangling forever — `TaskSuccessfulCompletionService.apply` performs
+    /// this exact resolution, but only on the validation-PASS sub-branches, so
+    /// a validation failure/error skips it entirely. Calling this first makes
+    /// the resolution unconditional; `apply`'s own resolution is idempotent
+    /// (guarded on `.validating`) so calling both is harmless.
+    @discardableResult
+    static func resolveValidationWakeOperationIfNeeded(
+        operationID: UUID?,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        at date: Date = Date()
+    ) -> Bool {
+        guard let operationID else { return false }
+        let operations = TaskExternalOperationRegistrationService.operations(
+            taskID: task.id,
+            modelContext: modelContext
+        )
+        guard let operation = operations.first(where: {
+            $0.id == operationID && $0.monitoringState == .validating && $0.originatingRunID != run.id
+        }) else {
+            return false
+        }
+        operation.monitoringState = .completed
+        operation.updatedAt = date
+        operation.nextCheckAt = nil
+        return true
+    }
+
     @discardableResult
     static func beginMonitoringAtRegistration(
         operation: TaskExternalOperation,
@@ -149,8 +185,18 @@ enum TaskExternalOperationProviderLifecycleService {
             taskID: task.id,
             modelContext: modelContext
         ).first(where: {
-            $0.originatingRunID != run.id
-                && [.active, .validating].contains($0.monitoringState)
+            guard $0.originatingRunID != run.id else { return false }
+            if [.active, .validating].contains($0.monitoringState) { return true }
+            // A `userFacingReasoning` wake's own target operation is ALREADY
+            // `.completed` by the time its reasoning run is dispatched (`apply`
+            // sets `.completed` for every terminal state except processCompleted,
+            // which is dispatched at `.validating` instead) — so a reasoning run
+            // that itself fails could otherwise never match this predicate,
+            // structurally guaranteeing the intended external-outcome review is
+            // replaced by an unrelated provider failure on every such run.
+            return $0.monitoringState == .completed
+                && $0.executionState.isTerminalObservation
+                && $0.executionState != .processCompleted
         }) else {
             return false
         }

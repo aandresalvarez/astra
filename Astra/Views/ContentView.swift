@@ -2223,6 +2223,7 @@ struct ContentView: View {
                 "reason": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
+            resumeMonitoringAfterAbortedUpdatePrep()
             return false
         }
 
@@ -2237,8 +2238,19 @@ struct ContentView: View {
                 "reason": "store_backup_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
+            resumeMonitoringAfterAbortedUpdatePrep()
             return false
         }
+    }
+
+    /// Sparkle postpones the relaunch and leaves the app running when this
+    /// preparation fails after the scheduler/monitor were already stopped above
+    /// — without this, every `waitingExternal` task's backend job would go
+    /// unobserved (no polls, no terminal wakes) until the user manually
+    /// relaunches ASTRA.
+    private func resumeMonitoringAfterAbortedUpdatePrep() {
+        runtime.startScheduler(modelContext: modelContext)
+        runtime.startExternalOperationMonitoring(modelContext: modelContext)
     }
 
     // MARK: - Workspace Management
@@ -2484,12 +2496,14 @@ struct ContentView: View {
         refreshRunningTaskCount()
     }
 
-    private func deleteTask(_ task: AgentTask) {
+    private func deleteTask(_ task: AgentTask) async {
         let deletedTaskID = task.id
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
-        _ = coordinator.deleteTask(task)
+        _ = await coordinator.deleteTask(task) { [runtime] operationID in
+            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
+        }
         // Release the task's browser (WebContent process + bridge listener) and
         // markdown sessions; otherwise they leak until the window closes.
         browserSessionStore.releaseSession(for: deletedTaskID)
@@ -2500,7 +2514,7 @@ struct ContentView: View {
     private func requestDeleteTask(_ task: AgentTask) {
         let linkedSchedules = coordinator.activeSameThreadSchedules(for: task)
         guard !linkedSchedules.isEmpty else {
-            deleteTask(task)
+            Task { @MainActor in await deleteTask(task) }
             return
         }
         linkedScheduleWarning = LinkedScheduleWarning(task: task, schedules: linkedSchedules, action: .delete)
@@ -2537,7 +2551,7 @@ struct ContentView: View {
             coordinator.setDoneState(warning.task, to: true)
             refreshRunningTaskCount()
         case .delete:
-            deleteTask(warning.task)
+            Task { @MainActor in await deleteTask(warning.task) }
         }
     }
 

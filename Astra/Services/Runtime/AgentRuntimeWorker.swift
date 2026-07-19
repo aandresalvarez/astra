@@ -1060,11 +1060,17 @@ final class AgentRuntimeWorker {
             "phase": auditPhase.rawValue,
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
+        // Tracked separately (rather than re-derived) so the isolation-cleanup
+        // gate below sees exactly the branch that actually fired here — the
+        // provider detached, but the Docker job it detached FROM is still
+        // running and still using `executionPath` as its mount.
+        var detachedForExternalMonitoring = false
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled
             TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
         } else if TaskExternalOperationProviderLifecycleService.preserveMonitoringAfterProviderExitIfNeeded(task: task, run: run, modelContext: modelContext) {
+            detachedForExternalMonitoring = true
         } else if result.policyApprovalRequired {
             TaskRuntimeOutcomeTransition.applyPolicyApproval(
                 task: task,
@@ -1133,6 +1139,21 @@ final class AgentRuntimeWorker {
         } else if processSucceeded {
             run.status = .completed
             run.typedStopReason = .completed
+            // Resolve this run's own validation-wake operation BEFORE the
+            // downstream validation gates below, which — on a failure/error
+            // outcome — apply their own task-level transition directly without
+            // ever calling TaskSuccessfulCompletionService.apply, and so never
+            // reach the resolution that lives there. Left unresolved, the
+            // operation stays `.validating` forever: the UI shows "validating"
+            // indefinitely and every later unrelated successful run is
+            // re-parked into waitingExternal by that same active/validating
+            // check.
+            TaskExternalOperationProviderLifecycleService.resolveValidationWakeOperationIfNeeded(
+                operationID: executionPolicy.externalOperationID,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
             AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
                 result: result,
                 task: task,
@@ -1306,7 +1327,12 @@ final class AgentRuntimeWorker {
             scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)
         }
 
-        if shouldCleanupIsolation {
+        if shouldCleanupIsolation, !detachedForExternalMonitoring {
+            // `.copy` isolation would delete this directory and `.gitBranch`
+            // would check out main underneath it — either corrupts or
+            // interrupts the still-running Docker job's mount when the
+            // provider detached for durable external monitoring above instead
+            // of genuinely finishing.
             IsolationService.cleanup(task: task, executionPath: executionPath)
         }
         let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder

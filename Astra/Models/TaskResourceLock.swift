@@ -50,15 +50,28 @@ public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
 }
 
 public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
-    public init(taskID: UUID, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String) {
+    public init(
+        taskID: UUID,
+        resourceKey: String,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        operationID: UUID? = nil
+    ) {
         self.taskID = taskID
         self.resourceKey = resourceKey
         self.accessMode = accessMode
         self.runMode = runMode
+        self.operationID = operationID
     }
 
     public var taskID: UUID
     public var resourceKey: String
     public var accessMode: TaskResourceAccessMode
     public var runMode: String
+    /// The external operation this claim is FOR, when it originates from a
+    /// wake/validation continuation (`AgentRuntimeExecutionPolicy.externalOperationID`).
+    /// `nil` for ordinary task work. Lets exclusion distinguish "this exact
+    /// operation's own continuation" from "a DIFFERENT nonterminal operation
+    /// on the same task" — see `TaskQueue.canAcquireResourceLock`.
+    public var operationID: UUID?
 }

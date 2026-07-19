@@ -120,6 +120,10 @@ struct WorkspaceManagedJobExternalOperationBackend:
     TaskExternalOperationOwnershipValidating,
     @unchecked Sendable
 {
+    /// The launch itself times out at 30s (`WorkspaceManagedJob.swift`'s
+    /// `docker exec -d` call); this is a generous multiple of that so a slow
+    /// but genuinely in-flight launch is never misclassified.
+    private static let queuedLaunchGracePeriod: TimeInterval = 5 * 60
     private let locatorResolver: WorkspaceManagedJobBackendLocatorResolver
     private let reachabilityProbe: any DockerContainerReachabilityProbing
 
@@ -153,7 +157,18 @@ struct WorkspaceManagedJobExternalOperationBackend:
             return TaskExternalOperationObservation(executionState: .unknown, health: .malformed)
         }
 
-        let executionState = Self.executionState(for: record.status)
+        var executionState = Self.executionState(for: record.status)
+        // A record can persist as `.queued` forever if the MCP helper died
+        // between `store.create` and the actual `docker exec -d` launch: the
+        // job never runs, never produces a heartbeat/result, and nothing here
+        // observes the specific (never-started) process — only the SHARED
+        // executor container's reachability, which is up regardless. Without
+        // this, the task waits `waitingExternal` silently forever. Treat
+        // prolonged queuing as an interruption so a real terminal wake fires.
+        if executionState == .queued,
+           Date().timeIntervalSince(record.createdAt) > Self.queuedLaunchGracePeriod {
+            executionState = .interrupted
+        }
         guard !executionState.isTerminalObservation,
               let receipt = record.startReceipt else {
             if executionState.isTerminalObservation,
@@ -195,6 +210,17 @@ struct WorkspaceManagedJobExternalOperationBackend:
         let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
         let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
         let record = manager.cancel(jobID: request.backendJobID)
+        // `.failed` with no receipt is DockerWorkspaceJobManager's synthetic
+        // fallback for a load/save failure BEFORE any kill was attempted — not a
+        // confirmed cancellation. Reporting it as a computed terminal state (as
+        // the old code did) would commit it as authoritative: the monitor stops
+        // polling forever and may deliver a "failed" wake for a job that was
+        // never touched by this cancel attempt and could still be running.
+        // Mirror the same unknown/malformed shape `observe()` already uses for
+        // an unreadable record instead.
+        guard record.status != .failed || record.startReceipt != nil else {
+            return TaskExternalOperationObservation(executionState: .unknown, health: .malformed)
+        }
         let state = Self.executionState(for: record.status)
         if state.isTerminalObservation {
             // A confirmed cancellation is terminal and never polled again. The
@@ -205,10 +231,7 @@ struct WorkspaceManagedJobExternalOperationBackend:
             // still own other trusted work).
             _ = manager.cleanupExecutorIfIdle()
         }
-        return TaskExternalOperationObservation(
-            executionState: state,
-            health: record.status == .failed && record.startReceipt == nil ? .malformed : .healthy
-        )
+        return TaskExternalOperationObservation(executionState: state, health: .healthy)
     }
 
     func validateOwnership(_ request: TaskExternalOperationBackendRequest) async -> Bool {

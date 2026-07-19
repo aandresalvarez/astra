@@ -60,9 +60,17 @@ enum TaskSuccessfulCompletionService {
         }
 
         if let operation = operations.first(where: {
+            // Unlike the `.active`/`.validating` check above, a stale
+            // `.completed` terminal-failure row is otherwise never cleared, so
+            // without the ID gate here ANY future successful run on this task —
+            // including ones with nothing to do with this operation — would
+            // re-enter "review required" forever. Only the run that produced
+            // the failure, or the run dispatched as ITS OWN reasoning wake, may
+            // match.
             $0.monitoringState == .completed
                 && $0.executionState.isTerminalObservation
                 && $0.executionState != .processCompleted
+                && ($0.originatingRunID == run.id || $0.id == validatingOperationID)
         }) {
             if operation.originatingRunID == run.id {
                 // The originating provider turn cannot convert an already

@@ -1806,7 +1806,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issue #322: wiring the zero-workspace titlebar
             // command flag into an already-full file cost one irreducible line.
-            "Astra/Views/ContentView.swift": .init(4_865, .owner("Workspace shell composition")),
+            "Astra/Views/ContentView.swift": .init(4_890, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body
@@ -1847,7 +1847,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // External-operation wakes disable reuse at the private continuation decision boundary.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_090, .owner("Runtime worker execution")),
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_130, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

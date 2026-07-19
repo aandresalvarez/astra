@@ -29,9 +29,12 @@ final class TaskQueue {
     /// run already returned to durable monitoring (in-memory locks are empty in
     /// that window, and entirely empty after an app restart). Injected so the
     /// conflict check can exclude other tasks from those roots until the
-    /// external work is terminal. Each entry is `(resourceKey, owningTaskID)`;
-    /// the owning task is never blocked from re-acquiring its own root.
-    var externalOperationResourceHolders: @MainActor () -> [(resourceKey: String, taskID: UUID)] = { [] }
+    /// external work is terminal. Each entry is `(resourceKey, owningTaskID,
+    /// operationID)`; a claim bypasses exclusion only for the SAME operation's
+    /// own continuation (`TaskResourceLockClaim.operationID` match), not for
+    /// any other nonterminal operation the same task happens to also own —
+    /// see `canAcquireResourceLock`.
+    var externalOperationResourceHolders: @MainActor () -> [(resourceKey: String, taskID: UUID, operationID: UUID)] = { [] }
 
     /// Track tasks that have been dispatched but may not yet be marked as .running.
     /// Prevents the queue loop from double-dispatching a task during the brief
@@ -408,7 +411,8 @@ final class TaskQueue {
             task: task,
             accessMode: resourceAccess,
             runMode: "continue",
-            modelContext: modelContext
+            modelContext: modelContext,
+            operationID: executionPolicy.externalOperationID
         ) else {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
@@ -440,6 +444,15 @@ final class TaskQueue {
             onEvent: onEvent
         )
         taskWorkerMap.removeValue(forKey: task.id)
+        // Mirrors executeTask's post-run schedule routing (above). Without this,
+        // a schedule-spawned task that registered external work is never
+        // routed here: its first executeTask call returns non-terminal
+        // (waitingExternal), skipping that check entirely, and this
+        // continueSession call — the wake sink's only path back to activity —
+        // was the sole remaining route to close the loop.
+        if let scheduleID = task.originScheduleID, task.isTerminal {
+            routeScheduleResult(task: task, scheduleID: scheduleID, modelContext: modelContext)
+        }
         return true
     }
 
@@ -869,13 +882,15 @@ final class TaskQueue {
         task: AgentTask,
         accessMode: TaskResourceAccessMode,
         runMode: String,
-        modelContext: ModelContext? = nil
+        modelContext: ModelContext? = nil,
+        operationID: UUID? = nil
     ) -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
             resourceKey: resourceKey(for: task),
             accessMode: accessMode,
-            runMode: runMode
+            runMode: runMode,
+            operationID: operationID
         )
         guard canAcquireResourceLock(claim) else {
             return nil
@@ -917,13 +932,15 @@ final class TaskQueue {
         task: AgentTask,
         accessMode: TaskResourceAccessMode,
         runMode: String,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        operationID: UUID? = nil
     ) async -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
             resourceKey: resourceKey(for: task),
             accessMode: accessMode,
-            runMode: runMode
+            runMode: runMode,
+            operationID: operationID
         )
         recordResourceLockEvent(
             type: TaskResourceLockEventTypes.requested,
@@ -941,7 +958,8 @@ final class TaskQueue {
                 task: task,
                 accessMode: accessMode,
                 runMode: runMode,
-                modelContext: modelContext
+                modelContext: modelContext,
+                operationID: operationID
             ) {
                 return acquired
             }
@@ -979,10 +997,16 @@ final class TaskQueue {
         // execution root after its provider run returned to durable monitoring,
         // so treat that root as an exclusive holder even though no in-memory
         // lock exists (and after a restart, in-memory locks are empty entirely).
-        // The owning task may still re-acquire — its own validation/reasoning
-        // wake must run — but any other task is blocked until the work terminates.
+        // A claim bypasses exclusion ONLY for that SAME operation's own
+        // continuation (its validation/reasoning wake must run) — not for a
+        // DIFFERENT nonterminal operation the same task also owns, and not for
+        // ordinary task work with no operationID at all. A task with two
+        // nonterminal operations (or a user-authored continuation racing a
+        // wake) must not let one operation's session write over the execution
+        // root while a different operation's detached job is still using it.
         if externalOperationResourceHolders().contains(where: {
-            $0.taskID != claim.taskID && resourceKeysConflict($0.resourceKey, claim.resourceKey)
+            resourceKeysConflict($0.resourceKey, claim.resourceKey)
+                && !($0.taskID == claim.taskID && $0.operationID == claim.operationID)
         }) {
             return false
         }
