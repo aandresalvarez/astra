@@ -85,7 +85,10 @@ final class TaskQueue {
         }
 
         for request in requests where request.state.isActive {
-            guard let task = request.task,
+            let taskID = request.taskID
+            guard let task = (try? modelContext.fetch(
+                      FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+                  ))?.first,
                   task.events.contains(where: { $0.id == request.messageEventID }),
                   replayingRecoveredTurnIDs.insert(request.id).inserted else {
                 continue
@@ -531,7 +534,7 @@ final class TaskQueue {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async -> Bool {
         guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
-              request.task?.id == task.id,
+              request.taskID == task.id,
               request.state.isActive,
               let message = task.events.first(where: { $0.id == request.messageEventID })?.payload else {
             return false
@@ -622,6 +625,15 @@ final class TaskQueue {
             _ = transitionPersistedTurn(request, to: .admitted, modelContext: modelContext)
             taskWorkerMap[task.id] = worker
             activeTasks.insert(task.id)
+            // Promote the task to .running before handing off, exactly like the
+            // legacy continuation path (markContinuationLaunchAdmitted). The
+            // worker gates run creation on markRuntimeSessionStarted, whose
+            // allowedFrom is [.running]; a follow-up to a completed/failed/
+            // cancelled task — the primary durable-turn case — leaves the task
+            // terminal, so without this the worker rejects and the turn is
+            // admitted but never executed.
+            let launchLifecycle = ContinuationLaunchLifecycle(task: task)
+            markContinuationLaunchAdmitted(task, modelContext: modelContext)
             await worker.continueSession(
                 task: task,
                 message: message,
@@ -639,6 +651,10 @@ final class TaskQueue {
             // when a stale task was no longer admissible). Runtime-created runs
             // finalize their request in AgentRuntimeWorker's defer.
             if request.state == .admitted {
+                // The worker never created a run, so the optimistic .running
+                // promotion above must be reverted or the task strands as
+                // running forever.
+                recordContinuationAdmissionFailure(task, lifecycle: launchLifecycle, modelContext: modelContext)
                 failPersistedTurn(request, reason: "runtime_not_started", modelContext: modelContext)
                 return false
             }
@@ -702,11 +718,15 @@ final class TaskQueue {
             terminalReason: terminalReason
         )
         guard result.changed else { return result }
+        let taskID = request.taskID
         if state.isTerminal {
+            let workspace = (try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+            ))?.first?.workspace
             WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: request.task?.workspace,
+                workspace: workspace,
                 modelContext: modelContext,
-                taskID: request.task?.id,
+                taskID: taskID,
                 auditFields: ["operation": "turn_request_\(state.rawValue)"]
             )
         } else {
@@ -714,7 +734,7 @@ final class TaskQueue {
             // should not race the later terminal workspace-mirror export.
             WorkspacePersistenceCoordinator.saveWithoutAutoExport(
                 modelContext: modelContext,
-                taskID: request.task?.id,
+                taskID: taskID,
                 auditFields: ["operation": "turn_request_\(state.rawValue)"]
             )
         }

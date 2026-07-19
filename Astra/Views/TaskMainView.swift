@@ -1763,8 +1763,15 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        ForEach(currentThreadSnapshot.conversationItems) { item in
-            conversationItemView(item, decisionDockVisible: decisionDockVisible)
+        conversationItemsList(decisionDockVisible: decisionDockVisible)
+    }
+
+    // Fetch turn-request snapshots once per body pass, not per `.userMessage`
+    // row (was O(messages) DB fetches per render). Plain func so `let` is legal.
+    private func conversationItemsList(decisionDockVisible: Bool) -> some View {
+        let snapshots = taskTurnRequestSnapshots
+        return ForEach(currentThreadSnapshot.conversationItems) { item in
+            conversationItemView(item, turnRequestSnapshots: snapshots, decisionDockVisible: decisionDockVisible)
                 .id(item.id)
         }
     }
@@ -2120,7 +2127,11 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private func conversationItemView(_ item: TaskConversationItem, decisionDockVisible: Bool) -> some View {
+    private func conversationItemView(
+        _ item: TaskConversationItem,
+        turnRequestSnapshots: [TaskTurnRequestSnapshot],
+        decisionDockVisible: Bool
+    ) -> some View {
         switch item {
         case .userMessage(let eventID, let text, let timestamp):
             chatUserBubble(
@@ -2128,7 +2139,7 @@ struct TaskMainView: View {
                 timestamp: timestamp,
                 lifecycle: eventID.flatMap { TaskTurnMessageLifecyclePresentation.resolve(
                     messageEventID: $0,
-                    requests: taskTurnRequestSnapshots
+                    requests: turnRequestSnapshots
                 ) }
             )
         case .planUserMessage(let text, let timestamp):

@@ -8,7 +8,21 @@ import ASTRACore
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
     @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
-    @Query(sort: \TaskTurnRequest.submittedAt, order: .reverse) private var turnRequests: [TaskTurnRequest]
+    // Only active (non-terminal) requests drive sidebar activity counts. The
+    // table is append-only and never pruned, so an unfiltered query would grow
+    // unbounded with history and make `taskActivities` O(all-requests) per body
+    // eval. The literals mirror TaskTurnRequestState's terminal cases
+    // (.completed/.failed/.cancelled), which #Predicate can't reach via the
+    // computed `isTerminal`.
+    @Query(
+        filter: #Predicate<TaskTurnRequest> {
+            $0.stateRawValue != "completed"
+                && $0.stateRawValue != "failed"
+                && $0.stateRawValue != "cancelled"
+        },
+        sort: \TaskTurnRequest.submittedAt,
+        order: .reverse
+    ) private var turnRequests: [TaskTurnRequest]
 
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -34,7 +48,7 @@ struct TaskSidebarContainerView: View {
     private var taskActivities: [UUID: TaskActivityPresentation] {
         TaskActivityPresentation.resolveByTaskID(
             tasks: tasks,
-            requests: turnRequests.compactMap(\.snapshot)
+            requests: turnRequests.map(\.snapshot)
         )
     }
 

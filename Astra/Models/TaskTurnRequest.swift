@@ -48,7 +48,14 @@ public struct TaskTurnRequestSnapshot: Equatable, Sendable {
 @Model
 public final class TaskTurnRequest {
     public var id: UUID
-    public var task: AgentTask?
+    /// The owning task, stored as a scalar id rather than a SwiftData
+    /// relationship. A to-one relationship to `AgentTask` would force SwiftData
+    /// to synthesize an inverse on `AgentTask`, mutating the shipped V14 task
+    /// entity and breaking the V14→V15 lightweight migration of populated
+    /// stores (a hard CoreData abort). The scalar keeps V15 a genuinely
+    /// additive new-entity migration — the invariant this record's repository
+    /// comment already promised. Mirrors `TaskExternalOperation.taskID`.
+    public var taskID: UUID
     /// Stable reference to the append-only `user.message` event. This avoids a
     /// second mutable owner for user-authored content.
     public var messageEventID: UUID
@@ -74,7 +81,7 @@ public final class TaskTurnRequest {
         submittedAt: Date = Date()
     ) {
         self.id = UUID()
-        self.task = task
+        self.taskID = task.id
         self.messageEventID = messageEventID
         self.runID = nil
         self.sequence = sequence
@@ -93,9 +100,8 @@ public final class TaskTurnRequest {
         set { stateRawValue = newValue.rawValue }
     }
 
-    public var snapshot: TaskTurnRequestSnapshot? {
-        guard let taskID = task?.id else { return nil }
-        return TaskTurnRequestSnapshot(
+    public var snapshot: TaskTurnRequestSnapshot {
+        TaskTurnRequestSnapshot(
             id: id,
             taskID: taskID,
             messageEventID: messageEventID,

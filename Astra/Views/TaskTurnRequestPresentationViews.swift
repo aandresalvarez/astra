@@ -40,12 +40,13 @@ struct TaskTurnMessageLifecycleChip: View {
 }
 
 extension TaskMainView {
-    /// This relationship intentionally stays one-way in SwiftData for the
-    /// additive V15 migration. Fetch through the repository instead of adding
-    /// a persisted inverse to `AgentTask`.
+    /// Turn requests reference their task by a scalar `taskID` (no SwiftData
+    /// relationship / synthesized inverse) so V15 stays an additive migration.
+    /// Fetch through the repository rather than adding a persisted inverse to
+    /// `AgentTask`.
     var taskTurnRequestSnapshots: [TaskTurnRequestSnapshot] {
         (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?
-            .compactMap(\.snapshot) ?? []
+            .map(\.snapshot) ?? []
     }
 
     var taskActivityPresentation: TaskActivityPresentation {

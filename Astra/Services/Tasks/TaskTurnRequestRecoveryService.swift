@@ -33,8 +33,14 @@ enum TaskTurnRequestRecoveryService {
 
         var summary = Summary()
         var affectedWorkspaces: [UUID: Workspace] = [:]
+        // Resolve the owning task via the scalar `taskID` (there is no
+        // relationship). Fetch once into a map rather than per request.
+        let tasksByID = Dictionary(
+            ((try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         for request in requests where request.state.isActive {
-            guard let task = request.task else {
+            guard let task = tasksByID[request.taskID] else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
                     to: .failed,
@@ -45,15 +51,12 @@ enum TaskTurnRequestRecoveryService {
                 continue
             }
 
-            if request.state == .running {
-                let transition = TaskTurnRequestStateMachine.transition(
-                    request,
-                    to: .failed,
-                    terminalReason: "app_restarted",
-                    at: recoveredAt
-                )
-                if transition.changed { summary.terminalized += 1 }
-            } else if let runID = request.runID,
+            // Prefer the linked run's outcome for BOTH running and admitted
+            // requests. A run persists its terminal status
+            // (AgentRuntimeRunPersistence.finalizeAndPersist) before the
+            // request's own finalizer defer runs, so a crash in that window must
+            // not mismark a genuinely completed turn as failed.
+            if let runID = request.runID,
                let run = task.runs.first(where: { $0.id == runID }),
                run.status != .running {
                 let terminalState: TaskTurnRequestState = switch run.status {
@@ -66,6 +69,17 @@ enum TaskTurnRequestRecoveryService {
                     to: terminalState,
                     runID: run.id,
                     terminalReason: run.stopReason.isEmpty ? run.status.rawValue : run.stopReason,
+                    at: recoveredAt
+                )
+                if transition.changed { summary.terminalized += 1 }
+            } else if request.state == .running {
+                // No terminal run to mirror — the run (if any) never finished.
+                // Worker ownership is process-local, so a running turn cannot
+                // survive the restart; fail it.
+                let transition = TaskTurnRequestStateMachine.transition(
+                    request,
+                    to: .failed,
+                    terminalReason: "app_restarted",
                     at: recoveredAt
                 )
                 if transition.changed { summary.terminalized += 1 }

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import ASTRAModels
 @testable import ASTRA
@@ -21,7 +22,7 @@ struct TaskActivityPresentationTests {
         )
         request.blockerSummary = blockerSummary
         request.terminalReason = terminalReason
-        return request.snapshot!
+        return request.snapshot
     }
 
     @Test("Running wins task-level presentation while queued turns retain their own state")
@@ -89,7 +90,7 @@ struct TaskActivityPresentationTests {
         let task = makeTask(goal: "Original request")
         let event = makeEvent(
             task: task,
-            type: TaskEventTypes.Conversation.userMessage,
+            type: TaskEventTypes.Conversation.userMessage.rawValue,
             payload: "Same text can be submitted twice",
             timestamp: Date(timeIntervalSince1970: 100)
         )

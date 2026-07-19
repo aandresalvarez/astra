@@ -274,10 +274,12 @@ struct SchemaVersionTests {
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 3)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 2)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 3)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 2)
+        // The isolated V12 recovery plans migrate their colliding-V12 store
+        // forward to current: V12x → V13 → V14 → V15 (4 schemas, 3 stages).
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 4)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 3)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 4)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 3)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")

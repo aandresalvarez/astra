@@ -100,9 +100,18 @@ final class TaskLifecycleCoordinator {
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
-        task.tokensUsed = 0
-        task.costUSD = 0
+        let isDurableFollowUpRetry = retryTurn != nil && retryFollowUpMessage != nil
+        // A base-task retry re-runs the whole goal through the queue. A durable
+        // follow-up retry must NOT re-enqueue the task: `.queued` invites
+        // processQueue/executeTask to re-run the base goal, racing
+        // continuePersistedTurn (double execution). continuePersistedTurn
+        // promotes the task to `.running` itself, and the follow-up's cumulative
+        // token/cost totals must not be reset.
+        if !isDurableFollowUpRetry {
+            TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
+            task.tokensUsed = 0
+            task.costUSD = 0
+        }
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.retried,

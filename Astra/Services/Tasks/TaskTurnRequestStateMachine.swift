@@ -41,10 +41,7 @@ enum TaskTurnRequestStateMachine {
                 || previousBlockerID != request.blockingTaskID
                 || previousBlockerSummary != request.blockerSummary
             if changed {
-                request.task?.updatedAt = date
-                if let taskID = request.task?.id {
-                    TaskThreadChangeNotifier.post(taskID: taskID, source: "turn_request_\(next.rawValue)")
-                }
+                TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(next.rawValue)")
             }
             return TransitionResult(from: current, to: next, changed: changed, rejection: nil)
         }
@@ -73,14 +70,18 @@ enum TaskTurnRequestStateMachine {
         } else if current.isTerminal {
             // Retrying a failed or cancelled submission reuses the same
             // durable intent. The linked TaskRun history remains the record
-            // of prior attempts; the request is once again actionable.
+            // of prior attempts; the request is once again actionable. Clear
+            // the prior attempt's admission fields too — a stale runID would
+            // otherwise let restart recovery mirror the OLD run's terminal
+            // status onto a retried-but-not-yet-rerun request, and stale
+            // admitted/started timestamps skew the turn timeline.
             request.terminalAt = nil
             request.terminalReason = nil
+            if runID == nil { request.runID = nil }
+            request.admittedAt = nil
+            request.startedAt = nil
         }
-        request.task?.updatedAt = date
-        if let taskID = request.task?.id {
-            TaskThreadChangeNotifier.post(taskID: taskID, source: "turn_request_\(next.rawValue)")
-        }
+        TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(next.rawValue)")
         return TransitionResult(from: current, to: next, changed: true, rejection: nil)
     }
 
@@ -95,15 +96,16 @@ enum TaskTurnRequestStateMachine {
     ]
 }
 
-/// Query boundary for the new one-way request relationship. Keeping the
-/// collection off `AgentTask` preserves the shipped V14 task schema so V15 is
-/// a genuinely additive lightweight migration.
+/// Query boundary for the scalar `taskID` back-reference. Keeping the
+/// collection off `AgentTask` (no relationship, no synthesized inverse)
+/// preserves the shipped V14 task entity so V15 is a genuinely additive
+/// lightweight migration.
 @MainActor
 enum TaskTurnRequestRepository {
     static func requests(for task: AgentTask, in modelContext: ModelContext) throws -> [TaskTurnRequest] {
         let taskID = task.id
         let descriptor = FetchDescriptor<TaskTurnRequest>(
-            predicate: #Predicate { $0.task?.id == taskID },
+            predicate: #Predicate { $0.taskID == taskID },
             sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
         )
         return try modelContext.fetch(descriptor)
