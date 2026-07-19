@@ -874,6 +874,12 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     public func cancel(jobID: String) -> WorkspaceManagedJobRecord {
         do {
             let record = try store.load(jobID: jobID)
+            // If the job already reached a terminal result between the last poll
+            // and this cancel, return that authoritative result unchanged rather
+            // than issuing a kill and rewriting it to .cancelled — otherwise a
+            // job that actually succeeded/failed would be routed to cancellation
+            // instead of completion validation.
+            guard !record.isTerminal else { return record }
             let directory = containerJobDirectory(jobID: record.jobID)
             let cancelResult = executor.runDockerCommand(
                 arguments: [

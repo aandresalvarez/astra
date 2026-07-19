@@ -1868,7 +1868,7 @@ struct ArchitectureFitnessTests {
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Durable job trust, restart, cleanup, and filesystem attacks stay at the tool boundary.
-            "Tests/WorkspaceToolSupportTests.swift": .init(2_419, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
+            "Tests/WorkspaceToolSupportTests.swift": .init(2_476, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).

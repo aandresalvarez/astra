@@ -45,10 +45,11 @@ enum TaskExternalOperationWakeMessageRenderer {
         Intent: \(request.intent.rawValue)
         Execution state: \(request.observation.executionState.rawValue)
         Observation health: \(request.observation.health.rawValue)
+        Backend job ID: \(request.backendJobID)
         Originating run: \(request.originatingRunID.uuidString)
         Originating context revision (provenance only): \(provenance)
 
-        Use the latest Context Capsule below as the current task truth. Do not relaunch or duplicate the external operation. Process completion is not task success: validate the task outcome before declaring success.
+        Use the workspace job status/tail/wait tools with the backend job ID above to inspect this job's logs and result. Use the latest Context Capsule below as the current task truth. Do not relaunch or duplicate the external operation. Process completion is not task success: validate the task outcome before declaring success.
 
         \(request.latestContext)
         """
@@ -57,26 +58,35 @@ enum TaskExternalOperationWakeMessageRenderer {
 
 @MainActor
 extension AppRuntimeController {
-    func startExternalOperationMonitoring(modelContext: ModelContext) {
-        // Keep active external operations participating in resource-lock
-        // admission. Their detached Docker job keeps writing the execution root
-        // after the provider run returned to durable monitoring, and in-memory
-        // locks are empty after a restart — so admission must derive exclusion
-        // from the durable operation rows, not just live locks.
+    /// Wires the resource-lock exclusion provider so admission derives exclusion
+    /// from durable external-operation rows (in-memory locks are empty after a
+    /// restart). Installed BEFORE the scheduler starts — otherwise a due task
+    /// could acquire an overlapping execution root on launch before this runs.
+    func installExternalOperationResourceHolders(modelContext: ModelContext) {
         taskQueue.externalOperationResourceHolders = { [weak taskQueue] in
             guard let taskQueue else { return [] }
             let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
-            let active = operations.filter {
-                $0.monitoringState == .active && !$0.executionState.isTerminalObservation
+            // Every locally-owned, still-executing registration holds its root.
+            // This includes `.stopped` rows: stopping MONITORING leaves the
+            // detached job running (the confirmation says so), so its root must
+            // stay excluded. Only imported no-contact rows (`.quarantined`) and
+            // rows whose execution already terminated (job stopped writing) are
+            // excluded.
+            let holding = operations.filter {
+                $0.monitoringState != .quarantined && !$0.executionState.isTerminalObservation
             }
-            guard !active.isEmpty else { return [] }
+            guard !holding.isEmpty else { return [] }
             let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
             let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            return active.compactMap { operation in
+            return holding.compactMap { operation in
                 guard let task = tasksByID[operation.taskID] else { return nil }
                 return (resourceKey: taskQueue.resourceKey(for: task), taskID: operation.taskID)
             }
         }
+    }
+
+    func startExternalOperationMonitoring(modelContext: ModelContext) {
+        installExternalOperationResourceHolders(modelContext: modelContext)
         if let externalOperationMonitor {
             externalOperationMonitor.start()
             return

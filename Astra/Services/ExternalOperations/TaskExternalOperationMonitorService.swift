@@ -91,6 +91,12 @@ struct TaskExternalOperationWakeRequest: Equatable, Sendable {
     let operationID: UUID
     let taskID: UUID
     let originatingRunID: UUID
+    /// The bounded backend job identifier, so the fresh validation/reasoning
+    /// session can address the job's status/tail/wait tools (which all require
+    /// `job_id`) to inspect its logs and result. The managed start result is
+    /// redacted from run history, so the wake prompt is the session's only path
+    /// to the id.
+    let backendJobID: String
     let originatingContextRevision: String?
     let latestContext: String
     let observation: TaskExternalOperationObservation
@@ -100,6 +106,7 @@ struct TaskExternalOperationWakeRequest: Equatable, Sendable {
         operationID: UUID,
         taskID: UUID,
         originatingRunID: UUID,
+        backendJobID: String,
         originatingContextRevision: String?,
         latestContext: String,
         observation: TaskExternalOperationObservation,
@@ -108,6 +115,7 @@ struct TaskExternalOperationWakeRequest: Equatable, Sendable {
         self.operationID = operationID
         self.taskID = taskID
         self.originatingRunID = originatingRunID
+        self.backendJobID = backendJobID
         self.originatingContextRevision = originatingContextRevision
         self.latestContext = String(latestContext.prefix(Self.maximumContextCharacters))
         self.observation = observation
@@ -603,6 +611,7 @@ final class TaskExternalOperationMonitorService {
                 operationID: operation.id,
                 taskID: operation.taskID,
                 originatingRunID: operation.originatingRunID,
+                backendJobID: operation.backendJobID,
                 originatingContextRevision: operation.originatingContextRevision,
                 latestContext: contextProvider(operation.taskID),
                 observation: effectiveObservation,
@@ -690,6 +699,7 @@ final class TaskExternalOperationMonitorService {
                     operationID: operation.id,
                     taskID: operation.taskID,
                     originatingRunID: operation.originatingRunID,
+                    backendJobID: operation.backendJobID,
                     originatingContextRevision: operation.originatingContextRevision,
                     latestContext: contextProvider(operation.taskID),
                     observation: observation,

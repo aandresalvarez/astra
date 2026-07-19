@@ -254,6 +254,23 @@ struct TaskExternalOperationMonitorServiceTests {
         #expect(operation.lastWakeKey == nil)
     }
 
+    @Test("wake prompt carries the backend job id for the validating session's tools")
+    func wakePromptIncludesBackendJobID() {
+        let request = TaskExternalOperationWakeRequest(
+            operationID: UUID(),
+            taskID: UUID(),
+            originatingRunID: UUID(),
+            backendJobID: "job-abc123",
+            originatingContextRevision: nil,
+            latestContext: "capsule",
+            observation: TaskExternalOperationObservation(executionState: .processCompleted, health: .healthy),
+            intent: .completionValidation
+        )
+        let prompt = TaskExternalOperationWakeMessageRenderer.render(request)
+        // The fresh session needs the job id to call status/tail/wait.
+        #expect(prompt.contains("job-abc123"))
+    }
+
     @Test("quarantined registrations never contact an observer")
     func quarantinedRegistrationNeverPolls() async throws {
         let fixture = try Fixture()
