@@ -1205,6 +1205,26 @@ struct WorkspaceShareDocumentTests {
         }
         report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.blockers.contains { $0.message.contains("host must not be empty") })
+
+        // Misaligned skill env arrays.
+        try Self.reseal(at: destination) { document in
+            document.sshConnections = []
+            document.skills = [ShareSkill(
+                name: "S", icon: "i", description: "", allowedTools: [], disallowedTools: [], customTools: [],
+                behaviorInstructions: "", environmentKeys: ["A", "B"], environmentValues: ["only-one"],
+                connectorNames: [], localToolNames: []
+            )]
+        }
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("counts must match") })
+
+        // Unusable workspace name (control char).
+        try Self.reseal(at: destination) { document in
+            document.skills = []
+            document.name = "bad\u{0}name"
+        }
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("control characters") })
     }
 
     @MainActor

@@ -119,7 +119,12 @@ enum PortablePackageSafeFileReader {
         remainingFiles: inout Int,
         remainingBytes: inout Int
     ) -> PortablePackageStagingError? {
-        guard let dir = opendir(dirPath) else { return nil }
+        // An unreadable directory is a violation, NOT "no violation": returning
+        // nil here would let the review pass a package whose confirm-time staged
+        // copy then fails on that same directory.
+        guard let dir = opendir(dirPath) else {
+            return .copyFailed(relativePrefix.isEmpty ? "." : relativePrefix)
+        }
         defer { closedir(dir) }
         while let entry = readdir(dir) {
             let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in

@@ -84,6 +84,33 @@ struct WorkspacePackageImportPlanner {
 
     func plan(from report: WorkspacePackageValidationReport) -> WorkspacePackageImportPlan? {
         guard let manifest = report.manifest, let document = report.shareDocument else { return nil }
+
+        // If any inventory exceeds the review limit (validation already added a
+        // blocker), do NOT map every entry into plan rows — the review's non-lazy
+        // stack would freeze on tens of thousands of items. Return a plan carrying
+        // the blockers with empty item lists; the review shows the blockers and
+        // the Import button stays disabled.
+        let limit = 1000
+        let oversized = [
+            document.skills.count, document.connectors.count, document.localTools.count,
+            document.templates.count, document.schedules.count, document.sshConnections.count,
+            document.capabilityIDs.count, document.packIDs.count,
+            manifest.appEntries.count, manifest.capabilityEntries.count,
+            manifest.googleAccountsRequiringReauth.count, manifest.sshConnectionsRequiringLocalKeys.count
+        ].contains { $0 > limit }
+        if oversized {
+            return WorkspacePackageImportPlan(
+                workspaceName: manifest.workspaceName,
+                workspaceInstructions: "",
+                packageID: manifest.packageID,
+                exportProfile: manifest.exportProfile,
+                blockers: report.blockers,
+                apps: [], capabilities: [], packs: [], connectors: [], localTools: [],
+                skills: [], templates: [], accounts: [], sshConnections: [],
+                quarantinedScheduleCount: 0,
+                droppedMachinePaths: []
+            )
+        }
         let installed = installedCapabilityIDs()
         let approved = approvedCapabilityIDs()
 

@@ -490,7 +490,12 @@ struct WorkspacePackageService {
         proseFields += rawCapability.skills.flatMap { [$0.behaviorInstructions, $0.description] }
         proseFields += rawCapability.templates.flatMap { [$0.beforeGoal, $0.mainGoal, $0.afterGoal, $0.variablesJSON, $0.description] }
         proseFields += rawCapability.localTools.flatMap { [$0.command, $0.arguments, $0.description] }
-        proseFields += rawCapability.connectors.flatMap { [$0.description, $0.notes] }
+        proseFields += rawCapability.connectors.flatMap { connector -> [String] in
+            [connector.description, connector.notes]
+                + connector.credentialHints.map(\.hint)
+                + connector.configHints.map(\.hint)
+        }
+        proseFields += rawCapability.setupRequirements.map(\.notes)
         for text in proseFields {
             if containsCredentialAssignment(text) {
                 issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include credential material."))
@@ -737,6 +742,17 @@ struct WorkspacePackageService {
         // thousands of pack IDs / skills / etc. would each become a plan item
         // rendered in a non-lazy stack, freezing the review UI merely by opening
         // the package. Reject an unreasonable per-kind count up front.
+        // The workspace name becomes a directory component on import. Reject a
+        // name that can't form one — over the ~255-byte per-component limit, or
+        // containing NUL/control characters — so the review can't promise an
+        // import that fails with ENAMETOOLONG/EINVAL at createDirectory. (A
+        // dot-only name is separately mapped to a fallback by directoryName.)
+        if document.name.utf8.count > 255 {
+            issues.append(blocker("/workspace-share.json/name", "Workspace name is too long to form a directory."))
+        }
+        if document.name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+            issues.append(blocker("/workspace-share.json/name", "Workspace name contains control characters."))
+        }
         let perKindLimit = 1000
         let counts: [(String, Int)] = [
             ("skills", document.skills.count), ("connectors", document.connectors.count),
@@ -794,6 +810,14 @@ struct WorkspacePackageService {
         // Keychain/SwiftData by the importer, breaking the review's promise that
         // credential values never travel.
         for (index, skill) in document.skills.enumerated() {
+            // The importer pads/truncates a mismatched pair, silently losing or
+            // inventing values vs. what the review approved. Require alignment.
+            if skill.environmentKeys.count != skill.environmentValues.count {
+                issues.append(blocker(
+                    "/workspace-share.json/skills[\(index)].environmentValues",
+                    "Skill environmentKeys (\(skill.environmentKeys.count)) and environmentValues (\(skill.environmentValues.count)) counts must match."
+                ))
+            }
             for (keyIndex, key) in skill.environmentKeys.enumerated()
             where Skill.isSecretEnvironmentKey(key) {
                 let value = keyIndex < skill.environmentValues.count ? skill.environmentValues[keyIndex] : ""

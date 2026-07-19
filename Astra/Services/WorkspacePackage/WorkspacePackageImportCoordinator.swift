@@ -397,7 +397,13 @@ struct WorkspacePackageImportCoordinator {
         // a manual re-bind. Nothing runs between here and the commit below, so
         // there is no window where a pending capability is live.
         let records = approvalRecords()
+        let freshlyInstalledDrafts = Set(capabilitiesInstalledAsDraft)
         workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs.filter { id in
+            // A capability THIS import just installed as a draft must never be
+            // auto-enabled — even if a stale digest-bound approval record from a
+            // previously-approved-then-uninstalled copy still matches its bytes.
+            // The plan/outcome say it needs approval; honor that.
+            guard !freshlyInstalledDrafts.contains(id) else { return false }
             guard let installed = capabilityLibrary.installedPackage(id: id) else { return false }
             // Effective approval: a locally-approved CUSTOM capability's on-disk
             // governance is normalized to `.draft`, so its approval lives only in
