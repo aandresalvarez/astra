@@ -43,6 +43,41 @@ struct WorkspaceShareDocument: Codable, Sendable, Equatable {
     var schedules: [ShareSchedule]
     var sshConnections: [ShareSSHConnection]
 
+    /// The single declared list of resource types a `.astra-share` package can
+    /// carry. Each kind must be wired through all four stages — export
+    /// projection, validation, import, and review disclosure. The recurring
+    /// class of bugs on this feature (a resource the importer creates that the
+    /// review never shows, a field validation never guards) is exactly a kind
+    /// or field handled in one stage but not the parallel ones, because those
+    /// four traversals are hand-written and independent. This enum is the
+    /// contract's anchor: `WorkspaceShareStageCoverageTests` asserts every kind
+    /// is disclosed in the review planner (the invariant that skills/templates
+    /// silently violated), so a new resource type cannot be added to the DTO
+    /// without surfacing it for approval. Per-FIELD completeness within a kind
+    /// (sanitizing every credential surface, range-checking every value) is
+    /// owned by that kind's projection + validator.
+    enum ResourceKind: String, CaseIterable, Sendable {
+        case skills, connectors, localTools, templates, schedules, sshConnections
+        case capabilities, apps, packs, accounts
+
+        /// Substrings, any of which appearing in the review-planner source proves
+        /// this kind is surfaced in the pre-import review.
+        var disclosureTokens: [String] {
+            switch self {
+            case .skills: ["document.skills"]
+            case .connectors: ["document.connectors"]
+            case .localTools: ["document.localTools"]
+            case .templates: ["document.templates"]
+            case .schedules: ["document.schedules", "quarantinedScheduleCount"]
+            case .sshConnections: ["document.sshConnections"]
+            case .capabilities: ["capabilityEntries"]
+            case .apps: ["appEntries"]
+            case .packs: ["document.packIDs", "packs"]
+            case .accounts: ["googleAccountsRequiringReauth"]
+            }
+        }
+    }
+
     init(
         formatVersion: Int = WorkspaceShareDocument.currentFormatVersion,
         name: String,

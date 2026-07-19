@@ -1091,6 +1091,26 @@ struct WorkspaceShareDocumentTests {
         #expect(item.detail.contains("ci@build.example.com"))
     }
 
+    @Test("every shareable resource kind is disclosed in the import review planner")
+    func everyResourceKindIsDisclosed() throws {
+        // The contract test: a resource type that can travel in the DTO must be
+        // surfaced in the pre-import review. This is the exact invariant Skills
+        // and Templates silently violated (imported but never shown) — enforcing
+        // it here stops a NEW resource type from being added to the wire format
+        // without wiring its disclosure. See `WorkspaceShareDocument.ResourceKind`.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // Tests/
+            .deletingLastPathComponent()   // repo root
+        let plannerSource = try String(
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"),
+            encoding: .utf8
+        )
+        for kind in WorkspaceShareDocument.ResourceKind.allCases {
+            let disclosed = kind.disclosureTokens.contains { plannerSource.contains($0) }
+            #expect(disclosed, "resource kind '\(kind.rawValue)' is not disclosed in the import review planner")
+        }
+    }
+
     @MainActor
     @Test("validation rejects an imported local tool with a rerouting toolType")
     func validationRejectsRerouteToolType() throws {
