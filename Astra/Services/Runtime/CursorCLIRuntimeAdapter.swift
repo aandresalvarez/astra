@@ -41,10 +41,10 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         task _: AgentTask,
         promptOverride: String?,
         startPayload: String,
-        sessionMessage _: String?,
+        sessionMessage: String?,
         phase _: RunPhase
     ) -> String {
-        promptOverride ?? startPayload
+        sessionMessage ?? promptOverride ?? startPayload
     }
 
     func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
