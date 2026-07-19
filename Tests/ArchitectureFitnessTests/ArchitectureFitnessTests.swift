@@ -1804,7 +1804,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issue #322: wiring the zero-workspace titlebar
             // command flag into an already-full file cost one irreducible line.
-            "Astra/Views/ContentView.swift": .init(4_855, .owner("Workspace shell composition")),
+            "Astra/Views/ContentView.swift": .init(4_865, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body

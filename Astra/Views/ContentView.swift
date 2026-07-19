@@ -499,6 +499,7 @@ struct ContentView: View {
     /// the same `SidebarSurface` so the two never diverge in style.
     private var sidebarContent: some View {
         TaskSidebarContainerView(
+            appUpdateController: appUpdateController,
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
@@ -875,11 +876,16 @@ struct ContentView: View {
             // beside the traffic lights in every layout. It feeds the hover-to-peek
             // state (isSidebarToggleHovered); the native split-view toggle is
             // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
-            ContentToolbar(
-                appUpdateController: appUpdateController,
-                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
-            )
-
+            //
+            // `.collapsed` hides the sidebar footer (this control's normal home)
+            // with no trace at all — restore a fallback for just that state.
+            // `.docked`/`.overlay` both already keep the footer on screen.
+            if presentation.mode == .collapsed {
+                CollapsedSidebarUpdateToolbar(
+                    appUpdateController: appUpdateController,
+                    onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
+                )
+            }
             if topRightActions.showsToolbar {
                 ToolbarItem(placement: .primaryAction) {
                     WorkspaceTopRightToolbar(
@@ -2786,7 +2792,8 @@ struct ContentView: View {
     }
 }
 
-private struct ContentToolbar: ToolbarContent {
+/// Fallback for when the sidebar footer is off screen — see the `.collapsed` gate above.
+private struct CollapsedSidebarUpdateToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
     let onCheckForUpdates: () -> Void
