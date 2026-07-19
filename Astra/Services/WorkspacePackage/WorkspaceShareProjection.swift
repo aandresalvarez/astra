@@ -56,6 +56,34 @@ enum WorkspaceShareProjection {
         return components.contains { credentialWords.contains($0) }
     }
 
+    /// Blanks the `defaultValue` of any template variable whose NAME is
+    /// secret-like (`API_TOKEN`, …). The credential-assignment scan can't
+    /// associate the separate `"name"`/`"defaultValue"` JSON fields, so a secret
+    /// default would otherwise travel verbatim in a ready-to-use template.
+    /// Returns the input unchanged if it doesn't decode as template variables.
+    static func templateVariablesJSONBlankingSecrets(_ json: String) -> String {
+        guard let data = json.data(using: .utf8),
+              var variables = try? JSONDecoder().decode([TemplateVariable].self, from: data) else { return json }
+        var changed = false
+        for index in variables.indices
+        where Skill.isSecretEnvironmentKey(variables[index].name) && !variables[index].defaultValue.isEmpty {
+            variables[index].defaultValue = ""
+            changed = true
+        }
+        guard changed,
+              let encoded = try? JSONEncoder().encode(variables),
+              let result = String(data: encoded, encoding: .utf8) else { return json }
+        return result
+    }
+
+    /// True if the variables blob carries a nonempty secret-named default —
+    /// used by validation to reject a hand-tampered package.
+    static func templateVariablesCarrySecretDefault(_ json: String) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let variables = try? JSONDecoder().decode([TemplateVariable].self, from: data) else { return false }
+        return variables.contains { Skill.isSecretEnvironmentKey($0.name) && !$0.defaultValue.isEmpty }
+    }
+
     static func document(from config: WorkspaceConfigManager.WorkspaceConfig) -> WorkspaceShareDocument {
         let connectorNameByID = Dictionary(
             (config.connectors ?? []).compactMap { c in c.id.map { ($0, c.name) } },
@@ -155,7 +183,7 @@ enum WorkspaceShareProjection {
                 beforeModel: t.beforeModel,
                 mainModel: t.mainModel,
                 afterModel: t.afterModel,
-                variablesJSON: t.variablesJSON,
+                variablesJSON: templateVariablesJSONBlankingSecrets(t.variablesJSON),
                 passContextToMain: t.passContextToMain,
                 passContextToAfter: t.passContextToAfter,
                 defaultSkillNames: names(fromIDs: t.defaultSkillIDs, fallback: nil, map: skillNameByID)
@@ -172,7 +200,7 @@ enum WorkspaceShareProjection {
                 // Routine paths are also embedded in the template-variables blob;
                 // strip them so the recipient's `routinePaths` getter can't read
                 // sender paths back out.
-                templateVariablesJSON: TaskSchedule.templateVariablesJSONWithoutRoutinePaths(s.templateVariablesJSON),
+                templateVariablesJSON: templateVariablesJSONBlankingSecrets(TaskSchedule.templateVariablesJSONWithoutRoutinePaths(s.templateVariablesJSON)),
                 model: s.model,
                 tokenBudget: s.tokenBudget,
                 scheduleType: s.scheduleType,

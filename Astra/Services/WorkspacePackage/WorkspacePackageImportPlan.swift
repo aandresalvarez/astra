@@ -36,6 +36,9 @@ struct WorkspacePackageImportPlanItem: Identifiable, Sendable, Equatable {
 /// SwiftData, the capability library, or the filesystem.
 struct WorkspacePackageImportPlan: Sendable, Equatable {
     var workspaceName: String
+    /// Always-on workspace agent instructions the package carries — injected into
+    /// every task prompt on import, so surfaced for review before activation.
+    var workspaceInstructions: String
     var packageID: String
     var exportProfile: WorkspacePackageExportProfile
     var blockers: [PortablePackageValidationIssue]
@@ -350,6 +353,7 @@ struct WorkspacePackageImportPlanner {
 
         return WorkspacePackageImportPlan(
             workspaceName: manifest.workspaceName,
+            workspaceInstructions: document.instructions,
             packageID: manifest.packageID,
             exportProfile: manifest.exportProfile,
             blockers: report.blockers,

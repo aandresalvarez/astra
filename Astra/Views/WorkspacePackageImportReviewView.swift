@@ -308,6 +308,11 @@ struct WorkspacePackageImportReviewView: View {
         if !plan.localTools.isEmpty {
             section("Local Tools") { itemRows(plan.localTools) }
         }
+        if !plan.workspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            section("Workspace Instructions") {
+                infoRow("Always-on", "This package sets workspace-wide agent instructions applied to every task: \(plan.workspaceInstructions)")
+            }
+        }
         if !plan.skills.isEmpty {
             section("Skills") { itemRows(plan.skills) }
         }

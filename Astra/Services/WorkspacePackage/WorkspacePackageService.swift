@@ -473,6 +473,19 @@ struct WorkspacePackageService {
         // behaviorInstructions, a template goal, variablesJSON, a setup guide).
         // Scan just those prose fields for a credential assignment or absolute
         // machine path — not the structural key-name fields.
+        // An embedded capability's templates carry token budgets too (copied into
+        // a TaskTemplate by CapabilityInstaller on enable); a negative one breaks
+        // prompt-budget enforcement. Apply the same non-negative check as
+        // top-level shared templates.
+        for (templateIndex, template) in rawCapability.templates.enumerated() {
+            for (field, value) in [("beforeBudget", template.beforeBudget), ("mainBudget", template.mainBudget), ("afterBudget", template.afterBudget)]
+            where value < 0 {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] \(field) must not be negative."
+                ))
+            }
+        }
         var proseFields: [String] = [rawCapability.description, rawCapability.setupGuide]
         proseFields += rawCapability.skills.flatMap { [$0.behaviorInstructions, $0.description] }
         proseFields += rawCapability.templates.flatMap { [$0.beforeGoal, $0.mainGoal, $0.afterGoal, $0.variablesJSON, $0.description] }
@@ -554,7 +567,23 @@ struct WorkspacePackageService {
         packageURL: URL,
         issues: inout [PortablePackageValidationIssue]
     ) {
+        // A sub-limit checksums.json can list tens of thousands of DUPLICATE
+        // entries for the same near-10MB file; hashing each one turns opening the
+        // package into hundreds of GB of work. Cap the entry count and reject
+        // duplicate paths BEFORE the hashing loop.
+        if checksums.count > 20_000 {
+            issues.append(blocker("/checksums.json", "checksums.json declares \(checksums.count) entries, exceeding the 20000 limit."))
+            return
+        }
+        var seenPaths = Set<String>()
         for checksum in checksums {
+            // Reject a duplicate path AND skip re-hashing it: without this, tens of
+            // thousands of entries for the same near-10MB file would hash hundreds
+            // of GB just to open the package.
+            guard seenPaths.insert(checksum.path).inserted else {
+                issues.append(blocker("/checksums.json/\(checksum.path)", "Duplicate checksum entry for '\(checksum.path)'."))
+                continue
+            }
             guard PortablePackageSafeFileReader.isPortableRelativePath(checksum.path) else {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum path must be relative and portable."))
                 continue
@@ -683,6 +712,15 @@ struct WorkspacePackageService {
             scan(schedule.routineDescription, "schedules[\(index)].routineDescription")
             scan(schedule.routineInstructions, "schedules[\(index)].routineInstructions")
             scan(schedule.templateVariablesJSON, "schedules[\(index)].templateVariablesJSON")
+        }
+        // User-authored SSH label/endpoint fields can hold a pasted credential
+        // and are excluded from the raw file scan, so scan them here.
+        for (index, ssh) in document.sshConnections.enumerated() {
+            scan(ssh.name, "sshConnections[\(index)].name")
+            scan(ssh.host, "sshConnections[\(index)].host")
+            scan(ssh.user, "sshConnections[\(index)].user")
+            scan(ssh.remotePath, "sshConnections[\(index)].remotePath")
+            scan(ssh.configAlias, "sshConnections[\(index)].configAlias")
         }
     }
 
@@ -885,6 +923,19 @@ struct WorkspacePackageService {
                     "Template \(field) must not be negative."
                 ))
             }
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(template.variablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].variablesJSON",
+                    "Template variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+        }
+        for (index, schedule) in document.schedules.enumerated()
+        where WorkspaceShareProjection.templateVariablesCarrySecretDefault(schedule.templateVariablesJSON) {
+            issues.append(blocker(
+                "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
+                "Routine template variable with a secret-like name must not carry a default value; credential values never travel."
+            ))
         }
         // Connectors and local tools have a to-ONE inverse `skill` relationship,
         // so a name referenced by two skills would silently re-parent the single

@@ -803,6 +803,41 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("a secret-named template variable default is blanked on export and rejected if tampered")
+    func templateVariableSecretDefaultRedacted() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let template = TaskTemplate(name: "Deploy", mainGoal: "ship", workspace: workspace)
+        template.variables = [
+            TemplateVariable(name: "REGION", label: "Region", defaultValue: "us-west"),
+            TemplateVariable(name: "API_TOKEN", label: "Token", defaultValue: "supersecret123")
+        ]
+        container.mainContext.insert(template)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let shareText = try String(contentsOf: destination.appendingPathComponent("workspace-share.json"), encoding: .utf8)
+        #expect(!shareText.contains("supersecret123"))
+        #expect(shareText.contains("us-west"))
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        // A hand-tampered package that re-plants the secret default is rejected.
+        try Self.reseal(at: destination) { document in
+            document.templates = document.templates.map { t in
+                var m = t
+                m.variablesJSON = #"[{"id":"00000000-0000-0000-0000-000000000000","name":"API_TOKEN","label":"Token","defaultValue":"supersecret123","isRequired":true}]"#
+                return m
+            }
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("secret-like name") })
+    }
+
+    @MainActor
     @Test("credential-related words in prose do not block export; an actual assignment does")
     func credentialWordsInProseDoNotBlockExport() throws {
         let root = try Self.temporaryRoot()
