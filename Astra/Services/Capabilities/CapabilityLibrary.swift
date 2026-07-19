@@ -115,6 +115,33 @@ struct CapabilityLibrary {
         installedPackages(trustedBuiltInIDs: trustedBuiltInIDs).first { $0.id == id }
     }
 
+    /// Every storage name currently occupied in the library directory —
+    /// each `<name>.json` file and each `<name>/` package directory —
+    /// lowercased to match the case-insensitive default filesystem.
+    ///
+    /// Unlike `installedPackages()`, this reflects the raw filesystem and so
+    /// includes malformed/undecodable entries. Import uses it to seed the
+    /// storage-collision set: an occupied-but-undecodable name must be treated
+    /// as a conflict (and skipped), not silently overwritten on a successful
+    /// install just because it failed to decode.
+    func occupiedStorageNames() -> Set<String> {
+        guard let entries = libraryContents(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]
+        ) else {
+            return []
+        }
+        var names: Set<String> = []
+        for entry in entries {
+            if isDirectory(entry) {
+                names.insert(entry.lastPathComponent.lowercased())
+            } else if entry.pathExtension == "json" {
+                names.insert(entry.deletingPathExtension().lastPathComponent.lowercased())
+            }
+        }
+        return names
+    }
+
     func installedVersion(of id: String) -> String? {
         installedPackage(id: id)?.version
     }

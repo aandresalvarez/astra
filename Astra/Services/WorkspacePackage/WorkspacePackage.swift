@@ -59,6 +59,13 @@ struct WorkspacePackageManifest: Codable, Sendable, Equatable {
     var requiredConnectorServiceTypes: [String]
     var googleAccountsRequiringReauth: [String]
     var sshConnectionsRequiringLocalKeys: [String]
+    /// How many machine-local paths the export dropped because the share format
+    /// has no slot for them (workspace root/working paths + every schedule
+    /// `routinePaths` entry). Surfaced in the review so the recipient knows a
+    /// routine/workspace that depended on local directories will need those
+    /// reconfigured — the paths themselves never travel. Optional so a manifest
+    /// authored before this field decodes as "unknown / none disclosed".
+    var droppedMachinePathCount: Int?
 }
 
 struct WorkspacePackageAppEntry: Codable, Sendable, Equatable {

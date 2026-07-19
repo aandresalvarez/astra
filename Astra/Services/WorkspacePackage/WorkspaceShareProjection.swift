@@ -42,18 +42,39 @@ enum WorkspaceShareProjection {
     }
 
     /// A query-parameter/env key name that names a credential value. Matches at
-    /// component boundaries (splitting on `_`/`-`/`.`), NOT as a substring — so
-    /// `author`, `tokenizer`, `secretary` (which merely contain `auth`/`token`/
-    /// `secret`) are not misclassified and silently stripped.
+    /// component boundaries — splitting on `_`/`-`/`.`/space AND camelCase
+    /// transitions — NOT as a substring, so `author`/`tokenizer`/`secretary` are
+    /// not misclassified while `accessToken`/`clientSecret`/`authToken` are.
     static func isCredentialLikeKey(_ name: String) -> Bool {
         let credentialWords: Set<String> = [
             "token", "secret", "password", "passwd", "apikey", "key", "auth",
             "bearer", "credential", "credentials"
         ]
-        let components = name.lowercased()
-            .split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." || $0 == " " })
-            .map(String.init)
+        let components = camelAndPunctuationComponents(name)
         return components.contains { credentialWords.contains($0) }
+    }
+
+    /// Lowercased word components of an identifier, split on punctuation/space and
+    /// camelCase boundaries (`accessToken` -> `access`, `token`; `APIKey` ->
+    /// `api`, `key`; `apikey` -> `apikey`).
+    static func camelAndPunctuationComponents(_ name: String) -> [String] {
+        let scalars = Array(name.unicodeScalars)
+        var spaced = String.UnicodeScalarView()
+        for (i, sc) in scalars.enumerated() {
+            if sc == "_" || sc == "-" || sc == "." || sc == " " {
+                spaced.append(" ")
+                continue
+            }
+            if CharacterSet.uppercaseLetters.contains(sc), i > 0 {
+                let prev = scalars[i - 1]
+                let prevLower = CharacterSet.lowercaseLetters.contains(prev)
+                let prevUpper = CharacterSet.uppercaseLetters.contains(prev)
+                let nextLower = i + 1 < scalars.count && CharacterSet.lowercaseLetters.contains(scalars[i + 1])
+                if prevLower || (prevUpper && nextLower) { spaced.append(" ") }
+            }
+            spaced.append(sc)
+        }
+        return String(spaced).lowercased().split(separator: " ").map(String.init)
     }
 
     /// Blanks the `defaultValue` of any template variable whose NAME is
@@ -82,6 +103,35 @@ enum WorkspaceShareProjection {
         guard let data = json.data(using: .utf8),
               let variables = try? JSONDecoder().decode([TemplateVariable].self, from: data) else { return false }
         return variables.contains { Skill.isSecretEnvironmentKey($0.name) && !$0.defaultValue.isEmpty }
+    }
+
+    /// True if a TEMPLATE variables blob is present but does NOT decode as an
+    /// array of `TemplateVariable` (the shape a `TaskTemplate`/`PluginTemplate`
+    /// uses). A malformed blob slips past the secret-default scrub (which no-ops
+    /// on a decode failure), so it would persist verbatim into the imported
+    /// template — possibly carrying a secret default in a shape our decoder
+    /// doesn't recognize. Validation rejects it rather than trusting an opaque
+    /// payload. An empty string is the legitimate "no variables" value.
+    static func templateVariablesJSONIsMalformed(_ json: String) -> Bool {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let data = trimmed.data(using: .utf8),
+              (try? JSONDecoder().decode([TemplateVariable].self, from: data)) != nil else { return true }
+        return false
+    }
+
+    /// True if a ROUTINE/SCHEDULE variables blob is present but does NOT decode
+    /// as the `[String: String]` name→value map a `TaskSchedule` stores (a
+    /// different shape than a template's `[TemplateVariable]` array). A malformed
+    /// blob slips past the routine-path and secret scrubs (both no-op on a decode
+    /// failure) and would persist verbatim into the imported schedule. `"{}"` and
+    /// an empty string are the legitimate "no variables" values.
+    static func scheduleTemplateVariablesJSONIsMalformed(_ json: String) -> Bool {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let data = trimmed.data(using: .utf8),
+              (try? JSONDecoder().decode([String: String].self, from: data)) != nil else { return true }
+        return false
     }
 
     static func document(from config: WorkspaceConfigManager.WorkspaceConfig) -> WorkspaceShareDocument {
@@ -307,7 +357,6 @@ enum WorkspaceShareImporter {
             connectorCount += 1
         }
 
-        var toolsByName: [String: LocalTool] = [:]
         var localToolCount = 0
         for share in document.localTools {
             guard LocalToolSecurityPolicy.isSafe(command: share.command, arguments: share.arguments) else { continue }
@@ -321,8 +370,10 @@ enum WorkspaceShareImporter {
             )
             tool.isGlobal = false
             tool.workspace = workspace
+            // Imported standalone (skill = nil): the skill loop deliberately does
+            // not re-attach these, since a skill→localTool link auto-grants the
+            // tool command + Bash in SkillResolver, defeating grant-stripping.
             modelContext.insert(tool)
-            toolsByName[share.name] = tool
             localToolCount += 1
         }
 
@@ -363,7 +414,15 @@ enum WorkspaceShareImporter {
             skill.workspace = workspace
             modelContext.insert(skill)
             for name in share.connectorNames { connectorsByName[name]?.skill = skill }
-            for name in share.localToolNames { toolsByName[name]?.skill = skill }
+            // Deliberately do NOT wire imported local tools onto the skill.
+            // `SkillResolver` auto-adds every linked local tool's `command` to the
+            // skill's effective allow-list — and `Bash` for any CLI tool — which
+            // flows into the provider `--allowedTools` and SKIPS the permission
+            // prompt (see SkillResolver.resolvedAllowedTools / effectiveTools).
+            // That would silently re-grant exactly the auto-approval we just
+            // stripped by zeroing `allowedTools`/`customTools`. The tool is still
+            // imported as a workspace-scoped standalone row (surfaced in the plan);
+            // the recipient re-attaches it to the skill after review if desired.
             skill.migrateSecretsToKeychain()
             skillsByName[share.name] = skill
         }

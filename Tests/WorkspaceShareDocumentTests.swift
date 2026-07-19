@@ -1153,11 +1153,19 @@ struct WorkspaceShareDocumentTests {
         #expect(WorkspaceShareProjection.isCredentialLikeKey("API-KEY"))
         #expect(WorkspaceShareProjection.isCredentialLikeKey("client_secret"))
         #expect(WorkspaceShareProjection.isCredentialLikeKey("token"))
+        // …including camelCase keys with no separator to split on.
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("accessToken"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("clientSecret"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("authToken"))
+        #expect(WorkspaceShareProjection.isCredentialLikeKey("apiKey"))
         // …but words that merely CONTAIN them do not (no silent query stripping).
         #expect(!WorkspaceShareProjection.isCredentialLikeKey("author"))
         #expect(!WorkspaceShareProjection.isCredentialLikeKey("tokenizer"))
         #expect(!WorkspaceShareProjection.isCredentialLikeKey("secretary"))
         #expect(!WorkspaceShareProjection.isCredentialLikeKey("region"))
+        // A camelCase word that merely embeds a credential word is not a match
+        // (the split yields whole words, not substrings).
+        #expect(!WorkspaceShareProjection.isCredentialLikeKey("tokenizerFactory"))
     }
 
     @MainActor
@@ -1375,6 +1383,141 @@ struct WorkspaceShareDocumentTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
+    }
+
+    @MainActor
+    @Test("validation catches a short credential assignment like PASSWORD=1234")
+    func validationCatchesShortCredentialAssignment() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        try Self.reseal(at: destination) { document in
+            document.instructions = "First run: PASSWORD=1234 then connect."
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("credential material") })
+    }
+
+    @MainActor
+    @Test("validation rejects a malformed template/schedule variables blob")
+    func validationRejectsMalformedVariablesJSON() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        try Self.reseal(at: destination) { document in
+            document.templates = [ShareTemplate(
+                name: "T", icon: "i", description: "", beforeGoal: "", mainGoal: "g", afterGoal: "",
+                beforeBudget: 0, mainBudget: 0, afterBudget: 0, beforeModel: "", mainModel: "", afterModel: "",
+                variablesJSON: "{not valid variables json", passContextToMain: false, passContextToAfter: false,
+                defaultSkillNames: []
+            )]
+        }
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("must decode as an array of template variables") })
+    }
+
+    @MainActor
+    @Test("planner returns a blockers-only plan when the manifest/share cannot be decoded")
+    func plannerReturnsBlockersWhenDocsMissing() throws {
+        // A report with blockers but no decoded manifest/share (models a package
+        // whose required JSON is missing/corrupt) still yields a plan so the
+        // review renders the blockers instead of hanging on "Reading package…".
+        let report = WorkspacePackageValidationReport(
+            manifest: nil,
+            shareDocument: nil,
+            appReports: [:],
+            issues: [PortablePackageValidationIssue(
+                severity: .blocker, path: "/manifest.json",
+                message: "Package manifest is missing or unreadable."
+            )]
+        )
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        #expect(!plan.canImport)
+        #expect(!plan.blockers.isEmpty)
+        #expect(plan.allItems.isEmpty)
+    }
+
+    @MainActor
+    @Test("an imported skill does not auto-attach imported local tools (no silent tool/Bash grant)")
+    func importedSkillDoesNotAutoAttachLocalTools() async throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
+        let tool = LocalTool(name: "Fetch", toolDescription: "d", icon: "terminal", toolType: "shell", command: "curl", arguments: "-sSL")
+        tool.workspace = senderWorkspace
+        senderContainer.mainContext.insert(tool)
+        let skill = Skill(
+            name: "Uses Tool", icon: "gear", skillDescription: "s",
+            allowedTools: [], disallowedTools: [], customTools: [], behaviorInstructions: "hi"
+        )
+        skill.workspace = senderWorkspace
+        skill.localTools = [tool]
+        senderContainer.mainContext.insert(skill)
+
+        let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: senderWorkspace, modelContext: senderContainer.mainContext, to: packageURL
+        )
+
+        let targetContainer = try Self.makeContainer()
+        let target = targetContainer.mainContext
+        let destinationParent = root.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("caps", isDirectory: true))
+        let outcome = try await coordinator.importPackage(
+            at: packageURL, intoDestinationFolder: destinationParent, modelContext: target
+        )
+        let importedWorkspaceID = outcome.workspace.id
+
+        // The tool imported standalone (no owning skill)…
+        let importedTool = try #require(try target.fetch(FetchDescriptor<LocalTool>())
+            .first { $0.name == "Fetch" && $0.workspace?.id == importedWorkspaceID })
+        #expect(importedTool.skill == nil)
+        // …and the skill has no attached local tools, so SkillResolver cannot
+        // auto-grant the tool command or Bash from a linked tool.
+        let importedSkill = try #require(try target.fetch(FetchDescriptor<Skill>())
+            .first { $0.name == "Uses Tool" && $0.workspace?.id == importedWorkspaceID })
+        #expect(importedSkill.localTools.isEmpty)
+        #expect(importedSkill.allowedTools.isEmpty)
+        #expect(importedSkill.customTools.isEmpty)
+    }
+
+    @MainActor
+    @Test("dropped machine-path count is disclosed in the manifest and the review plan")
+    func droppedMachinePathCountDisclosed() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        // A schedule carrying routine paths — each is dropped on export.
+        let schedule = TaskSchedule(name: "Nightly", goal: "run", scheduleType: .daily)
+        schedule.workspace = workspace
+        schedule.routinePaths = ["/Users/alice/project", "/Users/alice/other"]
+        container.mainContext.insert(schedule)
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        let result = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        // primaryPath (1) + 2 routine paths = at least 3 dropped paths.
+        let count = try #require(result.manifest.droppedMachinePathCount)
+        #expect(count >= 3)
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        #expect(plan.droppedMachinePathCount == count)
     }
 
     @MainActor

@@ -485,6 +485,23 @@ struct WorkspacePackageService {
                     "Embedded capability template[\(templateIndex)] \(field) must not be negative."
                 ))
             }
+            // CapabilityInstaller copies a template's variablesJSON verbatim into a
+            // TaskTemplate on enable, so a secret-named default here becomes a live
+            // credential in the recipient's workspace. The top-level share templates
+            // are export-blanked + validation-rejected; embedded-capability templates
+            // travel inside the opaque capability package, so reject them here too.
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(template.variablesJSON) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+            if WorkspaceShareProjection.templateVariablesJSONIsMalformed(template.variablesJSON) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] variablesJSON must decode as an array of template variables; a malformed blob bypasses the secret-default scrub."
+                ))
+            }
         }
         var proseFields: [String] = [rawCapability.description, rawCapability.setupGuide]
         proseFields += rawCapability.skills.flatMap { [$0.behaviorInstructions, $0.description] }
@@ -496,6 +513,16 @@ struct WorkspacePackageService {
                 + connector.configHints.map(\.hint)
         }
         proseFields += rawCapability.setupRequirements.map(\.notes)
+        // CLI prerequisite descriptors are author-written prose too: the install
+        // hint, auth hint, purpose blurb, liveness args, and install URL can each
+        // carry a pasted `API_TOKEN=…` or a `/Users/<name>/…` path. They are
+        // excluded from the free-text scan like the rest of the capability JSON,
+        // so fold them into the same prose/path scan.
+        proseFields += rawCapability.prerequisites.flatMap { prereq -> [String] in
+            [prereq.binary, prereq.displayName, prereq.purpose, prereq.installHint, prereq.authHint ?? ""]
+                + prereq.livenessArgs
+                + [prereq.installURL?.absoluteString ?? ""]
+        }
         for text in proseFields {
             if containsCredentialAssignment(text) {
                 issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include credential material."))
@@ -505,6 +532,21 @@ struct WorkspacePackageService {
         for text in proseFields {
             if containsAbsoluteMachinePath(text) {
                 issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include an absolute local path."))
+                break
+            }
+        }
+        // A prerequisite install URL can also embed credentials directly in
+        // userinfo or a credential-like query item (`https://user:tok@host`,
+        // `?token=…`), which the assignment scan above won't catch.
+        for prereq in rawCapability.prerequisites {
+            guard let raw = prereq.installURL?.absoluteString,
+                  let components = URLComponents(string: raw) else { continue }
+            if components.user != nil || components.password != nil
+                || (components.queryItems?.contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) ?? false) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability prerequisite install URL must not embed credentials."
+                ))
                 break
             }
         }
@@ -953,13 +995,26 @@ struct WorkspacePackageService {
                     "Template variable with a secret-like name must not carry a default value; credential values never travel."
                 ))
             }
+            if WorkspaceShareProjection.templateVariablesJSONIsMalformed(template.variablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].variablesJSON",
+                    "Template variablesJSON must decode as an array of template variables; a malformed blob bypasses the secret-default scrub."
+                ))
+            }
         }
-        for (index, schedule) in document.schedules.enumerated()
-        where WorkspaceShareProjection.templateVariablesCarrySecretDefault(schedule.templateVariablesJSON) {
-            issues.append(blocker(
-                "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
-                "Routine template variable with a secret-like name must not carry a default value; credential values never travel."
-            ))
+        for (index, schedule) in document.schedules.enumerated() {
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(schedule.templateVariablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
+                    "Routine template variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+            if WorkspaceShareProjection.scheduleTemplateVariablesJSONIsMalformed(schedule.templateVariablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
+                    "Routine templateVariablesJSON must decode as a name→value map; a malformed blob bypasses the routine-path and secret scrubs."
+                ))
+            }
         }
         // Connectors and local tools have a to-ONE inverse `skill` relationship,
         // so a name referenced by two skills would silently re-parent the single
@@ -1071,7 +1126,10 @@ struct WorkspacePackageService {
         // Optional quotes around the key and value catch the JSON form
         // `{"API_TOKEN":"supersecret123"}` (variablesJSON is scanned verbatim),
         // where a closing quote sits between the key and the `:`.
-        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b["']?\s*[:=]\s*["']?\S{6,}"#
+        // Value requires >=3 non-space chars: a credential key followed by `=`/`:`
+        // and a short value (`PASSWORD=1234`, `API_TOKEN=abcde`) is still a
+        // credential; the mandatory key + delimiter keeps prose from matching.
+        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b["']?\s*[:=]\s*["']?\S{3,}"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.firstMatch(in: text, range: range) != nil

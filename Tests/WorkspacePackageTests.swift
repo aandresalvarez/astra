@@ -842,6 +842,105 @@ struct WorkspacePackageTests {
         #expect(report.blockers.contains { $0.message.contains("MCP server") && $0.message.contains("machine path") })
     }
 
+    @MainActor
+    @Test("exported embedded capability blanks secret-keyed template defaults; validation rejects a tampered/malformed one")
+    func exportBlanksEmbeddedCapabilityTemplateSecretDefaults() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        var capability = Self.makeCapability(id: "tmpl.cap", governance: .localDraft())
+        capability.templates = [PluginTemplate(
+            name: "Deploy", icon: "gear", description: "d", mainGoal: "ship",
+            beforeGoal: "", afterGoal: "", mainBudget: 0, beforeBudget: 0, afterBudget: 0,
+            variablesJSON: #"[{"id":"00000000-0000-0000-0000-000000000001","name":"API_TOKEN","label":"Token","defaultValue":"hunter2-tmpl-secret","isRequired":true},{"id":"00000000-0000-0000-0000-000000000002","name":"REGION","label":"Region","defaultValue":"us-west","isRequired":false}]"#,
+            passContextToMain: false, passContextToAfter: false
+        )]
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["tmpl.cap"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let capabilityURL = destination.appendingPathComponent("capabilities/tmpl.cap.json")
+        let text = try String(contentsOf: capabilityURL, encoding: .utf8)
+        #expect(!text.contains("hunter2-tmpl-secret"))
+        #expect(text.contains("us-west"))
+        #expect(WorkspacePackageService().validatePackage(at: destination).canInstall)
+
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+
+        // Re-plant the secret default → rejected.
+        var tampered = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tampered.templates[0].variablesJSON = #"[{"id":"00000000-0000-0000-0000-000000000001","name":"API_TOKEN","label":"Token","defaultValue":"hunter2-tmpl-secret","isRequired":true}]"#
+        try encoder.encode(tampered).write(to: capabilityURL)
+        var report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("secret-like name") })
+
+        // A malformed variables blob (bypasses the secret scrub) → rejected.
+        tampered.templates[0].variablesJSON = "{not valid variables json"
+        try encoder.encode(tampered).write(to: capabilityURL)
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("must decode as an array of template variables") })
+    }
+
+    @MainActor
+    @Test("validation scans embedded capability CLI prerequisites for credentials and machine paths")
+    func validationScansEmbeddedCapabilityPrerequisites() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        let capability = Self.makeCapability(id: "prereq.cap", governance: .localDraft())
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["prereq.cap"]
+
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let capabilityURL = destination.appendingPathComponent("capabilities/prereq.cap.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+
+        // A credential pasted into an install hint → rejected.
+        var tampered = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tampered.prerequisites = [CLIPrerequisite(
+            binary: "mytool", displayName: "My Tool", purpose: "does things",
+            installHint: "Run API_TOKEN=supersecret123 mytool install"
+        )]
+        try encoder.encode(tampered).write(to: capabilityURL)
+        var report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("credential material") })
+
+        // An absolute machine path in the auth hint → rejected.
+        tampered.prerequisites = [CLIPrerequisite(
+            binary: "mytool", displayName: "My Tool", purpose: "does things",
+            installHint: "brew install mytool", authHint: "Point it at /Users/alice/.config/mytool"
+        )]
+        try encoder.encode(tampered).write(to: capabilityURL)
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("absolute local path") })
+
+        // Credentials embedded in the install URL → rejected.
+        tampered.prerequisites = [CLIPrerequisite(
+            binary: "mytool", displayName: "My Tool", purpose: "does things",
+            installURL: URL(string: "https://user:tok@example.com/install"), installHint: "brew install mytool"
+        )]
+        try encoder.encode(tampered).write(to: capabilityURL)
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("prerequisite install URL must not embed credentials") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

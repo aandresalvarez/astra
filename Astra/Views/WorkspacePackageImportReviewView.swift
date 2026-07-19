@@ -331,8 +331,8 @@ struct WorkspacePackageImportReviewView: View {
             if plan.quarantinedScheduleCount > 0 {
                 infoRow("Routines", "\(plan.quarantinedScheduleCount) enabled routine(s) import disabled until you re-enable them.")
             }
-            if !plan.droppedMachinePaths.isEmpty {
-                infoRow("Paths", "\(plan.droppedMachinePaths.count) machine-specific path(s) from the exporting machine are not transferred.")
+            if plan.droppedMachinePathCount > 0 {
+                infoRow("Paths", "\(plan.droppedMachinePathCount) machine-specific path(s) from the exporting machine are not transferred.")
             }
         }
     }

@@ -52,7 +52,9 @@ struct WorkspacePackageImportPlan: Sendable, Equatable {
     var accounts: [WorkspacePackageImportPlanItem]
     var sshConnections: [WorkspacePackageImportPlanItem]
     var quarantinedScheduleCount: Int
-    var droppedMachinePaths: [String]
+    /// How many machine-local paths the export dropped (from the manifest). The
+    /// paths themselves never travel, so only the count is disclosed.
+    var droppedMachinePathCount: Int
 
     var canImport: Bool { blockers.isEmpty }
 
@@ -83,7 +85,22 @@ struct WorkspacePackageImportPlanner {
     }
 
     func plan(from report: WorkspacePackageValidationReport) -> WorkspacePackageImportPlan? {
-        guard let manifest = report.manifest, let document = report.shareDocument else { return nil }
+        guard let manifest = report.manifest, let document = report.shareDocument else {
+            // manifest.json / workspace-share.json missing or malformed: still
+            // return a plan carrying the blockers so the review renders them (and
+            // keeps Import disabled) instead of hanging on "Reading package…".
+            guard !report.blockers.isEmpty else { return nil }
+            return WorkspacePackageImportPlan(
+                workspaceName: report.manifest?.workspaceName ?? "",
+                workspaceInstructions: "",
+                packageID: report.manifest?.packageID ?? "",
+                exportProfile: report.manifest?.exportProfile ?? .configurationOnly,
+                blockers: report.blockers,
+                apps: [], capabilities: [], packs: [], connectors: [], localTools: [],
+                skills: [], templates: [], accounts: [], sshConnections: [],
+                quarantinedScheduleCount: 0, droppedMachinePathCount: 0
+            )
+        }
 
         // If any inventory exceeds the review limit (validation already added a
         // blocker), do NOT map every entry into plan rows — the review's non-lazy
@@ -108,7 +125,7 @@ struct WorkspacePackageImportPlanner {
                 apps: [], capabilities: [], packs: [], connectors: [], localTools: [],
                 skills: [], templates: [], accounts: [], sshConnections: [],
                 quarantinedScheduleCount: 0,
-                droppedMachinePaths: []
+                droppedMachinePathCount: manifest.droppedMachinePathCount ?? 0
             )
         }
         let installed = installedCapabilityIDs()
@@ -401,8 +418,9 @@ struct WorkspacePackageImportPlanner {
             sshConnections: sshConnections,
             // Every imported routine is quarantined until re-enabled.
             quarantinedScheduleCount: document.schedules.count,
-            // Machine-local paths never travel in the share format.
-            droppedMachinePaths: []
+            // Machine-local paths never travel in the share format; disclose how
+            // many the export dropped so the recipient can reconfigure them.
+            droppedMachinePathCount: manifest.droppedMachinePathCount ?? 0
         )
     }
 }

@@ -77,6 +77,20 @@ struct WorkspacePackageExporter {
             .sorted()
         let shareDocument = WorkspaceShareProjection.document(from: config)
 
+        // Count machine-local paths the projection dropped (no DTO slot): the
+        // workspace root + working paths, and every schedule's routine paths.
+        // Surfaced in the manifest so the review can disclose "N local paths were
+        // dropped" — the recipient learns a routine/workspace depended on local
+        // directories that won't carry over, without the paths themselves ever
+        // travelling.
+        var droppedMachinePathCount = 0
+        if !config.primaryPath.isEmpty { droppedMachinePathCount += 1 }
+        if let active = config.activeWorkingPath, !active.isEmpty { droppedMachinePathCount += 1 }
+        droppedMachinePathCount += config.additionalPaths.filter { !$0.isEmpty }.count
+        for schedule in config.schedules ?? [] {
+            droppedMachinePathCount += (schedule.routinePaths ?? []).filter { !$0.isEmpty }.count
+        }
+
         let stagingURL = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".astra-share-staging-\(UUID().uuidString.lowercased())", isDirectory: true)
         var published = false
@@ -115,7 +129,8 @@ struct WorkspacePackageExporter {
             capabilityEntries: capabilityEntries,
             requiredConnectorServiceTypes: Array(Set((config.connectors ?? []).map(\.serviceType))).sorted(),
             googleAccountsRequiringReauth: (config.googleOAuthAccountProfiles ?? []).map(\.email).sorted(),
-            sshConnectionsRequiringLocalKeys: sshLabelsRequiringLocalKeys
+            sshConnectionsRequiringLocalKeys: sshLabelsRequiringLocalKeys,
+            droppedMachinePathCount: droppedMachinePathCount
         )
         try writeJSON(manifest, to: stagingURL.appendingPathComponent("manifest.json"))
 
@@ -230,6 +245,17 @@ struct WorkspacePackageExporter {
                 var sanitized = connector
                 sanitized.baseURL = WorkspaceShareProjection.baseURLWithoutCredentials(connector.baseURL)
                 return sanitized
+            }
+            // A capability's `PluginTemplate.variablesJSON` carries per-variable
+            // defaults that CapabilityInstaller copies verbatim into a TaskTemplate
+            // on enable, so a secret-named default ships a live credential (these
+            // paths are excluded from the free-text scan). Blank every secret-keyed
+            // default before serialization, mirroring the top-level share-template
+            // path. Validation additionally rejects a tampered/malformed one.
+            clamped.templates = clamped.templates.map { template in
+                var redacted = template
+                redacted.variablesJSON = WorkspaceShareProjection.templateVariablesJSONBlankingSecrets(template.variablesJSON)
+                return redacted
             }
             // An embedded capability's MCP servers are executable configuration
             // the review never surfaces, and their `url` can carry a credential

@@ -320,7 +320,16 @@ struct WorkspacePackageImportCoordinator {
         // (and `CapabilityPackageValidator.validateIdentity` lowercases for the
         // same reason).
         func storageKey(_ id: String) -> String { CapabilityLibrary.safeFileName(for: id).lowercased() }
-        var claimedStorageNames = Set(capabilityLibrary.installedPackages().map { storageKey($0.id) })
+        // Seed from the raw filesystem, not `installedPackages()`: a
+        // malformed/undecodable file occupying a storage name is omitted by the
+        // decode-based listing, so seeding from it alone would let an embedded
+        // capability with a colliding storage name overwrite that file on a
+        // SUCCESSFUL import (the snapshot only restores on rollback). The
+        // filesystem view treats the occupied name as a conflict so it is
+        // skipped, never destroyed. Union both so a decodable package whose
+        // storage name somehow escaped the directory scan is still covered.
+        var claimedStorageNames = capabilityLibrary.occupiedStorageNames()
+            .union(capabilityLibrary.installedPackages().map { storageKey($0.id) })
         for entry in manifest.capabilityEntries {
             if capabilityLibrary.installedPackage(id: entry.packageID) != nil {
                 capabilitiesAlreadyInstalled.append(entry.packageID)
