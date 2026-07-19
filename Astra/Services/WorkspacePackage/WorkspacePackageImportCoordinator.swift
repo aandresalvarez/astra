@@ -11,6 +11,7 @@ enum WorkspacePackageImportError: LocalizedError {
     case unsafePackageSymlink(String)
     case packageTooLarge
     case capabilityStorageUncapturable(String)
+    case destinationInsideSourcePackage
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ enum WorkspacePackageImportError: LocalizedError {
             return "The package is too large to import safely."
         case .capabilityStorageUncapturable(let id):
             return "A capability (\(id)) already exists on this machine and its storage could not be safely backed up, so the import was stopped to avoid losing it."
+        case .destinationInsideSourcePackage:
+            return "Choose a destination outside the package itself — importing into the package would corrupt it."
         }
     }
 }
@@ -242,6 +245,15 @@ struct WorkspacePackageImportCoordinator {
         // rollback (`removeItem` below) could delete. Creating the parent chain
         // first, then the leaf with `withIntermediateDirectories: false`, makes the
         // leaf create fail if it already exists — an atomic claim.
+        // Reject a destination inside the SOURCE package: creating the workspace
+        // there would write unchecksummed files into the package, breaking its
+        // validation so it can never be shared/re-imported again. Compare
+        // standardized, symlink-resolved paths at a component boundary.
+        let sourceRoot = packageURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let destRoot = parentFolder.resolvingSymlinksInPath().standardizedFileURL.path
+        if destRoot == sourceRoot || destRoot.hasPrefix(sourceRoot + "/") {
+            throw WorkspacePackageImportError.destinationInsideSourcePackage
+        }
         try fileManager.createDirectory(at: parentFolder, withIntermediateDirectories: true)
         do {
             try fileManager.createDirectory(at: workspaceRootURL, withIntermediateDirectories: false)

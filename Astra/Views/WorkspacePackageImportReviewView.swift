@@ -167,6 +167,14 @@ struct WorkspacePackageImportReviewView: View {
                         return (WorkspacePackageService().validatePackage(at: url), nil)
                     }
                 }.value
+            // The `.task` may have been cancelled (sheet dismissed) while the
+            // detached copy ran — `onDisappear` already fired and saw no staging
+            // root to clean. Remove it now so a late-returning copy doesn't leak
+            // up to the 500MB review limit into the temp dir.
+            if Task.isCancelled {
+                if let root = staged.stagingRoot { try? FileManager.default.removeItem(at: root) }
+                return
+            }
             reviewStagingRoot = staged.stagingRoot
             state.planLoaded(
                 WorkspacePackageImportPlanner().plan(from: staged.report),

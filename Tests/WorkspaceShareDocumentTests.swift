@@ -1162,6 +1162,14 @@ struct WorkspaceShareDocumentTests {
         }
         report = WorkspacePackageService().validatePackage(at: destination)
         #expect(report.blockers.contains { $0.message.contains("exceeding") })
+
+        // Blank SSH host/user with no config alias.
+        try Self.reseal(at: destination) { document in
+            document.packIDs = []
+            document.sshConnections = [ShareSSHConnection(name: "x", host: "  ", user: "u", port: 22, remotePath: "", configAlias: "")]
+        }
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(report.blockers.contains { $0.message.contains("host must not be empty") })
     }
 
     @MainActor

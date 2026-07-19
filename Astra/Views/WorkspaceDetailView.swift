@@ -491,23 +491,33 @@ struct WorkspaceDetailView: View {
         // changed it, re-append it so the app's own export can still re-enter
         // the package review flow instead of falling through to the legacy
         // folder importer.
-        let url = chosenURL.pathExtension == "astra-share"
-            ? chosenURL
-            : chosenURL.deletingPathExtension().appendingPathExtension("astra-share")
+        let normalizedExtension = chosenURL.pathExtension != "astra-share"
+        let url = normalizedExtension
+            ? chosenURL.deletingPathExtension().appendingPathExtension("astra-share")
+            : chosenURL
+        let fm = FileManager.default
         do {
-            // The exporter refuses to overwrite (it creates the package dir
-            // fresh). NSSavePanel already got the user's explicit Replace
-            // confirmation when they chose an existing name, so honor it by
-            // removing the prior item first — otherwise Replace silently fails
-            // with "destination already exists".
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            // Only when the user picked an existing `.astra-share` in the panel
+            // (so NSSavePanel's Replace prompt named exactly this file) do we
+            // replace it. If we NORMALIZED the extension and that path happens to
+            // already exist, the panel never asked to replace it — don't clobber.
+            if fm.fileExists(atPath: url.path), normalizedExtension {
+                exportMessage = "A package named \(url.lastPathComponent) already exists. Choose that name to replace it."
+                return
             }
+            // Export to a private temp path FIRST, then atomically swap into place
+            // on success — so a projection/disk/validation error never destroys
+            // the user's previous export.
+            let tempURL = url.deletingLastPathComponent()
+                .appendingPathComponent(".astra-share-export-\(UUID().uuidString).tmp", isDirectory: true)
+            defer { try? fm.removeItem(at: tempURL) }
             let result = try WorkspacePackageExporter().exportConfigurationPackage(
                 workspace: workspace,
                 modelContext: modelContext,
-                to: url
+                to: tempURL
             )
+            if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
+            try fm.moveItem(at: tempURL, to: url)
             withAnimation {
                 exportMessage = "Exported \(result.manifest.appEntries.count) app(s), " +
                     "\(result.manifest.capabilityEntries.count) capability(ies) to \(url.lastPathComponent)"

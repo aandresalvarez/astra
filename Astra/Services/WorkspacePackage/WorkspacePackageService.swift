@@ -167,6 +167,22 @@ struct WorkspacePackageService {
         // coordinator imports both (`createApp` suffixes the collided ID). Reject
         // duplicate app logical IDs so the reviewed status stays bound to the
         // bundle that installs.
+        // Bound manifest inventory cardinality too (the share-document bound only
+        // covers `workspace-share.json` arrays): a sub-limit manifest could still
+        // hold hundreds of thousands of short account/entry values that the
+        // planner maps into rows rendered in a non-lazy stack.
+        if let manifest {
+            let manifestCounts: [(String, Int)] = [
+                ("appEntries", manifest.appEntries.count),
+                ("capabilityEntries", manifest.capabilityEntries.count),
+                ("googleAccountsRequiringReauth", manifest.googleAccountsRequiringReauth.count),
+                ("sshConnectionsRequiringLocalKeys", manifest.sshConnectionsRequiringLocalKeys.count),
+                ("requiredConnectorServiceTypes", manifest.requiredConnectorServiceTypes.count)
+            ]
+            for (kind, count) in manifestCounts where count > 1000 {
+                issues.append(blocker("/manifest.json/\(kind)", "Package declares \(count) \(kind), exceeding the 1000 limit for import review."))
+            }
+        }
         rejectDuplicateNames((manifest?.appEntries ?? []).map(\.logicalID), kind: "app entries", issues: &issues)
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
         for entry in manifest?.appEntries ?? [] {
@@ -177,6 +193,16 @@ struct WorkspacePackageService {
         // payload's prerequisites for both while the coordinator installs the
         // first and skips the rest. Reject duplicate capability entry IDs.
         rejectDuplicateNames((manifest?.capabilityEntries ?? []).map(\.packageID), kind: "capability entries", issues: &issues)
+        // Distinct IDs that map to the SAME case-insensitive storage name
+        // (`a.b`/`a-b` → `a-b.json`) are shown as installable by the planner but
+        // the coordinator installs only the first and silently skips the rest, so
+        // confirmation imports less than the reviewed inventory. Reject the
+        // collision up front, matching the coordinator's storage-key comparison.
+        rejectDuplicateNames(
+            (manifest?.capabilityEntries ?? []).map { CapabilityLibrary.safeFileName(for: $0.packageID).lowercased() },
+            kind: "capability storage names",
+            issues: &issues
+        )
         var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
         for entry in manifest?.capabilityEntries ?? [] {
             validateEmbeddedCapability(
@@ -419,7 +445,15 @@ struct WorkspacePackageService {
                     "Embedded capability MCP server[\(serverIndex)] URL carries a credential; credential values never travel."
                 ))
             }
-            let invocation = ([server.command].compactMap { $0 } + server.arguments).joined(separator: " ")
+            // Include the install-source arguments + risk notes: they can carry a
+            // machine path or a literal secret (`packageManagerArguments:
+            // ["--token=…"]`) and are excluded from every other scan.
+            let invocation = (
+                [server.command].compactMap { $0 }
+                    + server.arguments
+                    + (server.installSource?.packageManagerArguments ?? [])
+                    + (server.installSource?.riskNotes ?? [])
+            ).joined(separator: " ")
             if containsAbsoluteMachinePath(invocation) {
                 issues.append(blocker(
                     "/\(entry.relativePath)",
@@ -828,6 +862,17 @@ struct WorkspacePackageService {
                     "/workspace-share.json/sshConnections[\(index)].port",
                     "SSH port \(ssh.port) is out of range (1–65535)."
                 ))
+            }
+            // A blank host/user (with no config alias to resolve them) imports an
+            // unusable `@host` / `user@` target that also lands in task prompts;
+            // the SSH editor already requires trimmed non-empty values.
+            if ssh.configAlias.trimmingCharacters(in: .whitespaces).isEmpty {
+                if ssh.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append(blocker("/workspace-share.json/sshConnections[\(index)].host", "SSH host must not be empty."))
+                }
+                if ssh.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append(blocker("/workspace-share.json/sshConnections[\(index)].user", "SSH user must not be empty."))
+                }
             }
         }
         // Template token budgets feed task launch unbounded and templates import
