@@ -159,8 +159,14 @@ struct AppAccessPresentationTests {
         #expect(appAccessSource.contains("if appUpdateController.shouldShowUpdateButton"))
         #expect(!appMenuSource.contains("CheckForUpdatesMenuItem"))
         #expect(!appMenuSource.contains("CommandGroup(after: .appInfo)"))
-        #expect(!contentViewSource.contains("AppUpdateButton"))
-        #expect(!contentViewSource.contains("ContentToolbar"))
+        // The unconditional app-menu command and always-visible toolbar button
+        // are gone — but a scoped toolbar fallback remains for the one state
+        // where the footer (this control's normal home) isn't on screen at all:
+        // the sidebar fully collapsed. `.docked` and `.overlay` both keep the
+        // footer visible, so this must not render unconditionally.
+        #expect(contentViewSource.contains("presentation.mode == .collapsed"))
+        #expect(contentViewSource.contains("CollapsedSidebarUpdateToolbar"))
+        #expect(contentViewSource.contains(".accessibilityIdentifier(\"AppUpdateButton\")"))
     }
 
     private func appAccessMenuSource() throws -> String {

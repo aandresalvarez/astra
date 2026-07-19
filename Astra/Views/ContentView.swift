@@ -876,6 +876,16 @@ struct ContentView: View {
             // beside the traffic lights in every layout. It feeds the hover-to-peek
             // state (isSidebarToggleHovered); the native split-view toggle is
             // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
+            //
+            // `.collapsed` hides the sidebar footer (this control's normal home)
+            // with no trace at all — restore a fallback for just that state.
+            // `.docked`/`.overlay` both already keep the footer on screen.
+            if presentation.mode == .collapsed {
+                CollapsedSidebarUpdateToolbar(
+                    appUpdateController: appUpdateController,
+                    onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
+                )
+            }
             if topRightActions.showsToolbar {
                 ToolbarItem(placement: .primaryAction) {
                     WorkspaceTopRightToolbar(
@@ -2778,6 +2788,25 @@ struct ContentView: View {
             return CopilotCLIRuntime.detectPath()
         case let executableName:
             return RuntimePathResolver.detectExecutablePath(named: executableName)
+        }
+    }
+}
+
+/// Fallback for when the sidebar footer is off screen — see the `.collapsed` gate above.
+private struct CollapsedSidebarUpdateToolbar: ToolbarContent {
+    @ObservedObject var appUpdateController: AppUpdateController
+
+    let onCheckForUpdates: () -> Void
+
+    var body: some ToolbarContent {
+        if appUpdateController.shouldShowUpdateButton {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: onCheckForUpdates) {
+                    Label(appUpdateController.buttonTitle, systemImage: "arrow.down.circle")
+                }
+                .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
+                .accessibilityIdentifier("AppUpdateButton")
+            }
         }
     }
 }
