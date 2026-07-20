@@ -34,6 +34,13 @@ public final class MCPServer {
     private let tools: () throws -> [[String: Any]]
     private let diagnostics: (MCPServerDiagnostic) -> Void
     private let handleToolCall: (MCPToolCall) -> MCPServerReply
+    /// A JSON-RPC request ID only correlates one request with its response —
+    /// clients may reuse it after completion, and a numeric counter resets
+    /// when the helper process restarts. Durable consumers (e.g. the
+    /// workspace_job_start idempotency check) need an invocation identity that
+    /// is unique ACROSS helper processes, so every invocation id is scoped by
+    /// this per-process nonce.
+    private let sessionNonce = UUID().uuidString
 
     public init(
         name: String,
@@ -106,7 +113,7 @@ public final class MCPServer {
         switch handleToolCall(MCPToolCall(
             name: toolName,
             arguments: arguments,
-            invocationID: invocationID
+            invocationID: "\(sessionNonce):\(invocationID)"
         )) {
         case .result(let result):
             return encodeResult(id: id, result: result)
@@ -137,15 +144,18 @@ public final class MCPServer {
         }
     }
 
+    /// Raw request-id length is capped at 200 (not 256) so the composed
+    /// "\(sessionNonce):\(id)" invocation identity stays within downstream
+    /// consumers' 256-character validation limit.
     private func stableInvocationID(_ id: Any?) -> String? {
         switch id {
         case let value as String:
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !trimmed.isEmpty && trimmed.count <= 256 ? value : nil
+            return !trimmed.isEmpty && trimmed.count <= 200 ? value : nil
         case let value as NSNumber:
             guard !isJSONBoolean(value) else { return nil }
             let rendered = value.stringValue
-            return rendered.count <= 256 ? rendered : nil
+            return rendered.count <= 200 ? rendered : nil
         default:
             return nil
         }

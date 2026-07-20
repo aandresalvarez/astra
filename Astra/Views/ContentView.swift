@@ -2324,7 +2324,7 @@ struct ContentView: View {
             ws,
             existingWorkspaces: workspaces
         ) { [runtime] operationID in
-            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
+            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID, suppressTerminalWake: true)
         }
         // A confirmed-unconfirmed external job means the workspace (and its
         // markdown session) is still live — releasing the session or changing
@@ -2536,7 +2536,7 @@ struct ContentView: View {
     private func deleteTask(_ task: AgentTask) async {
         let deletedTaskID = task.id
         let outcome = await coordinator.deleteTask(task) { [runtime] operationID in
-            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
+            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID, suppressTerminalWake: true)
         }
         // A confirmed-unconfirmed external job means the task row (and its
         // browser/markdown session) is still live — clearing selection or

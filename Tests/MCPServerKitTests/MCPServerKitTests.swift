@@ -49,7 +49,14 @@ struct MCPServerKitTests {
         #expect(callResult["isError"] as? Bool == false)
         #expect(calls.map(\.name) == ["example.echo"])
         #expect(calls.first?.arguments["message"] as? String == "hello")
-        #expect(calls.first?.invocationID == "2")
+        // The invocation id is the raw JSON-RPC id scoped by a per-process
+        // nonce: request ids may be reused after completion and numeric
+        // counters reset on helper restart, so durable idempotency consumers
+        // need an identity unique across processes.
+        let invocationID = try #require(calls.first?.invocationID)
+        #expect(invocationID.hasSuffix(":2"))
+        let noncePart = String(invocationID.dropLast(2))
+        #expect(UUID(uuidString: noncePart) != nil)
 
         #expect(server.handleLine(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#) == nil)
         #expect(server.handleLine("   ") == nil)

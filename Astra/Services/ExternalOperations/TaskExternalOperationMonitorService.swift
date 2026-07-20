@@ -387,7 +387,7 @@ final class TaskExternalOperationMonitorService {
         operation.leaseOwner = nil
         operation.leaseExpiresAt = nil
         operation.updatedAt = now
-        persist(operation: "external_operation_monitoring_stopped")
+        persist(operation: "external_operation_monitoring_stopped", taskID: operation.taskID)
         return .applied
     }
 
@@ -406,7 +406,7 @@ final class TaskExternalOperationMonitorService {
         operation.leaseOwner = nil
         operation.leaseExpiresAt = nil
         operation.updatedAt = now
-        persist(operation: "external_operation_monitoring_resumed")
+        persist(operation: "external_operation_monitoring_resumed", taskID: operation.taskID)
         return .applied
     }
 
@@ -455,18 +455,30 @@ final class TaskExternalOperationMonitorService {
             current.nextCheckAt = now
         }
         current.updatedAt = now
-        persist(operation: "external_operation_reactivated")
+        persist(operation: "external_operation_reactivated", taskID: current.taskID)
         return .applied
     }
 
-    func cancelExternalWork(operationID: UUID) async -> TaskExternalOperationPollResult {
+    /// `suppressTerminalWake` is for destructive deletion flows: applying the
+    /// cancellation's terminal observation normally delivers a
+    /// `userFacingReasoning` wake, which launches a full write-capable provider
+    /// continuation — deletion would block on minutes of paid provider work
+    /// that can mutate the workspace immediately before it is removed. The
+    /// notification path still runs; only the provider wake is withheld.
+    func cancelExternalWork(
+        operationID: UUID,
+        suppressTerminalWake: Bool = false
+    ) async -> TaskExternalOperationPollResult {
         if let existing = inFlightCancellations[operationID] {
             return .coalesced(await existing.task.value)
         }
 
         let token = UUID()
         let task = Task { @MainActor [weak self] in
-            await self?.performCancellation(operationID: operationID) ?? .missing
+            await self?.performCancellation(
+                operationID: operationID,
+                suppressTerminalWake: suppressTerminalWake
+            ) ?? .missing
         }
         inFlightCancellations[operationID] = InFlightPoll(token: token, task: task)
         let result = await task.value
@@ -497,7 +509,10 @@ final class TaskExternalOperationMonitorService {
         return applied.result
     }
 
-    private func performCancellation(operationID: UUID) async -> TaskExternalOperationPollResult {
+    private func performCancellation(
+        operationID: UUID,
+        suppressTerminalWake: Bool = false
+    ) async -> TaskExternalOperationPollResult {
         guard let operation = fetchOperation(id: operationID) else { return .missing }
         guard operation.monitoringState != .quarantined else { return .quarantined }
         guard !operation.executionState.isTerminalObservation else { return .notMonitoring }
@@ -507,7 +522,7 @@ final class TaskExternalOperationMonitorService {
         operation.leaseOwner = leaseOwner
         operation.leaseExpiresAt = now.addingTimeInterval(leaseDuration)
         operation.updatedAt = now
-        persist(operation: "external_operation_cancel_claimed")
+        persist(operation: "external_operation_cancel_claimed", taskID: operation.taskID)
 
         let observation = await canceller.cancel(backendRequest(for: operation))
         let applied = apply(
@@ -516,7 +531,16 @@ final class TaskExternalOperationMonitorService {
             expectedGeneration: generation,
             expectedLeaseOwner: leaseOwner
         )
-        await deliver(applied)
+        let delivered = suppressTerminalWake
+            ? AppliedObservation(
+                result: applied.result,
+                notification: applied.notification,
+                notificationKey: applied.notificationKey,
+                wakeRequest: nil,
+                wakeKey: nil
+            )
+            : applied
+        await deliver(delivered)
         return applied.result
     }
 
@@ -536,7 +560,7 @@ final class TaskExternalOperationMonitorService {
         operation.leaseOwner = leaseOwner
         operation.leaseExpiresAt = now.addingTimeInterval(leaseDuration)
         operation.updatedAt = now
-        persist(operation: "external_operation_poll_claimed")
+        persist(operation: "external_operation_poll_claimed", taskID: operation.taskID)
         return AcquiredPoll(
             request: backendRequest(for: operation),
             generation: operation.generation
@@ -584,7 +608,7 @@ final class TaskExternalOperationMonitorService {
             operation.leaseOwner = nil
             operation.leaseExpiresAt = nil
             operation.updatedAt = now
-            persist(operation: "external_operation_stale_terminal_ignored")
+            persist(operation: "external_operation_stale_terminal_ignored", taskID: operation.taskID)
             return AppliedObservation(
                 result: .staleIgnored,
                 notification: nil,
@@ -633,7 +657,7 @@ final class TaskExternalOperationMonitorService {
         if intent == nil { operation.lastWakeKey = nil }
         let wakeKey = intent.map { "\(notificationKey)|\($0.rawValue)" }
         let shouldWake = wakeKey.map { operation.lastWakeKey != $0 } ?? false
-        persist(operation: "external_operation_observation_applied")
+        persist(operation: "external_operation_observation_applied", taskID: operation.taskID)
 
         let notification = shouldNotify
             ? TaskExternalOperationNotification(
@@ -807,7 +831,7 @@ final class TaskExternalOperationMonitorService {
               let operation = fetchOperation(id: operationID) else { return }
         operation.lastNotificationKey = deliveredKey
         operation.updatedAt = clock.now()
-        persist(operation: "external_operation_notification_acknowledged")
+        persist(operation: "external_operation_notification_acknowledged", taskID: operation.taskID)
     }
 
     private func acknowledgeWake(operationID: UUID, semanticKey deliveredKey: String) {
@@ -815,7 +839,7 @@ final class TaskExternalOperationMonitorService {
               let operation = fetchOperation(id: operationID) else { return }
         operation.lastWakeKey = deliveredKey
         operation.updatedAt = clock.now()
-        persist(operation: "external_operation_wake_acknowledged")
+        persist(operation: "external_operation_wake_acknowledged", taskID: operation.taskID)
     }
 
     private func isCurrentNotificationKey(operationID: UUID, semanticKey expectedKey: String) -> Bool {
@@ -895,10 +919,26 @@ final class TaskExternalOperationMonitorService {
         (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
     }
 
-    private func persist(operation: String) {
+    /// Passing the mutated operation's `taskID` resolves the owning workspace
+    /// so the change is exported to its `.astra-workspace.json` mirror.
+    /// `saveAndAutoExport(workspace: nil, ...)` saves but skips export — a user
+    /// who stops monitoring and quits would otherwise leave the mirror
+    /// describing the operation as active with stale generation/scheduling
+    /// state, and a backup/recovery import would reconstruct a state that
+    /// never matched the durable source.
+    private func persist(operation: String, taskID: UUID? = nil) {
+        var workspace: Workspace?
+        if let taskID {
+            var descriptor = FetchDescriptor<AgentTask>(
+                predicate: #Predicate<AgentTask> { $0.id == taskID }
+            )
+            descriptor.fetchLimit = 1
+            workspace = (try? modelContext.fetch(descriptor).first)?.workspace
+        }
         WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: nil,
+            workspace: workspace,
             modelContext: modelContext,
+            taskID: taskID,
             auditFields: ["operation": operation]
         )
     }

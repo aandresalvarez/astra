@@ -48,9 +48,12 @@ enum TaskSuccessfulCompletionService {
 
         // Completing one validation never supersedes another task-owned
         // operation. Re-evaluate the full set after the mutation above so a
-        // remaining active or validating row keeps the task waitingExternal.
+        // remaining active, validating, or stopped-but-still-executing row
+        // keeps the task waitingExternal ("Stop monitoring" leaves the
+        // external job running, so it must not unlock task completion).
         if let operation = operations.first(where: {
             $0.monitoringState == .active || $0.monitoringState == .validating
+                || ($0.monitoringState == .stopped && !$0.executionState.isTerminalObservation)
         }) {
             // An ambiguity/reasoning wake does not supersede the still-running
             // external operation. A successful explanatory provider turn

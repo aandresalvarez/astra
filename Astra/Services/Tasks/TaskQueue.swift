@@ -296,6 +296,19 @@ final class TaskQueue {
                         for artifact in task.artifacts {
                             artifact.task = sourceTask
                         }
+                        // TaskExternalOperation rows carry only a scalar taskID
+                        // (no cascade relationship), so deleting the transient
+                        // task would orphan its completed registrations —
+                        // recurring same-thread routines that complete through
+                        // an external-operation wake would accumulate
+                        // unreachable rows forever.
+                        let transientTaskID = task.id
+                        let orphanedOperations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>(
+                            predicate: #Predicate<TaskExternalOperation> { $0.taskID == transientTaskID }
+                        ))) ?? []
+                        for operation in orphanedOperations {
+                            modelContext.delete(operation)
+                        }
                         modelContext.delete(task)
                     }
                 } else {

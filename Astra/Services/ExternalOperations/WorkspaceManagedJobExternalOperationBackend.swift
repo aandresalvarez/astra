@@ -89,13 +89,25 @@ final class WorkspaceManagedJobBackendLocatorResolver {
         )
         descriptor.fetchLimit = 1
         guard let task = try? modelContext.fetch(descriptor).first,
-              task.runs.contains(where: { $0.id == request.originatingRunID }) else {
+              let originatingRun = task.runs.first(where: { $0.id == request.originatingRunID }) else {
             return nil
         }
         let jobRootPath = DockerWorkspaceMCPProjection.jobRootHostPath(task: task)
         guard !jobRootPath.isEmpty else { return nil }
 
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        // Control configuration must reflect the environment the job was
+        // LAUNCHED in, not the task's currently selected one: a pinned
+        // waitingExternal task can be retargeted to another Docker environment
+        // for its next retry, and rebuilding from the new selection would point
+        // cancellation/observation at the wrong container paths (or report
+        // unreachable), leaving the still-running original job uncontrollable.
+        let environment: WorkspaceExecutionEnvironment
+        if let launchSnapshot = originatingRun.executionEnvironmentSnapshotJSON,
+           !launchSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            environment = ExecutionEnvironmentStore.decode(launchSnapshot)
+        } else {
+            environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        }
         let currentDirectory = task.executionRootPath
             ?? task.workspace?.activeWorkingPath
             ?? task.workspace?.primaryPath
@@ -139,6 +151,11 @@ struct WorkspaceManagedJobExternalOperationBackend:
     /// `docker exec -d` call); this is a generous multiple of that so a slow
     /// but genuinely in-flight launch is never misclassified.
     private static let queuedLaunchGracePeriod: TimeInterval = 5 * 60
+    /// The job wrapper refreshes heartbeat.json every 10 seconds; a running
+    /// record whose heartbeat is this stale means the wrapper itself died
+    /// without writing result.json (the container being up proves nothing —
+    /// it is shared).
+    private static let staleHeartbeatGracePeriod: TimeInterval = 5 * 60
     private let locatorResolver: WorkspaceManagedJobBackendLocatorResolver
     private let reachabilityProbe: any DockerContainerReachabilityProbing
 
@@ -182,6 +199,18 @@ struct WorkspaceManagedJobExternalOperationBackend:
         // prolonged queuing as an interruption so a real terminal wake fires.
         if executionState == .queued,
            Date().timeIntervalSince(record.createdAt) > Self.queuedLaunchGracePeriod {
+            executionState = .interrupted
+        }
+        // A detached wrapper that dies without writing result.json leaves the
+        // record `.running` while the SHARED executor container stays up, so
+        // container reachability alone reports the job healthy forever and the
+        // task never leaves waitingExternal. The wrapper refreshes
+        // heartbeat.json every 10s; treat a heartbeat far beyond that cadence
+        // (or a running record that never produced one) as an interruption so
+        // a real terminal wake fires. The threshold is a generous multiple of
+        // the cadence to tolerate host sleep/load hiccups.
+        if executionState == .running,
+           Date().timeIntervalSince(record.lastHeartbeatAt ?? record.createdAt) > Self.staleHeartbeatGracePeriod {
             executionState = .interrupted
         }
         guard !executionState.isTerminalObservation,

@@ -65,13 +65,16 @@ enum TaskExternalOperationRegistrationService {
         modelContext: ModelContext,
         now: Date = Date()
     ) -> [TaskExternalOperationRegistrationOutcome] {
-        let existing = operations(taskID: task.id, modelContext: modelContext)
-        // Imported/shared registrations are a hard no-contact boundary. Their
-        // safe mirror rows are present solely to explain why the task is
-        // waiting; startup must not adopt sibling backend files around them.
-        guard !existing.contains(where: { $0.monitoringState == .quarantined }) else {
-            return []
-        }
+        // Imported/shared registrations are a hard no-contact boundary, but it
+        // is scoped to each imported operation's OWN identity, not the whole
+        // task: `registerVerifiedReceipt` returns `.alreadyRegistered` for any
+        // receipt whose externalIdentity matches an existing (including
+        // quarantined) row, so a quarantined import is never re-adopted or
+        // contacted. A task-wide bail here would instead suppress adoption of
+        // a NEW locally-launched receipt merely because unrelated imported
+        // history exists — leaving that fresh job unmonitored after a crash in
+        // the launch-to-registration window, with orphan recovery then
+        // terminalizing its run and exposing a duplicate-launch retry.
 
         let jobRoot = DockerWorkspaceMCPProjection.jobRootHostPath(task: task)
         guard !jobRoot.isEmpty else { return [] }

@@ -1901,7 +1901,10 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // External-operation wakes disable reuse at the private continuation decision boundary.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_155, .owner("Runtime worker execution")),
+            // + PR #328: failure-reasoning wakes bypass ordinary success
+            // validation (deliverables/runTests/aiCheck) so a resume-phase
+            // validation failure can't pre-empt the external-outcome review.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_185, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

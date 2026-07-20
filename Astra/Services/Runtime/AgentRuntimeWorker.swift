@@ -1167,13 +1167,38 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            let blockedByDeliverableVerification = await Self.applyDeliverableVerificationFailureIfNeeded(
-                task: task,
-                run: run,
-                modelContext: modelContext
-            )
+            // A userFacingReasoning wake narrates an ALREADY-terminal external
+            // failure; its success means "the explanation ran", not "the
+            // task's work is valid" — deliverable verification and
+            // runTests/aiCheck must not judge it. Adapters that validate
+            // resume phases (Copilot, Antigravity) would otherwise let a
+            // configured runTests failure mark the task .failed before
+            // apply() could route it to review, and the wake sink — seeing no
+            // resolved outcome — would relaunch the same paid reasoning run
+            // and test suite on every scheduler pass, forever. Scoped to
+            // terminal-failure target operations: completion-validation wakes
+            // (processCompleted) still run the full validation gates, which
+            // are exactly how ASTRA validates external success.
+            let isFailureReasoningWake = executionPolicy.externalOperationID
+                .flatMap { operationID in
+                    TaskExternalOperationRegistrationService
+                        .operations(taskID: task.id, modelContext: modelContext)
+                        .first { $0.id == operationID }
+                }
+                .map { $0.executionState.isTerminalObservation && $0.executionState != .processCompleted }
+                ?? false
+            let blockedByDeliverableVerification: Bool
+            if isFailureReasoningWake {
+                blockedByDeliverableVerification = false
+            } else {
+                blockedByDeliverableVerification = await Self.applyDeliverableVerificationFailureIfNeeded(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+            }
             if !blockedByDeliverableVerification {
-                if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
+                if !isFailureReasoningWake, runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     switch task.validationStrategy {
                     case .manual:
                         let completed = TaskSuccessfulCompletionService.apply(

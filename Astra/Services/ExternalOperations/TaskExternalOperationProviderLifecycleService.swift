@@ -97,7 +97,11 @@ enum TaskExternalOperationProviderLifecycleService {
               run.task?.id == task.id,
               (!requireOriginatingRun || operation.originatingRunID == run.id),
               task.status != .cancelled,
-              [.active, .validating, .completed].contains(operation.monitoringState) else {
+              // `.stopped` is included: stopping MONITORING leaves the external
+              // job running (the confirmation says so), so a stopped
+              // nonterminal registration must still detach the provider turn
+              // rather than let it complete the task around the live job.
+              [.active, .validating, .completed, .stopped].contains(operation.monitoringState) else {
             return false
         }
 
@@ -149,7 +153,8 @@ enum TaskExternalOperationProviderLifecycleService {
             modelContext: modelContext
         ).first(where: {
             $0.originatingRunID == run.id
-                && [.active, .validating, .completed].contains($0.monitoringState)
+                && ([.active, .validating, .completed].contains($0.monitoringState)
+                        || ($0.monitoringState == .stopped && !$0.executionState.isTerminalObservation))
         }) else {
             return false
         }
