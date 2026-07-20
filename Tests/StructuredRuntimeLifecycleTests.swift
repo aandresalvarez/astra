@@ -18,7 +18,7 @@ private func makeStructuredRuntimeLifecycleContainer() throws -> ModelContainer 
 struct StructuredRuntimeLifecycleTests {
     @Test("Known lifecycle frames are transient controls across structured runtimes")
     func knownLifecycleFramesAreTransientControls() {
-        let claudeLine = #"{"type":"stream_event","event":{"type":"content_block_start"}}"#
+        let claudeLine = #"{"type":"system","subtype":"status","status":"requesting","uuid":"74b4705c-e0ac-45f0-9693-26d184a40c32","session_id":"f6c2c835-49a4-4141-9bfd-68f07f4ebcc7"}"#
         let cursorLine = #"{"type":"stream_event","event":{"type":"message_stop"}}"#
         let fixtures: [(name: String, line: String, parsed: [ParsedEvent], agent: [AgentEvent])] = [
             (
@@ -78,6 +78,36 @@ struct StructuredRuntimeLifecycleTests {
             #expect(monitor.estimatedTokens == 0)
             #expect(monitor.turnCount == 0)
         }
+    }
+
+    @MainActor
+    @Test("Claude status frames do not establish a session or durable start")
+    func claudeStatusDoesNotEstablishSessionOrStart() throws {
+        let line = #"{"type":"system","subtype":"status","status":"requesting","uuid":"74b4705c-e0ac-45f0-9693-26d184a40c32","session_id":"f6c2c835-49a4-4141-9bfd-68f07f4ebcc7"}"#
+        let container = try makeStructuredRuntimeLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Status", goal: "Keep provider status transient")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let events = StreamEventParser.parseAll(line: line)
+            .flatMap(AgentEventRecorder.agentEvents(from:))
+        #expect(events.count == 1)
+        #expect(events.allSatisfy(Self.isAgentControl))
+        for event in events {
+            AgentEventRecorder.recordClaudeEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: context,
+                recordingState: AgentEventRecordingState()
+            )
+        }
+
+        #expect(task.sessionId == nil)
+        #expect(run.providerSessionId == nil)
+        #expect(task.events.isEmpty)
     }
 
     @Test("Valid structured JSON never falls back to transcript text")

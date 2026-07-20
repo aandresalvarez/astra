@@ -15,6 +15,7 @@ final class AgentEventRecordingState {
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
+    private var runsWithProviderStart: Set<UUID> = []
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -33,6 +34,17 @@ final class AgentEventRecordingState {
 
     func outputCameFromCompletedSummary(for run: TaskRun) -> Bool {
         runsWithCompletedOutput.contains(run.id)
+    }
+
+    /// A provider run has one durable start boundary. Stream retries and
+    /// duplicate initialization frames must not create repeated lifecycle
+    /// events or repeatedly invalidate the task transcript.
+    func registerProviderStart(for run: TaskRun, task: AgentTask) -> Bool {
+        guard !runsWithProviderStart.contains(run.id) else { return false }
+        runsWithProviderStart.insert(run.id)
+        return !task.events.contains {
+            $0.run?.id == run.id && $0.type == TaskEventTypes.Task.started.rawValue
+        }
     }
 
     func appendConversationChunk(
@@ -491,6 +503,11 @@ enum AgentEventRecorder {
             break
 
         case .started(let sessionID, let model):
+            let shouldRecordStart = recordingState?.registerProviderStart(for: run, task: task)
+                ?? !task.events.contains {
+                    $0.run?.id == run.id && $0.type == TaskEventTypes.Task.started.rawValue
+                }
+            guard shouldRecordStart else { return }
             recordingState?.breakConversationCoalescing(for: run)
             if let sessionID {
                 task.sessionId = sessionID

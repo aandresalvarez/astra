@@ -331,6 +331,39 @@ struct StreamParserTests {
         #expect(sessionId == "s1")
     }
 
+    @Test("Claude system status remains a transient control")
+    func systemStatusIsControl() throws {
+        let json = #"{"type":"system","subtype":"status","status":"requesting","uuid":"74b4705c-e0ac-45f0-9693-26d184a40c32","session_id":"f6c2c835-49a4-4141-9bfd-68f07f4ebcc7"}"#
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .control(let type) = parsed else {
+            Issue.record("Expected .control, got \(String(describing: parsed))")
+            return
+        }
+        #expect(type == "system.status")
+    }
+
+    @Test("Claude post-turn summaries remain transient controls")
+    func postTurnSummaryIsControl() throws {
+        let json = #"{"type":"system","subtype":"post_turn_summary","summarizes_uuid":"u1","status_category":"completed"}"#
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .control(let type) = parsed else {
+            Issue.record("Expected .control, got \(String(describing: parsed))")
+            return
+        }
+        #expect(type == "system.post_turn_summary")
+    }
+
+    @Test("Unknown Claude system subtypes remain observable")
+    func unknownSystemSubtypeIsUnknown() throws {
+        let json = #"{"type":"system","subtype":"future_lifecycle","session_id":"s1"}"#
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .unknown(let type) = parsed else {
+            Issue.record("Expected .unknown, got \(String(describing: parsed))")
+            return
+        }
+        #expect(type == "system.future_lifecycle")
+    }
+
     @Test("local_agent task_type also parsed as teammateStarted")
     func localAgentStarted() throws {
         let json = """
