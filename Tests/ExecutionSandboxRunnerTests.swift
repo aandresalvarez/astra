@@ -103,6 +103,15 @@ struct ExecutionSandboxRunnerTests {
         )
     }
 
+    private var testDockerRuntimeProvider: AgentRuntimeProcessRunner.DockerRuntimeProvider {
+        {
+            DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
+        }
+    }
+
     /// Builds sandbox settings from an isolated `UserDefaults` suite (never
     /// `.standard`) so concurrently-running suites that also flip global sandbox
     /// keys (`ExecutionSandboxTests`, `AgentUtilityRuntimeTests`) can't race this
@@ -230,7 +239,10 @@ struct ExecutionSandboxRunnerTests {
         )
 
         withStandardEnforcement(.off) { sandboxSettingsProvider in
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: ws.path),
                 context: context
@@ -939,7 +951,10 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context
@@ -982,14 +997,18 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
-                GitCredentialSandboxContext(
-                    readablePaths: [gitConfig.path],
-                    writablePaths: [gitDirectory.path],
-                    transports: [.ssh],
-                    diagnostics: []
-                )
-            })
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                gitCredentialContextProvider: { _ in
+                    GitCredentialSandboxContext(
+                        readablePaths: [gitConfig.path],
+                        writablePaths: [gitDirectory.path],
+                        transports: [.ssh],
+                        diagnostics: []
+                    )
+                },
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context
