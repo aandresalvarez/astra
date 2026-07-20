@@ -24,6 +24,7 @@ struct TaskSidebarContainerView: View {
         order: .reverse
     ) private var turnRequests: [TaskTurnRequest]
 
+    let appUpdateController: AppUpdateController
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
@@ -54,6 +55,7 @@ struct TaskSidebarContainerView: View {
 
     var body: some View {
         TaskSidebarView(
+            appUpdateController: appUpdateController,
             tasks: tasks,
             selectedTask: $selectedTask,
             taskQueue: taskQueue,
@@ -343,6 +345,7 @@ enum SidebarWorkspaceTaskList {
 }
 
 struct TaskSidebarView: View {
+    let appUpdateController: AppUpdateController
     let tasks: [AgentTask]
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -666,7 +669,7 @@ struct TaskSidebarView: View {
         VStack(spacing: 0) {
             Divider()
                 .opacity(0.35)
-            AppAccessMenu()
+            AppAccessMenu(appUpdateController: appUpdateController)
         }
         .accessibilityIdentifier("AppAccessSidebarFooter")
     }

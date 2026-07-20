@@ -70,6 +70,7 @@ struct ContentView: View {
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
+    @State private var packageImportPresentation = WorkspacePackageImportSheetPresentation()
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
     @State private var renamingWorkspace: Workspace?
@@ -499,6 +500,7 @@ struct ContentView: View {
     /// the same `SidebarSurface` so the two never diverge in style.
     private var sidebarContent: some View {
         TaskSidebarContainerView(
+            appUpdateController: appUpdateController,
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
@@ -875,11 +877,16 @@ struct ContentView: View {
             // beside the traffic lights in every layout. It feeds the hover-to-peek
             // state (isSidebarToggleHovered); the native split-view toggle is
             // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
-            ContentToolbar(
-                appUpdateController: appUpdateController,
-                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
-            )
-
+            //
+            // `.collapsed` hides the sidebar footer (this control's normal home)
+            // with no trace at all — restore a fallback for just that state.
+            // `.docked`/`.overlay` both already keep the footer on screen.
+            if presentation.mode == .collapsed {
+                CollapsedSidebarUpdateToolbar(
+                    appUpdateController: appUpdateController,
+                    onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
+                )
+            }
             if topRightActions.showsToolbar {
                 ToolbarItem(placement: .primaryAction) {
                     WorkspaceTopRightToolbar(
@@ -1061,6 +1068,15 @@ struct ContentView: View {
             if let ws = effectiveWorkspace {
                 ScheduleEditorView(workspace: ws)
             }
+        }
+        .sheet(item: $packageImportPresentation.presented, onDismiss: { packageImportPresentation.sheetDismissed() }) { request in
+            WorkspacePackageImportReviewView(packageURL: request.url) { imported in
+                packageImportPresentation.presented = nil
+                if let imported {
+                    applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(imported))
+                }
+            }
+            .id(request.id)
         }
         .sheet(item: $editingSchedule) { schedule in
             if let ws = schedule.workspace ?? effectiveWorkspace {
@@ -2291,13 +2307,22 @@ struct ContentView: View {
         let urls = WorkspaceImportPanel.selectedURLs()
         guard !urls.isEmpty else { return }
 
+        // .astra-share packages get the review-before-import flow (each selected
+        // one reviewed in turn); everything else stays on the legacy path.
+        let partition = WorkspacePackageImportRouting.partition(urls)
+        if !partition.packageURLs.isEmpty {
+            packageImportPresentation.request(partition.packageURLs.map(WorkspacePackageImportRequest.init(url:)))
+        }
+        guard !partition.legacyURLs.isEmpty else { return }
+
         let result = workspaceActionCoordinator.importWorkspaces(
-            from: urls,
+            from: partition.legacyURLs,
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
     }
+
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {
@@ -2787,7 +2812,8 @@ struct ContentView: View {
     }
 }
 
-private struct ContentToolbar: ToolbarContent {
+/// Fallback for when the sidebar footer is off screen — see the `.collapsed` gate above.
+private struct CollapsedSidebarUpdateToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
     let onCheckForUpdates: () -> Void

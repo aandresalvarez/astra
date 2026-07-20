@@ -1,0 +1,1267 @@
+import Foundation
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+
+/// What an embedded capability needs on the recipient machine, surfaced so the
+/// pre-import review can say more than "installs as a draft".
+struct WorkspacePackageCapabilityRequirements: Sendable, Equatable {
+    var cliPrerequisites: [String]
+    var accountRequirements: [String]
+    var isEmpty: Bool { cliPrerequisites.isEmpty && accountRequirements.isEmpty }
+}
+
+struct WorkspacePackageValidationReport: Sendable {
+    var manifest: WorkspacePackageManifest?
+    var shareDocument: WorkspaceShareDocument?
+    var appReports: [String: WorkspaceAppPackageValidationReport]
+    var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
+    /// Whole-package fingerprint (digest of `checksums.json`) captured in the
+    /// SAME validation call that built the plan, so the review's displayed
+    /// inventory and the digest the import is bound to come from one read of the
+    /// package — a source swapped between two separate reads can't pair one
+    /// package's plan with another's accepted digest.
+    var packageFingerprint: String?
+    var issues: [PortablePackageValidationIssue]
+
+    var blockers: [PortablePackageValidationIssue] {
+        issues.filter { $0.severity == .blocker }
+    }
+
+    var canInstall: Bool {
+        blockers.isEmpty && manifest != nil && shareDocument != nil
+    }
+}
+
+/// Reads and validates a `.astra-share` portable workspace package. Every
+/// byte read here is treated as untrusted — the package may have come from
+/// anywhere — so reads go through `PortablePackageSafeFileReader`'s
+/// O_NOFOLLOW-safe path walk rather than an unguarded raw file read.
+struct WorkspacePackageService {
+    var appPackageService = WorkspaceAppPackageService()
+
+    /// Local-tool `toolType`s an untrusted imported tool may use: plain
+    /// command-executing types that `LocalToolSecurityPolicy` actually vets.
+    /// Excludes `mcp` (reroutes runtime handling) and the `workspaceAppRead`
+    /// sentinel (changes exposure), and anything unknown. Empty defaults to CLI.
+    static let allowedImportedLocalToolTypes: Set<String> = ["", "cli", "script", "shell"]
+
+    func validatePackage(at packageURL: URL) -> WorkspacePackageValidationReport {
+        var issues: [PortablePackageValidationIssue] = []
+
+        // Bound the untrusted package BEFORE hashing anything: a crafted tree of
+        // many files (or a few near-limit files) would otherwise be enumerated
+        // and digested in full during review — the staging budget only applies
+        // after the user confirms. This single lstat walk also surfaces the
+        // symlink rejection `stageBoundedCopy` applies at import as a
+        // pre-confirmation blocker, so the review never approves a package the
+        // import will reject.
+        if let violation = PortablePackageSafeFileReader.reviewBoundsViolation(in: packageURL) {
+            let message: String
+            switch violation {
+            case .containsSymlink(let path):
+                message = "Package contains a symbolic link (\(path)); links are not allowed in a portable package."
+            case .tooManyFiles(let limit):
+                message = "Package exceeds the \(limit)-file limit for import review."
+            case .tooLarge(let limit):
+                message = "Package exceeds the \(limit / (1024 * 1024))MB size limit for import review."
+            case .copyFailed(let path):
+                message = "Package could not be read (\(path))."
+            }
+            issues.append(blocker("/", message))
+            return WorkspacePackageValidationReport(manifest: nil, shareDocument: nil, appReports: [:], issues: issues)
+        }
+
+        // Capture the whole-package fingerprint (checksums.json digest) BEFORE
+        // decoding anything, and re-verify it hasn't changed at the end of this
+        // call. The package may sit in an attacker-writable location; without this
+        // an attacker could let package A finish validation, then swap
+        // checksums.json (and the rest) for package B before the final digest —
+        // the review would display A while the recorded fingerprint matched B, so
+        // the coordinator (which binds the confirmed import to that fingerprint)
+        // would accept and import B. Binding every read to one stable fingerprint
+        // makes such a mid-validation swap a blocker.
+        let initialFingerprint = try? PortablePackageSafeFileReader.digest(
+            rootURL: packageURL,
+            relativePath: "checksums.json"
+        )
+
+        let manifest: WorkspacePackageManifest? = decode(
+            WorkspacePackageManifest.self,
+            rootURL: packageURL,
+            relativePath: "manifest.json",
+            issuePath: "/manifest.json",
+            issues: &issues
+        )
+        let shareDocument: WorkspaceShareDocument? = decode(
+            WorkspaceShareDocument.self,
+            rootURL: packageURL,
+            relativePath: "workspace-share.json",
+            issuePath: "/workspace-share.json",
+            issues: &issues
+        )
+        let declaredChecksums: [WorkspacePackageChecksum]? = decode(
+            [WorkspacePackageChecksum].self,
+            rootURL: packageURL,
+            relativePath: "checksums.json",
+            issuePath: "/checksums.json",
+            issues: &issues
+        )
+
+        if let manifest {
+            let actualShareDigest = (try? PortablePackageSafeFileReader.digest(
+                rootURL: packageURL,
+                relativePath: "workspace-share.json"
+            )) ?? ""
+            if shareDocument != nil, manifest.sourceShareDigest != actualShareDigest {
+                issues.append(blocker("/manifest.json/sourceShareDigest", "Manifest digest does not match workspace-share.json."))
+            }
+            // The review sheet and the destination directory name are derived
+            // from `manifest.workspaceName`, but the workspace is actually
+            // created with `workspace-share.json`'s name. Bind them so the
+            // imported workspace's identity can't differ from the one reviewed.
+            if let shareName = shareDocument?.name, shareName != manifest.workspaceName {
+                issues.append(blocker(
+                    "/manifest.json/workspaceName",
+                    "Manifest workspace name (\(manifest.workspaceName)) does not match workspace-share.json name (\(shareName))."
+                ))
+            }
+            validateVersionGate(
+                minimumASTRAVersion: manifest.minimumASTRAVersion,
+                path: "/manifest.json/minimumASTRAVersion",
+                issues: &issues
+            )
+        }
+
+        if let declaredChecksums {
+            validateChecksums(declaredChecksums, packageURL: packageURL, issues: &issues)
+            validateAllFilesAreChecksummed(declaredChecksums, packageURL: packageURL, issues: &issues)
+        } else {
+            issues.append(blocker("/checksums.json", "Package is missing checksums.json."))
+        }
+
+        validateNoForbiddenContent(
+            checksums: declaredChecksums,
+            manifest: manifest,
+            packageURL: packageURL,
+            issues: &issues
+        )
+        if let shareDocument {
+            // Reject a future/unsupported format up front: Swift's decoder
+            // ignores unknown fields, so a newer additive format would otherwise
+            // decode and import with the semantics this build doesn't understand
+            // silently dropped.
+            if shareDocument.formatVersion > WorkspaceShareDocument.currentFormatVersion {
+                issues.append(blocker(
+                    "/workspace-share.json/formatVersion",
+                    "Package format version \(shareDocument.formatVersion) is newer than this build supports (\(WorkspaceShareDocument.currentFormatVersion))."
+                ))
+            }
+            validateShareFreeTextContent(shareDocument, issues: &issues)
+            validateShareResourceSafety(shareDocument, issues: &issues)
+        }
+
+        // Reports are keyed by logical ID, so two entries sharing one would make
+        // the later report overwrite the earlier — and the planner would then
+        // show a safe bundle's status for a permission-sensitive one while the
+        // coordinator imports both (`createApp` suffixes the collided ID). Reject
+        // duplicate app logical IDs so the reviewed status stays bound to the
+        // bundle that installs.
+        // Bound manifest inventory cardinality too (the share-document bound only
+        // covers `workspace-share.json` arrays): a sub-limit manifest could still
+        // hold hundreds of thousands of short account/entry values that the
+        // planner maps into rows rendered in a non-lazy stack.
+        let manifestInventoryLimit = 1000
+        var appEntriesWithinLimit = true
+        var capabilityEntriesWithinLimit = true
+        if let manifest {
+            let manifestCounts: [(String, Int)] = [
+                ("appEntries", manifest.appEntries.count),
+                ("capabilityEntries", manifest.capabilityEntries.count),
+                ("googleAccountsRequiringReauth", manifest.googleAccountsRequiringReauth.count),
+                ("sshConnectionsRequiringLocalKeys", manifest.sshConnectionsRequiringLocalKeys.count),
+                ("requiredConnectorServiceTypes", manifest.requiredConnectorServiceTypes.count)
+            ]
+            for (kind, count) in manifestCounts where count > manifestInventoryLimit {
+                issues.append(blocker("/manifest.json/\(kind)", "Package declares \(count) \(kind), exceeding the \(manifestInventoryLimit) limit for import review."))
+            }
+            appEntriesWithinLimit = manifest.appEntries.count <= manifestInventoryLimit
+            capabilityEntriesWithinLimit = manifest.capabilityEntries.count <= manifestInventoryLimit
+        }
+        rejectDuplicateNames((manifest?.appEntries ?? []).map(\.logicalID), kind: "app entries", issues: &issues)
+        // Distinct logical IDs may point at the SAME embedded bundle path; each
+        // would otherwise re-enumerate and re-hash that bundle (a ~32MB bundle ×
+        // 1000 entries = tens of GB of work just to open the review). Reject the
+        // duplicate paths outright — a shared package has one bundle per app.
+        rejectDuplicateNames((manifest?.appEntries ?? []).map(\.relativeBundlePath), kind: "app bundle paths", issues: &issues)
+        var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
+        // Skip the per-entry enumerate+hash loop once the app inventory is over
+        // the limit: the package is already rejected, and a sub-10MB manifest can
+        // repeat tens of thousands of entries pointing at the same large embedded
+        // bundle, so re-validating each would re-enumerate and re-hash that bundle
+        // for nothing. (Duplicate-ID rejection does not bound this — repeats can
+        // carry distinct IDs.)
+        if appEntriesWithinLimit {
+            // Validate each unique bundle path once even within the limit, so a
+            // duplicate-path package (already blocked above) can't force repeated
+            // hashing of the same large bundle.
+            var validatedBundlePaths: Set<String> = []
+            for entry in manifest?.appEntries ?? [] where validatedBundlePaths.insert(entry.relativeBundlePath).inserted {
+                validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
+            }
+        }
+        // Requirements are keyed by packageID, so two entries sharing one would
+        // let the second overwrite the first — the planner then shows the last
+        // payload's prerequisites for both while the coordinator installs the
+        // first and skips the rest. Reject duplicate capability entry IDs.
+        rejectDuplicateNames((manifest?.capabilityEntries ?? []).map(\.packageID), kind: "capability entries", issues: &issues)
+        // Distinct IDs that map to the SAME case-insensitive storage name
+        // (`a.b`/`a-b` → `a-b.json`) are shown as installable by the planner but
+        // the coordinator installs only the first and silently skips the rest, so
+        // confirmation imports less than the reviewed inventory. Reject the
+        // collision up front, matching the coordinator's storage-key comparison.
+        rejectDuplicateNames(
+            (manifest?.capabilityEntries ?? []).map { CapabilityLibrary.safeFileName(for: $0.packageID).lowercased() },
+            kind: "capability storage names",
+            issues: &issues
+        )
+        // Same repeated-read guard as the app entries: reject distinct capability
+        // IDs that reuse one payload path.
+        rejectDuplicateNames((manifest?.capabilityEntries ?? []).map(\.relativePath), kind: "capability payload paths", issues: &issues)
+        var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
+        // Same guard as the app loop: skip re-reading+hashing every embedded
+        // capability once the inventory is over the limit and the package is
+        // already rejected.
+        if capabilityEntriesWithinLimit {
+            var validatedCapabilityPaths: Set<String> = []
+            for entry in manifest?.capabilityEntries ?? [] where validatedCapabilityPaths.insert(entry.relativePath).inserted {
+                validateEmbeddedCapability(
+                    entry,
+                    packageURL: packageURL,
+                    requirements: &capabilityRequirements,
+                    issues: &issues
+                )
+            }
+        }
+
+        // Re-read the fingerprint and require it to match the one captured before
+        // decoding: if checksums.json changed under us during validation, the
+        // package was swapped mid-review and every decoded artifact above is
+        // untrustworthy — fail closed rather than pairing this review with a
+        // fingerprint the import would bind to.
+        let finalFingerprint = try? PortablePackageSafeFileReader.digest(
+            rootURL: packageURL,
+            relativePath: "checksums.json"
+        )
+        if initialFingerprint != finalFingerprint {
+            issues.append(blocker("/checksums.json", "Package changed during validation; re-open it to review."))
+        }
+
+        return WorkspacePackageValidationReport(
+            manifest: manifest,
+            shareDocument: shareDocument,
+            appReports: appReports,
+            capabilityRequirements: capabilityRequirements,
+            packageFingerprint: initialFingerprint,
+            issues: issues
+        )
+    }
+
+    // MARK: - Embedded package cross-validation
+
+    private func validateEmbeddedApp(
+        _ entry: WorkspacePackageAppEntry,
+        packageURL: URL,
+        appReports: inout [String: WorkspaceAppPackageValidationReport],
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        // `relativeBundlePath` is untrusted manifest data. Unlike capability
+        // paths (which flow through the O_NOFOLLOW safe reader), it is handed
+        // straight to `WorkspaceAppPackageService.validatePackage` as a package
+        // ROOT, so a value like `../existing.astra-app` or a symlinked bundle
+        // would let an outer package — whose checksums cover only its own
+        // files — validate and import a bundle outside the `.astra-share`
+        // directory, defeating containment. Reject anything that isn't a
+        // portable relative path staying inside the package root.
+        guard let bundleURL = Self.containedBundleURL(
+            packageURL: packageURL,
+            relativePath: entry.relativeBundlePath
+        ) else {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app bundle path must stay inside the package."
+            ))
+            return
+        }
+        let report = appPackageService.validatePackage(at: bundleURL)
+        appReports[entry.logicalID] = report
+        if !report.canInstall {
+            issues.append(blocker("/\(entry.relativeBundlePath)", "Embedded workspace app package did not validate."))
+        }
+        // The `.astra-share` profile is configuration-only: an embedded app must
+        // carry ONLY its manifest + template, never app-owned data. A
+        // `templatePlusSeedData`/`fullAppExport` bundle would have its
+        // `storage/data/exports.json` records persisted by the app importer —
+        // undisclosed data entering through this package. Require template-only.
+        if let exportMode = report.package?.exportMode, exportMode != .templateOnly {
+            issues.append(blocker(
+                "/\(entry.relativeBundlePath)",
+                "Embedded app export mode '\(exportMode.rawValue)' is not permitted; a shared package may embed template-only apps."
+            ))
+        }
+        // The outer entry's declared `logicalID`/`displayName` drive the review
+        // plan, but the coordinator imports the nested bundle's OWN manifest. If
+        // the entry advertises one identity while the bundle validates to a
+        // different `app.id`, the reviewed inventory names an app other than the
+        // one installed. Bind them, mirroring the embedded-capability ID check.
+        if let embeddedAppID = report.manifest?.app.id, embeddedAppID != entry.logicalID {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app ID (\(embeddedAppID)) does not match its manifest entry ID (\(entry.logicalID))."
+            ))
+        }
+        // The review sheet shows `entry.displayName`, but the coordinator imports
+        // and reports the embedded manifest's own `app.name`. A benign display
+        // name over a different embedded name would let the recipient approve an
+        // app identity other than the one shown — bind the name alongside the ID.
+        if let embeddedAppName = report.manifest?.app.name, embeddedAppName != entry.displayName {
+            issues.append(blocker(
+                "/manifest.json/appEntries/\(entry.logicalID)",
+                "Embedded app name (\(embeddedAppName)) does not match its manifest entry display name (\(entry.displayName))."
+            ))
+        }
+        // The outer package's own version gate can't mask an embedded app's
+        // — check both, so a recipient on an old build can't pass the outer
+        // gate and only then discover an inner one silently can't run.
+        if let embeddedMinVersion = report.package?.minimumASTRAVersion {
+            validateVersionGate(
+                minimumASTRAVersion: embeddedMinVersion,
+                path: "/\(entry.relativeBundlePath)/package.json/minimumASTRAVersion",
+                issues: &issues
+            )
+        }
+        let actualDigest = (try? PortablePackageSafeFileReader.digest(
+            rootURL: bundleURL,
+            relativePath: "checksums.json"
+        )) ?? ""
+        if entry.packageDigest != actualDigest {
+            issues.append(blocker("/\(entry.relativeBundlePath)", "Embedded app package digest does not match the manifest entry."))
+        }
+    }
+
+    /// Returns the bundle URL only when `relativePath` is a portable relative
+    /// path that stays inside `packageURL` even after symlink resolution;
+    /// otherwise `nil`. Root and candidate are resolved identically so a
+    /// `/private`-alias collapse (see `WorkspaceFileLayout.appDirectoryURL`)
+    /// applies to both and can't produce a false mismatch.
+    private static func containedBundleURL(packageURL: URL, relativePath: String) -> URL? {
+        guard PortablePackageSafeFileReader.isPortableRelativePath(relativePath) else { return nil }
+        let root = packageURL.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = packageURL.appendingPathComponent(relativePath)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path == root.path || candidate.path.hasPrefix(rootPath) else { return nil }
+        return packageURL.appendingPathComponent(relativePath)
+    }
+
+    private func validateEmbeddedCapability(
+        _ entry: WorkspacePackageCapabilityEntry,
+        packageURL: URL,
+        requirements: inout [String: WorkspacePackageCapabilityRequirements],
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        guard let data = try? PortablePackageSafeFileReader.readData(rootURL: packageURL, relativePath: entry.relativePath) else {
+            issues.append(blocker("/\(entry.relativePath)", "Embedded capability package is missing or unreadable."))
+            return
+        }
+        let actualDigest = WorkspaceAppService.digest(for: data)
+        if entry.sha256 != actualDigest {
+            issues.append(blocker("/\(entry.relativePath)", "Embedded capability package digest does not match the manifest entry."))
+        }
+        // The existing capability-import validator owns the deep checks
+        // (malformed JSON, unsafe MCP transport, shell-metacharacter tools,
+        // identity/version literals). Prerequisites are deliberately NOT
+        // checked here: a missing CLI on the recipient machine is a
+        // readiness/review item for the import plan, not a package defect.
+        let capabilityReport = CapabilityPackageValidator.validate(data: data, checkPrerequisites: false)
+        for issue in capabilityReport.blockers {
+            issues.append(blocker("/\(entry.relativePath)", "\(issue.title): \(issue.message)"))
+        }
+        // Package JSON is not a trust boundary (see CapabilityGovernanceNormalizer):
+        // an exporter that skipped the local-draft clamp, or a package hand-edited
+        // after export, must not be trusted just because it decodes cleanly. This
+        // check must use the RAW decode — the validator's returned package is
+        // already normalized to draft, so checking that copy would always pass.
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let rawCapability = try? decoder.decode(PluginPackage.self, from: data) else { return }
+        // The manifest entry's declared `packageID` drives the review plan, the
+        // enabled-set draft stripping on import, and the "already installed"
+        // check — but the importer installs the DECODED package, keyed by its
+        // own `PluginPackage.id`. If the two disagree, a package could advertise
+        // an innocuous ID while installing (or overwriting) a different one, and
+        // the enabled-set stripping — which filters by the declared entry ID —
+        // would miss the real installed ID, exposing the draft immediately. Bind
+        // them: the declared entry ID must equal the embedded package's own ID.
+        if rawCapability.id != entry.packageID {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability package ID (\(rawCapability.id)) does not match its manifest entry ID (\(entry.packageID))."
+            ))
+        }
+        // A curated built-in ID must never be *embedded*: if the recipient lacks
+        // that built-in's library file, the exact-ID lookup finds nothing, the
+        // draft install proceeds, and `CapabilityLibrary.decodeInstalledPackage`
+        // then applies the compiled approved governance for every trusted
+        // built-in ID while retaining the imported payload — auto-approving
+        // attacker-controlled content the review promised was a draft. Built-ins
+        // travel only as references (`capabilityIDs`), never as embedded packages.
+        if CapabilityLibrary.trustedBuiltInPackageIDs.contains(entry.packageID)
+            || CapabilityLibrary.trustedBuiltInPackageIDs.contains(rawCapability.id) {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability may not use the built-in ID '\(entry.packageID)'; built-in capabilities are referenced, not embedded."
+            ))
+        }
+        // The review sheet shows `entry.displayName`, but the coordinator installs
+        // the decoded package's own `name`. A benign display name masking a
+        // different embedded name would let the recipient approve an inventory
+        // that names a different capability than the one added — bind them.
+        if rawCapability.name != entry.displayName {
+            issues.append(blocker(
+                "/\(entry.relativePath)",
+                "Embedded capability name (\(rawCapability.name)) does not match its manifest entry display name (\(entry.displayName))."
+            ))
+        }
+        if rawCapability.governance.approvalStatus != .draft {
+            issues.append(blocker("/\(entry.relativePath)", "Embedded capability must land as a local draft pending review."))
+        }
+        // An embedded capability connector baseURL that carries a credential
+        // (userinfo, or a credential-like query param) is excluded from the
+        // free-text scan; the export sanitizes it, so a nonempty one here means a
+        // tampered package. Reject it.
+        for (connectorIndex, connector) in rawCapability.connectors.enumerated() {
+            if let components = URLComponents(string: connector.baseURL),
+               components.user != nil
+                || components.password != nil
+                || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability connector[\(connectorIndex)] base URL carries a credential; credential values never travel."
+                ))
+            }
+        }
+        // MCP servers are executable configuration the review never surfaces and
+        // are excluded from the free-text scan. Reject a `url` carrying a
+        // credential (userinfo or credential-like query — the export strips it, so
+        // a residual one means tampering), and any absolute machine path or
+        // literal credential assignment in the `command`/`arguments` (sender
+        // machine-local data or a secret that must not travel).
+        for (serverIndex, server) in rawCapability.mcpServers.enumerated() {
+            let urlsToCheck: [URL?] = [
+                server.url,
+                server.installSource?.registryURL,
+                server.installSource?.documentationURL,
+                server.remoteRegistry?.endpoint
+            ]
+            if urlsToCheck.contains(where: { url in
+                guard let urlString = url?.absoluteString,
+                      let components = URLComponents(string: urlString) else { return false }
+                return components.user != nil
+                    || components.password != nil
+                    || (components.queryItems ?? []).contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) })
+            }) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] URL carries a credential; credential values never travel."
+                ))
+            }
+            // Include the install-source arguments + risk notes: they can carry a
+            // machine path or a literal secret (`packageManagerArguments:
+            // ["--token=…"]`) and are excluded from every other scan.
+            let invocation = (
+                [server.command].compactMap { $0 }
+                    + server.arguments
+                    + (server.installSource?.packageManagerArguments ?? [])
+                    + (server.installSource?.riskNotes ?? [])
+            ).joined(separator: " ")
+            if containsAbsoluteMachinePath(invocation) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] command/arguments contain an absolute machine path; local paths never travel."
+                ))
+            }
+            if containsCredentialAssignment(invocation) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] command/arguments contain a credential; credential values never travel."
+                ))
+            }
+            // The nested control-plane / remote-registry / install-source objects
+            // carry human-authored PROSE (e.g. `controlPlane.secretRefs[].purpose`,
+            // provider display names, config descriptions, risk notes) that can hold
+            // a real credential assignment or a sender-local absolute path. These
+            // sub-objects are excluded from every scan above, so serialize each to
+            // JSON and run the same credential/path scan over the whole blob —
+            // covering all current and future prose fields without enumerating them.
+            func encodeToText<T: Encodable>(_ value: T?) -> String {
+                guard let value else { return "" }
+                let encoder = JSONEncoder()
+                // Do NOT escape forward slashes: the default `\/` encoding would
+                // turn `/Users/…` into `\/Users\/…` and hide it from the
+                // absolute-path scan below.
+                encoder.outputFormatting = [.withoutEscapingSlashes]
+                guard let data = try? encoder.encode(value),
+                      let text = String(data: data, encoding: .utf8) else { return "" }
+                return text
+            }
+            let nestedMetadata = [
+                encodeToText(server.controlPlane),
+                encodeToText(server.remoteRegistry),
+                encodeToText(server.installSource)
+            ].joined(separator: " ")
+            if containsCredentialAssignment(nestedMetadata) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] control-plane/registry metadata contains a credential; credential values never travel."
+                ))
+            }
+            if containsAbsoluteMachinePath(nestedMetadata) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] control-plane/registry metadata contains an absolute machine path; local paths never travel."
+                ))
+            }
+        }
+        // Capability JSON is excluded from the free-text scan (it legitimately
+        // carries credential KEY NAMES as structure), but its human-authored PROSE
+        // can still hold a real credential assignment (`API_TOKEN=…` in a skill's
+        // behaviorInstructions, a template goal, variablesJSON, a setup guide).
+        // Scan just those prose fields for a credential assignment or absolute
+        // machine path — not the structural key-name fields.
+        // An embedded capability's templates carry token budgets too (copied into
+        // a TaskTemplate by CapabilityInstaller on enable); a negative one breaks
+        // prompt-budget enforcement. Apply the same non-negative check as
+        // top-level shared templates.
+        for (templateIndex, template) in rawCapability.templates.enumerated() {
+            for (field, value) in [("beforeBudget", template.beforeBudget), ("mainBudget", template.mainBudget), ("afterBudget", template.afterBudget)]
+            where value < 0 {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] \(field) must not be negative."
+                ))
+            }
+            // CapabilityInstaller copies a template's variablesJSON verbatim into a
+            // TaskTemplate on enable, so a secret-named default here becomes a live
+            // credential in the recipient's workspace. The top-level share templates
+            // are export-blanked + validation-rejected; embedded-capability templates
+            // travel inside the opaque capability package, so reject them here too.
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(template.variablesJSON) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+            if WorkspaceShareProjection.templateVariablesJSONIsMalformed(template.variablesJSON) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability template[\(templateIndex)] variablesJSON must decode as an array of template variables; a malformed blob bypasses the secret-default scrub."
+                ))
+            }
+        }
+        var proseFields: [String] = [rawCapability.description, rawCapability.setupGuide]
+        proseFields += rawCapability.skills.flatMap { [$0.behaviorInstructions, $0.description] }
+        proseFields += rawCapability.templates.flatMap { [$0.beforeGoal, $0.mainGoal, $0.afterGoal, $0.variablesJSON, $0.description] }
+        proseFields += rawCapability.localTools.flatMap { [$0.command, $0.arguments, $0.description] }
+        proseFields += rawCapability.connectors.flatMap { connector -> [String] in
+            [connector.description, connector.notes]
+                + connector.credentialHints.map(\.hint)
+                + connector.configHints.map(\.hint)
+        }
+        proseFields += rawCapability.setupRequirements.map(\.notes)
+        // CLI prerequisite descriptors are author-written prose too: the install
+        // hint, auth hint, purpose blurb, liveness args, and install URL can each
+        // carry a pasted `API_TOKEN=…` or a `/Users/<name>/…` path. They are
+        // excluded from the free-text scan like the rest of the capability JSON,
+        // so fold them into the same prose/path scan.
+        proseFields += rawCapability.prerequisites.flatMap { prereq -> [String] in
+            [prereq.binary, prereq.displayName, prereq.purpose, prereq.installHint, prereq.authHint ?? ""]
+                + prereq.livenessArgs
+                + [prereq.installURL?.absoluteString ?? ""]
+        }
+        for text in proseFields {
+            if containsCredentialAssignment(text) {
+                issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include credential material."))
+                break
+            }
+        }
+        for text in proseFields {
+            if containsAbsoluteMachinePath(text) {
+                issues.append(blocker("/\(entry.relativePath)", "Embedded capability content appears to include an absolute local path."))
+                break
+            }
+        }
+        // A prerequisite install URL can also embed credentials directly in
+        // userinfo or a credential-like query item (`https://user:tok@host`,
+        // `?token=…`), which the assignment scan above won't catch.
+        for prereq in rawCapability.prerequisites {
+            guard let raw = prereq.installURL?.absoluteString,
+                  let components = URLComponents(string: raw) else { continue }
+            if components.user != nil || components.password != nil
+                || (components.queryItems?.contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) ?? false) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability prerequisite install URL must not embed credentials."
+                ))
+                break
+            }
+        }
+        // Capability paths are excluded from the free-text credential scan, so a
+        // hand-tampered package could carry a secret-keyed skill default the
+        // export blanks. Reject any nonempty secret-keyed value here.
+        for skill in rawCapability.skills {
+            for (index, key) in skill.environmentKeys.enumerated() where Skill.isSecretEnvironmentKey(key) {
+                let value = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
+                if !value.isEmpty {
+                    issues.append(blocker(
+                        "/\(entry.relativePath)",
+                        "Embedded capability carries a secret environment value for '\(key)'; credential values never travel."
+                    ))
+                }
+            }
+        }
+        // Surface what this capability will need locally so the review plan can
+        // say "needs the gcloud CLI" / "needs a Google account" rather than a
+        // bare "installs as a draft". Prerequisites are intentionally not
+        // validated as package defects (a missing CLI is a recipient-state
+        // readiness item), so this is the channel the `checkPrerequisites: false`
+        // call above defers them to.
+        let cli = rawCapability.prerequisites.map { $0.displayName.isEmpty ? $0.binary : $0.displayName }
+        let accounts = rawCapability.setupRequirements
+            .filter { $0.kind == .oauthAccount }
+            .map { $0.provider ?? $0.displayName }
+        if !cli.isEmpty || !accounts.isEmpty {
+            requirements[entry.packageID] = WorkspacePackageCapabilityRequirements(
+                cliPrerequisites: cli,
+                accountRequirements: accounts
+            )
+        }
+    }
+
+    // MARK: - Version gate
+
+    /// Mirrors `PluginPackage.installBlockers(appVersion:installedPluginIDs:)`
+    /// (`ASTRACore/PluginPackage.swift:433-454`), the one place in this codebase
+    /// that actually enforces a minimum-version gate — `.astra-app`'s own
+    /// `minimumASTRAVersion` field is stored and displayed but never checked.
+    private func validateVersionGate(
+        minimumASTRAVersion: String,
+        path: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        // `minimumASTRAVersion` is a required field and the format's only
+        // compatibility gate. An unparsable value (malformed export or a
+        // hand-edited attempt to slip past the gate) must be a blocker, not a
+        // silently-skipped check that would let an incompatible package import.
+        guard let required = SemanticVersion(string: minimumASTRAVersion) else {
+            issues.append(blocker(path, "Minimum ASTRA version \"\(minimumASTRAVersion)\" is not a valid version string."))
+            return
+        }
+        let current = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
+        if current < required {
+            issues.append(blocker(path, "This package requires ASTRA \(minimumASTRAVersion) or later (running \(current))."))
+        }
+    }
+
+    // MARK: - Checksums
+
+    private func validateChecksums(
+        _ checksums: [WorkspacePackageChecksum],
+        packageURL: URL,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        // A sub-limit checksums.json can list tens of thousands of DUPLICATE
+        // entries for the same near-10MB file; hashing each one turns opening the
+        // package into hundreds of GB of work. Cap the entry count and reject
+        // duplicate paths BEFORE the hashing loop.
+        if checksums.count > 20_000 {
+            issues.append(blocker("/checksums.json", "checksums.json declares \(checksums.count) entries, exceeding the 20000 limit."))
+            return
+        }
+        var seenPaths = Set<String>()
+        for checksum in checksums {
+            // Reject a duplicate path AND skip re-hashing it: without this, tens of
+            // thousands of entries for the same near-10MB file would hash hundreds
+            // of GB just to open the package.
+            guard seenPaths.insert(checksum.path).inserted else {
+                issues.append(blocker("/checksums.json/\(checksum.path)", "Duplicate checksum entry for '\(checksum.path)'."))
+                continue
+            }
+            guard PortablePackageSafeFileReader.isPortableRelativePath(checksum.path) else {
+                issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum path must be relative and portable."))
+                continue
+            }
+            guard let actual = try? PortablePackageSafeFileReader.digest(rootURL: packageURL, relativePath: checksum.path) else {
+                issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum references a missing or unreadable file."))
+                continue
+            }
+            if actual != checksum.sha256 {
+                issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum does not match package file."))
+            }
+        }
+    }
+
+    private func validateAllFilesAreChecksummed(
+        _ checksums: [WorkspacePackageChecksum],
+        packageURL: URL,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        let declared = Set(checksums.map(\.path) + ["checksums.json"])
+        for path in PortablePackageSafeFileReader.portableFilePaths(in: packageURL, intent: .explicitUserSelection)
+            where !declared.contains(path) {
+            issues.append(blocker("/\(path)", "Package file is not listed in checksums.json."))
+        }
+    }
+
+    // MARK: - Forbidden content
+
+    /// Same substring/absolute-path scan `.astra-app` runs
+    /// (`WorkspaceAppPackageService.swift:1019-1043`), reused as a fresh
+    /// standalone check here rather than reaching into that file's `private`
+    /// implementation. Defense in depth on top of this format's type-level
+    /// guarantees (no connector credential values, blanked skill secrets, no
+    /// OAuth tokens) — the exporter should never produce a match, but
+    /// validation treats the exporter as untrusted too.
+    ///
+    /// A raw whole-file scan is wrong for the three file groups this format
+    /// *understands*, all of which legitimately contain forbidden substrings
+    /// as structure, not as secrets — `workspace-config.json` carries
+    /// credential key NAMES like "API_TOKEN" and the `googleOAuthAccountProfiles`
+    /// key itself (the issue explicitly requires key names/scopes to travel),
+    /// capability packages carry `oauthAccount` setup-requirement kinds and
+    /// env key names, and embedded `.astra-app` bundles run their own
+    /// identical scan inside `WorkspaceAppPackageService.validatePackage`.
+    /// Those are excluded here and covered instead by
+    /// `validateConfigFreeTextContent` (structural free-text scan),
+    /// `CapabilityPackageValidator` + the draft-governance check, and the app
+    /// service's own validation respectively. Everything else — unknown
+    /// files a tampered package might smuggle in — still gets the raw scan.
+    private func validateNoForbiddenContent(
+        checksums: [WorkspacePackageChecksum]?,
+        manifest: WorkspacePackageManifest?,
+        packageURL: URL,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        let structurallyValidatedPaths = Set(
+            ["workspace-share.json", "manifest.json"]
+                + (manifest?.capabilityEntries.map(\.relativePath) ?? [])
+        )
+        let appBundlePrefixes = (manifest?.appEntries.map { $0.relativeBundlePath + "/" }) ?? []
+        let scannedPaths = (
+            checksums?.map(\.path) ??
+                PortablePackageSafeFileReader.portableFilePaths(in: packageURL, intent: .explicitUserSelection)
+        )
+        .filter { $0.hasSuffix(".json") || $0.hasSuffix(".md") }
+        .filter { path in
+            !structurallyValidatedPaths.contains(path)
+                && !appBundlePrefixes.contains(where: path.hasPrefix)
+        }
+        var reported = Set<String>()
+        for path in scannedPaths {
+            guard let data = try? PortablePackageSafeFileReader.readData(rootURL: packageURL, relativePath: path),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            appendForbiddenContentIssues(in: text, path: "/\(path)", reported: &reported, issues: &issues)
+        }
+    }
+
+    /// Structural free-text scan of the workspace config: only fields a human
+    /// or agent authored (where a secret could realistically be pasted) are
+    /// scanned, never key-name inventories (`credentialKeys`,
+    /// `environmentKeys`, `configKeys`) or structured account metadata, which
+    /// carry credential-adjacent *names* by design. Names of skills/
+    /// connectors/tools are also exempt — "GitHub Token Helper" is a
+    /// legitimate name, not a leak.
+    private func validateShareFreeTextContent(
+        _ document: WorkspaceShareDocument,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var reported = Set<String>()
+        func scan(_ text: String?, _ field: String) {
+            guard let text, !text.isEmpty else { return }
+            appendForbiddenContentIssues(
+                in: text,
+                path: "/workspace-share.json/\(field)",
+                reported: &reported,
+                issues: &issues
+            )
+        }
+
+        scan(document.instructions, "instructions")
+        for (index, skill) in document.skills.enumerated() {
+            scan(skill.behaviorInstructions, "skills[\(index)].behaviorInstructions")
+            scan(skill.description, "skills[\(index)].description")
+            for (valueIndex, value) in skill.environmentValues.enumerated() {
+                scan(value, "skills[\(index)].environmentValues[\(valueIndex)]")
+            }
+        }
+        for (index, connector) in document.connectors.enumerated() {
+            scan(connector.description, "connectors[\(index)].description")
+            scan(connector.notes, "connectors[\(index)].notes")
+        }
+        for (index, tool) in document.localTools.enumerated() {
+            scan(tool.description, "localTools[\(index)].description")
+            scan(tool.command, "localTools[\(index)].command")
+            scan(tool.arguments, "localTools[\(index)].arguments")
+        }
+        for (index, template) in document.templates.enumerated() {
+            scan(template.description, "templates[\(index)].description")
+            scan(template.beforeGoal, "templates[\(index)].beforeGoal")
+            scan(template.mainGoal, "templates[\(index)].mainGoal")
+            scan(template.afterGoal, "templates[\(index)].afterGoal")
+            scan(template.variablesJSON, "templates[\(index)].variablesJSON")
+        }
+        for (index, schedule) in document.schedules.enumerated() {
+            scan(schedule.goal, "schedules[\(index)].goal")
+            scan(schedule.routineDescription, "schedules[\(index)].routineDescription")
+            scan(schedule.routineInstructions, "schedules[\(index)].routineInstructions")
+            scan(schedule.templateVariablesJSON, "schedules[\(index)].templateVariablesJSON")
+        }
+        // User-authored SSH label/endpoint fields can hold a pasted credential
+        // and are excluded from the raw file scan, so scan them here.
+        for (index, ssh) in document.sshConnections.enumerated() {
+            scan(ssh.name, "sshConnections[\(index)].name")
+            scan(ssh.host, "sshConnections[\(index)].host")
+            scan(ssh.user, "sshConnections[\(index)].user")
+            scan(ssh.remotePath, "sshConnections[\(index)].remotePath")
+            scan(ssh.configAlias, "sshConnections[\(index)].configAlias")
+        }
+    }
+
+    /// Structural safety gates the dedicated importer applies anyway, hoisted
+    /// to validation so an unsafe resource surfaces as a pre-import blocker
+    /// instead of being silently dropped (leaving dangling name links) or
+    /// installed with an embedded credential the review promised never travels.
+    private func validateShareResourceSafety(
+        _ document: WorkspaceShareDocument,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        // Bound collection cardinality: the per-file/byte limits don't constrain
+        // how many SHORT resources a below-limit JSON can hold. Hundreds of
+        // thousands of pack IDs / skills / etc. would each become a plan item
+        // rendered in a non-lazy stack, freezing the review UI merely by opening
+        // the package. Reject an unreasonable per-kind count up front.
+        // The workspace name becomes a directory component on import. Reject a
+        // name that can't form one — over the ~255-byte per-component limit, or
+        // containing NUL/control characters — so the review can't promise an
+        // import that fails with ENAMETOOLONG/EINVAL at createDirectory. (A
+        // dot-only name is separately mapped to a fallback by directoryName.)
+        if document.name.utf8.count > 255 {
+            issues.append(blocker("/workspace-share.json/name", "Workspace name is too long to form a directory."))
+        }
+        if document.name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+            issues.append(blocker("/workspace-share.json/name", "Workspace name contains control characters."))
+        }
+        let perKindLimit = 1000
+        let counts: [(String, Int)] = [
+            ("skills", document.skills.count), ("connectors", document.connectors.count),
+            ("localTools", document.localTools.count), ("templates", document.templates.count),
+            ("schedules", document.schedules.count), ("sshConnections", document.sshConnections.count),
+            ("capabilityIDs", document.capabilityIDs.count), ("packIDs", document.packIDs.count)
+        ]
+        for (kind, count) in counts where count > perKindLimit {
+            issues.append(blocker(
+                "/workspace-share.json/\(kind)",
+                "Package declares \(count) \(kind), exceeding the \(perKindLimit) limit for import review."
+            ))
+        }
+        for (index, connector) in document.connectors.enumerated() {
+            // A base URL like https://user:pass@host embeds a credential the
+            // review's "credential values never travel" promise would break.
+            if let components = URLComponents(string: connector.baseURL),
+               components.user != nil || components.password != nil {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    "Connector base URL must not embed credentials (user:password@host)."
+                ))
+            }
+            // Mirrors the userinfo check above: the exporter strips a
+            // credential-like query item (`WorkspaceShareProjection.
+            // baseURLWithoutCredentials`), but a hand-tampered package could
+            // reintroduce one — reject it here too rather than trust the
+            // exporter as a security boundary.
+            if let components = URLComponents(string: connector.baseURL),
+               let items = components.queryItems,
+               items.contains(where: { WorkspaceShareProjection.isCredentialLikeKey($0.name) }) {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    "Connector base URL must not embed a credential-like query parameter."
+                ))
+            }
+            // The importer applies the same transport policy and *silently skips*
+            // a connector that declares credentials over an unprotected URL (e.g.
+            // http://host), even though the plan presented it as installable and
+            // skills may keep a name link to it. Surface it as a blocker so the
+            // package is rejected rather than partially imported.
+            if let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+                baseURL: connector.baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialKeys
+            ) {
+                issues.append(blocker(
+                    "/workspace-share.json/connectors[\(index)].baseURL",
+                    violation
+                ))
+            }
+        }
+        // Secret-keyed env values never travel (export blanks them). A tampered
+        // package that re-populates one would otherwise be persisted to the
+        // Keychain/SwiftData by the importer, breaking the review's promise that
+        // credential values never travel.
+        for (index, skill) in document.skills.enumerated() {
+            // The importer pads/truncates a mismatched pair, silently losing or
+            // inventing values vs. what the review approved. Require alignment.
+            if skill.environmentKeys.count != skill.environmentValues.count {
+                issues.append(blocker(
+                    "/workspace-share.json/skills[\(index)].environmentValues",
+                    "Skill environmentKeys (\(skill.environmentKeys.count)) and environmentValues (\(skill.environmentValues.count)) counts must match."
+                ))
+            }
+            for (keyIndex, key) in skill.environmentKeys.enumerated()
+            where Skill.isSecretEnvironmentKey(key) {
+                let value = keyIndex < skill.environmentValues.count ? skill.environmentValues[keyIndex] : ""
+                if !value.isEmpty {
+                    issues.append(blocker(
+                        "/workspace-share.json/skills[\(index)].environmentValues[\(keyIndex)]",
+                        "Secret environment value for '\(key)' must not be present in a share (credential values never travel)."
+                    ))
+                }
+            }
+        }
+        for (index, tool) in document.localTools.enumerated() {
+            // The importer silently drops a policy-unsafe tool, which would
+            // leave a skill's name link to it unresolved. Reject up front.
+            if !LocalToolSecurityPolicy.isSafe(command: tool.command, arguments: tool.arguments) {
+                issues.append(blocker(
+                    "/workspace-share.json/localTools[\(index)].command",
+                    "Local tool command is not permitted for import."
+                ))
+            }
+            // `toolType` routes runtime behavior: `LocalToolSecurityPolicy.isSafe`
+            // is toolType-agnostic (it only vets command/arguments), but `mcp`
+            // reroutes the tool out of CLI-command handling and the
+            // `workspaceAppRead` sentinel exposes it as an app-readable connector
+            // read. An untrusted imported tool must stay a plain, command-safety-
+            // vetted CLI/script/shell tool — allow only those.
+            if !Self.allowedImportedLocalToolTypes.contains(tool.toolType) {
+                issues.append(blocker(
+                    "/workspace-share.json/localTools[\(index)].toolType",
+                    "Local tool type '\(tool.toolType)' is not permitted for import."
+                ))
+            }
+        }
+        // Resource links are resolved by NAME within the package, so a duplicate
+        // name is ambiguous: the importer would keep only the last row under a
+        // name, and any skill/schedule/template link to the others would rebind
+        // to the wrong one (e.g. a routine running a different template's goal).
+        // Reject duplicate names per resource type.
+        rejectDuplicateNames(document.skills.map(\.name), kind: "skills", issues: &issues)
+        rejectDuplicateNames(document.connectors.map(\.name), kind: "connectors", issues: &issues)
+        rejectDuplicateNames(document.localTools.map(\.name), kind: "localTools", issues: &issues)
+        rejectDuplicateNames(document.templates.map(\.name), kind: "templates", issues: &issues)
+        let templateNames = Set(document.templates.map(\.name))
+        // Apply the schedule editor's domain constraints: an out-of-range value
+        // (notably interval <= 0) would make `advanceNextFireDate` place every
+        // next fire at/before now, so `TaskScheduler` would relaunch the routine
+        // on every ~0.5s iteration once the recipient enabled it.
+        for (index, schedule) in document.schedules.enumerated() {
+            let type = ScheduleType(rawValue: schedule.scheduleType)
+            let invalid: String?
+            switch type {
+            case .interval where schedule.intervalSeconds <= 0:
+                invalid = "interval must be a positive number of seconds"
+            case .daily where !(0...23).contains(schedule.dailyHour) || !(0...59).contains(schedule.dailyMinute):
+                invalid = "daily hour/minute is out of range"
+            case .weekly where !(1...7).contains(schedule.weeklyDayOfWeek):
+                invalid = "weekly day-of-week is out of range"
+            // A weekly routine also carries an hour/minute (reused from the daily
+            // fields); an out-of-range clock makes `Calendar.nextDate` return nil
+            // and the importer silently falls back to one week from now, so the
+            // enabled routine fires at a different time than declared.
+            case .weekly where !(0...23).contains(schedule.dailyHour) || !(0...59).contains(schedule.dailyMinute):
+                invalid = "weekly hour/minute is out of range"
+            case .none:
+                invalid = "unknown schedule type '\(schedule.scheduleType)'"
+            default:
+                invalid = nil
+            }
+            if let invalid {
+                issues.append(blocker("/workspace-share.json/schedules[\(index)]", "Schedule is invalid: \(invalid)."))
+            }
+            if schedule.tokenBudget < 0 {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].tokenBudget",
+                    "Routine token budget must not be negative."
+                ))
+            }
+            // A `templateName` absent from the package's own templates would be
+            // silently stored as a nil `templateID`; the enabled routine then
+            // runs `effectiveGoal` instead of the declared template's behavior.
+            if let templateName = schedule.templateName,
+               !templateName.isEmpty,
+               !templateNames.contains(templateName) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateName",
+                    "Schedule references template '\(templateName)' that is not present in the package."
+                ))
+            }
+        }
+        // An SSH `host`/`user`/`configAlias` that begins with `-` is parsed by
+        // `ssh` as an OPTION, not a destination — e.g. `-oProxyCommand=…` runs an
+        // attacker-selected local command when `SSHConnectionManager.test` places
+        // it on the command line. Reject option-like values up front.
+        for (index, ssh) in document.sshConnections.enumerated() {
+            for (field, value) in [("host", ssh.host), ("user", ssh.user), ("configAlias", ssh.configAlias)]
+            where value.hasPrefix("-") {
+                issues.append(blocker(
+                    "/workspace-share.json/sshConnections[\(index)].\(field)",
+                    "SSH \(field) must not begin with '-' (it would be parsed as an ssh option)."
+                ))
+            }
+            if !(1...65535).contains(ssh.port) {
+                issues.append(blocker(
+                    "/workspace-share.json/sshConnections[\(index)].port",
+                    "SSH port \(ssh.port) is out of range (1–65535)."
+                ))
+            }
+            // A blank host/user (with no config alias to resolve them) imports an
+            // unusable `@host` / `user@` target that also lands in task prompts;
+            // the SSH editor already requires trimmed non-empty values.
+            if ssh.configAlias.trimmingCharacters(in: .whitespaces).isEmpty {
+                if ssh.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append(blocker("/workspace-share.json/sshConnections[\(index)].host", "SSH host must not be empty."))
+                }
+                if ssh.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append(blocker("/workspace-share.json/sshConnections[\(index)].user", "SSH user must not be empty."))
+                }
+            }
+        }
+        // Template token budgets feed task launch unbounded and templates import
+        // ready-to-use (not quarantined), so reject a negative budget.
+        for (index, template) in document.templates.enumerated() {
+            for (field, value) in [("beforeBudget", template.beforeBudget), ("mainBudget", template.mainBudget), ("afterBudget", template.afterBudget)]
+            where value < 0 {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].\(field)",
+                    "Template \(field) must not be negative."
+                ))
+            }
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(template.variablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].variablesJSON",
+                    "Template variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+            if WorkspaceShareProjection.templateVariablesJSONIsMalformed(template.variablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates[\(index)].variablesJSON",
+                    "Template variablesJSON must decode as an array of template variables; a malformed blob bypasses the secret-default scrub."
+                ))
+            }
+        }
+        for (index, schedule) in document.schedules.enumerated() {
+            if WorkspaceShareProjection.templateVariablesCarrySecretDefault(schedule.templateVariablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
+                    "Routine template variable with a secret-like name must not carry a default value; credential values never travel."
+                ))
+            }
+            if WorkspaceShareProjection.scheduleTemplateVariablesJSONIsMalformed(schedule.templateVariablesJSON) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].templateVariablesJSON",
+                    "Routine templateVariablesJSON must decode as a name→value map; a malformed blob bypasses the routine-path and secret scrubs."
+                ))
+            }
+            // A nil resultMode is accepted (import defaults it), but a NON-nil
+            // unknown value would be silently coerced to `.newTask` by the import
+            // mapper — routing results differently than the package declares (e.g. a
+            // misspelled `schedule_log` fragments run history into separate tasks).
+            // Reject an unrecognized value so the mismatch surfaces at review.
+            if let mode = schedule.resultMode, ScheduleResultMode(rawValue: mode) == nil {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules[\(index)].resultMode",
+                    "Routine resultMode '\(mode)' is not a recognized result mode."
+                ))
+            }
+        }
+        // Connectors and local tools have a to-ONE inverse `skill` relationship,
+        // so a name referenced by two skills would silently re-parent the single
+        // row to whichever skill is imported last, stripping it from the earlier
+        // one while the review still reports success. Reject a resource claimed by
+        // more than one skill.
+        rejectMultiSkillOwnership(
+            document.skills.flatMap(\.connectorNames), kind: "connector", issues: &issues
+        )
+        rejectMultiSkillOwnership(
+            document.skills.flatMap(\.localToolNames), kind: "local tool", issues: &issues
+        )
+
+        // Every by-name reference must resolve within the package. A skill that
+        // names a connector/tool the package omits (e.g. the exporter filtered an
+        // unsafe attached resource but the projection fell back to the saved name
+        // list) would silently lose that behavior on import with no warning.
+        let connectorNames = Set(document.connectors.map(\.name))
+        let toolNames = Set(document.localTools.map(\.name))
+        let skillNames = Set(document.skills.map(\.name))
+        for skill in document.skills {
+            for name in skill.connectorNames where !connectorNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/skills",
+                    "Skill '\(skill.name)' references connector '\(name)' that is not present in the package."
+                ))
+            }
+            for name in skill.localToolNames where !toolNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/skills",
+                    "Skill '\(skill.name)' references local tool '\(name)' that is not present in the package."
+                ))
+            }
+        }
+        for template in document.templates {
+            for name in template.defaultSkillNames where !skillNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/templates",
+                    "Template '\(template.name)' references skill '\(name)' that is not present in the package."
+                ))
+            }
+        }
+        for schedule in document.schedules {
+            for name in schedule.skillNames where !skillNames.contains(name) {
+                issues.append(blocker(
+                    "/workspace-share.json/schedules",
+                    "Routine '\(schedule.name)' references skill '\(name)' that is not present in the package."
+                ))
+            }
+        }
+    }
+
+    private func rejectMultiSkillOwnership(
+        _ referencedNames: [String],
+        kind: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var counts: [String: Int] = [:]
+        for name in referencedNames { counts[name, default: 0] += 1 }
+        for name in counts.filter({ $0.value > 1 }).keys.sorted() {
+            issues.append(blocker(
+                "/workspace-share.json/skills",
+                "\(kind.capitalized) '\(name)' is assigned to more than one skill; a shared resource can belong to only one skill."
+            ))
+        }
+    }
+
+    private func rejectDuplicateNames(
+        _ names: [String],
+        kind: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        var seen = Set<String>()
+        var reported = Set<String>()
+        for name in names where !seen.insert(name).inserted && reported.insert(name).inserted {
+            issues.append(blocker(
+                "/workspace-share.json/\(kind)",
+                "Duplicate \(kind) name '\(name)' — resource names must be unique because links resolve by name."
+            ))
+        }
+    }
+
+    private func appendForbiddenContentIssues(
+        in text: String,
+        path: String,
+        reported: inout Set<String>,
+        issues: inout [PortablePackageValidationIssue]
+    ) {
+        if containsCredentialAssignment(text), reported.insert("\(path)#credential").inserted {
+            issues.append(blocker(path, "Package content appears to include credential material."))
+        }
+        if containsAbsoluteMachinePath(text), reported.insert("\(path)#path").inserted {
+            issues.append(blocker(path, "Package content appears to include an absolute local path."))
+        }
+    }
+
+    /// True only when `text` looks like an actual credential ASSIGNMENT — a
+    /// credential key name immediately followed by a `:`/`=` delimiter and a
+    /// non-trivial value. The old check flagged any occurrence of "oauth",
+    /// "password", "secret", "token", etc. anywhere in free text, so ordinary
+    /// prose ("OAuth flow", "token budget", "password reset", "never reveal
+    /// secrets") failed export self-verification even with no credential present.
+    private func containsCredentialAssignment(_ text: String) -> Bool {
+        // optional prefix segments (e.g. API_, GITHUB_) + credential key +
+        // [: or =] + value(6+ non-space). Case-insensitive. The prefix group lets
+        // `API_TOKEN=…` match (the `_` is a word char, so a bare `\btoken` never
+        // starts inside `API_TOKEN`), without restoring prose false positives —
+        // the required `[:=]` + value keeps "token budget"/"OAuth flow" out.
+        // Optional quotes around the key and value catch the JSON form
+        // `{"API_TOKEN":"supersecret123"}` (variablesJSON is scanned verbatim),
+        // where a closing quote sits between the key and the `:`.
+        // Value requires >=3 non-space chars: a credential key followed by `=`/`:`
+        // and a short value (`PASSWORD=1234`, `API_TOKEN=abcde`) is still a
+        // credential; the mandatory key + delimiter keeps prose from matching.
+        let pattern = #"(?i)\b(?:[a-z0-9]+[_-])*(api[_-]?key|apikey|oauth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|bearer|token)\b["']?\s*[:=]\s*["']?\S{3,}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.firstMatch(in: text, range: range) != nil
+    }
+
+    /// True when `text` embeds an absolute macOS/Unix path. The old check only
+    /// recognized the running user's `NSHomeDirectory()` and `/Users/`, so a
+    /// sender path like `/Volumes/External/...` or `/opt/custom/bin` slipped
+    /// through the free-text scan; this matches the common absolute roots at a
+    /// component boundary.
+    private func containsAbsoluteMachinePath(_ text: String) -> Bool {
+        if text.contains(NSHomeDirectory()) { return true }
+        let lowered = text.lowercased()
+        let roots = ["/users/", "/home/", "/volumes/", "/opt/", "/usr/", "/private/", "/var/", "/applications/", "/library/", "/system/", "/tmp/", "/etc/", "/mnt/", "/srv/"]
+        // A path-segment character before the root would make it a relative
+        // fragment (e.g. "abc/opt/x"); require the root to begin the string or
+        // follow a non-path delimiter so only genuine absolute paths match.
+        let pathSegmentChars = Set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+        for root in roots {
+            var searchStart = lowered.startIndex
+            while let range = lowered.range(of: root, range: searchStart..<lowered.endIndex) {
+                if range.lowerBound == lowered.startIndex
+                    || !pathSegmentChars.contains(lowered[lowered.index(before: range.lowerBound)]) {
+                    return true
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return false
+    }
+
+    // MARK: - Decoding
+
+    private func decode<T: Decodable>(
+        _ type: T.Type,
+        rootURL: URL,
+        relativePath: String,
+        issuePath: String,
+        issues: inout [PortablePackageValidationIssue]
+    ) -> T? {
+        do {
+            let data = try PortablePackageSafeFileReader.readData(rootURL: rootURL, relativePath: relativePath)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(type, from: data)
+        } catch PortablePackageFileError.missing {
+            issues.append(blocker(issuePath, "Required package file \(relativePath) is missing."))
+            return nil
+        } catch {
+            issues.append(blocker(issuePath, "Could not decode required package file \(relativePath): \(error.localizedDescription)"))
+            return nil
+        }
+    }
+
+    private func blocker(_ path: String, _ message: String) -> PortablePackageValidationIssue {
+        PortablePackageValidationIssue(severity: .blocker, path: path, message: message)
+    }
+}

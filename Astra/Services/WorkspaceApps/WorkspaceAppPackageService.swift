@@ -415,14 +415,16 @@ struct WorkspaceAppPackageService {
     func importPackage(
         at packageURL: URL,
         into workspace: Workspace,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        persistence: WorkspaceAppPersistenceMode = .saveAndAutoExport
     ) throws -> WorkspaceAppPackageImportResult {
         let report = validatePackage(at: packageURL)
         return try importPackage(
             at: packageURL,
             validatedBy: report,
             into: workspace,
-            modelContext: modelContext
+            modelContext: modelContext,
+            persistence: persistence
         )
     }
 
@@ -431,7 +433,8 @@ struct WorkspaceAppPackageService {
         at packageURL: URL,
         validatedBy report: WorkspaceAppPackageValidationReport,
         into workspace: Workspace,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        persistence: WorkspaceAppPersistenceMode = .saveAndAutoExport
     ) throws -> WorkspaceAppPackageImportResult {
         guard report.canInstall,
               let package = report.package,
@@ -448,7 +451,8 @@ struct WorkspaceAppPackageService {
             status: .draft,
             sourcePackageID: package.packageID,
             sourcePackageVersion: package.version,
-            sourcePackageDigest: packageDigest
+            sourcePackageDigest: packageDigest,
+            persistence: persistence
         )
         // Seed storage against the PERSISTED manifest (createApp may have suffixed the logical id) so
         // the imported rows land in the app's actual storage path.
