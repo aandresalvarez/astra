@@ -44,16 +44,28 @@ extension TaskMainView {
     /// relationship / synthesized inverse) so V15 stays an additive migration.
     /// Fetch through the repository rather than adding a persisted inverse to
     /// `AgentTask`.
-    var taskTurnRequestSnapshots: [TaskTurnRequestSnapshot] {
-        (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?
+    /// Activity state only ever derives from active requests, so the dock and
+    /// composer paths must not pay for the append-only table's full history.
+    var taskActiveTurnRequestSnapshots: [TaskTurnRequestSnapshot] {
+        (try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext))?
             .map(\.snapshot) ?? []
+    }
+
+    /// Message-chip source, bounded to active requests plus the requests whose
+    /// user bubbles are inside the visible transcript window.
+    func turnRequestSnapshots(visibleMessageEventIDs: [UUID]) -> [TaskTurnRequestSnapshot] {
+        (try? TaskTurnRequestRepository.presentationRequests(
+            for: task,
+            visibleMessageEventIDs: visibleMessageEventIDs,
+            in: modelContext
+        ))?.map(\.snapshot) ?? []
     }
 
     var taskActivityPresentation: TaskActivityPresentation {
         TaskActivityPresentation.resolve(
             taskID: task.id,
             taskStatus: task.status,
-            requests: taskTurnRequestSnapshots
+            requests: taskActiveTurnRequestSnapshots
         )
     }
 
@@ -62,6 +74,23 @@ extension TaskMainView {
               let summary = taskActivityPresentation.dockSummary else {
             return nil
         }
+        // While the turn waits, the task keeps its previous status, so the
+        // status-gated Cancel surfaces are unavailable and the composer's stop
+        // callback is suppressed by this dock. The dock itself must therefore
+        // offer the one way to retract a saved turn before it runs — scoped to
+        // this request, not `.stop`, so cancelling a queued follow-up never
+        // flips the task's own terminal status.
+        let cancelAction: TaskDecisionDockAction? = {
+            guard taskQueue != nil,
+                  let requestID = taskActivityPresentation.request?.id else { return nil }
+            return TaskDecisionDockAction(
+                kind: .cancelTurnRequest,
+                title: "Cancel request",
+                systemImage: "xmark.circle",
+                payload: requestID.uuidString,
+                help: "Cancel this saved message before it runs."
+            )
+        }()
         return TaskDecisionDockPresentation(
             id: "turn-request-\(taskActivityPresentation.request?.id.uuidString ?? task.id.uuidString)",
             icon: taskActivityPresentation.sidebarSystemImage ?? "clock",
@@ -71,7 +100,7 @@ extension TaskMainView {
             metrics: [],
             details: [],
             primaryAction: nil,
-            secondaryActions: [],
+            secondaryActions: [cancelAction].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: false
         )

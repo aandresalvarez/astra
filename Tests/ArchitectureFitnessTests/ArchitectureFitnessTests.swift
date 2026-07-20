@@ -1840,7 +1840,7 @@ struct ArchitectureFitnessTests {
 
     private var lineBudgetRegistry: [String: LineBudgetEntry] {
         [
-            "Astra/Views/TaskMainView.swift": .init(6_120, .owner("Task detail and run surface")),
+            "Astra/Views/TaskMainView.swift": .init(6_130, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one

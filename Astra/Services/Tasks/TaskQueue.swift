@@ -546,7 +546,10 @@ final class TaskQueue {
             return false
         }
 
-        while !Task.isCancelled && request.state.isActive {
+        // `isDeleted` guards every wake-up: task deletion cancels active
+        // requests and then removes their rows, so a coroutine sleeping in a
+        // poll must not touch (or resurrect) a deleted model on resume.
+        while !Task.isCancelled && !request.isDeleted && request.state.isActive {
             guard isEarliestActiveTurn(request, for: task, modelContext: modelContext) else {
                 _ = transitionPersistedTurn(
                     request,
@@ -554,7 +557,7 @@ final class TaskQueue {
                     blockerSummary: "Waiting for an earlier message in this task.",
                     modelContext: modelContext
                 )
-                await waitForTurnAdmissionPoll()
+                await waitForTurnAdmissionSignal(taskID: task.id)
                 continue
             }
 
@@ -565,7 +568,7 @@ final class TaskQueue {
                     blockerSummary: "Waiting for an available worker.",
                     modelContext: modelContext
                 )
-                await waitForTurnAdmissionPoll()
+                await waitForTurnAdmissionSignal(taskID: task.id)
                 continue
             }
 
@@ -591,7 +594,7 @@ final class TaskQueue {
                 runMode: "continue",
                 modelContext: modelContext
             ) else {
-                if request.state.isActive {
+                if !request.isDeleted, request.state.isActive {
                     _ = transitionPersistedTurn(
                         request,
                         to: .cancelled,
@@ -602,7 +605,7 @@ final class TaskQueue {
                 return false
             }
 
-            guard request.state.isActive else {
+            guard !request.isDeleted, request.state.isActive else {
                 releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
                 return false
             }
@@ -647,6 +650,9 @@ final class TaskQueue {
             activeTasks.remove(task.id)
             releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
 
+            // The task (and its request rows) can be deleted while the worker
+            // ran; the deleted model must not be transitioned or reported on.
+            guard !request.isDeleted else { return false }
             // A worker can reject before it constructs a TaskRun (for example,
             // when a stale task was no longer admissible). Runtime-created runs
             // finalize their request in AgentRuntimeWorker's defer.
@@ -661,7 +667,7 @@ final class TaskQueue {
             return request.state == .completed
         }
 
-        if request.state.isActive {
+        if !request.isDeleted, request.state.isActive {
             _ = transitionPersistedTurn(
                 request,
                 to: .cancelled,
@@ -718,6 +724,9 @@ final class TaskQueue {
             terminalReason: terminalReason
         )
         guard result.changed else { return result }
+        // A changed transition can make the next same-task turn the earliest
+        // active request — wake its parked admission loop immediately.
+        wakeTurnAdmissionWaiters(taskID: request.taskID)
         let taskID = request.taskID
         if state.isTerminal {
             let workspace = (try? modelContext.fetch(
@@ -741,11 +750,49 @@ final class TaskQueue {
         return result
     }
 
-    private func waitForTurnAdmissionPoll() async {
-        do {
-            try await Task.sleep(for: .milliseconds(100))
-        } catch {
-            // The outer loop observes cancellation and persists it.
+    /// Parked admission loops, keyed by task id. Everything here is
+    /// MainActor-serialized: registration, wake, and the fallback tick all
+    /// run on the actor, so a continuation is resumed exactly once (the dict
+    /// removal is the claim).
+    private var turnAdmissionWaiters: [UUID: [UUID: CheckedContinuation<Void, Never>]] = [:]
+
+    /// Parks one admission-loop iteration until queue state plausibly changed.
+    /// Waking is signal-driven — a same-task turn transition, a turn
+    /// cancellation, or any worker/resource-lock release — instead of a
+    /// per-request 100 ms poll, so N waiting turns no longer generate N
+    /// repeating main-actor fetches. A 500 ms fallback tick bounds staleness
+    /// for changes with no signal (e.g. pool resize) and honors cancellation.
+    private func waitForTurnAdmissionSignal(taskID: UUID) async {
+        let waiterID = UUID()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            turnAdmissionWaiters[taskID, default: [:]][waiterID] = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.resumeTurnAdmissionWaiter(taskID: taskID, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func resumeTurnAdmissionWaiter(taskID: UUID, waiterID: UUID) {
+        guard let continuation = turnAdmissionWaiters[taskID]?.removeValue(forKey: waiterID) else { return }
+        if turnAdmissionWaiters[taskID]?.isEmpty == true {
+            turnAdmissionWaiters.removeValue(forKey: taskID)
+        }
+        continuation.resume()
+    }
+
+    private func wakeTurnAdmissionWaiters(taskID: UUID) {
+        guard let waiters = turnAdmissionWaiters.removeValue(forKey: taskID) else { return }
+        for continuation in waiters.values { continuation.resume() }
+    }
+
+    /// Worker and resource-lock availability are queue-global, so releases
+    /// wake every parked admission loop, not just the releasing task's.
+    private func wakeAllTurnAdmissionWaiters() {
+        let all = turnAdmissionWaiters
+        turnAdmissionWaiters.removeAll()
+        for waiters in all.values {
+            for continuation in waiters.values { continuation.resume() }
         }
     }
 
@@ -1073,6 +1120,33 @@ final class TaskQueue {
                 auditFields: ["operation": "cancel_turn_requests"]
             )
         }
+        wakeTurnAdmissionWaiters(taskID: task.id)
+    }
+
+    /// Retract one saved-but-not-yet-admitted turn without touching the rest
+    /// of the task. `cancel(task:)` is deliberately wider (worker + every
+    /// active request); a waiting follow-up on a completed task must be
+    /// cancellable without flipping that task's terminal status.
+    @MainActor
+    func cancelTurnRequest(id: UUID, workspace: Workspace?, modelContext: ModelContext) {
+        guard let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
+              request.state.isActive else { return }
+        _ = TaskTurnRequestStateMachine.transition(
+            request,
+            to: .cancelled,
+            terminalReason: "cancelled_by_user"
+        )
+        AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
+            "scope": "turn_request",
+            "request_id": request.id.uuidString
+        ])
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
+            modelContext: modelContext,
+            taskID: request.taskID,
+            auditFields: ["operation": "cancel_turn_request"]
+        )
+        wakeTurnAdmissionWaiters(taskID: request.taskID)
     }
 
     /// Cancel all running workers
@@ -1232,6 +1306,9 @@ final class TaskQueue {
             status: "released",
             modelContext: modelContext
         )
+        // Every release path (worker hand-back, legacy continuation, initial
+        // runs) funnels through here, and availability is queue-global.
+        wakeAllTurnAdmissionWaiters()
     }
 
     @MainActor

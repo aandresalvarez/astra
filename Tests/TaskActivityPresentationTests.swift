@@ -164,4 +164,60 @@ struct TaskActivityPresentationTests {
         #expect(index.waitingTaskCount(in: workspace) == 1)
         #expect(index.reviewTasks(for: workspace).map(\.id) == [runningTask.id, waitingTask.id])
     }
+
+    @Test("Waiting counts include tasks the user already marked done")
+    func waitingCountIncludesDoneTasks() {
+        let workspace = makeWorkspace()
+        let doneTask = makeTask(status: .completed, workspace: workspace)
+        doneTask.isDone = true
+        let waiting = request(for: doneTask, sequence: 1, state: .waitingForWorker)
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: [doneTask],
+            requests: [waiting]
+        )
+
+        let index = SidebarTaskIndex(
+            tasks: [doneTask],
+            searchText: "",
+            taskActivities: activities
+        )
+        // Submission never clears `isDone`, so a done-filter here would hide
+        // the saved follow-up whenever the workspace drawer is collapsed.
+        #expect(index.waitingTaskCount(in: workspace) == 1)
+        #expect(SidebarTaskIndex.isSidebarReviewTask(doneTask, activity: activities[doneTask.id]))
+    }
+
+    @Test("Failure chips distinguish admission failures from post-start failures")
+    func failureChipsDistinguishAdmissionFromRuntimeFailures() {
+        let task = makeTask(status: .failed)
+        let neverStarted = request(
+            for: task,
+            sequence: 1,
+            state: .failed,
+            terminalReason: "task_folder_create_failed"
+        )
+
+        let started = TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 2,
+            state: .running
+        )
+        started.startedAt = Date()
+        started.state = .failed
+        started.terminalReason = "provider_exit_1"
+        let startedSnapshot = started.snapshot
+
+        let admissionChip = TaskTurnMessageLifecyclePresentation.resolve(
+            messageEventID: neverStarted.messageEventID,
+            requests: [neverStarted]
+        )
+        let runtimeChip = TaskTurnMessageLifecyclePresentation.resolve(
+            messageEventID: startedSnapshot.messageEventID,
+            requests: [startedSnapshot]
+        )
+
+        #expect(admissionChip?.title == "Couldn’t start")
+        #expect(runtimeChip?.title == "Run failed")
+    }
 }

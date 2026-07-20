@@ -86,6 +86,19 @@ final class TaskLifecycleCoordinator {
     /// `@discardableResult` — production callers ignore it.
     @discardableResult
     func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
+        // A durable submission leaves the task's terminal status untouched
+        // while it waits, so status-gated Retry surfaces can still fire.
+        // Starting a second continuation here would race the pending
+        // admission into out-of-order or duplicate execution.
+        if let activeTurns = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext),
+           let activeTurn = activeTurns.first {
+            AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
+                "retry_mode": "rejected_active_turn",
+                "active_request_id": activeTurn.id.uuidString,
+                "active_request_state": activeTurn.state.rawValue
+            ], level: .warning)
+            return nil
+        }
         let retryTurn = latestRetryableTurnRequest(for: task)
         let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
             ?? Self.latestRetryableFollowUpMessage(for: task)
@@ -537,6 +550,17 @@ final class TaskLifecycleCoordinator {
     func deleteTask(_ task: AgentTask) -> Workspace? {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
+        // Turn requests reference the task by scalar id, so deleting the task
+        // cannot cascade to them. Cancel first — terminalizing every active
+        // request makes a waiting admission coroutine exit instead of resuming
+        // provider work for a task that no longer exists — then remove the
+        // rows so terminal history doesn't accumulate as permanent orphans.
+        taskQueue.cancel(task: task, modelContext: modelContext)
+        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
+            for request in requests {
+                modelContext.delete(request)
+            }
+        }
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         return workspace

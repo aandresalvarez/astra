@@ -111,8 +111,47 @@ enum TaskTurnRequestRepository {
         return try modelContext.fetch(descriptor)
     }
 
+    /// The table is append-only and never pruned, so active-state filtering
+    /// must happen in the store, not over a full-history fetch. The literals
+    /// mirror `TaskTurnRequestState`'s terminal cases, which `#Predicate`
+    /// can't reach via the computed `isTerminal`.
     static func activeRequests(for task: AgentTask, in modelContext: ModelContext) throws -> [TaskTurnRequest] {
-        try requests(for: task, in: modelContext).filter { $0.state.isActive }
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate {
+                $0.taskID == taskID
+                    && $0.stateRawValue != "completed"
+                    && $0.stateRawValue != "failed"
+                    && $0.stateRawValue != "cancelled"
+            },
+            sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
+        )
+        return try modelContext.fetch(descriptor)
+    }
+
+    /// Bounded fetch for transcript presentation: every active request (they
+    /// drive the dock, chips, and sidebar state) plus the requests owning a
+    /// message bubble inside the visible transcript window. Terminal requests
+    /// outside that window stay unfetched so long-lived threads don't reload
+    /// their entire submission history on every view update.
+    static func presentationRequests(
+        for task: AgentTask,
+        visibleMessageEventIDs: [UUID],
+        in modelContext: ModelContext
+    ) throws -> [TaskTurnRequest] {
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate {
+                $0.taskID == taskID && (
+                    ($0.stateRawValue != "completed"
+                        && $0.stateRawValue != "failed"
+                        && $0.stateRawValue != "cancelled")
+                    || visibleMessageEventIDs.contains($0.messageEventID)
+                )
+            },
+            sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
+        )
+        return try modelContext.fetch(descriptor)
     }
 
     static func request(id: UUID, in modelContext: ModelContext) throws -> TaskTurnRequest? {

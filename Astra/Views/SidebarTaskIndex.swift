@@ -42,7 +42,11 @@ struct SidebarTaskIndex {
             if activity.isRunning, !task.isDone {
                 runningCounts[workspaceID, default: 0] += 1
             }
-            if activity.isWaiting, !task.isDone {
+            // Waiting always reflects a live durable request. A follow-up sent
+            // from a task the user already closed keeps `isDone` true, so the
+            // done filter would hide the saved turn from the collapsed-drawer
+            // count entirely.
+            if activity.isWaiting {
                 waitingCounts[workspaceID, default: 0] += 1
             }
 

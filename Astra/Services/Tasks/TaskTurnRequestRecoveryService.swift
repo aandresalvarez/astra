@@ -18,7 +18,8 @@ enum TaskTurnRequestRecoveryService {
     @discardableResult
     static func recoverInterruptedRequests(
         modelContext: ModelContext,
-        at recoveredAt: Date = Date()
+        at recoveredAt: Date = Date(),
+        autoExportWorkspaces: Bool = true
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
@@ -98,14 +99,20 @@ enum TaskTurnRequestRecoveryService {
         }
 
         guard summary.hasChanges else { return summary }
-        for workspace in affectedWorkspaces.values {
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: workspace,
-                modelContext: modelContext,
-                auditFields: ["operation": "recover_turn_requests"]
-            )
+        // `autoExportWorkspaces: false` mirrors recoverOrphanedRunningRuns:
+        // a launch that explicitly disabled workspace recovery (e.g.
+        // ASTRA_SKIP_WORKSPACE_RECOVERY=true) must still persist the state
+        // reconciliation but must not rewrite workspace export JSON.
+        if autoExportWorkspaces {
+            for workspace in affectedWorkspaces.values {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: workspace,
+                    modelContext: modelContext,
+                    auditFields: ["operation": "recover_turn_requests"]
+                )
+            }
         }
-        if affectedWorkspaces.isEmpty {
+        if affectedWorkspaces.isEmpty || !autoExportWorkspaces {
             WorkspacePersistenceCoordinator.saveWithoutAutoExport(
                 modelContext: modelContext,
                 auditFields: ["operation": "recover_turn_requests"]

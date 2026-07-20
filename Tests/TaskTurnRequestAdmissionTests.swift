@@ -140,6 +140,145 @@ struct TaskTurnRequestAdmissionTests {
         #expect(runningRequest.state == .failed)
         #expect(runningRequest.terminalReason == "app_restarted")
     }
+
+    @Test("Cancelling one waiting turn request leaves the task's status untouched")
+    func cancelTurnRequestPreservesTaskStatus() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Cancel", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+
+        let queue = TaskQueue(poolSize: 0)
+        let admission = Task { @MainActor in
+            await queue.continueSession(
+                task: task,
+                message: "Queued follow-up",
+                existingMessageEventID: submission.eventID,
+                turnRequestID: submission.requestID,
+                modelContext: context
+            )
+        }
+        let isWaitingForWorker = await waitUntil {
+            request.blockerSummary == "Waiting for an available worker."
+        }
+        #expect(isWaitingForWorker)
+
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        let started = await admission.value
+
+        #expect(!started)
+        #expect(request.state == .cancelled)
+        #expect(request.terminalReason == "cancelled_by_user")
+        #expect(task.status == .completed)
+    }
+
+    @Test("Presentation fetches stay bounded to active plus visible-window requests")
+    func presentationRequestsAreBounded() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Bounded", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let offWindowTerminal = try #require(TaskTurnSubmissionService.submit(
+            message: "Old completed turn", for: task, into: context
+        ).successValue)
+        let inWindowTerminal = try #require(TaskTurnSubmissionService.submit(
+            message: "Visible failed turn", for: task, into: context
+        ).successValue)
+        let active = try #require(TaskTurnSubmissionService.submit(
+            message: "Still waiting", for: task, into: context
+        ).successValue)
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: context)
+        let first = try #require(requests.first { $0.id == offWindowTerminal.requestID })
+        let second = try #require(requests.first { $0.id == inWindowTerminal.requestID })
+        _ = TaskTurnRequestStateMachine.transition(first, to: .admitted)
+        _ = TaskTurnRequestStateMachine.transition(first, to: .running)
+        _ = TaskTurnRequestStateMachine.transition(first, to: .completed)
+        _ = TaskTurnRequestStateMachine.transition(second, to: .failed)
+
+        let bounded = try TaskTurnRequestRepository.presentationRequests(
+            for: task,
+            visibleMessageEventIDs: [inWindowTerminal.eventID],
+            in: context
+        )
+        #expect(bounded.map(\.id) == [inWindowTerminal.requestID, active.requestID])
+
+        let activeOnly = try TaskTurnRequestRepository.activeRequests(for: task, in: context)
+        #expect(activeOnly.map(\.id) == [active.requestID])
+    }
+
+    @Test("Pending turn messages stay invisible to objective resolution until admitted")
+    func pendingTurnMessagesStayInvisibleUntilAdmitted() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Visibility", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Summarize the report", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        // Seed message so both durable turns are follow-ups, not the pinned
+        // starting request.
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Summarize the report"
+        ))
+
+        let firstTurn = try #require(TaskTurnSubmissionService.submit(
+            message: "Add an executive summary", for: task, into: context
+        ).successValue)
+        let secondTurn = try #require(TaskTurnSubmissionService.submit(
+            message: "new goal is to translate the report to French", for: task, into: context
+        ).successValue)
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: context)
+        let first = try #require(requests.first { $0.id == firstTurn.requestID })
+        let second = try #require(requests.first { $0.id == secondTurn.requestID })
+
+        // Turn 1 is being prompted; turn 2 is durable but not yet admitted.
+        _ = TaskTurnRequestStateMachine.transition(first, to: .admitted)
+        #expect(TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task) == [secondTurn.eventID])
+
+        let whilePending = TaskContextStateManager.activeObjectiveResolution(
+            for: task,
+            planState: .empty,
+            startingRequest: task.goal,
+            approvedGoal: nil
+        )
+        #expect(whilePending.hasExplicitOverride == false)
+        #expect(!whilePending.objective.localizedCaseInsensitiveContains("French"))
+
+        // Once turn 2 is admitted its message becomes visible context.
+        _ = TaskTurnRequestStateMachine.transition(first, to: .running)
+        _ = TaskTurnRequestStateMachine.transition(first, to: .completed)
+        _ = TaskTurnRequestStateMachine.transition(second, to: .admitted)
+        #expect(TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task).isEmpty)
+
+        let afterAdmission = TaskContextStateManager.activeObjectiveResolution(
+            for: task,
+            planState: .empty,
+            startingRequest: task.goal,
+            approvedGoal: nil
+        )
+        #expect(afterAdmission.hasExplicitOverride)
+        #expect(afterAdmission.objective.localizedCaseInsensitiveContains("French"))
+    }
 }
 
 private extension Result where Failure == TaskTurnSubmissionService.SubmissionError {

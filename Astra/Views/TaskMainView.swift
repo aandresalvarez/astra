@@ -1767,9 +1767,12 @@ struct TaskMainView: View {
     }
 
     // Fetch turn-request snapshots once per body pass, not per `.userMessage`
-    // row (was O(messages) DB fetches per render). Plain func so `let` is legal.
+    // row (was O(messages) DB fetches per render), bounded to active requests
+    // plus the visible window's own bubbles. Plain func so `let` is legal.
     private func conversationItemsList(decisionDockVisible: Bool) -> some View {
-        let snapshots = taskTurnRequestSnapshots
+        let snapshots = turnRequestSnapshots(visibleMessageEventIDs: currentThreadSnapshot.conversationItems.compactMap { item -> UUID? in
+            if case .userMessage(let eventID, _, _) = item { return eventID } else { return nil }
+        })
         return ForEach(currentThreadSnapshot.conversationItems) { item in
             conversationItemView(item, turnRequestSnapshots: snapshots, decisionDockVisible: decisionDockVisible)
                 .id(item.id)
@@ -4331,6 +4334,9 @@ struct TaskMainView: View {
         switch action.kind {
         case .stop:
             onCancelTask?(task)
+        case .cancelTurnRequest:
+            guard let requestID = action.payload.flatMap(UUID.init) else { return }
+            taskQueue?.cancelTurnRequest(id: requestID, workspace: task.workspace, modelContext: modelContext)
         case .allowOnce, .approveResult, .dismissReview:
             onApproveTask?(task)
         case .allowSimilar:

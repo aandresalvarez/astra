@@ -851,7 +851,8 @@ public struct ASTRAApp: App {
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
         TaskTurnRequestRecoveryService.recoverInterruptedRequests(
-            modelContext: modelContext
+            modelContext: modelContext,
+            autoExportWorkspaces: !skipWorkspaceRecovery
         )
     }
 

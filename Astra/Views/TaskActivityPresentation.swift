@@ -217,11 +217,16 @@ struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
                 systemImage: "checkmark.circle"
             )
         case .failed:
+            // "Couldn't start" is reserved for pre-runtime admission failures.
+            // A request that reached .running (startedAt set) performed real
+            // work — possibly with partial changes — before failing, and must
+            // not be reported as never having begun.
+            let ranBeforeFailing = request.startedAt != nil
             return Self(
                 requestID: request.id,
                 messageEventID: request.messageEventID,
                 state: request.state,
-                title: "Couldn’t start",
+                title: ranBeforeFailing ? "Run failed" : "Couldn’t start",
                 detail: request.terminalReason,
                 systemImage: "exclamationmark.triangle"
             )

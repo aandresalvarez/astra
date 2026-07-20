@@ -2096,7 +2096,27 @@ struct TaskSidebarView: View {
             }
         }
 
-        if task.status == .failed || task.status == .cancelled || task.status == .budgetExceeded {
+        // A waiting turn leaves the task in its previous status, so the
+        // running-gated Cancel above never covers it. Retract just the saved
+        // request rather than cancelling the whole task.
+        if let activity = taskActivities[task.id], activity.isWaiting,
+           let requestID = activity.request?.id {
+            Button {
+                taskQueue.cancelTurnRequest(
+                    id: requestID,
+                    workspace: task.workspace,
+                    modelContext: modelContext
+                )
+            } label: {
+                Label("Cancel Queued Message", systemImage: "xmark.circle")
+            }
+        }
+
+        // While a durable follow-up is waiting or starting, the task keeps its
+        // terminal status, but retrying then would race the pending admission
+        // into out-of-order or duplicate execution.
+        if task.status == .failed || task.status == .cancelled || task.status == .budgetExceeded,
+           (taskActivities[task.id]?.kind ?? .idle) == .idle {
             Button {
                 onRetryTask?(task)
             } label: {
