@@ -112,6 +112,21 @@ final class WorkspaceManagedJobBackendLocatorResolver {
         let configuration = try? WorkspaceToolConfiguration.fromEnvironment(variables)
         return Locator(jobRootPath: jobRootPath, configuration: configuration)
     }
+
+    /// Whether the operation's ORIGINATING provider run is still executing.
+    /// While it is, its still-connected MCP helper shares the task/run-scoped
+    /// executor container (ordinary `workspace_shell` calls run in it), so the
+    /// monitor must not `docker stop` it out from under that session — the
+    /// helper's own session-end cleanup releases the container once the
+    /// provider exits, with the same fail-closed nonterminal-job check.
+    func originatingRunIsActive(for request: TaskExternalOperationBackendRequest) -> Bool {
+        let runID = request.originatingRunID
+        var descriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.id == runID }
+        )
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor).first)?.status == .running
+    }
 }
 
 struct WorkspaceManagedJobExternalOperationBackend:
@@ -173,7 +188,12 @@ struct WorkspaceManagedJobExternalOperationBackend:
               let receipt = record.startReceipt else {
             if executionState.isTerminalObservation,
                let configuration = locator.configuration,
-               record.startReceipt?.containerName == configuration.containerName {
+               record.startReceipt?.containerName == configuration.containerName,
+               // The originating provider session shares this container for its
+               // ordinary workspace_shell calls; stopping it mid-session would
+               // fail or kill unrelated provider work. Defer to the helper's
+               // own session-end cleanup while that run is still executing.
+               await !locatorResolver.originatingRunIsActive(for: request) {
                 let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
                 let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
                 let cleaned = manager.cleanupExecutorIfIdle()
@@ -222,7 +242,12 @@ struct WorkspaceManagedJobExternalOperationBackend:
             return TaskExternalOperationObservation(executionState: .unknown, health: .malformed)
         }
         let state = Self.executionState(for: record.status)
-        if state.isTerminalObservation {
+        if state.isTerminalObservation,
+           // Same originating-session guard as the observed-terminal path: the
+           // still-connected MCP helper shares this container for ordinary
+           // workspace_shell calls, and its own session-end cleanup releases
+           // the container once the provider exits.
+           await !locatorResolver.originatingRunIsActive(for: request) {
             // A confirmed cancellation is terminal and never polled again. The
             // originating provider's cleanup preserved this task/run executor
             // container while the job was still nonterminal, so — mirroring the

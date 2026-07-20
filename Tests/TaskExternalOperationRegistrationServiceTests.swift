@@ -356,6 +356,46 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(TaskExternalOperationWakeAdmission.shouldResume(taskStatus: .running))
     }
 
+    @Test("a wake is acknowledged only when its outcome actually resolved")
+    func wakeAcknowledgedOnlyWhenOutcomeResolved() {
+        // Validation wake: preflight early-exit leaves the op .validating and
+        // the task waitingExternal — must NOT acknowledge (retry later).
+        #expect(!TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .completionValidation,
+            operationMonitoringState: .validating,
+            taskStatus: .waitingExternal
+        ))
+        // Successful validation consumed the validating state.
+        #expect(TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .completionValidation,
+            operationMonitoringState: .completed,
+            taskStatus: .completed
+        ))
+        // Reasoning wake resolved = task reached its runtime review.
+        #expect(TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .userFacingReasoning,
+            operationMonitoringState: .completed,
+            taskStatus: .pendingUser
+        ))
+        // Reasoning run failed / preflight-exited: task not in review — retry.
+        #expect(!TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .userFacingReasoning,
+            operationMonitoringState: .completed,
+            taskStatus: .waitingExternal
+        ))
+        #expect(!TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .userFacingReasoning,
+            operationMonitoringState: .completed,
+            taskStatus: .failed
+        ))
+        // Ambiguity wakes never launch a session; always acknowledged.
+        #expect(TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .ambiguousObservation,
+            operationMonitoringState: .active,
+            taskStatus: .waitingExternal
+        ))
+    }
+
     @Test("a failed wake run keeps a task with live external work in monitoring")
     func failedWakeRunReturnsToMonitoring() throws {
         let fixture = try RegistrationFixture()

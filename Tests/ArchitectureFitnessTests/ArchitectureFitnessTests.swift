@@ -1875,7 +1875,10 @@ struct ArchitectureFitnessTests {
             // synthesized memberwise init is always internal, even for an
             // all-public struct) to stay constructible from outside this new
             // target - a hard language requirement, not scope creep.
-            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
+            // + PR #328: remappingTaskIdentities (fresh AgentTask/TaskRun ids
+            // for duplicated workspaces so a duplicate can't drive the
+            // original's globally-taskID-keyed external operations).
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_260, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line

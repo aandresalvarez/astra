@@ -2675,6 +2675,59 @@ public enum WorkspaceConfigManager {
         return config
     }
 
+    /// Generates fresh ids for every AgentTask/TaskRun in `config` and rewrites
+    /// the task-id cross-references (`chainedFromID`, `forkedFromID`,
+    /// `ScheduleConfig.sourceTaskID`) to match. A duplicated workspace must not
+    /// share task/run primary keys with the workspace it was exported from:
+    /// `TaskExternalOperation` and its controls/services are keyed globally by
+    /// scalar `taskID` (no workspace scoping), so a duplicate task retaining
+    /// the original UUID could observe, poll, stop, or cancel the ORIGINAL
+    /// task's live external job — and startup trusted-record reconciliation
+    /// could adopt the original's backend receipt onto the duplicate. Exported
+    /// task events reference runs by index, not id, so only `RunConfig.id`
+    /// itself needs regeneration.
+    public static func remappingTaskIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
+        var config = config
+        var taskIDRemap: [String: String] = [:]
+
+        config.tasks = config.tasks?.map { task in
+            var task = task
+            if let oldID = task.id {
+                let newID = UUID().uuidString
+                taskIDRemap[oldID] = newID
+                task.id = newID
+            }
+            task.runs = task.runs.map { run in
+                var run = run
+                if run.id != nil {
+                    run.id = UUID().uuidString
+                }
+                return run
+            }
+            return task
+        }
+
+        // Second pass: cross-references may point at a task defined later in
+        // the array, so they can only be rewritten once the full remap exists.
+        // References to tasks outside this config (already absent from the
+        // duplicate) are left as-is; they simply dangle like they would after
+        // deleting the referenced task.
+        config.tasks = config.tasks?.map { task in
+            var task = task
+            task.chainedFromID = task.chainedFromID.flatMap { taskIDRemap[$0] ?? $0 }
+            task.forkedFromID = task.forkedFromID.flatMap { taskIDRemap[$0] ?? $0 }
+            return task
+        }
+
+        config.schedules = config.schedules?.map { schedule in
+            var schedule = schedule
+            schedule.sourceTaskID = schedule.sourceTaskID.flatMap { taskIDRemap[$0] ?? $0 }
+            return schedule
+        }
+
+        return config
+    }
+
     private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], workspaceID: UUID, modelContext: ModelContext) {
         for config in configs {
             let app = WorkspaceApp(

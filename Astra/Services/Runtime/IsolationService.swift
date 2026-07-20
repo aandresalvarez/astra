@@ -70,6 +70,30 @@ enum IsolationService {
         }
     }
 
+    /// The deterministic execution path a RETAINED isolation artifact lives at
+    /// (retained because the provider detached for durable external
+    /// monitoring), for callers that need to clean it up outside the worker's
+    /// own run lifecycle — e.g. when a cancelled task's suppressed terminal
+    /// wake is the last event that will ever fire for it. Returns nil when
+    /// there is nothing to clean (`.sameDirectory`, or no copy exists).
+    static func retainedExecutionPath(task: AgentTask) -> String? {
+        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        guard !codeDir.isEmpty else { return nil }
+        switch task.isolationStrategy {
+        case .sameDirectory:
+            return nil
+        case .gitBranch:
+            // cleanup() is a safe no-op unless the repo is currently on an
+            // astra/* branch.
+            return codeDir
+        case .copy:
+            let originalName = URL(fileURLWithPath: codeDir).lastPathComponent
+            let copyName = "\(originalName)-astra-\(task.id.uuidString.prefix(8).lowercased())"
+            let copyPath = copyScratchRoot().appendingPathComponent(copyName, isDirectory: true).path
+            return FileManager.default.fileExists(atPath: copyPath) ? copyPath : nil
+        }
+    }
+
     /// Clean up isolation artifacts if needed (e.g., switch back from branch).
     /// Serialized per-workspace to prevent interleaved git operations.
     static func cleanup(task: AgentTask, executionPath: String) {

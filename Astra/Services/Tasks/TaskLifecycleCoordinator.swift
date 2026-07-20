@@ -761,18 +761,18 @@ final class TaskLifecycleCoordinator {
                     // let e.g. WorkspaceAppService.deleteApp on the duplicate's
                     // copy affect the original's rows too.
                     dupConfig = WorkspaceConfigManager.remappingWorkspaceAppIdentities(in: dupConfig)
-                    // Task/run ids are NOT remapped on duplicate (unlike the
-                    // WorkspaceApp family above) — the duplicate's AgentTask/
-                    // TaskRun rows keep the original's ids. TaskExternalOperation
-                    // is queried globally by a raw taskID (no relationship, no
-                    // uniqueness constraint, no workspace scoping — see
-                    // TaskExternalOperationControlsView's @Query and
+                    // Task/run ids ARE remapped for a duplicate: even with the
+                    // operation rows dropped below, a duplicate task retaining
+                    // the original UUID would still resolve the ORIGINAL's
+                    // operations through every globally-taskID-keyed surface
+                    // (TaskExternalOperationControlsView's @Query,
                     // WorkspaceManagedJobBackendLocatorResolver's fetchLimit=1
-                    // lookup), so importing a task's operations unchanged would
-                    // let the duplicate's UI observe or cancel the ORIGINAL
-                    // workspace's still-live external job. Drop them: a
-                    // duplicate didn't actually start that job, so it shouldn't
-                    // inherit "there's a live job running" state at all.
+                    // lookup, startup trusted-record reconciliation) and could
+                    // observe, poll, stop, or cancel the original's live job.
+                    dupConfig = WorkspaceConfigManager.remappingTaskIdentities(in: dupConfig)
+                    // Operations are dropped as well: a duplicate didn't
+                    // actually start that job, so it shouldn't inherit "there's
+                    // a live job running" state at all.
                     if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             dupConfig.tasks = freshExport.tasks

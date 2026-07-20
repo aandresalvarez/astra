@@ -197,6 +197,20 @@ enum TaskExternalOperationRegistrationService {
             modelContext: modelContext,
             at: now
         )
+        // Registration is only a durable ownership boundary once it is actually
+        // ON DISK. SwiftData autosave gives no timing guarantee, and the next
+        // guaranteed save happens only after the provider run finishes — a
+        // crash in that window would lose the operation row and the task/run
+        // transition while the detached backend job stays live, and startup
+        // reconciliation would then reject the receipt (its run row is gone),
+        // leaving unregistered work that a retry can duplicate. Commit
+        // synchronously before reporting `.registered`.
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "external_operation_registered"]
+        )
         AppLogger.audit(.taskStarted, category: "ExternalOperation", taskID: task.id, fields: [
             "operation": "register",
             "backend": backendKind,

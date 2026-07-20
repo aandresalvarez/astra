@@ -23,6 +23,39 @@ enum TaskExternalOperationWakeAdmission {
     static func shouldResume(taskStatus: TaskStatus) -> Bool {
         taskStatus != .cancelled
     }
+
+    /// Whether a delivered terminal wake actually achieved its outcome.
+    ///
+    /// `TaskQueue.continueSession` returns `true` whenever the worker RAN — but
+    /// the worker can exit early after admission (missing provider executable,
+    /// runtime/connector/Docker/isolation preflight failure) without touching
+    /// the operation. Acknowledging such a wake would permanently strand it:
+    /// terminal reconciliation only retries UNacknowledged deliveries. The sink
+    /// therefore acknowledges only when the wake's observable outcome exists;
+    /// otherwise the wake stays pending and retries on a later scheduler pass.
+    static func wakeOutcomeResolved(
+        intent: TaskExternalOperationWakeIntent,
+        operationMonitoringState: TaskExternalOperationMonitoringState?,
+        taskStatus: TaskStatus
+    ) -> Bool {
+        switch intent {
+        case .completionValidation:
+            // Resolved when the validating state was consumed (operation
+            // `.completed`, or the row vanished) or the task terminalized.
+            // A failed validation run leaves `.validating` + `waitingExternal`
+            // on purpose — unresolved, so the wake retries.
+            return operationMonitoringState != .validating || taskStatus == .completed
+        case .userFacingReasoning:
+            // Resolved when the task reached its runtime review (or completed
+            // via an approval racing this wake). A reasoning run that itself
+            // failed returns the task to `waitingExternal` — unresolved.
+            return taskStatus == .pendingUser || taskStatus == .completed
+        case .ambiguousObservation:
+            // Never launches a provider session (suppressed at the sink while
+            // the observation is nonterminal); acknowledged unconditionally.
+            return true
+        }
+    }
 }
 
 struct TaskEventExternalOperationNotificationSink:
@@ -127,6 +160,19 @@ extension AppRuntimeController {
             )
             descriptor.fetchLimit = 1
             guard let task = try? modelContext.fetch(descriptor).first else { return false }
+            // A wake for a still-NONTERMINAL observation (ambiguity) is never
+            // allowed to launch a provider session: `resourceAccess` terminates
+            // in lock admission and is not enforced by the provider policy or
+            // sandbox, so a "read-only" reasoning session could still mutate
+            // the execution root the detached job is writing, or cancel and
+            // relaunch jobs. The user is informed through the notification
+            // sink; provider reasoning is deferred until the observation is
+            // terminal (the lock-side read-only restriction stays as defense
+            // in depth). Acknowledge so the same incident is not redelivered;
+            // `apply` re-arms the wake key on the next healthy observation.
+            guard request.observation.executionState.isTerminalObservation else {
+                return true
+            }
             // Never resurrect an explicitly cancelled task. Return true so the
             // wake is acknowledged and not retried, while the task stays cancelled.
             guard TaskExternalOperationWakeAdmission.shouldResume(taskStatus: task.status) else {
@@ -154,23 +200,47 @@ extension AppRuntimeController {
                         auditFields: ["operation": "external_operation_wake_suppressed_cancelled"]
                     )
                 }
+                // This suppression bypasses AgentRuntimeWorker — the only code
+                // that cleans the isolation retained when the provider
+                // detached. Without cleanup here, a cancelled `.gitBranch`
+                // task's repository stays checked out on its astra/* branch
+                // (and a `.copy` task's copy directory persists) forever, and
+                // later tasks acquire the workspace on the wrong branch. Clean
+                // up once no other nonterminal operation still uses the root.
+                let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+                let rootStillInUse = operations.contains {
+                    $0.taskID == task.id
+                        && $0.id != request.operationID
+                        && $0.monitoringState != .quarantined
+                        && !$0.executionState.isTerminalObservation
+                }
+                if !rootStillInUse, let retained = IsolationService.retainedExecutionPath(task: task) {
+                    IsolationService.cleanup(task: task, executionPath: retained)
+                }
                 return true
             }
-            // A wake for a still-nonterminal observation (an ambiguity-
-            // reasoning wake) runs while the detached job may still be writing
-            // the execution root — its own registration row is still a durable
-            // resource holder. Admit that session as a READER only: the
-            // resource-lock bypass for a claim's own operation is restricted to
-            // read claims, so a write claim here would deadlock against the
-            // operation's own holder, and a write admission would let the
-            // reasoning session race the detached job's writes. Terminal wakes
-            // (validation/reasoning after the job stopped) keep write access.
-            return await taskQueue.continueSession(
+            let continued = await taskQueue.continueSession(
                 task: task,
                 message: TaskExternalOperationWakeMessageRenderer.render(request),
                 modelContext: modelContext,
-                executionPolicy: .externalOperationWake(operationID: request.operationID),
-                resourceAccess: request.observation.executionState.isTerminalObservation ? .write : .readOnly
+                executionPolicy: .externalOperationWake(operationID: request.operationID)
+            )
+            guard continued else { return false }
+            // `continued` only proves the worker RAN — it can exit early after
+            // admission (missing executable, runtime/connector/Docker/isolation
+            // preflight) without ever touching the operation. Acknowledge only
+            // when the wake's observable outcome exists; otherwise leave the
+            // wake unacknowledged so terminal reconciliation retries it.
+            let operationID = request.operationID
+            var operationDescriptor = FetchDescriptor<TaskExternalOperation>(
+                predicate: #Predicate<TaskExternalOperation> { $0.id == operationID }
+            )
+            operationDescriptor.fetchLimit = 1
+            let operation = try? modelContext.fetch(operationDescriptor).first
+            return TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+                intent: request.intent,
+                operationMonitoringState: operation?.monitoringState,
+                taskStatus: task.status
             )
         }
         let notificationSink = TaskEventExternalOperationNotificationSink { notification in
