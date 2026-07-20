@@ -46,11 +46,63 @@ enum TaskSuccessfulCompletionService {
             validation.nextCheckAt = nil
         }
 
-        // Completing one validation never supersedes another task-owned
-        // operation. Re-evaluate the full set after the mutation above so a
-        // remaining active, validating, or stopped-but-still-executing row
-        // keeps the task waitingExternal ("Stop monitoring" leaves the
-        // external job running, so it must not unlock task completion).
+        // Does THIS run correspond to a terminal-failure operation's own
+        // reasoning wake (or is it that operation's originating run)? If a
+        // reasoning wake, its `externalOperation.review.required` event must
+        // be recorded NOW, unconditionally — independent of whether some
+        // OTHER operation is still active — or the wake sink
+        // (`wakeOutcomeResolved`) can never acknowledge it and terminal
+        // reconciliation retries this already-succeeded reasoning wake
+        // forever. Recorded before the active/validating check below so a
+        // still-pending sibling operation cannot suppress it.
+        var ownFailureOperationRequiringPendingReview: TaskExternalOperation?
+        if let failureOperation = operations.first(where: {
+            // A stale `.completed` terminal-failure row is otherwise never
+            // cleared, so without the ID gate here ANY future successful run
+            // on this task — including ones with nothing to do with this
+            // operation — would re-enter "review required" forever. Only the
+            // run that produced the failure, or the run dispatched as ITS OWN
+            // reasoning wake, may match.
+            $0.monitoringState == .completed
+                && $0.executionState.isTerminalObservation
+                && $0.executionState != .processCompleted
+                && ($0.originatingRunID == run.id || $0.id == validatingOperationID)
+        }) {
+            if failureOperation.originatingRunID == run.id {
+                // The originating provider turn cannot convert an already
+                // terminal external failure into task success. Keep the task
+                // waiting until the operation-specific reasoning wake runs.
+                pauseForMonitoring(operation: failureOperation, task: task, run: run, modelContext: modelContext)
+                return false
+            }
+            // A reasoning wake may explain cancellation/failure/interruption,
+            // but successful narration is not successful external work.
+            let operationID = failureOperation.id.uuidString
+            let alreadyRecorded = task.events.contains {
+                $0.type == "externalOperation.review.required" && $0.payload.contains(operationID)
+            }
+            if !alreadyRecorded {
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    type: "externalOperation.review.required",
+                    payload: TaskEvent.payloadString([
+                        "execution_state": failureOperation.executionState.rawValue,
+                        "operation_id": operationID
+                    ]),
+                    run: run
+                ))
+            }
+            ownFailureOperationRequiringPendingReview = failureOperation
+        }
+
+        // Completing one validation (or recording the review event just
+        // above) never supersedes another task-owned operation. Re-evaluate
+        // the full set so a remaining active, validating, or
+        // stopped-but-still-executing row keeps the task waitingExternal
+        // ("Stop monitoring" leaves the external job running, so it must not
+        // unlock task completion) — including when THIS run was itself a
+        // reasoning wake whose review event is now durably recorded but a
+        // SIBLING operation is still live.
         if let operation = operations.first(where: {
             $0.monitoringState == .active || $0.monitoringState == .validating
                 || ($0.monitoringState == .stopped && !$0.executionState.isTerminalObservation)
@@ -62,41 +114,11 @@ enum TaskSuccessfulCompletionService {
             return false
         }
 
-        if let operation = operations.first(where: {
-            // Unlike the `.active`/`.validating` check above, a stale
-            // `.completed` terminal-failure row is otherwise never cleared, so
-            // without the ID gate here ANY future successful run on this task —
-            // including ones with nothing to do with this operation — would
-            // re-enter "review required" forever. Only the run that produced
-            // the failure, or the run dispatched as ITS OWN reasoning wake, may
-            // match.
-            $0.monitoringState == .completed
-                && $0.executionState.isTerminalObservation
-                && $0.executionState != .processCompleted
-                && ($0.originatingRunID == run.id || $0.id == validatingOperationID)
-        }) {
-            if operation.originatingRunID == run.id {
-                // The originating provider turn cannot convert an already
-                // terminal external failure into task success. Keep the task
-                // waiting until the operation-specific reasoning wake runs.
-                pauseForMonitoring(operation: operation, task: task, run: run, modelContext: modelContext)
-                return false
-            }
-            // A reasoning wake may explain cancellation/failure/interruption,
-            // but successful narration is not successful external work.
+        if ownFailureOperationRequiringPendingReview != nil {
             let completedAt = run.completedAt ?? Date()
             run.completedAt = completedAt
             run.recordExternalOutcomePending()
             TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: completedAt)
-            modelContext.insert(TaskEvent(
-                task: task,
-                type: "externalOperation.review.required",
-                payload: TaskEvent.payloadString([
-                    "execution_state": operation.executionState.rawValue,
-                    "operation_id": operation.id.uuidString
-                ]),
-                run: run
-            ))
             return false
         }
 
@@ -171,6 +193,16 @@ enum TaskSuccessfulCompletionService {
     /// approval recorded at/after the failure's `review.required` event. No
     /// `review.required` event at all means the failure's reasoning wake has
     /// not fired yet — also unresolved.
+    ///
+    /// `task.approved` carries no operation-specific identity (it is one
+    /// generic UI action), so with TWO failed operations whose reasoning
+    /// wakes are serialized, each inserts its own `review.required` event and
+    /// a single approval click could otherwise satisfy BOTH — even though the
+    /// user only ever saw and approved whichever failure's review was most
+    /// recently surfaced. An approval is credited to an operation only when
+    /// that operation's `review.required` event is the LATEST one at the
+    /// moment of approval — i.e. no OTHER operation's review surfaced in
+    /// between and could have been the one actually being approved.
     @MainActor
     private static func hasResolvedFailureReview(
         operation: TaskExternalOperation,
@@ -183,8 +215,16 @@ enum TaskSuccessfulCompletionService {
             .max() else {
             return false
         }
-        return task.events.contains {
-            $0.type == TaskEventTypes.Task.approved.rawValue && $0.timestamp >= reviewRequiredAt
+        return task.events.contains { approval in
+            guard approval.type == TaskEventTypes.Task.approved.rawValue,
+                  approval.timestamp >= reviewRequiredAt else { return false }
+            let laterUnrelatedReviewIntervened = task.events.contains {
+                $0.type == "externalOperation.review.required"
+                    && !$0.payload.contains(operationID)
+                    && $0.timestamp > reviewRequiredAt
+                    && $0.timestamp <= approval.timestamp
+            }
+            return !laterUnrelatedReviewIntervened
         }
     }
 

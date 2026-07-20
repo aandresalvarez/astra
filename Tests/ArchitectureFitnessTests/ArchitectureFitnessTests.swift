@@ -1880,7 +1880,7 @@ struct ArchitectureFitnessTests {
             // original's globally-taskID-keyed external operations), including
             // the Workspace App run task references (linkedTaskID +
             // awaitedTaskIDsJSON) resolved globally by run resumption.
-            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_370, .owner("Workspace mirror persistence")),
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_430, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line

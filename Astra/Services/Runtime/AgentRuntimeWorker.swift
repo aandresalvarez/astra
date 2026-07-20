@@ -717,13 +717,17 @@ final class AgentRuntimeWorker {
         if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
             do {
                 // Existing deterministic artifacts may be reused ONLY when the
-                // task provably owns live external work that retained them; a
-                // leftover from a crashed ordinary run must be recreated (copy)
-                // or fail visibly (branch), never silently run on.
+                // task provably owns live external work that retained THIS
+                // SPECIFIC root (`codeDir`, computed above) — a leftover from
+                // a crashed ordinary run, or a retained operation on a
+                // DIFFERENT (retargeted) root, must be recreated (copy) or
+                // fail visibly (branch), never silently reused as if it were
+                // this root's own artifact.
                 let ownsRetainedExternalWork = TaskExternalOperationRegistrationService
                     .operations(taskID: task.id, modelContext: modelContext)
                     .contains {
                         $0.monitoringState != .quarantined
+                            && $0.launchResourceKey == codeDir
                             && (!$0.executionState.isTerminalObservation
                                     || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake($0))
                     }

@@ -915,19 +915,18 @@ final class TaskLifecycleCoordinator {
             "colliding_task_count": String(collidingIDs.count)
         ], level: .warning)
         let collidingIDStrings = Set(collidingIDs.map(\.uuidString))
-        var config = config
         // Strip externalOperations for the COLLIDING tasks only, by their
         // still-original id (before remap changes it) — a duplicate's task
         // didn't actually start the ORIGINAL's job, so it shouldn't inherit
         // "there's a live job running" state. Every other, non-colliding
         // task's exported operations (including a pending quarantined
-        // registration) are left completely untouched.
-        config.tasks = config.tasks?.map { task in
-            guard let id = task.id, collidingIDStrings.contains(id) else { return task }
-            var task = task
-            task.externalOperations = nil
-            return task
-        }
+        // registration) are left completely untouched. Also normalizes an
+        // affected `waitingExternal` status (see
+        // `WorkspaceConfigManager.strippedOfExternalOperations`'s doc comment).
+        let config = WorkspaceConfigManager.strippedOfExternalOperations(
+            config,
+            forTaskIDs: collidingIDStrings
+        )
         // Regenerate ids ONLY for the colliding tasks — remapping every task
         // in the config merely because one collided would strand unrelated
         // tasks (dropping their run/id-stable exported operation state) for

@@ -250,22 +250,24 @@ extension AppRuntimeController {
                 // task's repository stays checked out on its astra/* branch
                 // (and a `.copy` task's copy directory persists) forever, and
                 // later tasks acquire the workspace on the wrong branch. Clean
-                // up once no other nonterminal operation still uses the root.
+                // up once no other nonterminal operation still uses THIS
+                // SPECIFIC root — a task can own operations on different
+                // roots after a retarget, so "any other nonterminal operation
+                // on the task" over-blocks (or under-blocks) cleanup of a
+                // root a different operation doesn't even share.
+                let launchRoot = TaskExternalOperationRegistrationService.launchExecutionRoot(
+                    operationID: request.operationID,
+                    modelContext: modelContext
+                )
                 let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
                 let rootStillInUse = operations.contains {
                     $0.taskID == task.id
                         && $0.id != request.operationID
                         && $0.monitoringState != .quarantined
                         && !$0.executionState.isTerminalObservation
+                        && $0.launchResourceKey == launchRoot
                 }
                 if !rootStillInUse {
-                    // This specific operation's own launch root — not just
-                    // "any retained root for the task" — since it is the one
-                    // whose isolation was actually retained for this wake.
-                    let launchRoot = TaskExternalOperationRegistrationService.launchExecutionRoot(
-                        operationID: request.operationID,
-                        modelContext: modelContext
-                    )
                     if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
                         IsolationService.cleanup(task: task, executionPath: retained)
                     }

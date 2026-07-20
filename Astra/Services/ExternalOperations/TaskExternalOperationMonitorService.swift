@@ -766,6 +766,15 @@ final class TaskExternalOperationMonitorService {
                 )
             }
         }
+        // Rechecked here (not just at entry): the notification delivery just
+        // above this can suspend at `await notificationSink.notify`, during
+        // which `stop()` may have run (e.g. a pending update install).
+        // `Task.isCancelled` catches the cooperative cancellation `stop()`
+        // issues to this delivery's own tracked Task; `isStopped` catches a
+        // stop that raced ahead of that cancellation actually being observed.
+        // Without both, notification delivery returning would still launch a
+        // paid, write-capable provider wake during shutdown.
+        guard !isStopped, !Task.isCancelled else { return }
         if let wakeRequest = applied.wakeRequest,
            let wakeKey = applied.wakeKey,
            isCurrentWakeKey(

@@ -306,30 +306,36 @@ final class TaskQueue {
                         }
                         // TaskExternalOperation rows carry only a scalar taskID
                         // (no cascade relationship), so deleting the transient
-                        // task would orphan its registrations. A cancelled
-                        // same-thread turn can still own a NONTERMINAL
-                        // registration whose detached job is genuinely still
-                        // running — deleting that row (like the artifacts
-                        // above did) would drop its only monitor/resource
-                        // holder while the job keeps writing. Transfer
-                        // ownership to the surviving `sourceTask` instead,
-                        // exactly like the artifact reassignment just above;
-                        // only TERMINAL rows (truly finished, otherwise
-                        // unreachable once the transient task is gone) are
-                        // deleted.
+                        // task would orphan its TERMINAL registrations
+                        // (unreachable once the task is gone) — those are
+                        // deleted here. A NONTERMINAL registration's detached
+                        // job is genuinely still running; rewriting its
+                        // taskID to `sourceTask` looked appealing but does NOT
+                        // work: the durable backend receipt on disk (and every
+                        // backend validation gate keyed on it) is bound to the
+                        // ORIGINAL task/run identity, and `sourceTask.runs`
+                        // does not contain the transient task's originating
+                        // run (whose row is about to be cascade-deleted with
+                        // `task` below) — reassigning the scalar taskID alone
+                        // would leave the operation pointing at an owner the
+                        // backend can never again validate against, making
+                        // every subsequent poll/cancel resolve as malformed.
+                        // Keep the row (and the transient task that still owns
+                        // a valid receipt binding) alive instead; the merge's
+                        // data transfer above still happened, only the
+                        // transient task's deletion is deferred until its
+                        // external work is confirmed terminal.
                         let transientTaskID = task.id
                         let transientOperations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>(
                             predicate: #Predicate<TaskExternalOperation> { $0.taskID == transientTaskID }
                         ))) ?? []
-                        for operation in transientOperations {
-                            if operation.executionState.isTerminalObservation {
-                                modelContext.delete(operation)
-                            } else {
-                                operation.taskID = sourceTask.id
-                                operation.updatedAt = Date()
-                            }
+                        let hasNonterminalOperation = transientOperations.contains { !$0.executionState.isTerminalObservation }
+                        for operation in transientOperations where operation.executionState.isTerminalObservation {
+                            modelContext.delete(operation)
                         }
-                        modelContext.delete(task)
+                        if !hasNonterminalOperation {
+                            modelContext.delete(task)
+                        }
                     }
                 } else {
                     let event = TaskEvent(

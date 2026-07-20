@@ -1939,6 +1939,31 @@ public enum WorkspaceConfigManager {
         )
     }
 
+    /// Mirrors `TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake`
+    /// against the DTO shape (this call site has only already-exported
+    /// `ExternalOperationConfig` rows, not the live `TaskExternalOperation`
+    /// model), so "still needs its originating run in the mirror" agrees with
+    /// "still holds its resource root" everywhere else in the codebase.
+    private static func isRetainedForExport(_ config: ExternalOperationConfig) -> Bool {
+        guard config.monitoringState != TaskExternalOperationMonitoringState.quarantined.rawValue,
+              let executionState = TaskExternalOperationExecutionState(rawValue: config.executionState) else {
+            return false
+        }
+        guard executionState.isTerminalObservation else { return true }
+        guard config.monitoringState == TaskExternalOperationMonitoringState.completed.rawValue else {
+            // `.validating` (processCompleted, wake not yet delivered).
+            return true
+        }
+        let observation = TaskExternalOperationObservation(
+            executionState: executionState,
+            health: TaskExternalOperationObservationHealth(rawValue: config.observationHealth) ?? .unknown
+        )
+        guard let currentKey = TaskExternalOperationWakeKeyDerivation.wakeKey(for: observation) else {
+            return false
+        }
+        return config.lastWakeKey != currentKey
+    }
+
     private static func taskConfig(
         _ task: AgentTask,
         externalOperations: [ExternalOperationConfig] = []
@@ -1958,7 +1983,17 @@ public enum WorkspaceConfigManager {
         // run reference, and import's `runIDs.contains(originatingRunID)`
         // guard silently discards the whole registration (no controls, no
         // wake, permanently stranded `waitingExternal`).
-        let requiredRunIDs = Set(externalOperations.compactMap { UUID(uuidString: $0.originatingRunID) })
+        // Only RETAINED operations force their run to survive export — every
+        // historical (fully acknowledged, or quarantined) operation is
+        // exported unconditionally by `externalOperationConfigsForExport` and
+        // is never pruned while the task exists, so forcing ALL of their
+        // originating runs back into the mirror would defeat
+        // `maxRunsPerTask` entirely and grow the mirror without bound.
+        let requiredRunIDs = Set(
+            externalOperations
+                .filter(isRetainedForExport)
+                .compactMap { UUID(uuidString: $0.originatingRunID) }
+        )
         if !requiredRunIDs.isEmpty {
             let mirroredRunIDs = Set(mirroredRuns.map(\.id))
             let missingRequiredRuns = sortedRuns.filter {
@@ -2762,6 +2797,33 @@ public enum WorkspaceConfigManager {
     /// collided would strand unrelated, non-colliding tasks' exported pending
     /// operations for no reason. `nil` (the default) remaps every task, as
     /// the Duplicate-workspace action requires.
+    /// Strips `externalOperations` from every task whose id is in
+    /// `taskIDs`, and normalizes an affected `waitingExternal` status to
+    /// `pendingUser` — `importTask` restores `status` verbatim, and
+    /// `waitingExternal` with no registration to eventually wake it would
+    /// otherwise import into a permanently stranded state (no controls, no
+    /// monitor, no queue admission). Used by the store-wide task-ID collision
+    /// remap path, where the dropped operations belonged to a task whose
+    /// automated outcome is genuinely unknown (a hand-copied/collided config,
+    /// not a normal export) — parked for a human to review rather than
+    /// guessing completed/failed.
+    public static func strippedOfExternalOperations(
+        _ config: WorkspaceConfig,
+        forTaskIDs taskIDs: Set<String>
+    ) -> WorkspaceConfig {
+        var config = config
+        config.tasks = config.tasks?.map { task in
+            guard let id = task.id, taskIDs.contains(id) else { return task }
+            var task = task
+            task.externalOperations = nil
+            if task.status == TaskStatus.waitingExternal.rawValue {
+                task.status = TaskStatus.pendingUser.rawValue
+            }
+            return task
+        }
+        return config
+    }
+
     public static func remappingTaskIdentities(
         in config: WorkspaceConfig,
         onlyTaskIDs: Set<String>? = nil

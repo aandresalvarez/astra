@@ -570,6 +570,133 @@ struct TaskCompletionPolicyTests {
         #expect(task.status == .completed)
     }
 
+    @Test("a failure reasoning wake records its review even while a sibling operation is still active")
+    func failureReasoningWakeRecordsReviewDespiteActiveSibling() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Two durable jobs, one still running")
+        task.status = .waitingExternal
+        let failedOrigin = TaskRun(task: task)
+        // Op A already failed; this run is A's reasoning wake, about to
+        // succeed (narrate the failure).
+        let failedOperation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(failedOrigin.id.uuidString.lowercased()):failed-job",
+            originatingRunID: failedOrigin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "failed-job",
+            executionState: .failed,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        // Op B is a SIBLING operation still genuinely running.
+        let liveRun = TaskRun(task: task)
+        let liveOperation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(liveRun.id.uuidString.lowercased()):live-job",
+            originatingRunID: liveRun.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "live-job",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active
+        )
+        let reasoningWakeRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(failedOrigin)
+        context.insert(liveRun)
+        context.insert(reasoningWakeRun)
+        context.insert(failedOperation)
+        context.insert(liveOperation)
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: reasoningWakeRun,
+            modelContext: context,
+            successPayload: "Reasoning about op A's failure.",
+            permissionPolicy: .autonomous,
+            validatingOperationID: failedOperation.id
+        )
+
+        // The task stays waitingExternal (op B still needs monitoring) rather
+        // than jumping to pendingUser — but op A's review.required event must
+        // exist regardless, so its wake is durably acknowledged and never
+        // retried.
+        #expect(!completed)
+        #expect(task.status == .waitingExternal)
+        let operationID = failedOperation.id.uuidString
+        #expect(task.events.contains {
+            $0.type == "externalOperation.review.required" && $0.payload.contains(operationID)
+        })
+    }
+
+    @Test("an approval only resolves the failure review that was most recently surfaced")
+    func approvalResolvesOnlyMostRecentlySurfacedReview() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Two sequential failures")
+        task.status = .waitingExternal
+
+        func makeFailure(label: String, at date: Date) -> (operation: TaskExternalOperation, run: TaskRun) {
+            let origin = TaskRun(task: task)
+            let operation = TaskExternalOperation(
+                taskID: task.id,
+                externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(origin.id.uuidString.lowercased()):\(label)",
+                originatingRunID: origin.id,
+                backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+                backendJobID: label,
+                executionState: .failed,
+                observationHealth: .healthy,
+                monitoringState: .completed
+            )
+            context.insert(origin)
+            context.insert(operation)
+            context.insert(TaskEvent(
+                task: task,
+                type: "externalOperation.review.required",
+                payload: TaskEvent.payloadString([
+                    "execution_state": "failed",
+                    "operation_id": operation.id.uuidString
+                ]),
+                run: origin
+            ))
+            let event = task.events.first { $0.type == "externalOperation.review.required" && $0.payload.contains(operation.id.uuidString) }
+            event?.timestamp = date
+            return (operation, origin)
+        }
+
+        context.insert(task)
+        let base = Date(timeIntervalSince1970: 1_777_100_000)
+        // A's review surfaces first, then B's review surfaces LATER — both
+        // still unresolved when the user approves once.
+        _ = makeFailure(label: "op-a", at: base)
+        _ = makeFailure(label: "op-b", at: base.addingTimeInterval(60))
+        let approval = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Task approved by user."
+        )
+        approval.timestamp = base.addingTimeInterval(120)
+        context.insert(approval)
+
+        // The single approval resolves B (the most recently surfaced review
+        // at the time of approval) but must NOT also resolve A — A's review
+        // surfaced, then B's review surfaced before the approval, so the
+        // approval cannot be assumed to also cover A.
+        let aRun = TaskRun(task: task)
+        context.insert(aRun)
+        let aCompleted = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: aRun,
+            modelContext: context,
+            successPayload: "Follow-up.",
+            permissionPolicy: .autonomous,
+            validatingOperationID: nil
+        )
+        #expect(!aCompleted)
+        #expect(task.status == .pendingUser)
+    }
+
     @Test("publication receipt cannot complete a task whose deliverable is missing")
     func publicationReceiptDoesNotBypassMissingDeliverable() throws {
         let container = try makeContainer()

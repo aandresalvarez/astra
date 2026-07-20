@@ -108,7 +108,15 @@ final class WorkspaceManagedJobBackendLocatorResolver {
         } else {
             environment = DockerExecutionPlanner.resolveEnvironment(for: task)
         }
-        let currentDirectory = task.executionRootPath
+        // Prefer the operation's persisted LAUNCH-TIME root over the task's
+        // current (possibly since-retargeted) working directory: this feeds
+        // `environmentVariables` below, which determines the reconstructed
+        // Docker configuration (mounts, working directory) used to actually
+        // reach the container — the same class of drift the resource-lock and
+        // isolation-retention fixes already close.
+        let currentDirectory = TaskExternalOperationRegistrationService
+            .launchExecutionRoot(operationID: request.operationID, modelContext: modelContext)
+            ?? task.executionRootPath
             ?? task.workspace?.activeWorkingPath
             ?? task.workspace?.primaryPath
             ?? ""
