@@ -39,12 +39,10 @@ final class AgentEventRecordingState {
     /// A provider run has one durable start boundary. Stream retries and
     /// duplicate initialization frames must not create repeated lifecycle
     /// events or repeatedly invalidate the task transcript.
-    func registerProviderStart(for run: TaskRun, task: AgentTask) -> Bool {
+    func registerProviderStart(for run: TaskRun, alreadyPersisted: Bool) -> Bool {
         guard !runsWithProviderStart.contains(run.id) else { return false }
         runsWithProviderStart.insert(run.id)
-        return !task.events.contains {
-            $0.run?.id == run.id && $0.type == TaskEventTypes.Task.started.rawValue
-        }
+        return !alreadyPersisted
     }
 
     func appendConversationChunk(
@@ -503,21 +501,29 @@ enum AgentEventRecorder {
             break
 
         case .started(let sessionID, let model):
-            let shouldRecordStart = recordingState?.registerProviderStart(for: run, task: task)
-                ?? !task.events.contains {
-                    $0.run?.id == run.id && $0.type == TaskEventTypes.Task.started.rawValue
-                }
-            guard shouldRecordStart else { return }
-            recordingState?.breakConversationCoalescing(for: run)
             if let sessionID {
                 task.sessionId = sessionID
                 run.providerSessionId = sessionID
+            }
+            let payload = model.map { "\(providerDisplayName) stream started with model \($0)." }
+                ?? "\(providerDisplayName) stream started."
+            let providerStartPayloadPrefix = "\(providerDisplayName) stream started"
+            let providerStartAlreadyPersisted = task.events.contains {
+                $0.run?.id == run.id
+                    && $0.type == TaskEventTypes.Task.started.rawValue
+                    && $0.payload.hasPrefix(providerStartPayloadPrefix)
+            }
+            let shouldRecordStart = recordingState?.registerProviderStart(
+                for: run,
+                alreadyPersisted: providerStartAlreadyPersisted
+            ) ?? !providerStartAlreadyPersisted
+            guard shouldRecordStart else { return }
+            recordingState?.breakConversationCoalescing(for: run)
+            if let sessionID {
                 AppLogger.audit(.workerSessionStarted, category: "Worker", taskID: task.id, fields: [
                     "session_id_prefix": String(sessionID.prefix(8))
                 ], level: .debug)
             }
-            let payload = model.map { "\(providerDisplayName) stream started with model \($0)." }
-                ?? "\(providerDisplayName) stream started."
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: payload, run: run))
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
                 "stream": "started",

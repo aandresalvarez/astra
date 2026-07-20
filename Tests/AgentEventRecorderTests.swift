@@ -17,7 +17,7 @@ private func makeAgentEventRecorderContainer() throws -> ModelContainer {
 @Suite("Agent Event Recorder")
 @MainActor
 struct AgentEventRecorderTests {
-    @Test("Duplicate provider starts create one durable lifecycle event")
+    @Test("Provider start survives the run lifecycle event and duplicate frames persist once")
     func duplicateProviderStartsCreateOneLifecycleEvent() throws {
         let container = try makeAgentEventRecorderContainer()
         let context = container.mainContext
@@ -25,6 +25,12 @@ struct AgentEventRecorderTests {
         let run = TaskRun(task: task)
         context.insert(task)
         context.insert(run)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.started,
+            payload: "Claude Code started for task.",
+            run: run
+        ))
         let recordingState = AgentEventRecordingState()
 
         AgentEventRecorder.recordClaudeEvent(
@@ -51,7 +57,12 @@ struct AgentEventRecorderTests {
 
         #expect(task.sessionId == "session-1")
         #expect(run.providerSessionId == "session-1")
-        #expect(task.events.filter { $0.type == TaskEventTypes.Task.started.rawValue }.count == 1)
+        let providerStarts = task.events.filter {
+            $0.type == TaskEventTypes.Task.started.rawValue
+                && $0.payload.hasPrefix("Claude Code stream started")
+        }
+        #expect(providerStarts.count == 1)
+        #expect(task.events.filter { $0.type == TaskEventTypes.Task.started.rawValue }.count == 2)
     }
 
     @Test("Failed tool results are stored separately from successful output")
