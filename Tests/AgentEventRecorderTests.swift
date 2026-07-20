@@ -14,6 +14,87 @@ private func makeAgentEventRecorderContainer() throws -> ModelContainer {
     )
 }
 
+private enum AgentEventRecorderTestProvider: String, CaseIterable {
+    case claude
+    case copilot
+    case antigravity
+    case codex
+    case cursor
+    case openCode
+
+    var displayName: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .copilot: "Copilot"
+        case .antigravity: "Antigravity"
+        case .codex: "Codex"
+        case .cursor: "Cursor"
+        case .openCode: "OpenCode"
+        }
+    }
+
+    @MainActor
+    func recordStart(
+        sessionID: String,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    ) {
+        let event = AgentEvent.started(sessionID: sessionID, model: "test-model")
+        switch self {
+        case .claude:
+            AgentEventRecorder.recordClaudeEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .copilot:
+            AgentEventRecorder.recordCopilotEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .antigravity:
+            AgentEventRecorder.recordAntigravityEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .codex:
+            AgentEventRecorder.recordCodexEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .cursor:
+            AgentEventRecorder.recordCursorEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .openCode:
+            AgentEventRecorder.recordOpenCodeEvent(
+                event,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        }
+    }
+}
+
 @Suite("Agent Event Recorder")
 @MainActor
 struct AgentEventRecorderTests {
@@ -54,6 +135,57 @@ struct AgentEventRecorderTests {
         #expect(!persistedPayloads.contains("super-secret-value"))
         #expect(!persistedPayloads.contains("printf private"))
         #expect(persistedPayloads.contains("Managed external operation start result received."))
+    }
+
+    @Test("Every provider start survives the run lifecycle event and duplicate frames persist once")
+    func duplicateProviderStartsCreateOneLifecycleEvent() throws {
+        for provider in AgentEventRecorderTestProvider.allCases {
+            let container = try makeAgentEventRecorderContainer()
+            let context = container.mainContext
+            let task = AgentTask(title: "Lifecycle", goal: "Record one provider start")
+            let run = TaskRun(task: task)
+            let sessionID = "\(provider.rawValue)-session"
+            context.insert(task)
+            context.insert(run)
+            context.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Task.started,
+                payload: "\(provider.displayName) started for task.",
+                run: run
+            ))
+            let recordingState = AgentEventRecordingState()
+
+            provider.recordStart(
+                sessionID: sessionID,
+                to: task,
+                run: run,
+                modelContext: context,
+                recordingState: recordingState
+            )
+            provider.recordStart(
+                sessionID: sessionID,
+                to: task,
+                run: run,
+                modelContext: context,
+                recordingState: recordingState
+            )
+            provider.recordStart(
+                sessionID: sessionID,
+                to: task,
+                run: run,
+                modelContext: context,
+                recordingState: AgentEventRecordingState()
+            )
+
+            #expect(task.sessionId == sessionID)
+            #expect(run.providerSessionId == sessionID)
+            let providerStarts = task.events.filter {
+                $0.type == TaskEventTypes.Task.started.rawValue
+                    && $0.payload.hasPrefix("\(provider.displayName) stream started")
+            }
+            #expect(providerStarts.count == 1)
+            #expect(task.events.filter { $0.type == TaskEventTypes.Task.started.rawValue }.count == 2)
+        }
     }
 
     @Test("Failed tool results are stored separately from successful output")
