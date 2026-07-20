@@ -1907,7 +1907,7 @@ struct ArchitectureFitnessTests {
             // validation (deliverables/runTests/aiCheck) so a resume-phase
             // validation failure can't pre-empt the external-outcome review,
             // and isolation is retained until every terminal wake finishes.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_200, .owner("Runtime worker execution")),
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_210, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

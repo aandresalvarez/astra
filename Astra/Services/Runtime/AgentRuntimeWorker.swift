@@ -699,7 +699,21 @@ final class AgentRuntimeWorker {
         let shouldCleanupIsolation: Bool
         if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
             do {
-                executionPath = try await IsolationService.prepare(task: task)
+                // Existing deterministic artifacts may be reused ONLY when the
+                // task provably owns live external work that retained them; a
+                // leftover from a crashed ordinary run must be recreated (copy)
+                // or fail visibly (branch), never silently run on.
+                let ownsRetainedExternalWork = TaskExternalOperationRegistrationService
+                    .operations(taskID: task.id, modelContext: modelContext)
+                    .contains {
+                        $0.monitoringState != .quarantined
+                            && (!$0.executionState.isTerminalObservation
+                                    || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake($0))
+                    }
+                executionPath = try await IsolationService.prepare(
+                    task: task,
+                    reuseRetainedArtifacts: ownsRetainedExternalWork
+                )
                 shouldCleanupIsolation = true
                 if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
                     let isoEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use,
@@ -1396,11 +1410,13 @@ final class AgentRuntimeWorker {
             .contains { operation in
                 guard operation.monitoringState != .quarantined,
                       operation.id != currentWakeOperationID else { return false }
-                if !operation.executionState.isTerminalObservation { return true }
-                if operation.monitoringState == .validating { return true }
-                return operation.monitoringState == .completed
-                    && operation.executionState != .processCompleted
-                    && operation.lastWakeKey == nil
+                // Shared derivation with the monitor/holders: pending means
+                // "acknowledged key differs from the CURRENT terminal wake
+                // key" — a previously acknowledged ambiguity/malformed wake
+                // leaves a non-nil but different key when the next observation
+                // jumps straight to a terminal failure.
+                return !operation.executionState.isTerminalObservation
+                    || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake(operation)
             }
         if shouldCleanupIsolation, !detachedForExternalMonitoring, !externalWorkStillUsesIsolation {
             IsolationService.cleanup(task: task, executionPath: executionPath)

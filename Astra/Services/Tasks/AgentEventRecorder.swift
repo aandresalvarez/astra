@@ -538,7 +538,7 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             let isManagedJobStart = DockerWorkspaceMCPProjection.canonicalToolName(
                 fromObservedToolName: name,
-                runtime: task.resolvedRuntimeID
+                runtime: run.launchRuntimeID(fallback: task.resolvedRuntimeID)
             ) == "workspace_job_start"
             // A managed job command may contain credentials or private paths.
             // The authoritative backend record owns it; task events keep only
@@ -554,7 +554,7 @@ enum AgentEventRecorder {
             let isManagedJobStart = toolName.map {
                 DockerWorkspaceMCPProjection.canonicalToolName(
                     fromObservedToolName: $0,
-                    runtime: task.resolvedRuntimeID
+                    runtime: run.launchRuntimeID(fallback: task.resolvedRuntimeID)
                 ) == "workspace_job_start"
             } ?? false
             // Registration is attempted regardless of `isError`: a managed

@@ -54,7 +54,15 @@ enum IsolationService {
 
     /// Prepare the workspace according to the isolation strategy.
     /// Returns the actual working directory path to use for execution.
-    static func prepare(task: AgentTask) async throws -> String {
+    ///
+    /// `reuseRetainedArtifacts` is set by the caller ONLY when the task owns a
+    /// live external operation (nonterminal, or terminal with a pending wake)
+    /// whose detached job retained the deterministic artifact. Without that
+    /// proof, an existing copy/branch is a STALE leftover (crash mid-run,
+    /// failed cleanup) — reusing it would silently run on a partial snapshot,
+    /// so the stale copy is recreated fresh and the stale branch fails `-b`
+    /// visibly, matching the pre-reuse behavior.
+    static func prepare(task: AgentTask, reuseRetainedArtifacts: Bool = false) async throws -> String {
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         switch task.isolationStrategy {
         case .sameDirectory:
@@ -62,11 +70,20 @@ enum IsolationService {
 
         case .gitBranch:
             return try workspaceLocks.withLock(for: codeDir) {
-                try createGitBranch(workspacePath: codeDir, taskTitle: task.title, taskId: task.id)
+                try createGitBranch(
+                    workspacePath: codeDir,
+                    taskTitle: task.title,
+                    taskId: task.id,
+                    reuseRetainedBranch: reuseRetainedArtifacts
+                )
             }
 
         case .copy:
-            return try copyWorkspace(workspacePath: codeDir, taskId: task.id)
+            return try copyWorkspace(
+                workspacePath: codeDir,
+                taskId: task.id,
+                reuseRetainedCopy: reuseRetainedArtifacts
+            )
         }
     }
 
@@ -156,7 +173,12 @@ enum IsolationService {
 
     // MARK: - Git Branch
 
-    private static func createGitBranch(workspacePath: String, taskTitle: String, taskId: UUID) throws -> String {
+    private static func createGitBranch(
+        workspacePath: String,
+        taskTitle: String,
+        taskId: UUID,
+        reuseRetainedBranch: Bool = false
+    ) throws -> String {
         // Verify it's a git repo
         let checkResult = runGitSync(args: ["rev-parse", "--is-inside-work-tree"], in: workspacePath)
         guard checkResult.exitCode == 0 else {
@@ -181,13 +203,14 @@ enum IsolationService {
         // detached job keeps using it). The eventual wake continuation
         // re-prepares isolation on adapters that prepare on resume; `-b` would
         // fail against the already-existing branch and acknowledge the only
-        // wake without ever starting the provider. Reuse the retained branch
-        // by checking it out instead.
+        // wake without ever starting the provider. Reuse is gated on the
+        // caller's proof of retained external work — a leftover branch from a
+        // crashed ordinary run still fails `-b` visibly as before.
         let existsResult = runGitSync(
             args: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branchName)"],
             in: workspacePath
         )
-        let createResult = existsResult.exitCode == 0
+        let createResult = (existsResult.exitCode == 0 && reuseRetainedBranch)
             ? runGitSync(args: ["checkout", branchName], in: workspacePath)
             : runGitSync(args: ["checkout", "-b", branchName], in: workspacePath)
         guard createResult.exitCode == 0 else {
@@ -257,7 +280,11 @@ enum IsolationService {
             .appendingPathComponent("WorkspaceCopies", isDirectory: true)
     }
 
-    private static func copyWorkspace(workspacePath: String, taskId: UUID) throws -> String {
+    private static func copyWorkspace(
+        workspacePath: String,
+        taskId: UUID,
+        reuseRetainedCopy: Bool = false
+    ) throws -> String {
         let fm = FileManager.default
         let originalName = URL(fileURLWithPath: workspacePath).lastPathComponent
         let copyName = "\(originalName)-astra-\(taskId.uuidString.prefix(8).lowercased())"
@@ -269,15 +296,26 @@ enum IsolationService {
         // detached job's mount). The eventual wake continuation re-prepares
         // isolation on adapters that prepare on resume; `copyItem` would fail
         // against the existing directory and acknowledge the only wake without
-        // ever starting the provider. Reuse the retained copy instead.
+        // ever starting the provider. Reuse is gated on the caller's proof of
+        // retained external work: without it an existing directory is a STALE
+        // leftover (crash mid-run, failed cleanup) and running on it would
+        // silently inherit a partial snapshot — remove it and copy fresh.
         var isDirectory: ObjCBool = false
         if fm.fileExists(atPath: copyPath, isDirectory: &isDirectory), isDirectory.boolValue {
+            if reuseRetainedCopy {
+                AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
+                    "strategy": "copy",
+                    "task_id": taskId.uuidString,
+                    "phase": "copy_reused"
+                ])
+                return copyPath
+            }
             AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
                 "strategy": "copy",
                 "task_id": taskId.uuidString,
-                "phase": "copy_reused"
+                "phase": "stale_copy_recreated"
             ])
-            return copyPath
+            _ = deleteCopy(path: copyPath)
         }
 
         AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [

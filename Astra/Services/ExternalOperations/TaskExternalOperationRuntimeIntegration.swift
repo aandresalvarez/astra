@@ -99,14 +99,18 @@ extension AppRuntimeController {
         taskQueue.externalOperationResourceHolders = { [weak taskQueue] in
             guard let taskQueue else { return [] }
             let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
-            // Every locally-owned, still-executing registration holds its root.
-            // This includes `.stopped` rows: stopping MONITORING leaves the
-            // detached job running (the confirmation says so), so its root must
-            // stay excluded. Only imported no-contact rows (`.quarantined`) and
-            // rows whose execution already terminated (job stopped writing) are
-            // excluded.
+            // Every locally-owned, still-executing registration holds its root
+            // (including `.stopped` rows: stopping MONITORING leaves the
+            // detached job running). A TERMINAL registration keeps holding it
+            // while its validation/reasoning wake is still pending — releasing
+            // the root the moment the job stops would let a waiting task
+            // mutate or remove the job's outputs before the wake validates
+            // them. Only imported no-contact rows (`.quarantined`) and fully
+            // delivered terminal rows are excluded.
             let holding = operations.filter {
-                $0.monitoringState != .quarantined && !$0.executionState.isTerminalObservation
+                guard $0.monitoringState != .quarantined else { return false }
+                return !$0.executionState.isTerminalObservation
+                    || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake($0)
             }
             guard !holding.isEmpty else { return [] }
             let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
@@ -117,7 +121,12 @@ extension AppRuntimeController {
                 // task/workspace-derived key is user-mutable while the
                 // detached job keeps writing the root it actually mounted.
                 let resourceKey = operation.launchResourceKey ?? taskQueue.resourceKey(for: task)
-                return (resourceKey: resourceKey, taskID: operation.taskID, operationID: operation.id)
+                return (
+                    resourceKey: resourceKey,
+                    taskID: operation.taskID,
+                    operationID: operation.id,
+                    allowsSameOperationWrite: operation.executionState.isTerminalObservation
+                )
             }
         }
     }

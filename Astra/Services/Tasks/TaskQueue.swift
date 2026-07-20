@@ -34,7 +34,11 @@ final class TaskQueue {
     /// own continuation (`TaskResourceLockClaim.operationID` match), not for
     /// any other nonterminal operation the same task happens to also own —
     /// see `canAcquireResourceLock`.
-    var externalOperationResourceHolders: @MainActor () -> [(resourceKey: String, taskID: UUID, operationID: UUID)] = { [] }
+    /// `allowsSameOperationWrite` is true for holders whose EXECUTION already
+    /// terminated (the detached job stopped writing; only its pending
+    /// validation/reasoning wake still needs the root — with write access).
+    /// Nonterminal holders admit their own operation's claims as readers only.
+    var externalOperationResourceHolders: @MainActor () -> [(resourceKey: String, taskID: UUID, operationID: UUID, allowsSameOperationWrite: Bool)] = { [] }
 
     /// Track tasks that have been dispatched but may not yet be marked as .running.
     /// Prevents the queue loop from double-dispatching a task during the brief
@@ -449,12 +453,14 @@ final class TaskQueue {
         }
 
         // The lock wait above can block indefinitely behind another holder;
-        // the user may cancel the task during it. Without this recheck the
-        // continuation would call markContinuationLaunchAdmitted, flip the
-        // CANCELLED task back to running, and launch the provider. (A wake
+        // the user may cancel — or DELETE — the task during it. Without this
+        // recheck the continuation would call markContinuationLaunchAdmitted,
+        // flip the cancelled task back to running (or launch a provider
+        // against deleted models), and start paid work nothing owns. (A wake
         // sink caller returning false here leaves its wake unacknowledged; the
-        // retry is then suppressed and finalized by the cancelled-task guard.)
-        guard task.status != .cancelled else {
+        // retry is then suppressed and finalized by the cancelled-task guard,
+        // or finds no task row at all after a deletion.)
+        guard task.status != .cancelled, !task.isDeleted else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "cancelled_while_waiting_for_resource_lock"
             ], level: .warning)
@@ -493,6 +499,15 @@ final class TaskQueue {
         // was the sole remaining route to close the loop.
         if let scheduleID = task.originScheduleID, task.isTerminal {
             routeScheduleResult(task: task, scheduleID: scheduleID, modelContext: modelContext)
+        }
+        // Mirrors runQueue/runSingleTask's post-run Workspace App resumption:
+        // an app run awaiting a task that detached into waitingExternal saw
+        // its only resumeCompletedRuns scan fire right after the initial
+        // executeTask returned (task still incomplete). The terminal wake
+        // completes the task HERE, and no other completion triggers a scan —
+        // without this, the app run waits forever on a finished task.
+        if task.isTerminal {
+            await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
         // Mirrors executeTask's auto-run-chained-task block (above) for the
         // same reason as the schedule routing just above it: a task that
@@ -1075,18 +1090,21 @@ final class TaskQueue {
         // wake) must not let one operation's session write over the execution
         // root while a different operation's detached job is still using it.
         //
-        // The bypass is additionally restricted to READ claims: a holder is by
-        // definition a nonterminal operation, so its detached job may still be
-        // writing the root, and the only wake dispatched while its own holder
-        // exists is an ambiguity-reasoning wake (terminal-execution rows are
-        // never holders and need no bypass). That session must inspect, not
-        // mutate — admitting it as a writer would let it race the detached
-        // job's own writes.
-        if externalOperationResourceHolders().contains(where: {
-            resourceKeysConflict($0.resourceKey, claim.resourceKey)
-                && !($0.taskID == claim.taskID
-                        && $0.operationID == claim.operationID
-                        && claim.accessMode == .readOnly)
+        // Access granularity of the same-operation bypass follows the holder's
+        // execution state: while the detached job is NONTERMINAL it may still
+        // be writing the root, so its own claims are admitted as readers only
+        // (ambiguity reasoning inspects, never mutates). Once execution is
+        // TERMINAL the job has stopped writing but the holder persists until
+        // its validation/reasoning wake is delivered — that wake needs write
+        // access, and holding the root here is exactly what stops a different
+        // waiting task from mutating the job's outputs before they are
+        // validated.
+        if externalOperationResourceHolders().contains(where: { holder in
+            guard resourceKeysConflict(holder.resourceKey, claim.resourceKey) else { return false }
+            let sameOperation = holder.taskID == claim.taskID && holder.operationID == claim.operationID
+            let bypassAllowed = sameOperation
+                && (claim.accessMode == .readOnly || holder.allowsSameOperationWrite)
+            return !bypassAllowed
         }) {
             return false
         }

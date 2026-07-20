@@ -547,6 +547,17 @@ final class TaskLifecycleCoordinator {
                 ], level: .warning)
                 return .blockedByActiveExternalWork
             }
+            // Re-check AFTER the cancellation awaits: a dispatched terminal
+            // delivery that was still waiting for its resource lock when the
+            // pre-cancel guard ran can have been admitted during those awaits.
+            // (A delivery still parked in the lock wait is covered by
+            // continueSession's post-lock deleted-task recheck.)
+            if taskQueue.taskWorkerMap[task.id] != nil {
+                AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id, fields: [
+                    "result": "blocked_active_wake_session"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
         }
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
@@ -669,6 +680,16 @@ final class TaskLifecycleCoordinator {
                 AppLogger.audit(.workspaceDeleted, category: "UI", fields: [
                     "workspace_id": ws.id.uuidString,
                     "result": "blocked_active_external_work"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
+            // Same post-await recheck as deleteTask: a terminal delivery that
+            // was lock-waiting during the pre-cancel guard may have been
+            // admitted while the cancellations awaited.
+            if ws.tasks.contains(where: { taskQueue.taskWorkerMap[$0.id] != nil }) {
+                AppLogger.audit(.workspaceDeleted, category: "UI", fields: [
+                    "workspace_id": ws.id.uuidString,
+                    "result": "blocked_active_wake_session"
                 ], level: .warning)
                 return .blockedByActiveExternalWork
             }

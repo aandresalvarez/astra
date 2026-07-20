@@ -114,6 +114,16 @@ public final class TaskRun {
 }
 
 public extension TaskRun {
+    /// The runtime that LAUNCHED this run. Tool-name decoding and receipt
+    /// registration must use it rather than the task's currently selected
+    /// runtime: the composer can retarget `task.runtimeID` while the
+    /// originating provider turn is still active (especially after
+    /// registration moves the task to waitingExternal), and runtime-specific
+    /// observed tool names would then stop being recognized.
+    func launchRuntimeID(fallback: AgentRuntimeID) -> AgentRuntimeID {
+        AgentRuntimeID(rawValue: runtimeID ?? "") ?? fallback
+    }
+
     static func isChronologicallyOrdered(_ lhs: TaskRun, _ rhs: TaskRun) -> Bool {
         if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
         return lhs.id.uuidString < rhs.id.uuidString

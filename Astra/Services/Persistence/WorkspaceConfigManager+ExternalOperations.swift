@@ -97,6 +97,20 @@ extension WorkspaceConfigManager {
                 createdAt: config.createdAt
             )
             operation.updatedAt = max(config.updatedAt, config.createdAt)
+            // Preserve the exported row's id when it is a valid, non-colliding
+            // UUID: exported `externalOperation.review.required` task events
+            // reference operations by this id, and minting a fresh one would
+            // make `hasResolvedFailureReview` unable to match an already
+            // approved historical failure — reopening a spurious review gate
+            // on the next unrelated successful continuation.
+            if let importedID = config.id.flatMap(UUID.init(uuidString:)) {
+                let existing = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>(
+                    predicate: #Predicate<TaskExternalOperation> { $0.id == importedID }
+                ))) ?? []
+                if existing.isEmpty {
+                    operation.id = importedID
+                }
+            }
             modelContext.insert(operation)
             insertedActiveRegistration = insertedActiveRegistration
                 || config.monitoringState == TaskExternalOperationMonitoringState.active.rawValue

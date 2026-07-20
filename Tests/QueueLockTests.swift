@@ -59,7 +59,7 @@ struct QueueLockTests {
         let ownerKey = queue.resourceKey(for: owner)
         let ownerID = owner.id
         let operationID = UUID()
-        queue.externalOperationResourceHolders = { [(resourceKey: ownerKey, taskID: ownerID, operationID: operationID)] }
+        queue.externalOperationResourceHolders = { [(resourceKey: ownerKey, taskID: ownerID, operationID: operationID, allowsSameOperationWrite: false)] }
 
         // Another task must not run against the still-written root...
         #expect(!queue.canAcquireResourceLock(for: other, accessMode: .write))
@@ -105,7 +105,7 @@ struct QueueLockTests {
         let holdingOperationID = UUID()
         let claimingOperationID = UUID()
         queue.externalOperationResourceHolders = {
-            [(resourceKey: ownerKey, taskID: ownerID, operationID: holdingOperationID)]
+            [(resourceKey: ownerKey, taskID: ownerID, operationID: holdingOperationID, allowsSameOperationWrite: false)]
         }
 
         // Ordinary task work (no operationID) must not bypass exclusion just
@@ -132,6 +132,46 @@ struct QueueLockTests {
             runMode: "continue",
             operationID: holdingOperationID
         ) != nil)
+    }
+
+    @Test("a terminal operation's pending wake keeps the root held and gets the write bypass")
+    func terminalHolderAdmitsOwnWakeAsWriter() throws {
+        let queue = TaskQueue(poolSize: 2)
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared", primaryPath: "/tmp/astra-shared-\(UUID().uuidString)")
+        let owner = AgentTask(title: "Owner", goal: "Terminal job, pending validation wake", workspace: workspace)
+        let other = AgentTask(title: "Other", goal: "Was waiting for the root", workspace: workspace)
+        context.insert(workspace)
+        context.insert(owner)
+        context.insert(other)
+
+        let ownerKey = queue.resourceKey(for: owner)
+        let ownerID = owner.id
+        let operationID = UUID()
+        // The job's execution is terminal but its validation wake has not run:
+        // the holder persists so a waiting task can't mutate the job's outputs
+        // before the wake validates them...
+        queue.externalOperationResourceHolders = {
+            [(resourceKey: ownerKey, taskID: ownerID, operationID: operationID, allowsSameOperationWrite: true)]
+        }
+        #expect(!queue.canAcquireResourceLock(for: other, accessMode: .write))
+        // ...while the wake's own WRITE claim is admitted (the job stopped
+        // writing; the wake needs write access to validate/repair).
+        let wakeClaim = TaskResourceLockClaim(
+            taskID: ownerID,
+            resourceKey: ownerKey,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: operationID
+        )
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: operationID
+        ) != nil)
+        queue.releaseResourceLock(wakeClaim, task: owner, modelContext: nil)
     }
 
     @Test("a chained task's resourceKey lock is unavailable while its parent holds it, and available once released")
