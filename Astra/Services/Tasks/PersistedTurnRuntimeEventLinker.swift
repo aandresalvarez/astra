@@ -30,9 +30,19 @@ enum PersistedTurnRuntimeEventLinker {
         task: AgentTask,
         in modelContext: ModelContext
     ) -> RuntimeBegin {
-        guard let requestID,
-              let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext) else {
+        // `requestID == nil` legitimately means a legacy (non-durable)
+        // continuation — proceed with no request to track. `requestID` set
+        // but its row unreadable (throws or genuinely missing) is different:
+        // this IS a durable launch, just one that lost its bookkeeping row.
+        // Silently proceeding would let the request stay `.admitted` while
+        // provider work runs unowned; a crash before any later save then
+        // lets startup recovery replay the same turn. Fail closed instead.
+        guard let requestID else {
             return RuntimeBegin(request: nil, persisted: true)
+        }
+        guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext) else {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            return RuntimeBegin(request: nil, persisted: false)
         }
         let transition = TaskTurnRequestStateMachine.transition(
             request,

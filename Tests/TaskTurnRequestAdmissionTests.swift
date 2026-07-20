@@ -413,6 +413,163 @@ struct TaskTurnRequestAdmissionTests {
         #expect(request.state.isActive)
     }
 
+    @Test("A resource-lock wait aborts immediately when its request is cancelled or deleted")
+    func resourceLockWaitAbortsOnRequestTermination() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "AbortOnDelete", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        let holder = AgentTask(title: "Holder", goal: "Hold lock", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(holder)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up racing a deletion",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+
+        let queue = TaskQueue(poolSize: 1)
+        let lock = try #require(queue.acquireResourceLockIfAvailable(
+            task: holder,
+            accessMode: .write,
+            runMode: "test"
+        ))
+        let admission = Task { @MainActor in
+            await queue.continueSession(
+                task: task,
+                message: "Follow-up racing a deletion",
+                existingMessageEventID: submission.eventID,
+                turnRequestID: submission.requestID,
+                modelContext: context
+            )
+        }
+        let isWaitingForResource = await waitUntil { request.state == .waitingForResource }
+        #expect(isWaitingForResource)
+
+        // Delete the task (and its request) WITHOUT releasing the holder's
+        // lock. Before the fix, the parked wait only checked `Task.isCancelled`
+        // and kept polling `acquireResourceLockIfAvailable` — which would
+        // eventually insert a resource-lock event referencing the deleted
+        // task once the holder released. The fix must abort right away.
+        queue.cancelAndRemoveTurnRequests(for: task, modelContext: context)
+        context.delete(task)
+
+        let started = await admission.value
+        #expect(!started)
+        // The holder's lock is still the only one recorded — the follow-up
+        // never reached acquireResourceLockIfAvailable.
+        #expect(queue.acquireResourceLockIfAvailable(task: holder, accessMode: .write, runMode: "test") == nil)
+        queue.releaseResourceLock(lock, task: holder, modelContext: context)
+    }
+
+    @Test("A successful scoped cancellation is durable across a fresh fetch")
+    func cancelTurnRequestPersistsDurably() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "CancelDurability", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: context
+        ).successValue)
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+
+        // `cancelTurnRequest` now routes through `transitionPersistedTurn`,
+        // which checks the save's return value rather than assuming success —
+        // re-fetching (instead of reading the in-memory object we already
+        // hold) confirms the .cancelled state actually reached the store, not
+        // just the live object graph.
+        let reloaded = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(reloaded.state == .cancelled)
+        #expect(reloaded.terminalReason == "cancelled_by_user")
+    }
+
+    @Test("Submitting a follow-up while the task is running still persists durably")
+    func submissionDuringRunningTaskPersistsDurably() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "RunningSubmit", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+
+        // While running, submission defers the workspace-JSON auto-export to
+        // runtime finalization's terminal-state export instead of racing it
+        // (WorkspaceConfigManager.autoExport writes via a detached Task, so
+        // write order does not follow call order) — but the SwiftData save
+        // itself, which recovery actually reads from, must remain immediate.
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up sent mid-run",
+            for: task,
+            into: context
+        ).successValue)
+
+        let reloadedRequest = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(reloadedRequest.state == .waitingForWorker)
+        #expect(task.events.contains { $0.id == submission.eventID })
+    }
+
+    @Test("A durable launch whose request row cannot be reloaded fails closed instead of proceeding")
+    func beginRuntimeFailsClosedOnUnreadableRequest() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "MissingRequest", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        context.insert(run)
+
+        // A non-nil requestID whose row genuinely does not exist — the
+        // durable-launch case the fix must distinguish from a legacy
+        // (requestID == nil) continuation.
+        let missingRequestID = UUID()
+        let begin = PersistedTurnRuntimeEventLinker.beginRuntime(
+            requestID: missingRequestID,
+            run: run,
+            task: task,
+            in: context
+        )
+
+        #expect(begin.request == nil)
+        #expect(!begin.persisted)
+        #expect(run.status == .failed)
+        #expect(task.status == .failed)
+
+        // The legacy (no durable request) path is unaffected: it proceeds
+        // normally with no run failure.
+        let legacyRun = TaskRun(task: task)
+        context.insert(legacyRun)
+        let legacyBegin = PersistedTurnRuntimeEventLinker.beginRuntime(
+            requestID: nil,
+            run: legacyRun,
+            task: task,
+            in: context
+        )
+        #expect(legacyBegin.request == nil)
+        #expect(legacyBegin.persisted)
+        #expect(legacyRun.status != .failed)
+    }
+
     @Test("Presentation fetches stay bounded to active plus visible-window requests")
     func presentationRequestsAreBounded() throws {
         let root = try makeWorkspaceRoot()

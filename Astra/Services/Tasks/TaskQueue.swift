@@ -618,7 +618,8 @@ final class TaskQueue {
                 task: task,
                 accessMode: resourceAccess,
                 runMode: "continue",
-                modelContext: modelContext
+                modelContext: modelContext,
+                shouldAbort: { request.isDeleted || !request.state.isActive }
             ) else {
                 if !request.isDeleted, request.state.isActive {
                     _ = transitionPersistedTurn(
@@ -1248,22 +1249,32 @@ final class TaskQueue {
     func cancelTurnRequest(id: UUID, workspace: Workspace?, modelContext: ModelContext) {
         guard let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
               request.state == .waitingForWorker || request.state == .waitingForResource else { return }
-        _ = TaskTurnRequestStateMachine.transition(
+        let previousState = request.state
+        let result = transitionPersistedTurn(
             request,
             to: .cancelled,
-            terminalReason: "cancelled_by_user"
+            terminalReason: "cancelled_by_user",
+            modelContext: modelContext
         )
+        guard result.persisted else {
+            // Cancellation is not durable: a crash before a later successful
+            // save would let startup recovery replay the message the user
+            // just retracted. Revert in memory too, so the parked admission
+            // coroutine (already woken by the failed transition above)
+            // re-parks as still-waiting instead of treating this as
+            // terminal — memory and disk both keep the pre-cancel state.
+            _ = TaskTurnRequestStateMachine.transition(request, to: previousState)
+            AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
+                "scope": "turn_request",
+                "request_id": request.id.uuidString,
+                "result": "persist_failed"
+            ], level: .error)
+            return
+        }
         AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
             "scope": "turn_request",
             "request_id": request.id.uuidString
         ])
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: workspace,
-            modelContext: modelContext,
-            taskID: request.taskID,
-            auditFields: ["operation": "cancel_turn_request"]
-        )
-        wakeTurnAdmissionWaiters(taskID: request.taskID)
     }
 
     /// Cancel all running workers
@@ -1438,7 +1449,15 @@ final class TaskQueue {
         task: AgentTask,
         accessMode: TaskResourceAccessMode,
         runMode: String,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        // Durable-turn admission passes this so the wait ends the moment its
+        // request is cancelled/deleted, instead of only checking Task
+        // cancellation. Without it, a request cancelled or deleted while
+        // another task holds the lock keeps polling and can go on to
+        // `acquireResourceLockIfAvailable`, which inserts and saves a
+        // resource-lock event referencing the now-deleted task before any
+        // caller-side guard runs.
+        shouldAbort: (() -> Bool)? = nil
     ) async -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
@@ -1457,7 +1476,7 @@ final class TaskQueue {
         )
 
         var recordedWaiting = false
-        while !Task.isCancelled {
+        while !Task.isCancelled && !(shouldAbort?() ?? false) {
             if let acquired = acquireResourceLockIfAvailable(
                 task: task,
                 accessMode: accessMode,

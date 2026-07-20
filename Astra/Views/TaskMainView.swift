@@ -5639,6 +5639,7 @@ struct TaskMainView: View {
             }
             messageText = ""
             attachedFiles = []
+            if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
             if task.status != .running {
                 let interruptionSummary = TaskRunLifecycleService.cancelTask(
                     task,
