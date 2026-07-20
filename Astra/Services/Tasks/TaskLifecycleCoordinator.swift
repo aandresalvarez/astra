@@ -478,6 +478,16 @@ final class TaskLifecycleCoordinator {
         TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
+    /// Distinguishes an actual commit from a deletion that was refused because
+    /// the caller could not confirm every nonterminal external operation had
+    /// truly stopped. `Workspace?` alone can't carry this: `nil` already means
+    /// "deleted, task had no workspace" on the success path, so overloading it
+    /// for "not deleted" would make the two indistinguishable to a caller.
+    enum ExternalWorkDeletionOutcome {
+        case deleted(Workspace?)
+        case blockedByActiveExternalWork
+    }
+
     /// `cancelExternalWork` lets the caller wire in the live monitor's cancel
     /// action (`AppRuntimeController.externalOperationMonitor?.cancelExternalWork`).
     /// Deletion here is intentionally metadata-only (see the doc comment on
@@ -494,10 +504,21 @@ final class TaskLifecycleCoordinator {
     /// (or via an unstructured `Task` that only runs once this synchronous
     /// method returns — by which point deletion has already happened) would
     /// always see a missing row and do nothing.
+    ///
+    /// `cancelExternalWork` returning is not the same as the job actually
+    /// having stopped: `TaskExternalOperationMonitorService.cancelExternalWork`
+    /// can return `.applied` for a transient backend failure that leaves the
+    /// operation's `executionState` nonterminal (e.g. a Docker daemon hiccup
+    /// reported as `.unknown`/`.unreachable`) — that is a successfully *applied
+    /// observation*, not a confirmed kill. So after every attempt, re-fetch and
+    /// refuse to commit unless every operation is authoritatively terminal (or
+    /// quarantined/no-contact); otherwise deletion would silently drop the only
+    /// durable record AND the only resource exclusion for a job that may still
+    /// be running.
     func deleteTask(
         _ task: AgentTask,
         cancelExternalWork: (@MainActor (UUID) async -> Void)? = nil
-    ) async -> Workspace? {
+    ) async -> ExternalWorkDeletionOutcome {
         if let cancelExternalWork {
             let nonterminalOperationIDs = TaskExternalOperationRegistrationService
                 .operations(taskID: task.id, modelContext: modelContext)
@@ -506,13 +527,32 @@ final class TaskLifecycleCoordinator {
             for operationID in nonterminalOperationIDs {
                 await cancelExternalWork(operationID)
             }
+            guard !hasNonterminalExternalOperations(taskIDs: [task.id]) else {
+                AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id, fields: [
+                    "result": "blocked_active_external_work"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
         }
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
         deleteExternalOperationRegistrations(taskIDs: Set([task.id]))
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        return workspace
+        return .deleted(workspace)
+    }
+
+    /// Mirrors `installExternalOperationResourceHolders`'s own exclusion
+    /// predicate exactly, so "still needs to hold its execution root" and
+    /// "safe to delete" can never silently disagree.
+    private func hasNonterminalExternalOperations(taskIDs: Set<UUID>) -> Bool {
+        guard !taskIDs.isEmpty else { return false }
+        let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+        return operations.contains {
+            taskIDs.contains($0.taskID)
+                && $0.monitoringState != .quarantined
+                && !$0.executionState.isTerminalObservation
+        }
     }
 
     func setDoneState(_ task: AgentTask, to isDone: Bool) {
@@ -571,9 +611,49 @@ final class TaskLifecycleCoordinator {
         return ws
     }
 
-    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
+    /// Same cancel-then-verify contract as `deleteTask` (see its doc comment),
+    /// applied across every task in the workspace: without this, deleting a
+    /// workspace that contains a task with a live external job removed that
+    /// job's only monitor/resource-holder record with no cancellation attempt
+    /// at all, letting the detached job keep writing its execution root while
+    /// a new task — in this workspace or another — could immediately reuse it.
+    func deleteWorkspace(
+        _ ws: Workspace,
+        existingWorkspaces: [Workspace],
+        cancelExternalWork: (@MainActor (UUID) async -> Void)? = nil
+    ) async -> ExternalWorkDeletionOutcome {
+        if let cancelExternalWork {
+            let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+            let initialTaskIDs = Set(ws.tasks.map(\.id))
+            let nonterminalOperationIDs = operations
+                .filter { initialTaskIDs.contains($0.taskID) && !$0.executionState.isTerminalObservation }
+                .map(\.id)
+            for operationID in nonterminalOperationIDs {
+                await cancelExternalWork(operationID)
+            }
+            // Re-derive from the LIVE `ws.tasks` relationship, not the snapshot
+            // above: a task can attach to this workspace during the
+            // cancellation await window (e.g. a chained follow-up task, or a
+            // schedule firing independently), and `modelContext.delete(ws)`
+            // below cascades over whatever is actually attached at that
+            // instant. Checking only the pre-cancellation snapshot would let
+            // such a task's operation slip past this guard entirely, then get
+            // silently cascade-deleted anyway — orphaning it exactly like the
+            // bug this contract exists to close.
+            guard !hasNonterminalExternalOperations(taskIDs: Set(ws.tasks.map(\.id))) else {
+                AppLogger.audit(.workspaceDeleted, category: "UI", fields: [
+                    "workspace_id": ws.id.uuidString,
+                    "result": "blocked_active_external_work"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
+        }
+
         removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
+        // Recomputed from the live relationship one more time: nothing awaits
+        // between here and `modelContext.delete(ws)` below, so this set is
+        // exactly what the cascade delete will also see.
         deleteExternalOperationRegistrations(taskIDs: Set(ws.tasks.map(\.id)))
 
         for connector in ws.connectors {
@@ -589,7 +669,7 @@ final class TaskLifecycleCoordinator {
 
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
-        return next
+        return .deleted(next)
     }
 
     /// Deleting task-owned registration state is intentionally metadata-only.

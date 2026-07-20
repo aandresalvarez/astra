@@ -1469,7 +1469,7 @@ struct WorkspacePersistenceTests {
 
     @Test("deleting workspace removes canonical and legacy generated mirrors")
     @MainActor
-    func deletingWorkspaceRemovesCanonicalAndLegacyGeneratedMirrors() throws {
+    func deletingWorkspaceRemovesCanonicalAndLegacyGeneratedMirrors() async throws {
         let root = URL(fileURLWithPath: "/tmp/astra_delete_legacy_mirror_\(UUID().uuidString)")
         let workspaceFolder = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
@@ -1484,7 +1484,7 @@ struct WorkspacePersistenceTests {
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: legacyURL)
 
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
-        _ = coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+        _ = await coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
 
         #expect(!FileManager.default.fileExists(atPath: canonicalURL.path))
         #expect(!FileManager.default.fileExists(atPath: legacyURL.path))

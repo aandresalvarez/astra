@@ -81,7 +81,19 @@ extension WorkspaceConfigManager {
                 observationHealth: .quarantined,
                 monitoringState: wasCompleted ? .completed : .quarantined,
                 nextCheckAt: nil,
-                generation: max(0, config.generation) + 1,
+                // `config.generation` is untrusted (decoded verbatim from an
+                // imported config that may come from a backup or another
+                // machine); a syntactically valid `Int.max` would trap Swift's
+                // checked `+ 1` and crash the import. `generation` is only ever
+                // used as a local optimistic-concurrency counter compared for
+                // equality within one process's lease lifecycle — never
+                // serialized as an authoritative identifier — so clamping an
+                // absurd value down changes no observable behavior. Bounded
+                // well below Int.max (not just Int.max - 1) because this same
+                // field is unclamped-incremented again on every subsequent
+                // poll/cancel/reactivate cycle in TaskExternalOperationMonitor
+                // Service, which would immediately re-trap otherwise.
+                generation: min(max(0, config.generation), 1_000_000_000) + 1,
                 createdAt: config.createdAt
             )
             operation.updatedAt = max(config.updatedAt, config.createdAt)

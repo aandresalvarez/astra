@@ -84,9 +84,15 @@ struct TaskExternalOperationControlsView: View {
         )
     }
 
+    /// Every operation the user can still act on. Multiple `workspace_job_start`
+    /// calls in one task's lifetime are supported (builds, tests, migrations,
+    /// deploys), so this must never truncate — a hidden operation has no row
+    /// and no Poll/Stop/Cancel/Resume/Reactivate button, leaving the user with
+    /// no way to control it. Row count is bounded visually instead, via the
+    /// scrollable container in `body`.
     private var visibleOperations: [TaskExternalOperation] {
         let actionable = operations.filter { $0.monitoringState != .completed }
-        return actionable.isEmpty ? Array(operations.prefix(1)) : Array(actionable.prefix(3))
+        return actionable.isEmpty ? Array(operations.prefix(1)) : actionable
     }
 
     var body: some View {
@@ -106,12 +112,7 @@ struct TaskExternalOperationControlsView: View {
                     }
                 }
 
-                ForEach(visibleOperations) { operation in
-                    operationRow(operation)
-                    if operation.id != visibleOperations.last?.id {
-                        Divider().opacity(0.55)
-                    }
-                }
+                operationRows
 
                 if let statusMessage {
                     Text(statusMessage)
@@ -142,6 +143,39 @@ struct TaskExternalOperationControlsView: View {
                 Text(confirmationMessage)
             }
             .accessibilityIdentifier("TaskExternalOperationControls")
+        }
+    }
+
+    /// Only the (rare) truncation case is wrapped in a `ScrollView`. A
+    /// `ScrollView` is a greedy container — it fills whatever height it's
+    /// proposed rather than sizing to its content — so giving one to the
+    /// common 1-3 row case (this host sits in a plain `VStack` alongside
+    /// `mainContent` with no `layoutPriority` differentiating them,
+    /// `TaskMainView.swift`) would make the card compete evenly for vertical
+    /// space with the chat transcript instead of sizing to its actual content,
+    /// leaving a mostly-blank card. Render the rows directly, unwrapped, for
+    /// that case; only reach for a bounded scroll container once there's
+    /// something to truncate.
+    @ViewBuilder
+    private var operationRows: some View {
+        if visibleOperations.count > 3 {
+            ScrollView {
+                operationRowsStack
+            }
+            .frame(maxHeight: 220)
+        } else {
+            operationRowsStack
+        }
+    }
+
+    private var operationRowsStack: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(visibleOperations) { operation in
+                operationRow(operation)
+                if operation.id != visibleOperations.last?.id {
+                    Divider().opacity(0.55)
+                }
+            }
         }
     }
 

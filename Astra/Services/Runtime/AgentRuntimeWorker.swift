@@ -1316,10 +1316,30 @@ final class AgentRuntimeWorker {
             )
         )
 
-        if auditPhase == .run,
+        // A task that detaches for external monitoring finishes its initial
+        // `.run` in `waitingExternal`, not `.completed` — chained-task creation
+        // is correctly skipped THEN. But the eventual terminal wake completes
+        // the task through `continueSession` at `auditPhase == .resume`, which
+        // this check's `auditPhase == .run` gate excludes entirely, so a
+        // chainedGoal registered on a task that detached never runs. Recognize
+        // that one `.resume` case — and only that one, scoped tightly to an
+        // external-operation wake continuation via `executionPolicy
+        // .externalOperationID` — without loosening the gate for ordinary user
+        // follow-up messages, which also run at `auditPhase == .resume` and
+        // must not spawn an unwanted chained task merely by completing an
+        // already-finished task.
+        let isExternalOperationTerminalContinuation =
+            auditPhase == .resume && executionPolicy.externalOperationID != nil
+        if (auditPhase == .run || isExternalOperationTerminalContinuation),
            task.status == .completed,
-           runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
-           !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+           runtimeAdapter.performsPostRunFollowUps(phase: .run),
+           !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !(task.workspace?.tasks.contains { $0.chainedFromID == task.id } ?? false) {
+            // A task can own more than one external operation; if one already
+            // completed the task and chained a follow-up, a LATER operation's
+            // wake can still resume this now-`.completed` task (continuations
+            // admit from any non-draft status) and would otherwise chain a
+            // second, duplicate follow-up without this guard.
             createChainedTask(from: task, run: run, modelContext: modelContext)
         }
 

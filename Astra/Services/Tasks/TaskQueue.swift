@@ -194,8 +194,11 @@ final class TaskQueue {
         ) else {
             return
         }
+        var resourceLockReleased = false
         defer {
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            if !resourceLockReleased {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            }
         }
 
         guard let worker = nextAvailableWorker() else {
@@ -241,11 +244,19 @@ final class TaskQueue {
             routeScheduleResult(task: task, scheduleID: scheduleID, modelContext: modelContext)
         }
 
-        // Auto-run chained task if one was created
+        // Auto-run chained task if one was created. A chained task inherits its
+        // parent's executionRootPath (createChainedTask), so it always claims
+        // the SAME resourceKey as this task — recursing into executeTask while
+        // THIS call's own lock is still held would deadlock forever, since
+        // waitForResourceLock has no timeout and would poll against a lock
+        // this very call is holding. Release it explicitly before recursing;
+        // the defer above becomes a no-op once resourceLockReleased is set.
         if task.status == .completed, let ws = task.workspace {
             let taskID = task.id
             let chainedTask = ws.tasks.first { $0.chainedFromID == taskID && $0.status == .queued }
             if let chainedTask {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                resourceLockReleased = true
                 AppLogger.audit(.taskChained, category: "Queue", taskID: chainedTask.id, fields: [
                     "source_task_id": taskID.uuidString
                 ])
@@ -417,8 +428,11 @@ final class TaskQueue {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
+        var resourceLockReleased = false
         defer {
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            if !resourceLockReleased {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            }
         }
 
         guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
@@ -452,6 +466,28 @@ final class TaskQueue {
         // was the sole remaining route to close the loop.
         if let scheduleID = task.originScheduleID, task.isTerminal {
             routeScheduleResult(task: task, scheduleID: scheduleID, modelContext: modelContext)
+        }
+        // Mirrors executeTask's auto-run-chained-task block (above) for the
+        // same reason as the schedule routing just above it: a task that
+        // detached for external monitoring completes here, not in executeTask,
+        // so this is the only place its chainedGoal follow-up can be launched.
+        // AgentRuntimeWorker creates the chained AgentTask row (queued) when
+        // this continuation's terminal completion is itself an external-
+        // operation wake; running it here is what actually starts it. Same
+        // deadlock hazard as executeTask's mirror block: a chained task shares
+        // this task's resourceKey, so the lock must be released before
+        // recursing, not after (waitForResourceLock has no timeout).
+        if task.status == .completed, let ws = task.workspace {
+            let taskID = task.id
+            let chainedTask = ws.tasks.first { $0.chainedFromID == taskID && $0.status == .queued }
+            if let chainedTask {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                resourceLockReleased = true
+                AppLogger.audit(.taskChained, category: "Queue", taskID: chainedTask.id, fields: [
+                    "source_task_id": taskID.uuidString
+                ])
+                await executeTask(chainedTask, modelContext: modelContext, onEvent: onEvent)
+            }
         }
         return true
     }

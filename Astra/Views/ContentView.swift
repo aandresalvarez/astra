@@ -2302,8 +2302,26 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        // `onDeleteWorkspace` (threaded through TaskSidebarView) is a plain
+        // synchronous closure; wrap the async cancel-then-verify coordinator
+        // call the same way `requestDeleteTask` wraps `deleteTask` rather than
+        // widening that closure's type through the whole sidebar hierarchy.
+        Task { @MainActor in await performWorkspaceDeletion(ws) }
+    }
+
+    private func performWorkspaceDeletion(_ ws: Workspace) async {
+        let outcome = await coordinator.deleteWorkspace(
+            ws,
+            existingWorkspaces: workspaces
+        ) { [runtime] operationID in
+            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
+        }
+        // A confirmed-unconfirmed external job means the workspace (and its
+        // markdown session) is still live — releasing the session or changing
+        // selection here would tear down state for a workspace that was never
+        // actually deleted.
+        guard case .deleted(let next) = outcome else { return }
         markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
-        let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
     }
 
@@ -2498,11 +2516,16 @@ struct ContentView: View {
 
     private func deleteTask(_ task: AgentTask) async {
         let deletedTaskID = task.id
+        let outcome = await coordinator.deleteTask(task) { [runtime] operationID in
+            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
+        }
+        // A confirmed-unconfirmed external job means the task row (and its
+        // browser/markdown session) is still live — clearing selection or
+        // releasing those sessions here would tear down state for a task that
+        // was never actually deleted.
+        guard case .deleted = outcome else { return }
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
-        }
-        _ = await coordinator.deleteTask(task) { [runtime] operationID in
-            _ = await runtime.externalOperationMonitor?.cancelExternalWork(operationID: operationID)
         }
         // Release the task's browser (WebContent process + bridge listener) and
         // markdown sessions; otherwise they leak until the window closes.

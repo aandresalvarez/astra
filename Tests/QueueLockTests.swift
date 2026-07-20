@@ -120,6 +120,46 @@ struct QueueLockTests {
         ) != nil)
     }
 
+    @Test("a chained task's resourceKey lock is unavailable while its parent holds it, and available once released")
+    func chainedTaskCanAcquireLockOnlyAfterParentReleases() throws {
+        // Regression test for a self-deadlock: executeTask/continueSession
+        // hold a .write lock via `defer`-at-return, but the auto-run-chained-
+        // task block recursively calls executeTask(chainedTask) BEFORE that
+        // defer fires. A chained task inherits its parent's executionRootPath
+        // (createChainedTask), so it always shares the parent's resourceKey —
+        // recursing while the parent's own lock is still held would make the
+        // nested call's waitForResourceLock (no timeout) poll forever against
+        // a lock this very call holds. The fix releases the lock explicitly
+        // before recursing; this test pins the underlying safety property
+        // that fix depends on, without needing a real end-to-end provider run.
+        let queue = TaskQueue(poolSize: 2)
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Chain", primaryPath: "/tmp/astra-chain-\(UUID().uuidString)")
+        let parent = AgentTask(title: "Parent", goal: "Chains a follow-up", workspace: workspace)
+        let chained = AgentTask(title: "Chained", goal: "Follow-up", workspace: workspace)
+        chained.chainedFromID = parent.id
+        chained.executionRootPath = parent.executionRootPath
+        context.insert(workspace)
+        context.insert(parent)
+        context.insert(chained)
+
+        #expect(queue.resourceKey(for: parent) == queue.resourceKey(for: chained))
+
+        let parentClaim = queue.acquireResourceLockIfAvailable(task: parent, accessMode: .write, runMode: "task")
+        #expect(parentClaim != nil)
+        // While the parent's lock is held, the chained task cannot acquire its
+        // own — this is the deadlocked state if the parent recurses here.
+        #expect(!queue.canAcquireResourceLock(for: chained, accessMode: .write))
+
+        if let parentClaim {
+            queue.releaseResourceLock(parentClaim, task: parent, modelContext: nil)
+        }
+        // Once released (what the fix does before recursing), the chained
+        // task can proceed.
+        #expect(queue.canAcquireResourceLock(for: chained, accessMode: .write))
+    }
+
     @Test("cancelAll clears active tasks")
     @MainActor
     func cancelAllClearsActive() {

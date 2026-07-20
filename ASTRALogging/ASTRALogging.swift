@@ -212,6 +212,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case mcpToolPolicyDenied = "mcp.tool_policy.denied"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
+    case workspaceDeleted = "workspace.deleted"
     case workspaceRecovered = "workspace.recovered"
     case workspaceRecoveryFailed = "workspace.recovery_failed"
     case workspaceStoreBackedUp = "workspace.store_backed_up"
