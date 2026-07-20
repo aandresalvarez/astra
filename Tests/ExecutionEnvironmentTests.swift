@@ -404,7 +404,11 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 0, stdout: "sha256:abc\n", stderr: "")
         ])
-        let service = DockerImageInventoryService(runner: runner, environment: [:])
+        let service = DockerImageInventoryService(
+            runner: runner,
+            environment: [:],
+            resolveDockerExecutable: { "/usr/local/bin/docker" }
+        )
 
         let availability = try await service.checkImageAvailability("astra/test:latest").get()
 
@@ -412,9 +416,10 @@ struct ExecutionEnvironmentTests {
         #expect(availability.imageID == "sha256:abc")
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/test:latest"]
+            ["context", "show"],
+            ["image", "inspect", "--format", "{{.Id}}", "astra/test:latest"]
         ])
+        #expect(calls.map(\.path) == ["/usr/local/bin/docker", "/usr/local/bin/docker"])
     }
 
     @Test("Docker image availability reports missing image")
@@ -423,15 +428,19 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 1, stdout: "", stderr: "Error response from daemon: No such image: astra/missing:latest\n")
         ])
-        let service = DockerImageInventoryService(runner: runner, environment: [:])
+        let service = DockerImageInventoryService(
+            runner: runner,
+            environment: [:],
+            resolveDockerExecutable: { "/usr/local/bin/docker" }
+        )
 
         let availability = await service.checkImageAvailability("astra/missing:latest")
 
         #expect(availability.failure == .missingImage("astra/missing:latest"))
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/missing:latest"]
+            ["context", "show"],
+            ["image", "inspect", "--format", "{{.Id}}", "astra/missing:latest"]
         ])
     }
 
@@ -1118,7 +1127,12 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 0, stdout: "built\n", stderr: "")
         ])
-        let service = DockerImageBuildService(runner: runner, environment: [:], timeout: 42)
+        let service = DockerImageBuildService(
+            runner: runner,
+            environment: [:],
+            timeout: 42,
+            resolveDockerExecutable: { "/usr/local/bin/docker" }
+        )
         let request = DockerImageBuildRequest(
             image: "astra-demo:latest",
             dockerfilePath: "/tmp/demo/Dockerfile",
@@ -1131,9 +1145,10 @@ struct ExecutionEnvironmentTests {
         #expect(summary.image == "astra-demo:latest")
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "build", "-t", "astra-demo:latest", "-f", "/tmp/demo/Dockerfile", "/tmp/demo"]
+            ["context", "show"],
+            ["build", "-t", "astra-demo:latest", "-f", "/tmp/demo/Dockerfile", "/tmp/demo"]
         ])
+        #expect(calls.map(\.path) == ["/usr/local/bin/docker", "/usr/local/bin/docker"])
         #expect(calls.map(\.timeout) == [3, 42])
     }
 

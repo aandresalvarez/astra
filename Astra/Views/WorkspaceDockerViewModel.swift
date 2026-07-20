@@ -28,7 +28,7 @@ final class WorkspaceDockerViewModel: ObservableObject {
     @Published var selectedEnvironment: WorkspaceExecutionEnvironment = .host
     @Published var isRefreshing = false
     @Published var isBuildingImage = false
-    @Published var imageInventoryIssue: String?
+    @Published private(set) var imageInventoryError: DockerImageInventoryError?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
 
@@ -80,10 +80,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
         var next = discovered
         switch loadedImages {
         case .success(let images):
-            imageInventoryIssue = nil
+            imageInventoryError = nil
             next.append(contentsOf: imageCandidates(for: workspace, images: images))
         case .failure(let error):
-            imageInventoryIssue = error.localizedDescription
+            imageInventoryError = error
         }
 
         candidates = Self.deduplicated(next)
@@ -325,11 +325,33 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var dockerIssueTitle: String? {
-        imageInventoryIssue == nil ? nil : "Docker is not connected"
+        switch imageInventoryError {
+        case .cliMissing:
+            return "Docker CLI was not found"
+        case .unavailable:
+            return "Docker is not connected"
+        case .unsafeRemoteContext:
+            return "Docker context needs approval"
+        case nil:
+            return nil
+        }
     }
 
     var dockerIssueSubtitle: String? {
-        imageInventoryIssue == nil ? nil : "Start Docker Desktop, then refresh."
+        switch imageInventoryError {
+        case .cliMissing:
+            return "Install or reopen Docker Desktop, then refresh."
+        case .unavailable:
+            return "Start Docker Desktop, then refresh."
+        case .unsafeRemoteContext:
+            return "Switch Docker Desktop to a local context, then refresh."
+        case nil:
+            return nil
+        }
+    }
+
+    var imageInventoryIssue: String? {
+        imageInventoryError?.localizedDescription
     }
 
     var buildCommand: String? {
@@ -628,8 +650,15 @@ final class WorkspaceDockerViewModel: ObservableObject {
             let detail = error.localizedDescription
             errorMessage = detail
             statusMessage = nil
-            if case .unavailable(let rawDetail) = error {
-                imageInventoryIssue = rawDetail
+            switch error {
+            case .cliMissing:
+                imageInventoryError = .cliMissing
+            case .unavailable(let rawDetail):
+                imageInventoryError = .unavailable(rawDetail)
+            case .unsafeRemoteContext(let detail):
+                imageInventoryError = .unsafeRemoteContext(detail)
+            case .failed, .timedOut, .cancelled, .launchFailed:
+                break
             }
             AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
                 "result": "build_failed",

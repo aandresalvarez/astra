@@ -142,6 +142,21 @@ enum RuntimePathResolver {
         )
     }
 
+    /// Resolves Docker independently of the GUI app's inherited PATH.
+    /// Docker Desktop can expose the CLI through a system link or only inside
+    /// its application bundle, so both installation forms are authoritative.
+    static func detectDockerPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "docker",
+            candidates: [
+                "\(usrLocalBin)/docker",
+                "\(homebrewBin)/docker",
+                "/Applications/Docker.app/Contents/Resources/bin/docker"
+            ],
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         defaultExecutableSearchDirectories.map {
             URL(fileURLWithPath: $0, isDirectory: true)

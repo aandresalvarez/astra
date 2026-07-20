@@ -81,6 +81,16 @@ struct RuntimePathResolverTests {
 
         #expect(resolved == "/tmp/fallback-tool")
     }
+
+    @Test("Docker resolver finds the CLI inside Docker Desktop without relying on PATH")
+    func dockerResolverFindsApplicationBundleCLI() {
+        let bundlePath = "/Applications/Docker.app/Contents/Resources/bin/docker"
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: Set([bundlePath]))
+
+        let resolved = RuntimePathResolver.detectDockerPath(fileManager: fileManager)
+
+        #expect(resolved == bundlePath)
+    }
 }
 
 // MARK: - RuntimeProcessEnvironment
