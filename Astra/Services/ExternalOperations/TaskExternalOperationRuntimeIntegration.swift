@@ -135,7 +135,12 @@ extension AppRuntimeController {
         for task in tasks {
             TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
                 task: task,
-                modelContext: modelContext
+                modelContext: modelContext,
+                // Startup-only: no provider session is live yet, so a job that
+                // terminalized while ASTRA was down can release its crash-left
+                // executor container (terminal rows are never polled, so the
+                // backend observe-path cleanup would otherwise never run).
+                cleanupTerminalExecutors: true
             )
         }
         if modelContext.hasChanges {

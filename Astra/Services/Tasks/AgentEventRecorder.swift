@@ -557,7 +557,15 @@ enum AgentEventRecorder {
                     runtime: task.resolvedRuntimeID
                 ) == "workspace_job_start"
             } ?? false
-            if !isError, let toolName {
+            // Registration is attempted regardless of `isError`: a managed
+            // command that fails or times out fast enough for the start tool
+            // to return a terminal status sets the error flag while the
+            // structured result still carries the trusted start receipt.
+            // Skipping it would leave the terminal job without a durable row
+            // or reasoning wake until a restart adopts it. The receipt
+            // validator already rejects synthetic failures that carry no
+            // ownership evidence.
+            if let toolName {
                 _ = TaskExternalOperationRegistrationService.registerStructuredStartResult(
                     content,
                     toolResultID: toolID,

@@ -448,6 +448,20 @@ final class TaskQueue {
             }
         }
 
+        // The lock wait above can block indefinitely behind another holder;
+        // the user may cancel the task during it. Without this recheck the
+        // continuation would call markContinuationLaunchAdmitted, flip the
+        // CANCELLED task back to running, and launch the provider. (A wake
+        // sink caller returning false here leaves its wake unacknowledged; the
+        // retry is then suppressed and finalized by the cancelled-task guard.)
+        guard task.status != .cancelled else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "cancelled_while_waiting_for_resource_lock"
+            ], level: .warning)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
+            return false
+        }
+
         guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue_after_resource_lock"

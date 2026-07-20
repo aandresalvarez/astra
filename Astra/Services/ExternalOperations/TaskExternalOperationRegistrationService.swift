@@ -59,11 +59,19 @@ enum TaskExternalOperationRegistrationService {
     /// Closes the launch-to-registration crash window. Enumeration is confined
     /// to the task-derived trusted job root, and every candidate must carry the
     /// full task/run owner receipt written before detached launch.
+    /// `cleanupTerminalExecutors` is enabled only by the STARTUP adoption pass
+    /// (no provider sessions are live at launch): a job that finished while
+    /// ASTRA was down is adopted directly in a terminal state, is never polled
+    /// (`runDueChecks` excludes terminal rows), and its backend `observe`
+    /// cleanup therefore never runs — the crash-left executor container would
+    /// stay up indefinitely. Mid-session reconciliation callers keep it off so
+    /// a live provider's shared container is never stopped underneath it.
     @discardableResult
     static func reconcileTrustedBackendRecords(
         task: AgentTask,
         modelContext: ModelContext,
-        now: Date = Date()
+        now: Date = Date(),
+        cleanupTerminalExecutors: Bool = false
     ) -> [TaskExternalOperationRegistrationOutcome] {
         // Imported/shared registrations are a hard no-contact boundary, but it
         // is scoped to each imported operation's OWN identity, not the whole
@@ -90,7 +98,10 @@ enum TaskExternalOperationRegistrationService {
             return []
         }
 
-        let runsByID = Dictionary(uniqueKeysWithValues: task.runs.map { ($0.id, $0) })
+        // NOT uniqueKeysWithValues: workspace config import does not enforce
+        // run-ID uniqueness, so a malformed/duplicated imported config could
+        // otherwise trap this startup-path initializer and prevent launch.
+        let runsByID = Dictionary(task.runs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return records.compactMap { record in
             guard let receipt = record.startReceipt,
                   receipt.taskID == task.id,
@@ -99,7 +110,7 @@ enum TaskExternalOperationRegistrationService {
                 logRejected(taskID: task.id, reason: "backend_owner_mismatch")
                 return nil
             }
-            return registerVerifiedReceipt(
+            let outcome = registerVerifiedReceipt(
                 receipt,
                 jobID: record.jobID,
                 task: task,
@@ -107,7 +118,51 @@ enum TaskExternalOperationRegistrationService {
                 modelContext: modelContext,
                 now: now
             )
+            if cleanupTerminalExecutors,
+               case .registered(let operationID) = outcome,
+               let operation = operations(taskID: task.id, modelContext: modelContext)
+                   .first(where: { $0.id == operationID }),
+               operation.executionState.isTerminalObservation {
+                cleanupExecutorForAdoptedTerminalJob(
+                    operation: operation,
+                    receipt: receipt,
+                    task: task,
+                    modelContext: modelContext
+                )
+            }
+            return outcome
         }
+    }
+
+    /// Startup-only guarded idle cleanup for a job that terminalized while
+    /// ASTRA was down. Mirrors the backend `observe` path's cleanup, including
+    /// its container-identity check and `cleanupExecutorIfIdle`'s fail-closed
+    /// nonterminal-work guard.
+    private static func cleanupExecutorForAdoptedTerminalJob(
+        operation: TaskExternalOperation,
+        receipt: WorkspaceManagedJobStartReceipt,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        let resolver = WorkspaceManagedJobBackendLocatorResolver(modelContext: modelContext)
+        let request = TaskExternalOperationBackendRequest(
+            operationID: operation.id,
+            taskID: task.id,
+            originatingRunID: operation.originatingRunID,
+            externalIdentity: operation.externalIdentity,
+            backendKind: operation.backendKindRaw,
+            backendJobID: operation.backendJobID
+        )
+        guard let locator = resolver.locator(for: request),
+              let configuration = locator.configuration,
+              receipt.containerName == configuration.containerName else { return }
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+        let cleaned = manager.cleanupExecutorIfIdle()
+        AppLogger.audit(.taskCompleted, category: "ExternalOperation", taskID: task.id, fields: [
+            "operation": "cleanup_adopted_terminal_executor",
+            "result": cleaned ? "stopped_or_absent" : "preserved"
+        ])
     }
 
     static func operations(taskID: UUID, modelContext: ModelContext) -> [TaskExternalOperation] {

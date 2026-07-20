@@ -205,6 +205,7 @@ final class TaskExternalOperationMonitorService {
     private let leaseOwner: String
 
     private var schedulerTask: Task<Void, Never>?
+    private var schedulerToken = UUID()
     private var inFlightPolls: [UUID: InFlightPoll] = [:]
     private var inFlightCancellations: [UUID: InFlightPoll] = [:]
     private var inFlightTerminalDeliveries: [UUID: InFlightDelivery] = [:]
@@ -244,6 +245,13 @@ final class TaskExternalOperationMonitorService {
     func start() {
         guard schedulerTask == nil else { return }
         isStopped = false
+        // A stop()+start() pair (e.g. aborted update preparation) can leave the
+        // CANCELLED loop still unwinding when the replacement is assigned; it
+        // must not clear the new loop's handle on exit — that would leave the
+        // live scheduler untracked (unstoppable) and let a later start() spawn
+        // a duplicate. Only the loop that is still current clears the handle.
+        let token = UUID()
+        schedulerToken = token
         schedulerTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await reconcileAfterRestart()
@@ -265,7 +273,9 @@ final class TaskExternalOperationMonitorService {
                 guard !Task.isCancelled else { break }
                 await runDueChecks(trigger: .scheduled)
             }
-            schedulerTask = nil
+            if schedulerToken == token {
+                schedulerTask = nil
+            }
         }
     }
 
@@ -817,6 +827,20 @@ final class TaskExternalOperationMonitorService {
         guard let intent = wakeIntent(for: observation) else { return }
         let notificationKey = semanticKey(for: observation)
         let wakeKey = "\(notificationKey)|\(intent.rawValue)"
+        // Crash-recovery idempotency for reasoning wakes: the continuation can
+        // persist its `pendingUser` review state and operation-specific
+        // `externalOperation.review.required` event, then ASTRA exits BEFORE
+        // the separate wake acknowledgement is saved. The durable review event
+        // IS the delivered outcome — recover the acknowledgement from it
+        // instead of dispatching another paid, write-capable provider run for
+        // an already-delivered review.
+        if intent == .userFacingReasoning,
+           operation.lastWakeKey != wakeKey,
+           hasDurableReviewEvent(for: operation) {
+            operation.lastWakeKey = wakeKey
+            operation.updatedAt = clock.now()
+            persist(operation: "external_operation_wake_recovered_from_review_event", taskID: operation.taskID)
+        }
         let notification = operation.lastNotificationKey == notificationKey
             ? nil
             : TaskExternalOperationNotification(
@@ -843,6 +867,23 @@ final class TaskExternalOperationMonitorService {
             wakeRequest: wakeRequest,
             wakeKey: wakeRequest == nil ? nil : wakeKey
         ))
+    }
+
+    /// Whether the task already carries this operation's durable
+    /// `externalOperation.review.required` event — i.e. a reasoning wake for
+    /// it was delivered and persisted, even if the wake acknowledgement was
+    /// lost to a crash.
+    private func hasDurableReviewEvent(for operation: TaskExternalOperation) -> Bool {
+        let taskID = operation.taskID
+        var descriptor = FetchDescriptor<AgentTask>(
+            predicate: #Predicate<AgentTask> { $0.id == taskID }
+        )
+        descriptor.fetchLimit = 1
+        guard let task = try? modelContext.fetch(descriptor).first else { return false }
+        let operationID = operation.id.uuidString
+        return task.events.contains {
+            $0.type == "externalOperation.review.required" && $0.payload.contains(operationID)
+        }
     }
 
     private func acknowledgeNotification(operationID: UUID, semanticKey deliveredKey: String) {

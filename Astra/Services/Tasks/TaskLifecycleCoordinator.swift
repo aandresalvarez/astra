@@ -708,7 +708,16 @@ final class TaskLifecycleCoordinator {
         _ existing: Workspace,
         operation: String
     ) -> Bool {
-        guard hasNonterminalExternalOperations(taskIDs: Set(existing.tasks.map(\.id))) else {
+        // Also refuse while a terminal wake's worker session is live: the
+        // operation is already terminal (so the nonterminal check below misses
+        // it) while a write-capable validation/reasoning continuation keeps
+        // mutating the workspace and would later persist against the deleted
+        // models — the same window deleteTask/deleteWorkspace already guard.
+        let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
+        let taskIDs = Set(existing.tasks.map(\.id))
+        let hasActiveWakeSession = operations.contains(where: { taskIDs.contains($0.taskID) })
+            && taskIDs.contains(where: { taskQueue.taskWorkerMap[$0] != nil })
+        guard hasNonterminalExternalOperations(taskIDs: taskIDs) || hasActiveWakeSession else {
             return false
         }
         AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
