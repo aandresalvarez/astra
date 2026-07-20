@@ -223,6 +223,48 @@ struct TaskTurnRequestAdmissionTests {
         #expect(activeOnly.map(\.id) == [active.requestID])
     }
 
+    @Test("Stopping the queue terminalizes parked durable admissions")
+    func cancelAllStopsParkedAdmissions() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "StopQueue", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Parked follow-up",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+
+        let queue = TaskQueue(poolSize: 0)
+        let admission = Task { @MainActor in
+            await queue.continueSession(
+                task: task,
+                message: "Parked follow-up",
+                existingMessageEventID: submission.eventID,
+                turnRequestID: submission.requestID,
+                modelContext: context
+            )
+        }
+        let isParked = await waitUntil {
+            request.blockerSummary == "Waiting for an available worker."
+        }
+        #expect(isParked)
+
+        queue.cancelAll()
+        let started = await admission.value
+
+        #expect(!started)
+        #expect(request.state == .cancelled)
+        #expect(request.terminalReason == "admission_cancelled")
+    }
+
     @Test("Pending turn messages stay invisible to objective resolution until admitted")
     func pendingTurnMessagesStayInvisibleUntilAdmitted() throws {
         let root = try makeWorkspaceRoot()

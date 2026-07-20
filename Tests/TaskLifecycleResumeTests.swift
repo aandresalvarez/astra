@@ -460,6 +460,34 @@ struct TaskLifecycleResumeTests {
         #expect(remaining.isEmpty)
     }
 
+    @Test("Deleting a workspace cancels and removes its tasks' turn requests")
+    func deleteWorkspaceRemovesTurnRequests() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Delete WS Cleanup", primaryPath: env.root)
+        let task = AgentTask(title: "Delete WS Cleanup", goal: "Initial request", workspace: workspace)
+        task.status = .completed
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let taskID = task.id
+
+        _ = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        try env.context.save()
+
+        // The workspace→task cascade cannot reach scalar turn-request rows;
+        // deleteWorkspace must cancel and remove them per task first.
+        _ = env.coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+
+        let remaining = try env.context.fetch(FetchDescriptor<TaskTurnRequest>())
+            .filter { $0.taskID == taskID }
+        #expect(remaining.isEmpty)
+    }
+
     private static func fakeOpenCodeScript(argsFile: URL) -> String {
         """
         #!/bin/sh

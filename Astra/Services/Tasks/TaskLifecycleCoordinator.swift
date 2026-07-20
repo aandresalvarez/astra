@@ -547,20 +547,25 @@ final class TaskLifecycleCoordinator {
         TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
-    func deleteTask(_ task: AgentTask) -> Workspace? {
-        AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
-        let workspace = task.workspace
-        // Turn requests reference the task by scalar id, so deleting the task
-        // cannot cascade to them. Cancel first — terminalizing every active
-        // request makes a waiting admission coroutine exit instead of resuming
-        // provider work for a task that no longer exists — then remove the
-        // rows so terminal history doesn't accumulate as permanent orphans.
+    /// Turn requests reference their task by scalar id, so neither the
+    /// workspace→task cascade nor task deletion reaches them. Cancel first —
+    /// terminalizing every active request makes a waiting admission coroutine
+    /// exit instead of resuming provider work for a task that no longer
+    /// exists — then remove the rows so terminal history doesn't accumulate
+    /// as permanent orphans.
+    private func cancelAndRemoveTurnRequests(for task: AgentTask) {
         taskQueue.cancel(task: task, modelContext: modelContext)
         if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
             for request in requests {
                 modelContext.delete(request)
             }
         }
+    }
+
+    func deleteTask(_ task: AgentTask) -> Workspace? {
+        AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
+        let workspace = task.workspace
+        cancelAndRemoveTurnRequests(for: task)
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         return workspace
@@ -623,6 +628,14 @@ final class TaskLifecycleCoordinator {
     }
 
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
+        // The workspace→task cascade never reaches scalar turn-request rows,
+        // and cascaded task deletion would leave their admission coroutines
+        // parked; cancel and remove them per task before deleting. This runs
+        // BEFORE mirror removal: cancelling live requests saves-and-exports,
+        // which must not resurrect the mirrors removed below.
+        for task in ws.tasks {
+            cancelAndRemoveTurnRequests(for: task)
+        }
         removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
         for connector in ws.connectors {
