@@ -282,8 +282,23 @@ final class AgentRuntimeProcessRunner {
             let dockerToolDirectory = URL(fileURLWithPath: dockerRuntime.executablePath)
                 .deletingLastPathComponent()
                 .path
+            var dockerReadablePaths = [dockerToolDirectory]
+            // Docker Desktop's system-wide CLI is often a symlink (e.g.
+            // /usr/local/bin/docker) into the protected app bundle. Granting
+            // only the symlink's own directory lets the sandbox read the link
+            // itself but denies exec traversal into its real target, so the
+            // resolved target's directory must be granted too.
+            let resolvedExecutablePath = (dockerRuntime.executablePath as NSString).resolvingSymlinksInPath
+            if resolvedExecutablePath != dockerRuntime.executablePath {
+                let resolvedToolDirectory = URL(fileURLWithPath: resolvedExecutablePath)
+                    .deletingLastPathComponent()
+                    .path
+                if resolvedToolDirectory != dockerToolDirectory {
+                    dockerReadablePaths.append(resolvedToolDirectory)
+                }
+            }
             plan = plan.addingSandboxReadablePaths(
-                [dockerToolDirectory],
+                dockerReadablePaths,
                 plannedFields: ["docker_host_tool_readable_path": dockerToolDirectory]
             )
         }

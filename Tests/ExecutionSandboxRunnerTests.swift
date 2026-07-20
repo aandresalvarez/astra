@@ -971,6 +971,70 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan grants the resolved target directory when the Docker CLI is a symlink")
+    func sandboxedPlanGrantsDockerSymlinkTargetDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-docker-symlink-\(UUID().uuidString)")
+        let targetDirectory = root.appendingPathComponent("Docker.app/Contents/Resources/bin", isDirectory: true)
+        let linkDirectory = root.appendingPathComponent("usr-local-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkDirectory, withIntermediateDirectories: true)
+        let targetExecutable = targetDirectory.appendingPathComponent("docker")
+        try Data().write(to: targetExecutable)
+        let linkExecutable = linkDirectory.appendingPathComponent("docker")
+        try FileManager.default.createSymbolicLink(at: linkExecutable, withDestinationURL: targetExecutable)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let resolvedExecutablePath = (linkExecutable.path as NSString).resolvingSymlinksInPath
+        let resolvedTargetDirectory = (resolvedExecutablePath as NSString).deletingLastPathComponent
+        // Sanity check the fixture actually exercises a symlink whose resolved
+        // target differs from the link's own directory; otherwise this test
+        // would pass trivially without covering the code path it targets.
+        try #require(resolvedTargetDirectory != linkDirectory.path)
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/codex",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: {
+                    DockerRuntimeResolver.resolution(
+                        executablePath: linkExecutable.path,
+                        environment: ["PATH": "/usr/bin:/bin"]
+                    )
+                }
+            )
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Codex Docker workspace execution to proceed to a launch plan")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains(linkDirectory.path))
+            #expect(plan.sandboxReadablePaths.contains(resolvedTargetDirectory))
+            #expect(plan.commandPlannedFields["docker_host_tool_readable_path"] == linkDirectory.path)
+        }
+    }
+
     @Test("sandboxedPlan composes Git credential context with Docker workspace execution")
     func sandboxedPlanComposesGitCredentialContextWithDockerWorkspaceExecution() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-docker-git-\(UUID().uuidString)")
