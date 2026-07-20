@@ -165,6 +165,28 @@ enum TaskExternalOperationRegistrationService {
         ])
     }
 
+    /// The launch-time execution root for a wake's target operation, if it
+    /// persisted one and it names a real filesystem path (not the `task:`
+    /// fallback used when the task had no resolvable working directory at
+    /// launch). Both resource-lock admission and worker execution must run a
+    /// terminal wake in THIS root — the workspace's active path is
+    /// user-mutable while the job runs, so recomputing from the task's
+    /// current state can validate the wrong filesystem state entirely.
+    static func launchExecutionRoot(
+        operationID: UUID,
+        modelContext: ModelContext
+    ) -> String? {
+        var descriptor = FetchDescriptor<TaskExternalOperation>(
+            predicate: #Predicate<TaskExternalOperation> { $0.id == operationID }
+        )
+        descriptor.fetchLimit = 1
+        guard let key = (try? modelContext.fetch(descriptor).first)?.launchResourceKey,
+              !key.hasPrefix("task:") else {
+            return nil
+        }
+        return key
+    }
+
     static func operations(taskID: UUID, modelContext: ModelContext) -> [TaskExternalOperation] {
         let descriptor = FetchDescriptor<TaskExternalOperation>(
             predicate: #Predicate<TaskExternalOperation> { $0.taskID == taskID }

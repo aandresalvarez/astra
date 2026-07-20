@@ -654,7 +654,15 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime
         )
 
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        // A terminal wake must run in the operation's LAUNCH-TIME root — the
+        // task/workspace-derived directory is user-mutable while the detached
+        // job runs. Mirrors TaskQueue.continueSession's identical resolution
+        // for resource-lock admission; both must agree on the same root.
+        let codeDir = executionPolicy.externalOperationID
+            .flatMap {
+                TaskExternalOperationRegistrationService.launchExecutionRoot(operationID: $0, modelContext: modelContext)
+            }
+            ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
         var isDir: ObjCBool = false
         let workspaceExists = FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir) && isDir.boolValue
         if runtimeAdapter.shouldCheckWorkspaceDirectory(phase: auditPhase),

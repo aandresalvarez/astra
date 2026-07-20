@@ -435,12 +435,23 @@ final class TaskQueue {
             return false
         }
 
+        // A terminal wake must run in (and lock) the operation's LAUNCH-TIME
+        // root, not whatever the task's current working directory resolves to
+        // now — the workspace's active path is user-mutable while the
+        // detached job runs, and validating the wrong filesystem state would
+        // approve/reject based on a checkout that never held the job's
+        // outputs. AgentRuntimeWorker independently resolves the same
+        // override for `codeDir`.
+        let launchRootOverride = executionPolicy.externalOperationID.flatMap {
+            TaskExternalOperationRegistrationService.launchExecutionRoot(operationID: $0, modelContext: modelContext)
+        }
         guard let resourceClaim = await waitForResourceLock(
             task: task,
             accessMode: resourceAccess,
             runMode: "continue",
             modelContext: modelContext,
-            operationID: executionPolicy.externalOperationID
+            operationID: executionPolicy.externalOperationID,
+            resourceKeyOverride: launchRootOverride
         ) else {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
@@ -968,11 +979,12 @@ final class TaskQueue {
         accessMode: TaskResourceAccessMode,
         runMode: String,
         modelContext: ModelContext? = nil,
-        operationID: UUID? = nil
+        operationID: UUID? = nil,
+        resourceKeyOverride: String? = nil
     ) -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
-            resourceKey: resourceKey(for: task),
+            resourceKey: resourceKeyOverride ?? resourceKey(for: task),
             accessMode: accessMode,
             runMode: runMode,
             operationID: operationID
@@ -1018,11 +1030,12 @@ final class TaskQueue {
         accessMode: TaskResourceAccessMode,
         runMode: String,
         modelContext: ModelContext,
-        operationID: UUID? = nil
+        operationID: UUID? = nil,
+        resourceKeyOverride: String? = nil
     ) async -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
-            resourceKey: resourceKey(for: task),
+            resourceKey: resourceKeyOverride ?? resourceKey(for: task),
             accessMode: accessMode,
             runMode: runMode,
             operationID: operationID
@@ -1044,7 +1057,8 @@ final class TaskQueue {
                 accessMode: accessMode,
                 runMode: runMode,
                 modelContext: modelContext,
-                operationID: operationID
+                operationID: operationID,
+                resourceKeyOverride: resourceKeyOverride
             ) {
                 return acquired
             }

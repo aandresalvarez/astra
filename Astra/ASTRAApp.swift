@@ -858,7 +858,15 @@ public struct ASTRAApp: App {
         for task in tasksForExternalOperationAdoption {
             TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
                 task: task,
-                modelContext: modelContext
+                modelContext: modelContext,
+                // This is the FIRST adoption pass (before orphan recovery, the
+                // scheduler, or any provider session) — cleanup is safe here,
+                // and it must run here: this pass creates the registration for
+                // a crash-window job, so ContentView's later adoption pass
+                // (which enables cleanup) sees only `.alreadyRegistered` for it
+                // and never cleans a terminal record adopted terminal by this
+                // one.
+                cleanupTerminalExecutors: true
             )
         }
         if modelContext.hasChanges {

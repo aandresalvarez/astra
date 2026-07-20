@@ -561,6 +561,16 @@ final class TaskLifecycleCoordinator {
         }
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
+        // The worker deliberately RETAINED this task's `.copy`/`.gitBranch`
+        // isolation artifact while its external operation was live (so the
+        // eventual wake could reuse it). Deleting the registration without
+        // cleaning it up first orphans the copy directory, or — worse — leaves
+        // the workspace checked out on the deleted task's `astra/*` branch,
+        // so the next unrelated task silently runs in the wrong checkout.
+        // Safe to call unconditionally: a no-op when nothing was retained.
+        if let retained = IsolationService.retainedExecutionPath(task: task) {
+            IsolationService.cleanup(task: task, executionPath: retained)
+        }
         deleteExternalOperationRegistrations(taskIDs: Set([task.id]))
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
@@ -696,6 +706,16 @@ final class TaskLifecycleCoordinator {
         }
 
         removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
+
+        // Same retained-isolation cleanup as deleteTask, for every task in the
+        // workspace — otherwise a deleted task's `.copy`/`.gitBranch` artifact
+        // orphans or leaves the workspace checked out on a branch that no
+        // longer has an owning task.
+        for task in ws.tasks {
+            if let retained = IsolationService.retainedExecutionPath(task: task) {
+                IsolationService.cleanup(task: task, executionPath: retained)
+            }
+        }
 
         // Recomputed from the live relationship one more time: nothing awaits
         // between here and `modelContext.delete(ws)` below, so this set is

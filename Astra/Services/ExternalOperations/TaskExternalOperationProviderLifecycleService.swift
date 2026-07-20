@@ -148,6 +148,19 @@ enum TaskExternalOperationProviderLifecycleService {
         modelContext: ModelContext,
         at date: Date = Date()
     ) -> Bool {
+        // Re-attempt registration from the trusted backend record before
+        // classifying this exit. Covers the window where the managed tool
+        // launched the job and the trusted receipt is durable on disk, but the
+        // in-session SwiftData registration failed to persist (rolled back) —
+        // without this retry, this run's exit would fall through to ordinary
+        // timeout/budget/failure handling, making the task retryable while the
+        // now-unregistered job stays live (a duplicate-launch window).
+        // Idempotent: a no-op when nothing changed since the last attempt.
+        TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+            task: task,
+            modelContext: modelContext,
+            now: date
+        )
         guard let operation = TaskExternalOperationRegistrationService.operations(
             taskID: task.id,
             modelContext: modelContext
