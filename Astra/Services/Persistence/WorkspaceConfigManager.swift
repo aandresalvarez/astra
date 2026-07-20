@@ -2725,6 +2725,26 @@ public enum WorkspaceConfigManager {
             return schedule
         }
 
+        // Workspace App runs reference tasks too: `linkedTaskID` and the UUIDs
+        // inside `awaitedTaskIDsJSON` are resolved GLOBALLY by
+        // WorkspaceAppRunResumptionService, so leaving them pointing at the
+        // original workspace's tasks would resume the duplicate's workflow
+        // with the original tasks' outputs (or fail it based on their state).
+        config.workspaceAppRuns = config.workspaceAppRuns?.map { run in
+            var run = run
+            run.linkedTaskID = run.linkedTaskID.flatMap { taskIDRemap[$0] ?? $0 }
+            if let awaitedJSON = run.awaitedTaskIDsJSON,
+               let data = awaitedJSON.data(using: .utf8),
+               let awaitedIDs = try? JSONDecoder().decode([String].self, from: data) {
+                let remapped = awaitedIDs.map { taskIDRemap[$0] ?? $0 }
+                if let encoded = try? JSONEncoder().encode(remapped),
+                   let rendered = String(data: encoded, encoding: .utf8) {
+                    run.awaitedTaskIDsJSON = rendered
+                }
+            }
+            return run
+        }
+
         return config
     }
 

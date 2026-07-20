@@ -103,7 +103,13 @@ extension WorkspaceConfigManager {
                 || config.monitoringState == TaskExternalOperationMonitoringState.validating.rawValue
         }
 
-        if insertedActiveRegistration {
+        // An explicitly cancelled task stays cancelled: a user can cancel a
+        // task while its external job is still monitored, so the export
+        // legitimately carries `.cancelled` alongside a nonterminal operation.
+        // Rewriting it to waitingExternal would let a later "Verify and
+        // reactivate" wake pass the cancellation admission guard and resume
+        // provider work the user explicitly cancelled.
+        if insertedActiveRegistration, task.status != .cancelled {
             task.status = .waitingExternal
             task.completedAt = nil
             task.updatedAt = Date()

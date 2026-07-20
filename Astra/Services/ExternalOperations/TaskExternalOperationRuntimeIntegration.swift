@@ -142,7 +142,16 @@ extension AppRuntimeController {
             )
         }
 
-        let dockerBackend = WorkspaceManagedJobExternalOperationBackend(modelContext: modelContext)
+        let dockerBackend = WorkspaceManagedJobExternalOperationBackend(
+            modelContext: modelContext,
+            // Live worker state, not durable run status: registration finalizes
+            // the originating run to `.completed` while the provider turn is
+            // still connected and issuing workspace_shell calls in the shared
+            // executor container.
+            providerSessionActive: { [weak taskQueue] taskID in
+                taskQueue?.taskWorkerMap[taskID] != nil
+            }
+        )
         let backend = TaskExternalOperationBackendRouter(registry: .init([
             (kind: WorkspaceManagedJobStartReceipt.backend, backend: dockerBackend)
         ]))

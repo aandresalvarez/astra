@@ -1150,6 +1150,42 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         }
     }
 
+    /// Verifies whether the managed command's process still exists inside the
+    /// executor container. Returns true when confirmed alive, false when
+    /// confirmed absent (no readable/parseable pidfile, pid gone, or zombie),
+    /// nil when indeterminate (daemon/container unreachable or the exec timed
+    /// out) — callers must treat nil as "may still be running".
+    public func probeCommandProcessAlive(jobID: String) -> Bool? {
+        let directory = containerJobDirectory(jobID: jobID)
+        let result = executor.runDockerCommand(
+            arguments: [
+                "exec", configuration.containerName, "sh", "-c",
+                """
+                pidfile=\(shellQuote(directory + "/pid"))
+                [ -r "$pidfile" ] || exit 40
+                IFS= read -r command_pid < "$pidfile" || command_pid=""
+                case "$command_pid" in
+                  ''|*[!0-9]*) exit 40 ;;
+                esac
+                kill -0 "$command_pid" 2>/dev/null || exit 41
+                state_line="$(cat "/proc/$command_pid/stat" 2>/dev/null || true)"
+                state_rest="${state_line##*) }"
+                set -- $state_rest
+                [ "$1" = "Z" ] && exit 41
+                exit 0
+                """
+            ],
+            commandLabel: "workspace_job_probe \(jobID)",
+            timeoutSeconds: 10
+        )
+        guard !result.timedOut else { return nil }
+        switch result.exitCode {
+        case 0: return true
+        case 40, 41: return false
+        default: return nil
+        }
+    }
+
     private func containerJobDirectory(jobID: String) -> String {
         configuration.jobRootContainerPath + "/" + jobID
     }

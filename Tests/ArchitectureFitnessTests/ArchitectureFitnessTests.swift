@@ -1877,8 +1877,10 @@ struct ArchitectureFitnessTests {
             // target - a hard language requirement, not scope creep.
             // + PR #328: remappingTaskIdentities (fresh AgentTask/TaskRun ids
             // for duplicated workspaces so a duplicate can't drive the
-            // original's globally-taskID-keyed external operations).
-            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_260, .owner("Workspace mirror persistence")),
+            // original's globally-taskID-keyed external operations), including
+            // the Workspace App run task references (linkedTaskID +
+            // awaitedTaskIDsJSON) resolved globally by run resumption.
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_280, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line
