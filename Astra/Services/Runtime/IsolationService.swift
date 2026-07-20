@@ -62,8 +62,18 @@ enum IsolationService {
     /// failed cleanup) — reusing it would silently run on a partial snapshot,
     /// so the stale copy is recreated fresh and the stale branch fails `-b`
     /// visibly, matching the pre-reuse behavior.
-    static func prepare(task: AgentTask, reuseRetainedArtifacts: Bool = false) async throws -> String {
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+    /// `sourcePathOverride` is the operation's persisted launch-time root
+    /// (when preparing for a terminal wake): the task/workspace-derived
+    /// `codeWorkingDirectory` is user-mutable while the detached job runs, so
+    /// without this a `.copy`/`.gitBranch` wake would create/reuse an
+    /// artifact for whatever path the workspace currently resolves to and
+    /// validate a filesystem that never held the job's outputs.
+    static func prepare(
+        task: AgentTask,
+        reuseRetainedArtifacts: Bool = false,
+        sourcePathOverride: String? = nil
+    ) async throws -> String {
+        let codeDir = sourcePathOverride ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
         switch task.isolationStrategy {
         case .sameDirectory:
             return codeDir
@@ -93,8 +103,13 @@ enum IsolationService {
     /// own run lifecycle — e.g. when a cancelled task's suppressed terminal
     /// wake is the last event that will ever fire for it. Returns nil when
     /// there is nothing to clean (`.sameDirectory`, or no copy exists).
-    static func retainedExecutionPath(task: AgentTask) -> String? {
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+    /// `launchRootOverride` is the operation's persisted launch-time root:
+    /// without it, a workspace whose active path changed while external work
+    /// was pending would look for a `.copy` named after the NEW path (missing
+    /// the real one) or clean the NEW repository's `.gitBranch` checkout
+    /// (leaving the launch repository parked on the deleted task's branch).
+    static func retainedExecutionPath(task: AgentTask, launchRootOverride: String? = nil) -> String? {
+        let codeDir = launchRootOverride ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
         guard !codeDir.isEmpty else { return nil }
         switch task.isolationStrategy {
         case .sameDirectory:

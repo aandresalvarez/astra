@@ -718,9 +718,16 @@ final class AgentRuntimeWorker {
                             && (!$0.executionState.isTerminalObservation
                                     || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake($0))
                     }
+                // `codeDir` (computed above) already resolves the operation's
+                // launch-time root when this run is a terminal wake, exactly
+                // mirroring resource-lock admission's resolution — pass it
+                // through so isolation preparation targets the same root
+                // instead of silently re-deriving from the task's current
+                // (possibly since-changed) working directory.
                 executionPath = try await IsolationService.prepare(
                     task: task,
-                    reuseRetainedArtifacts: ownsRetainedExternalWork
+                    reuseRetainedArtifacts: ownsRetainedExternalWork,
+                    sourcePathOverride: codeDir
                 )
                 shouldCleanupIsolation = true
                 if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
@@ -1082,6 +1089,22 @@ final class AgentRuntimeWorker {
             "phase": auditPhase.rawValue,
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
+        // Reconcile from the trusted backend record BEFORE branching on
+        // cancellation: `preserveMonitoringAfterProviderExitIfNeeded` already
+        // does this for the non-cancellation branches below, but the
+        // cancellation branch short-circuits before ever reaching it. Without
+        // this, a `workspace_job_start` that launched successfully but whose
+        // registration save failed (round-8 fail-closed path) stays
+        // unregistered forever if the user cancels this exact turn — no
+        // monitor, no controls, and the later `externalWorkStillUsesIsolation`
+        // isolation-retention check (which queries this same operations table)
+        // would then also miss it and let a `.copy`/`.gitBranch` cleanup run
+        // underneath the still-live job. Idempotent; does not change which
+        // branch below is taken — cancellation remains authoritative.
+        TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
+            task: task,
+            modelContext: modelContext
+        )
         // Tracked separately (rather than re-derived) so the isolation-cleanup
         // gate below sees exactly the branch that actually fired here — the
         // provider detached, but the Docker job it detached FROM is still

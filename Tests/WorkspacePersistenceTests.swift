@@ -2371,6 +2371,96 @@ struct WorkspacePersistenceTests {
         #expect((try context.fetch(FetchDescriptor<TaskExternalOperation>())).count == 1)
     }
 
+    @Test("import remaps a task id that collides with a different existing workspace's task")
+    @MainActor
+    func importRemapsStoreWideTaskIDCollision() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+
+        // An existing workspace with a live external job.
+        let existingWorkspace = Workspace(
+            name: "Original",
+            primaryPath: "/tmp/astra_collision_original_\(UUID().uuidString)"
+        )
+        let existingTask = AgentTask(title: "Original", goal: "Owns the live job", workspace: existingWorkspace)
+        existingTask.status = .waitingExternal
+        let existingRun = TaskRun(task: existingTask)
+        let identity = "\(WorkspaceManagedJobStartReceipt.backend):\(existingTask.id.uuidString.lowercased()):\(existingRun.id.uuidString.lowercased()):live-job"
+        let liveOperation = TaskExternalOperation(
+            taskID: existingTask.id,
+            externalIdentity: identity,
+            originatingRunID: existingRun.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "live-job",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active
+        )
+        context.insert(existingWorkspace)
+        context.insert(existingTask)
+        context.insert(existingRun)
+        context.insert(liveOperation)
+        try context.save()
+
+        // A config for a DIFFERENT workspace (distinct id/path — the ordinary
+        // import path, not Replace/Duplicate) that happens to carry a task
+        // UUID colliding with the existing task's — e.g. a hand-copied config.
+        var config = minimalWorkspaceConfig(
+            name: "Copied Elsewhere",
+            path: "/tmp/astra_collision_copy_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_004_000)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: existingTask.id.uuidString,
+                title: "Copied Task",
+                goal: "Should not inherit the original's live job",
+                status: TaskStatus.draft.rawValue,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 10_000,
+                tokensUsed: 0,
+                model: "default",
+                costUSD: 0,
+                maxTurns: 10,
+                createdAt: now,
+                updatedAt: now,
+                runs: [],
+                events: [],
+                skillNames: []
+            )
+        ]
+
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_collision_config_\(UUID().uuidString).json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let imported = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [existingWorkspace],
+            askDuplicateAction: { _, _ in .skip }
+        ))
+        let importedTask = try #require(imported.tasks.first)
+
+        // The imported task must NOT share the original's id...
+        #expect(importedTask.id != existingTask.id)
+        // ...and must not carry the original's operation row.
+        let importedTaskID = importedTask.id
+        let importedOperations = try context.fetch(FetchDescriptor<TaskExternalOperation>(
+            predicate: #Predicate { $0.taskID == importedTaskID }
+        ))
+        #expect(importedOperations.isEmpty)
+        // The original's live operation and its ownership are untouched.
+        #expect(liveOperation.taskID == existingTask.id)
+        #expect(liveOperation.monitoringState == .active)
+    }
+
     @Test("schedule editor saves preserve existing enabled state")
     func scheduleEditorSavesPreserveExistingEnabledState() {
         #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: false) == false)

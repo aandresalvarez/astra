@@ -27,9 +27,16 @@ enum TaskExternalOperationRegistrationService {
         modelContext: ModelContext,
         now: Date = Date()
     ) -> TaskExternalOperationRegistrationOutcome {
+        // Must decode against the LAUNCH runtime, not the task's currently
+        // selected one (the composer can retarget task.runtimeID while this
+        // turn is still active) — mirrors AgentEventRecorder's redaction
+        // guard, which already uses run.launchRuntimeID. A mismatch here
+        // would reject a runtime-specific observed name that the recorder's
+        // guard already accepted, delaying registration until a later
+        // provider-exit or startup reconciliation recovers it.
         guard DockerWorkspaceMCPProjection.canonicalToolName(
             fromObservedToolName: observedToolName,
-            runtime: task.resolvedRuntimeID
+            runtime: run.launchRuntimeID(fallback: task.resolvedRuntimeID)
         ) == "workspace_job_start",
               // The provider stream id and the MCP JSON-RPC id are separate
               // protocol domains and are not required to be equal. Binding is
@@ -185,6 +192,18 @@ enum TaskExternalOperationRegistrationService {
             return nil
         }
         return key
+    }
+
+    /// Any of the task's operations' persisted launch-time root (excluding the
+    /// `task:` no-path fallback). Isolation is prepared once per task and
+    /// reused deterministically, so every operation the task owns shares the
+    /// same launch root; the first one found is sufficient. For callers that
+    /// need the launch root WITHOUT a specific operation in hand (isolation
+    /// cleanup on task/workspace deletion).
+    static func taskLaunchExecutionRoot(taskID: UUID, modelContext: ModelContext) -> String? {
+        operations(taskID: taskID, modelContext: modelContext)
+            .compactMap(\.launchResourceKey)
+            .first { !$0.hasPrefix("task:") }
     }
 
     static func operations(taskID: UUID, modelContext: ModelContext) -> [TaskExternalOperation] {

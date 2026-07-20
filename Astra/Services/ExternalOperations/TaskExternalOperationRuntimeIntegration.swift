@@ -255,8 +255,14 @@ extension AppRuntimeController {
                         && $0.monitoringState != .quarantined
                         && !$0.executionState.isTerminalObservation
                 }
-                if !rootStillInUse, let retained = IsolationService.retainedExecutionPath(task: task) {
-                    IsolationService.cleanup(task: task, executionPath: retained)
+                if !rootStillInUse {
+                    let launchRoot = TaskExternalOperationRegistrationService.taskLaunchExecutionRoot(
+                        taskID: task.id,
+                        modelContext: modelContext
+                    )
+                    if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
+                        IsolationService.cleanup(task: task, executionPath: retained)
+                    }
                 }
                 return true
             }

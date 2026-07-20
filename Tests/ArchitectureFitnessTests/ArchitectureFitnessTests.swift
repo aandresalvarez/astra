@@ -1907,7 +1907,7 @@ struct ArchitectureFitnessTests {
             // validation (deliverables/runTests/aiCheck) so a resume-phase
             // validation failure can't pre-empt the external-outcome review,
             // and isolation is retained until every terminal wake finishes.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_210, .owner("Runtime worker execution")),
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_240, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -1926,7 +1926,7 @@ struct ArchitectureFitnessTests {
             // file's existing verbose per-field TaskConfig(...) construction style,
             // then again for PR #328's replace-refused-while-external-work-active
             // regression (both replace paths exercised against a live registration).
-            "Tests/WorkspacePersistenceTests.swift": .init(2_680, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            "Tests/WorkspacePersistenceTests.swift": .init(2_760, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Durable job trust, restart, cleanup, and filesystem attacks stay at the tool boundary.
