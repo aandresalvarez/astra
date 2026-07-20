@@ -97,6 +97,41 @@ enum TaskSuccessfulCompletionService {
             return false
         }
 
+        // A DIFFERENT operation's terminal failure whose required review the
+        // user never resolved must not be erased by this operation's success.
+        // With one failed and one successful operation, the failure's reasoning
+        // wake can finish first and place the task in runtime review; the
+        // success validation wake is still admitted from that state, and
+        // without this check it would complete the task, silently discarding
+        // the pending review (the failed wake is already acknowledged, so
+        // monitoring has nothing left to deliver). "Resolved" is the user's
+        // explicit approval (`task.approved`) recorded at/after the failure's
+        // `review.required` event; a failure row whose reasoning wake has not
+        // even fired yet is likewise unresolved.
+        if let unreviewed = operations.first(where: { operation in
+            operation.monitoringState == .completed
+                && operation.executionState.isTerminalObservation
+                && operation.executionState != .processCompleted
+                && operation.id != validatingOperationID
+                && operation.originatingRunID != run.id
+                && !hasResolvedFailureReview(operation: operation, task: task)
+        }) {
+            let completedAt = run.completedAt ?? Date()
+            run.completedAt = completedAt
+            run.recordExternalOutcomePending()
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: completedAt)
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "externalOperation.review.required",
+                payload: TaskEvent.payloadString([
+                    "execution_state": unreviewed.executionState.rawValue,
+                    "operation_id": unreviewed.id.uuidString
+                ]),
+                run: run
+            ))
+            return false
+        }
+
         if permissionPolicy != .autonomous {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,
@@ -127,6 +162,27 @@ enum TaskSuccessfulCompletionService {
             run: run
         ))
         return true
+    }
+
+    /// A terminal failure's review is resolved only by the user's explicit
+    /// approval recorded at/after the failure's `review.required` event. No
+    /// `review.required` event at all means the failure's reasoning wake has
+    /// not fired yet — also unresolved.
+    @MainActor
+    private static func hasResolvedFailureReview(
+        operation: TaskExternalOperation,
+        task: AgentTask
+    ) -> Bool {
+        let operationID = operation.id.uuidString
+        guard let reviewRequiredAt = task.events
+            .filter({ $0.type == "externalOperation.review.required" && $0.payload.contains(operationID) })
+            .map(\.timestamp)
+            .max() else {
+            return false
+        }
+        return task.events.contains {
+            $0.type == TaskEventTypes.Task.approved.rawValue && $0.timestamp >= reviewRequiredAt
+        }
     }
 
     @MainActor

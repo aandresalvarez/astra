@@ -486,6 +486,90 @@ struct TaskCompletionPolicyTests {
         #expect(task.status == .waitingExternal)
     }
 
+    @Test("another operation's unresolved failure review blocks completion")
+    func unresolvedFailureReviewBlocksCompletion() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "External", goal: "Two durable jobs")
+        task.status = .waitingExternal
+        let failedOrigin = TaskRun(task: task)
+        let successOrigin = TaskRun(task: task)
+        // Op A failed; its reasoning wake already ran and required review,
+        // which the user has NOT resolved.
+        let failedOperation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(failedOrigin.id.uuidString.lowercased()):failed-job",
+            originatingRunID: failedOrigin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "failed-job",
+            executionState: .failed,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        // Op B succeeded and its validation wake is the current run.
+        let validating = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: "docker_workspace_job:\(task.id.uuidString.lowercased()):\(successOrigin.id.uuidString.lowercased()):ok-job",
+            originatingRunID: successOrigin.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "ok-job",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating
+        )
+        let wakeRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(failedOrigin)
+        context.insert(successOrigin)
+        context.insert(wakeRun)
+        context.insert(failedOperation)
+        context.insert(validating)
+        context.insert(TaskEvent(
+            task: task,
+            type: "externalOperation.review.required",
+            payload: TaskEvent.payloadString([
+                "execution_state": "failed",
+                "operation_id": failedOperation.id.uuidString
+            ]),
+            run: failedOrigin
+        ))
+
+        let completed = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: wakeRun,
+            modelContext: context,
+            successPayload: "Validation for op B.",
+            permissionPolicy: .autonomous,
+            validatingOperationID: validating.id
+        )
+
+        // Op B's validation is consumed, but op A's unresolved failure review
+        // must survive: the task stays in review, not completed.
+        #expect(!completed)
+        #expect(validating.monitoringState == .completed)
+        #expect(task.status == .pendingUser)
+
+        // Once the user resolves the review (task.approved recorded after the
+        // review.required event), a later successful run may complete the task.
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Task approved by user."
+        ))
+        task.status = .running
+        let laterRun = TaskRun(task: task)
+        context.insert(laterRun)
+        let completedAfterApproval = TaskSuccessfulCompletionService.apply(
+            task: task,
+            run: laterRun,
+            modelContext: context,
+            successPayload: "Follow-up after review.",
+            permissionPolicy: .autonomous
+        )
+        #expect(completedAfterApproval)
+        #expect(task.status == .completed)
+    }
+
     @Test("publication receipt cannot complete a task whose deliverable is missing")
     func publicationReceiptDoesNotBypassMissingDeliverable() throws {
         let container = try makeContainer()

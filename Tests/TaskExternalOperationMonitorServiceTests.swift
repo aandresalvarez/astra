@@ -226,6 +226,7 @@ struct TaskExternalOperationMonitorServiceTests {
         // Terminal reconciliation now delivers the pending completion-validation
         // wake; before the fix (.active) it delivered nothing.
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.requests.count == 1)
     }
 
@@ -286,6 +287,7 @@ struct TaskExternalOperationMonitorServiceTests {
         let service = fixture.makeService(observer: observer)
 
         await service.reconcileAfterRestart()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await service.poll(operationID: operation.id) == .quarantined)
         #expect(await observer.callCount == 0)
         #expect(operation.monitoringState == .quarantined)
@@ -304,6 +306,7 @@ struct TaskExternalOperationMonitorServiceTests {
         let service = fixture.makeService(observer: observer)
 
         await service.reconcileAfterRestart()
+        await service.drainInFlightTerminalDeliveries()
 
         #expect(await observer.callCount == 1)
         #expect(operation.leaseOwner == nil)
@@ -362,6 +365,7 @@ struct TaskExternalOperationMonitorServiceTests {
         )
 
         await service.reconcileAfterRestart()
+        await service.drainInFlightTerminalDeliveries()
 
         #expect(await wakeSink.requests.count == 1)
         #expect(await notificationSink.notifications.count == 1)
@@ -373,6 +377,7 @@ struct TaskExternalOperationMonitorServiceTests {
 
         latestContext = "newer context that should not cause a duplicate"
         await service.reconcileAfterRestart()
+        await service.drainInFlightTerminalDeliveries()
 
         #expect(await wakeSink.requests.count == 1)
         #expect(await notificationSink.notifications.count == 1)
@@ -394,14 +399,17 @@ struct TaskExternalOperationMonitorServiceTests {
         )
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 1)
         #expect(operation.lastWakeKey == nil)
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 2)
         #expect(operation.lastWakeKey != nil)
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 2)
     }
 
@@ -420,15 +428,54 @@ struct TaskExternalOperationMonitorServiceTests {
         )
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 1)
         #expect(operation.lastWakeKey == nil)
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 2)
         #expect(operation.lastWakeKey == "v1|failed|healthy|user_facing_reasoning")
 
         await service.runDueChecks()
+        await service.drainInFlightTerminalDeliveries()
         #expect(await wakeSink.callCount == 2)
+    }
+
+    @Test("a slow terminal-wake delivery does not block the scheduler pass")
+    func schedulerPassDoesNotAwaitTerminalDelivery() async throws {
+        let fixture = try Fixture()
+        // One operation pending a completion-validation wake whose provider run
+        // will take a long time...
+        _ = fixture.insertOperation(
+            externalIdentity: "docker:slow-delivery",
+            executionState: .processCompleted,
+            observationHealth: .healthy,
+            monitoringState: .validating
+        )
+        // ...and one ordinary active operation that still needs polling.
+        let polled = fixture.insertOperation(
+            externalIdentity: "docker:needs-polling",
+            executionState: .running,
+            nextCheckAt: fixture.clock.now().addingTimeInterval(-1)
+        )
+        let wakeSink = BlockingOperationWakeSink()
+        let observer = SequenceOperationObserver(observations: [
+            TaskExternalOperationObservation(executionState: .running, health: .healthy)
+        ])
+        let service = fixture.makeService(observer: observer, wakeSink: wakeSink)
+
+        // Before the fix, runDueChecks awaited the delivery's full provider run
+        // and this call would hang forever on the blocked sink; now it must
+        // return after this pass's polls, with the delivery still in flight.
+        await service.runDueChecks()
+        await wakeSink.waitUntilCalled()
+        #expect(await wakeSink.callCount == 1)
+        #expect(await observer.callCount == 1)
+        #expect(polled.executionState == .running)
+
+        await wakeSink.release()
+        await service.drainInFlightTerminalDeliveries()
     }
 }
 
@@ -631,6 +678,39 @@ private actor RecordingOperationNotificationSink: TaskExternalOperationNotificat
     func notify(_ notification: TaskExternalOperationNotification) -> Bool {
         notifications.append(notification)
         return true
+    }
+}
+
+private actor BlockingOperationWakeSink: TaskExternalOperationWakeSinking {
+    private var callWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private(set) var callCount = 0
+    private var released = false
+
+    func wake(_: TaskExternalOperationWakeRequest) async -> Bool {
+        callCount += 1
+        let waiters = callWaiters
+        callWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if !released {
+            await withCheckedContinuation { continuation in
+                releaseWaiter = continuation
+            }
+        }
+        return true
+    }
+
+    func waitUntilCalled() async {
+        guard callCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            callWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
 

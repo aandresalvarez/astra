@@ -672,6 +672,28 @@ final class TaskLifecycleCoordinator {
         return .deleted(next)
     }
 
+    /// Replace flows are synchronous (they run inside a blocking duplicate-
+    /// action prompt), so unlike `deleteTask`/`deleteWorkspace` they cannot
+    /// await backend cancellation. The contract's other sanctioned outcome
+    /// applies instead: refuse the replacement outright while a task still
+    /// owns nonterminal external work, preserving the registrations (the only
+    /// durable monitor and resource-holder records for the detached jobs).
+    /// Returns true when the replace must be refused.
+    private func refuseReplaceForActiveExternalWork(
+        _ existing: Workspace,
+        operation: String
+    ) -> Bool {
+        guard hasNonterminalExternalOperations(taskIDs: Set(existing.tasks.map(\.id))) else {
+            return false
+        }
+        AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+            "operation": operation,
+            "workspace_id": existing.id.uuidString,
+            "result": "blocked_active_external_work"
+        ], level: .warning)
+        return true
+    }
+
     /// Deleting task-owned registration state is intentionally metadata-only.
     /// External cancellation is available exclusively through the explicit
     /// monitor/canceller action and is never a delete cascade side effect.
@@ -707,6 +729,9 @@ final class TaskLifecycleCoordinator {
                 case .skip:
                     return nil
                 case .replace:
+                    guard !refuseReplaceForActiveExternalWork(existing, operation: "import_config_replace") else {
+                        return nil
+                    }
                     if (config.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             config.tasks = freshExport.tasks
@@ -792,6 +817,9 @@ final class TaskLifecycleCoordinator {
             case .skip:
                 return nil
             case .replace:
+                guard !refuseReplaceForActiveExternalWork(existing, operation: "folder_replace") else {
+                    return nil
+                }
                 if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path

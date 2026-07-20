@@ -393,6 +393,48 @@ struct TaskExternalOperationRegistrationServiceTests {
         #expect(fixture.task.status == .waitingExternal)
         #expect(wakeRun.typedStopReason == .externalOutcomePending)
     }
+
+    @Test("a historical completed failure only preserves its OWN reasoning wake, not later ordinary failures")
+    func completedFailurePreservationScopedToItsWake() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+        // A terminal-failure operation whose reasoning review already happened:
+        // the row stays `.completed` on the task forever.
+        let operation = TaskExternalOperation(
+            taskID: fixture.task.id,
+            externalIdentity: "docker_workspace_job:reviewed-failure",
+            originatingRunID: fixture.run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "job-reviewed",
+            executionState: .failed,
+            observationHealth: .healthy,
+            monitoringState: .completed,
+            nextCheckAt: nil
+        )
+        fixture.context.insert(operation)
+        let ordinaryRun = TaskRun(task: fixture.task)
+        fixture.context.insert(ordinaryRun)
+        fixture.task.status = .running
+        try fixture.context.save()
+
+        // An ordinary later continuation that fails (no wake operation ID) must
+        // NOT be suppressed into waitingExternal by the stale completed row —
+        // its historical wake is already acknowledged, so monitoring would have
+        // nothing left to deliver.
+        #expect(!TaskExternalOperationProviderLifecycleService.returnFailedWakeRunToMonitoringIfNeeded(
+            task: fixture.task, run: ordinaryRun, wakeOperationID: nil, modelContext: fixture.context
+        ))
+
+        // The operation's OWN reasoning wake run failing still preserves the
+        // intended external-outcome review instead of terminalizing the task.
+        let reasoningWakeRun = TaskRun(task: fixture.task)
+        fixture.context.insert(reasoningWakeRun)
+        try fixture.context.save()
+        #expect(TaskExternalOperationProviderLifecycleService.returnFailedWakeRunToMonitoringIfNeeded(
+            task: fixture.task, run: reasoningWakeRun, wakeOperationID: operation.id, modelContext: fixture.context
+        ))
+        #expect(fixture.task.status == .waitingExternal)
+    }
 }
 
 @MainActor

@@ -1079,7 +1079,12 @@ final class AgentRuntimeWorker {
                 modelContext: modelContext
             )
         } else if !processSucceeded, TaskExternalOperationProviderLifecycleService
-                    .returnFailedWakeRunToMonitoringIfNeeded(task: task, run: run, modelContext: modelContext) {
+                    .returnFailedWakeRunToMonitoringIfNeeded(
+                        task: task,
+                        run: run,
+                        wakeOperationID: executionPolicy.externalOperationID,
+                        modelContext: modelContext
+                    ) {
             // A failed wake/validation run (fresh run id) keeps a still-live
             // external operation monitored instead of failing the task (a false
             // failure would invite a duplicate-job retry); success falls through.
@@ -1347,12 +1352,19 @@ final class AgentRuntimeWorker {
             scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)
         }
 
-        if shouldCleanupIsolation, !detachedForExternalMonitoring {
-            // `.copy` isolation would delete this directory and `.gitBranch`
-            // would check out main underneath it — either corrupts or
-            // interrupts the still-running Docker job's mount when the
-            // provider detached for durable external monitoring above instead
-            // of genuinely finishing.
+        // `.copy` isolation would delete this directory and `.gitBranch`
+        // would check out main underneath it — either corrupts or interrupts
+        // the still-running Docker job's mount. That applies both when THIS
+        // run detached for durable external monitoring, and when this run is a
+        // wake/continuation (e.g. an ambiguity-reasoning wake) that finished
+        // while a task-owned external operation is STILL nonterminal and using
+        // the retained isolation artifact. Cleanup runs once the external
+        // lifecycle has actually finished — the terminal wake that leaves no
+        // nonterminal operation behind.
+        let externalWorkStillUsesIsolation = TaskExternalOperationRegistrationService
+            .operations(taskID: task.id, modelContext: modelContext)
+            .contains { $0.monitoringState != .quarantined && !$0.executionState.isTerminalObservation }
+        if shouldCleanupIsolation, !detachedForExternalMonitoring, !externalWorkStillUsesIsolation {
             IsolationService.cleanup(task: task, executionPath: executionPath)
         }
         let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder

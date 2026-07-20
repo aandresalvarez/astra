@@ -311,16 +311,16 @@ final class TaskExternalOperationMonitorService {
         // Terminal operations are intentionally not polled. Retry any
         // unacknowledged terminal notification/wake delivery on every scheduler
         // pass so temporary worker unavailability cannot lose the transition.
-        // Dispatched CONCURRENTLY (not sequentially): a wake dispatch can run a
-        // full provider session (potentially minutes), and the prior design's
-        // sequential `for operation in operations { await deliver(...) }` loop
-        // meant one slow operation's delivery blocked every OTHER operation's
-        // delivery from even starting, for the rest of this pass. Each is still
-        // awaited before `runDueChecks` returns (below) — callers (including
-        // `reconcileAfterRestart` and tests) rely on that — but concurrently
-        // with each other and with this pass's regular polls, not serialized
-        // behind one another.
-        let terminalDeliveryTasks = reconcilePendingTerminalDeliveries(operations: fetchOperations())
+        // Dispatched but NOT awaited here: a wake dispatch can run a full
+        // provider session (potentially minutes — `TaskQueue.continueSession`
+        // awaits the entire run), and awaiting it in the scheduler pass would
+        // block every subsequent pass's polls, notifications, and wake retries
+        // for unrelated operations until that one validation finished. The
+        // deliveries stay tracked in `inFlightTerminalDeliveries` (so `stop()`
+        // cancels them and repeat passes coalesce onto the in-flight attempt);
+        // tests that need "deliveries finished" determinism await
+        // `drainInFlightTerminalDeliveries()` explicitly.
+        reconcilePendingTerminalDeliveries(operations: fetchOperations())
         let now = clock.now()
         let operationIDs = fetchOperations()
             .filter { operation in
@@ -338,11 +338,22 @@ final class TaskExternalOperationMonitorService {
                 await self?.poll(operationID: operationID, trigger: trigger) ?? .missing
             }
         }
-        for task in terminalDeliveryTasks {
-            await task.value
-        }
         for task in tasks {
             _ = await task.value
+        }
+    }
+
+    /// Awaits every terminal delivery that is currently in flight. The
+    /// scheduler deliberately does NOT await deliveries (each can run a full
+    /// provider session and would block later passes for every other
+    /// operation); tests and other callers that need "this pass's deliveries
+    /// have finished" determinism await this explicitly instead.
+    func drainInFlightTerminalDeliveries() async {
+        while !inFlightTerminalDeliveries.isEmpty {
+            let pending = inFlightTerminalDeliveries.values.map(\.task)
+            for task in pending {
+                await task.value
+            }
         }
     }
 
@@ -711,11 +722,11 @@ final class TaskExternalOperationMonitorService {
     }
 
     /// Returns the dispatched (or already in-flight/coalesced) delivery task
-    /// for every pending operation, so `runDueChecks` can await them all
-    /// CONCURRENTLY — preserving "this pass's terminal deliveries are done by
-    /// the time `runDueChecks` returns" (callers, including
-    /// `reconcileAfterRestart` and tests, rely on that) while no longer
-    /// serializing one operation's delivery behind another's.
+    /// for every pending operation. The scheduler pass does NOT await these —
+    /// a delivery can run a full provider session, and awaiting it would block
+    /// every later pass's polls and wake retries for unrelated operations.
+    /// Callers needing delivery-completion determinism (tests) await
+    /// `drainInFlightTerminalDeliveries()` instead.
     @discardableResult
     private func reconcilePendingTerminalDeliveries(
         operations: [TaskExternalOperation]

@@ -156,11 +156,21 @@ extension AppRuntimeController {
                 }
                 return true
             }
+            // A wake for a still-nonterminal observation (an ambiguity-
+            // reasoning wake) runs while the detached job may still be writing
+            // the execution root — its own registration row is still a durable
+            // resource holder. Admit that session as a READER only: the
+            // resource-lock bypass for a claim's own operation is restricted to
+            // read claims, so a write claim here would deadlock against the
+            // operation's own holder, and a write admission would let the
+            // reasoning session race the detached job's writes. Terminal wakes
+            // (validation/reasoning after the job stopped) keep write access.
             return await taskQueue.continueSession(
                 task: task,
                 message: TaskExternalOperationWakeMessageRenderer.render(request),
                 modelContext: modelContext,
-                executionPolicy: .externalOperationWake(operationID: request.operationID)
+                executionPolicy: .externalOperationWake(operationID: request.operationID),
+                resourceAccess: request.observation.executionState.isTerminalObservation ? .write : .readOnly
             )
         }
         let notificationSink = TaskEventExternalOperationNotificationSink { notification in

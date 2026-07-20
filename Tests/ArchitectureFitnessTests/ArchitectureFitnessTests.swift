@@ -1914,8 +1914,10 @@ struct ArchitectureFitnessTests {
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Budget raised for runtimeExplicitlySelected export/import round-trip
             // coverage (PR #281 review follow-up) - two new tests matching this
-            // file's existing verbose per-field TaskConfig(...) construction style.
-            "Tests/WorkspacePersistenceTests.swift": .init(2_600, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            // file's existing verbose per-field TaskConfig(...) construction style,
+            // then again for PR #328's replace-refused-while-external-work-active
+            // regression (both replace paths exercised against a live registration).
+            "Tests/WorkspacePersistenceTests.swift": .init(2_680, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Durable job trust, restart, cleanup, and filesystem attacks stay at the tool boundary.

@@ -1040,9 +1040,19 @@ final class TaskQueue {
         // nonterminal operations (or a user-authored continuation racing a
         // wake) must not let one operation's session write over the execution
         // root while a different operation's detached job is still using it.
+        //
+        // The bypass is additionally restricted to READ claims: a holder is by
+        // definition a nonterminal operation, so its detached job may still be
+        // writing the root, and the only wake dispatched while its own holder
+        // exists is an ambiguity-reasoning wake (terminal-execution rows are
+        // never holders and need no bypass). That session must inspect, not
+        // mutate — admitting it as a writer would let it race the detached
+        // job's own writes.
         if externalOperationResourceHolders().contains(where: {
             resourceKeysConflict($0.resourceKey, claim.resourceKey)
-                && !($0.taskID == claim.taskID && $0.operationID == claim.operationID)
+                && !($0.taskID == claim.taskID
+                        && $0.operationID == claim.operationID
+                        && claim.accessMode == .readOnly)
         }) {
             return false
         }

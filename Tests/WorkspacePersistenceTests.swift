@@ -2258,15 +2258,18 @@ struct WorkspacePersistenceTests {
         task.status = .waitingExternal
         let run = TaskRun(task: task)
         let identity = "\(WorkspaceManagedJobStartReceipt.backend):\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):replace-job"
+        // Terminal execution state: the job already stopped writing, so replace
+        // is permitted (a nonterminal job refuses the replace outright — see
+        // configReplaceRefusedWhileExternalWorkIsActive below).
         let operation = TaskExternalOperation(
             taskID: task.id,
             externalIdentity: identity,
             originatingRunID: run.id,
             backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
             backendJobID: "replace-job",
-            executionState: .running,
+            executionState: .processCompleted,
             observationHealth: .healthy,
-            monitoringState: .active,
+            monitoringState: .validating,
             nextCheckAt: Date(timeIntervalSince1970: 5_000)
         )
         context.insert(workspace)
@@ -2298,6 +2301,74 @@ struct WorkspacePersistenceTests {
         #expect(imported.monitoringState == .quarantined)
         #expect(imported.observationHealth == .quarantined)
         #expect(!registrations.contains { $0.monitoringState == .active })
+    }
+
+    @Test("config replace is refused while a task still owns nonterminal external work")
+    @MainActor
+    func configReplaceRefusedWhileExternalWorkIsActive() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_external_operation_replace_refused_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "External Operation Replace Refused", primaryPath: folder.path)
+        let task = AgentTask(title: "External", goal: "Keep the live job monitored", workspace: workspace)
+        task.status = .waitingExternal
+        let run = TaskRun(task: task)
+        let identity = "\(WorkspaceManagedJobStartReceipt.backend):\(task.id.uuidString.lowercased()):\(run.id.uuidString.lowercased()):live-job"
+        // A detached job that is STILL RUNNING: replacing the workspace would
+        // delete its only monitor and resource-holder record while the job
+        // keeps writing the workspace path.
+        let operation = TaskExternalOperation(
+            taskID: task.id,
+            externalIdentity: identity,
+            originatingRunID: run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "live-job",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active,
+            nextCheckAt: Date(timeIntervalSince1970: 5_000)
+        )
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        context.insert(operation)
+        try context.save()
+
+        let configURL = folder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        )
+
+        // Refused: the existing workspace, its task, and the live operation's
+        // registration must all survive untouched.
+        #expect(replaced == nil)
+        let registrations = try context.fetch(FetchDescriptor<TaskExternalOperation>())
+        #expect(registrations.count == 1)
+        #expect(registrations.first?.monitoringState == .active)
+        #expect(workspace.isDeleted == false)
+        #expect(workspace.tasks.contains { $0.id == task.id })
+
+        // The folder-replace path enforces the same refusal.
+        let folderReplaced = coordinator.createWorkspaceFromFolder(
+            folder,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        )
+        #expect(folderReplaced == nil)
+        #expect((try context.fetch(FetchDescriptor<TaskExternalOperation>())).count == 1)
     }
 
     @Test("schedule editor saves preserve existing enabled state")

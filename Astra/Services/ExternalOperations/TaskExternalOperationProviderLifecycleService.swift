@@ -178,6 +178,7 @@ enum TaskExternalOperationProviderLifecycleService {
     static func returnFailedWakeRunToMonitoringIfNeeded(
         task: AgentTask,
         run: TaskRun,
+        wakeOperationID: UUID? = nil,
         modelContext: ModelContext,
         at date: Date = Date()
     ) -> Bool {
@@ -194,7 +195,15 @@ enum TaskExternalOperationProviderLifecycleService {
             // that itself fails could otherwise never match this predicate,
             // structurally guaranteeing the intended external-outcome review is
             // replaced by an unrelated provider failure on every such run.
-            return $0.monitoringState == .completed
+            //
+            // Scoped to THIS run's own dispatched wake (`wakeOperationID`, from
+            // the run's execution policy): a task that retains a historical
+            // `.completed` failure row after its review would otherwise match
+            // this branch for EVERY later ordinary continuation that exits
+            // unsuccessfully — suppressing the real failure and re-parking the
+            // task in waitingExternal with nothing left to deliver.
+            return $0.id == wakeOperationID
+                && $0.monitoringState == .completed
                 && $0.executionState.isTerminalObservation
                 && $0.executionState != .processCompleted
         }) else {

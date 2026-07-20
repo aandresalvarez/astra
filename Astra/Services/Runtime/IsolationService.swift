@@ -152,8 +152,20 @@ enum IsolationService {
             "task_id": taskId.uuidString
         ])
 
-        // Create and checkout the branch
-        let createResult = runGitSync(args: ["checkout", "-b", branchName], in: workspacePath)
+        // The branch name is deterministic per task, and a task that detached
+        // for durable external monitoring RETAINS its isolation artifact (the
+        // detached job keeps using it). The eventual wake continuation
+        // re-prepares isolation on adapters that prepare on resume; `-b` would
+        // fail against the already-existing branch and acknowledge the only
+        // wake without ever starting the provider. Reuse the retained branch
+        // by checking it out instead.
+        let existsResult = runGitSync(
+            args: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branchName)"],
+            in: workspacePath
+        )
+        let createResult = existsResult.exitCode == 0
+            ? runGitSync(args: ["checkout", branchName], in: workspacePath)
+            : runGitSync(args: ["checkout", "-b", branchName], in: workspacePath)
         guard createResult.exitCode == 0 else {
             throw IsolationError.gitFailed("Failed to create branch '\(branchName)': \(createResult.stderr)")
         }
@@ -227,6 +239,22 @@ enum IsolationService {
         let copyName = "\(originalName)-astra-\(taskId.uuidString.prefix(8).lowercased())"
         let scratchRoot = copyScratchRoot(fileManager: fm)
         let copyPath = scratchRoot.appendingPathComponent(copyName, isDirectory: true).path
+
+        // The copy destination is deterministic per task, and a task that
+        // detached for durable external monitoring RETAINS its copy (the
+        // detached job's mount). The eventual wake continuation re-prepares
+        // isolation on adapters that prepare on resume; `copyItem` would fail
+        // against the existing directory and acknowledge the only wake without
+        // ever starting the provider. Reuse the retained copy instead.
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: copyPath, isDirectory: &isDirectory), isDirectory.boolValue {
+            AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
+                "strategy": "copy",
+                "task_id": taskId.uuidString,
+                "phase": "copy_reused"
+            ])
+            return copyPath
+        }
 
         AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
             "strategy": "copy",

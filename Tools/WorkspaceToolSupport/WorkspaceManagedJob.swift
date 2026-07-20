@@ -1049,15 +1049,39 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                         terminate_direct_pid "$target_pid"
                       fi
                     }
-                    if [ -r "$pidfile" ]; then
-                      IFS= read -r command_pid < "$pidfile" || command_pid=""
-                      terminate_pid_or_group "$command_pid"
-                      rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
-                    fi
+                    proc_state() {
+                      stat_line="$(cat "/proc/$1/stat" 2>/dev/null || true)"
+                      stat_rest="${stat_line##*) }"
+                      set -- $stat_rest
+                      printf '%s\\n' "$1"
+                    }
+                    verify_terminated() {
+                      target_pid="$1"
+                      i=0
+                      while [ "$i" -lt 6 ]; do
+                        kill -0 "$target_pid" 2>/dev/null || return 0
+                        [ "$(proc_state "$target_pid")" = "Z" ] && return 0
+                        sleep 1
+                        i=$((i + 1))
+                      done
+                      return 1
+                    }
+                    # Exit nonzero unless the target is verifiably absent or
+                    # actually terminated. Exiting zero without a verified kill
+                    # (no pidfile yet, unparseable pid, or a metadata mismatch
+                    # that made the terminate helpers decline to signal) would
+                    # let the caller finalize `.cancelled` while the managed
+                    # command keeps running unmonitored.
+                    [ -r "$pidfile" ] || exit 70
+                    IFS= read -r command_pid < "$pidfile" || command_pid=""
+                    safe_pid "$command_pid" || exit 71
+                    terminate_pid_or_group "$command_pid"
+                    verify_terminated "$command_pid" || exit 72
+                    rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
                     """
                 ],
                 commandLabel: "workspace_job_cancel \(record.jobID)",
-                timeoutSeconds: 10
+                timeoutSeconds: 25
             )
             // A transient exec failure (daemon/socket hiccup, container briefly
             // unreachable, or a timed-out kill) must NOT be rewritten to

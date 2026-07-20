@@ -64,18 +64,26 @@ struct QueueLockTests {
         // Another task must not run against the still-written root...
         #expect(!queue.canAcquireResourceLock(for: other, accessMode: .write))
         #expect(!queue.canAcquireResourceLock(for: other, accessMode: .readOnly))
-        // ...but a claim FOR that exact operation may re-acquire it (its own
-        // validation/reasoning wake must run).
+        // ...and even that exact operation's own continuation is admitted only
+        // as a READER: a holder is by definition nonterminal, so its detached
+        // job may still be writing the root — the only wake dispatched in that
+        // state is an ambiguity-reasoning wake, which must inspect, not mutate.
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .write,
+            runMode: "continue",
+            operationID: operationID
+        ) == nil)
         let ownClaim = TaskResourceLockClaim(
             taskID: ownerID,
             resourceKey: ownerKey,
-            accessMode: .write,
+            accessMode: .readOnly,
             runMode: "continue",
             operationID: operationID
         )
         #expect(queue.acquireResourceLockIfAvailable(
             task: owner,
-            accessMode: .write,
+            accessMode: .readOnly,
             runMode: "continue",
             operationID: operationID
         ) != nil)
@@ -105,16 +113,22 @@ struct QueueLockTests {
         #expect(!queue.canAcquireResourceLock(for: owner, accessMode: .write))
         // A continuation for a DIFFERENT operation on the SAME task must not
         // bypass exclusion either — only the exact holding operation's own
-        // continuation may.
+        // continuation may, and only as a reader.
         #expect(queue.acquireResourceLockIfAvailable(
             task: owner,
-            accessMode: .write,
+            accessMode: .readOnly,
             runMode: "continue",
             operationID: claimingOperationID
         ) == nil)
         #expect(queue.acquireResourceLockIfAvailable(
             task: owner,
             accessMode: .write,
+            runMode: "continue",
+            operationID: holdingOperationID
+        ) == nil)
+        #expect(queue.acquireResourceLockIfAvailable(
+            task: owner,
+            accessMode: .readOnly,
             runMode: "continue",
             operationID: holdingOperationID
         ) != nil)
