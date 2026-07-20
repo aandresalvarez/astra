@@ -189,6 +189,11 @@ struct WorkspacePackageService {
             capabilityEntriesWithinLimit = manifest.capabilityEntries.count <= manifestInventoryLimit
         }
         rejectDuplicateNames((manifest?.appEntries ?? []).map(\.logicalID), kind: "app entries", issues: &issues)
+        // Distinct logical IDs may point at the SAME embedded bundle path; each
+        // would otherwise re-enumerate and re-hash that bundle (a ~32MB bundle ×
+        // 1000 entries = tens of GB of work just to open the review). Reject the
+        // duplicate paths outright — a shared package has one bundle per app.
+        rejectDuplicateNames((manifest?.appEntries ?? []).map(\.relativeBundlePath), kind: "app bundle paths", issues: &issues)
         var appReports: [String: WorkspaceAppPackageValidationReport] = [:]
         // Skip the per-entry enumerate+hash loop once the app inventory is over
         // the limit: the package is already rejected, and a sub-10MB manifest can
@@ -197,7 +202,11 @@ struct WorkspacePackageService {
         // for nothing. (Duplicate-ID rejection does not bound this — repeats can
         // carry distinct IDs.)
         if appEntriesWithinLimit {
-            for entry in manifest?.appEntries ?? [] {
+            // Validate each unique bundle path once even within the limit, so a
+            // duplicate-path package (already blocked above) can't force repeated
+            // hashing of the same large bundle.
+            var validatedBundlePaths: Set<String> = []
+            for entry in manifest?.appEntries ?? [] where validatedBundlePaths.insert(entry.relativeBundlePath).inserted {
                 validateEmbeddedApp(entry, packageURL: packageURL, appReports: &appReports, issues: &issues)
             }
         }
@@ -216,12 +225,16 @@ struct WorkspacePackageService {
             kind: "capability storage names",
             issues: &issues
         )
+        // Same repeated-read guard as the app entries: reject distinct capability
+        // IDs that reuse one payload path.
+        rejectDuplicateNames((manifest?.capabilityEntries ?? []).map(\.relativePath), kind: "capability payload paths", issues: &issues)
         var capabilityRequirements: [String: WorkspacePackageCapabilityRequirements] = [:]
         // Same guard as the app loop: skip re-reading+hashing every embedded
         // capability once the inventory is over the limit and the package is
         // already rejected.
         if capabilityEntriesWithinLimit {
-            for entry in manifest?.capabilityEntries ?? [] {
+            var validatedCapabilityPaths: Set<String> = []
+            for entry in manifest?.capabilityEntries ?? [] where validatedCapabilityPaths.insert(entry.relativePath).inserted {
                 validateEmbeddedCapability(
                     entry,
                     packageURL: packageURL,
@@ -482,6 +495,41 @@ struct WorkspacePackageService {
                 issues.append(blocker(
                     "/\(entry.relativePath)",
                     "Embedded capability MCP server[\(serverIndex)] command/arguments contain a credential; credential values never travel."
+                ))
+            }
+            // The nested control-plane / remote-registry / install-source objects
+            // carry human-authored PROSE (e.g. `controlPlane.secretRefs[].purpose`,
+            // provider display names, config descriptions, risk notes) that can hold
+            // a real credential assignment or a sender-local absolute path. These
+            // sub-objects are excluded from every scan above, so serialize each to
+            // JSON and run the same credential/path scan over the whole blob —
+            // covering all current and future prose fields without enumerating them.
+            func encodeToText<T: Encodable>(_ value: T?) -> String {
+                guard let value else { return "" }
+                let encoder = JSONEncoder()
+                // Do NOT escape forward slashes: the default `\/` encoding would
+                // turn `/Users/…` into `\/Users\/…` and hide it from the
+                // absolute-path scan below.
+                encoder.outputFormatting = [.withoutEscapingSlashes]
+                guard let data = try? encoder.encode(value),
+                      let text = String(data: data, encoding: .utf8) else { return "" }
+                return text
+            }
+            let nestedMetadata = [
+                encodeToText(server.controlPlane),
+                encodeToText(server.remoteRegistry),
+                encodeToText(server.installSource)
+            ].joined(separator: " ")
+            if containsCredentialAssignment(nestedMetadata) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] control-plane/registry metadata contains a credential; credential values never travel."
+                ))
+            }
+            if containsAbsoluteMachinePath(nestedMetadata) {
+                issues.append(blocker(
+                    "/\(entry.relativePath)",
+                    "Embedded capability MCP server[\(serverIndex)] control-plane/registry metadata contains an absolute machine path; local paths never travel."
                 ))
             }
         }

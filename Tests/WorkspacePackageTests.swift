@@ -985,6 +985,85 @@ struct WorkspacePackageTests {
         #expect(report.blockers.count < 10)
     }
 
+    @MainActor
+    @Test("validation rejects duplicate embedded bundle paths across app entries")
+    func validationRejectsDuplicateBundlePaths() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        // Two distinct logical IDs pointing at the SAME bundle path — a
+        // repeated-read amplification vector, and rejected outright.
+        let manifestURL = destination.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        var manifest = try decoder.decode(WorkspacePackageManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.appEntries = [
+            WorkspacePackageAppEntry(logicalID: "a", displayName: "A", relativeBundlePath: "apps/shared.astra-app", packageDigest: "d"),
+            WorkspacePackageAppEntry(logicalID: "b", displayName: "B", relativeBundlePath: "apps/shared.astra-app", packageDigest: "d")
+        ]
+        try encoder.encode(manifest).write(to: manifestURL)
+        let paths = PortablePackageSafeFileReader.portableFilePaths(in: destination, intent: .explicitUserSelection)
+            .filter { $0 != "checksums.json" }
+        let checksums = try paths.map {
+            WorkspacePackageChecksum(path: $0, sha256: try PortablePackageSafeFileReader.digest(rootURL: destination, relativePath: $0))
+        }
+        try encoder.encode(checksums).write(to: destination.appendingPathComponent("checksums.json"))
+
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("Duplicate") && $0.message.contains("app bundle paths") })
+    }
+
+    @MainActor
+    @Test("validation scans nested MCP control-plane metadata of an embedded capability")
+    func validationScansEmbeddedCapabilityMCPControlPlane() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
+        let capability = Self.makeCapability(id: "cp.cap", governance: .localDraft())
+        try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
+        workspace.enabledCapabilityIDs = ["cp.cap"]
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let capabilityURL = destination.appendingPathComponent("capabilities/cp.cap.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+
+        // A credential pasted into a control-plane secretRef purpose blurb.
+        var tampered = try decoder.decode(PluginPackage.self, from: Data(contentsOf: capabilityURL))
+        tampered.mcpServers = [PluginMCPServer(
+            id: "srv", displayName: "Srv", transport: .stdio, command: "mytool",
+            controlPlane: MCPControlPlaneMetadata(
+                secretRefs: [MCPSecretRef(id: "tok", purpose: "Use API_TOKEN=supersecret123 for auth")]
+            )
+        )]
+        try encoder.encode(tampered).write(to: capabilityURL)
+        var report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("control-plane/registry metadata contains a credential") })
+
+        // An absolute machine path in the same nested prose.
+        tampered.mcpServers = [PluginMCPServer(
+            id: "srv", displayName: "Srv", transport: .stdio, command: "mytool",
+            controlPlane: MCPControlPlaneMetadata(
+                secretRefs: [MCPSecretRef(id: "tok", purpose: "Key lives at /Users/alice/.secrets/token")]
+            )
+        )]
+        try encoder.encode(tampered).write(to: capabilityURL)
+        report = WorkspacePackageService().validatePackage(at: destination)
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.message.contains("control-plane/registry metadata contains an absolute machine path") })
+    }
+
     // MARK: - Fixtures
 
     @MainActor

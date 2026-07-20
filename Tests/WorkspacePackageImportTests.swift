@@ -329,6 +329,28 @@ struct WorkspacePackageImportTests {
     }
 
     @MainActor
+    @Test("plan surfaces a collision with a malformed occupant that installedPackages omits")
+    func planSurfacesRawOccupiedStorageCollision() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try Self.exportedPackage(root: root)
+
+        let report = WorkspacePackageService().validatePackage(at: fixture.packageURL)
+        // No DECODABLE capability is installed, but a malformed file occupies the
+        // embedded capability's storage name on disk. installedCapabilityIDs() omits
+        // it, so the plan must use the raw filesystem inventory (as the coordinator
+        // does) or it would promise a draft install the import silently skips.
+        var planner = WorkspacePackageImportPlanner()
+        planner.installedCapabilityIDs = { [] }
+        planner.approvedCapabilityIDs = { [] }
+        planner.occupiedCapabilityStorageNames = { [CapabilityLibrary.safeFileName(for: "local.tool").lowercased()] }
+        let plan = try #require(planner.plan(from: report))
+        let item = try #require(plan.capabilities.first { $0.id == "capability:local.tool" })
+        #expect(item.status == .incompatible)
+        #expect(item.detail.contains("storage name collides"))
+    }
+
+    @MainActor
     @Test("a locally-approved custom capability the share references stays enabled after import")
     func locallyApprovedCustomCapabilityStaysEnabled() async throws {
         let root = try Self.temporaryRoot()

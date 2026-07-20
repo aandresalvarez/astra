@@ -227,6 +227,14 @@ struct WorkspacePackageImportCoordinator {
             )
         }.value
         defer { try? fileManager.removeItem(at: staged.stagingRoot) }
+        // The staging above ran in a DETACHED task, which the parent's cancellation
+        // does not propagate into — awaiting `.value` returns normally even if the
+        // sheet was dismissed mid-stage. Check cancellation now, before any
+        // externally-visible mutation, so Cancel does not create the workspace
+        // directory, insert SwiftData rows, or install capabilities only to roll
+        // them back at the much later pre-save check. The staging temp is still
+        // cleaned by the defer above.
+        try Task.checkCancellation()
         let stagedPackageURL = staged.stagedPackageURL
         let manifest = staged.manifest
         let document = staged.document

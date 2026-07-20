@@ -83,6 +83,14 @@ struct WorkspacePackageImportPlanner {
     var availablePackIDs: () -> Set<String> = {
         Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
     }
+    /// Raw filesystem storage names occupied in the capability library —
+    /// including malformed/undecodable files that `installedCapabilityIDs()`
+    /// omits. The coordinator seeds its conflict skip from the same inventory
+    /// (`CapabilityLibrary.occupiedStorageNames()`), so the plan must too or the
+    /// confirmed import silently skips a capability the review promised as a draft.
+    var occupiedCapabilityStorageNames: () -> Set<String> = {
+        CapabilityLibrary().occupiedStorageNames()
+    }
 
     func plan(from report: WorkspacePackageValidationReport) -> WorkspacePackageImportPlan? {
         guard let manifest = report.manifest, let document = report.shareDocument else {
@@ -181,7 +189,10 @@ struct WorkspacePackageImportPlanner {
         // — which the default case-insensitive macOS filesystem collides and the
         // coordinator skips — is reported here rather than promised as a draft.
         let storageKey: (String) -> String = { CapabilityLibrary.safeFileName(for: $0).lowercased() }
-        let installedStorageNames = Set(installed.map(storageKey))
+        // Union the decodable installed IDs' storage keys with the raw filesystem
+        // inventory (which also covers malformed/undecodable occupants), matching
+        // the coordinator's conflict seed so plan and import agree.
+        let installedStorageNames = Set(installed.map(storageKey)).union(occupiedCapabilityStorageNames())
         for entry in manifest.capabilityEntries {
             let already = installed.contains(entry.packageID)
             let storageCollision = !already
@@ -421,9 +432,19 @@ struct WorkspacePackageImportPlanner {
             )
         }
 
+        // Bound the instructions used for the REVIEW display: a valid package can
+        // put ~10MB into `instructions`, and rendering the whole untrusted string
+        // in a SwiftUI `Text` on the main actor freezes the sheet during layout.
+        // This is display-only — the import applies the workspace's full
+        // `document.instructions`; only the preview is truncated.
+        let instructionsDisplayLimit = 4000
+        let boundedInstructions = document.instructions.count > instructionsDisplayLimit
+            ? String(document.instructions.prefix(instructionsDisplayLimit)) + "… (truncated for review; full text applies on import)"
+            : document.instructions
+
         return WorkspacePackageImportPlan(
             workspaceName: manifest.workspaceName,
-            workspaceInstructions: document.instructions,
+            workspaceInstructions: boundedInstructions,
             packageID: manifest.packageID,
             exportProfile: manifest.exportProfile,
             blockers: report.blockers,

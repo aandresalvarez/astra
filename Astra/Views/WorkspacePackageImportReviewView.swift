@@ -161,10 +161,22 @@ struct WorkspacePackageImportReviewView: View {
                         try PortablePackageSafeFileReader.stageBoundedCopy(from: url, to: stagedPackage)
                         return (WorkspacePackageService().validatePackage(at: stagedPackage), stagingRoot)
                     } catch {
-                        // Staging failed (symlink / oversize / unreadable) — the
-                        // live-package validation surfaces the same blocker.
+                        // Staging failed (symlink / oversize / unreadable, or a
+                        // case-only filename collision that only manifests on the
+                        // recipient's case-insensitive temp volume). Validating the
+                        // LIVE source may NOT reproduce that failure, so it can't
+                        // stand in for it — the confirm step re-stages and would hit
+                        // the same failure. Preserve the staging error as its own
+                        // blocker on top of whatever live validation reports, so the
+                        // review shows it and Import stays disabled.
                         try? fm.removeItem(at: stagingRoot)
-                        return (WorkspacePackageService().validatePackage(at: url), nil)
+                        var liveReport = WorkspacePackageService().validatePackage(at: url)
+                        liveReport.issues.append(PortablePackageValidationIssue(
+                            severity: .blocker,
+                            path: "/",
+                            message: "Package could not be staged for import review (\(error.localizedDescription)); it cannot be safely imported on this machine."
+                        ))
+                        return (liveReport, nil)
                     }
                 }.value
             // The `.task` may have been cancelled (sheet dismissed) while the

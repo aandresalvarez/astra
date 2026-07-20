@@ -1600,6 +1600,26 @@ struct WorkspaceShareDocumentTests {
     }
 
     @MainActor
+    @Test("oversized workspace instructions are bounded in the review plan")
+    func oversizedInstructionsBoundedInPlan() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (container, workspace) = try Self.makeWorkspace(root: root)
+        workspace.instructions = String(repeating: "A", count: 200_000)
+        let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
+        _ = try WorkspacePackageExporter().exportConfigurationPackage(
+            workspace: workspace, modelContext: container.mainContext, to: destination
+        )
+        let report = WorkspacePackageService().validatePackage(at: destination)
+        let plan = try #require(WorkspacePackageImportPlanner().plan(from: report))
+        // Display copy is truncated so SwiftUI Text layout can't freeze the sheet;
+        // the import still applies the full instructions from the share document.
+        #expect(plan.workspaceInstructions.count < 5000)
+        #expect(plan.workspaceInstructions.contains("truncated"))
+        #expect(report.shareDocument?.instructions.count == 200_000)
+    }
+
+    @MainActor
     private static func makeWorkspace(root: URL, name: String = "Share Source") throws -> (ModelContainer, Workspace) {
         let container = try makeContainer()
         let workspaceURL = root.appendingPathComponent("workspace-\(name)", isDirectory: true)
