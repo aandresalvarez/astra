@@ -39,7 +39,8 @@ struct ArchitectureFitnessTests {
             "Startup",
             "Tasks",
             "Validation",
-            "WorkspaceApps"
+            "WorkspaceApps",
+            "WorkspacePackage"
         ])
     }
 
@@ -68,14 +69,21 @@ struct ArchitectureFitnessTests {
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()
         let serviceRoot = root.appendingPathComponent("Astra/Services")
-        let allowedWorkspaceAppPackAdapters: Set<String> = [
-            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift"
+        // Adapters that legitimately consume the pack catalog without owning it:
+        // the WorkspaceApps template-pack bridge, and the portable-workspace
+        // import flow, which must reconcile a share's referenced pack IDs against
+        // the recipient's real catalog (surface missing packs, drop unresolved
+        // ones from the enabled set) rather than trusting arbitrary IDs.
+        let allowedPackAdapters: Set<String> = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"
         ]
         let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
             .compactMap { file -> String? in
                 let path = relativePath(for: file, root: root)
                 guard path.contains("/Packs/") == false else { return nil }
-                guard allowedWorkspaceAppPackAdapters.contains(path) == false else { return nil }
+                guard allowedPackAdapters.contains(path) == false else { return nil }
                 let text = try String(contentsOf: file, encoding: .utf8)
                 return text.contains("AstraPack") ? path : nil
             }
@@ -975,6 +983,38 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Workspace import discovery scans should use HostFileAccessBroker: \(matches)")
     }
 
+    @Test("Workspace package subsystem goes through the file access broker")
+    func workspacePackageSubsystemGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePaths = [
+            "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageService.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift",
+            "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift"
+        ]
+        // Raw FileManager-prefixed reads are forbidden; `broker.enumerator(`
+        // (routed through HostFileAccessBroker) and the O_NOFOLLOW reads in
+        // PortablePackageSafeFileReader are the sanctioned paths.
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator(",
+            "FileManager.default.contentsOfDirectory(",
+            "fileManager.contentsOfDirectory("
+        ]
+        var matches: [String] = []
+        for relativePath in relativePaths {
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+                where forbiddenPatterns.contains(where: { String(line).contains($0) }) {
+                matches.append("\(relativePath):\(index + 1)")
+            }
+        }
+
+        #expect(matches.isEmpty, "Workspace package reads should use HostFileAccessBroker: \(matches)")
+    }
+
     @Test("Workspace recovery config loads keep implicit scan intent")
     func workspaceRecoveryConfigLoadsKeepImplicitScanIntent() throws {
         let root = try repositoryRoot()
@@ -1804,9 +1844,15 @@ struct ArchitectureFitnessTests {
         [
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
-            // Budget raised for issue #322: wiring the zero-workspace titlebar
-            // command flag into an already-full file cost one irreducible line.
-            "Astra/Views/ContentView.swift": .init(4_915, .owner("Workspace shell composition")),
+            // Budget raised for issues #322/#323 plus PR #328: the
+            // zero-workspace titlebar command flag, the portable-package
+            // import surface (one @State, one sheet, URL partition in
+            // importWorkspace), and the durable external-operation wiring
+            // (monitor lifecycle, trusted-receipt adoption ordering, and
+            // delete/replace cancel-and-verify outcome handling) — the
+            // review UI, import logic, and operation services themselves
+            // live in their own files.
+            "Astra/Views/ContentView.swift": .init(4_920, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body
@@ -1832,6 +1878,11 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
+            // Self-referential: this file crossed its own 2,000-line
+            // threshold from the file-access-broker tests added for issue
+            // #323's WorkspacePackage subsystem. It's a flat suite, not a
+            // companion of one production file, so it owns itself here.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_150, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
