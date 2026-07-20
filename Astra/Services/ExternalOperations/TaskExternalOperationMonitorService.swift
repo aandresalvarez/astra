@@ -505,7 +505,26 @@ final class TaskExternalOperationMonitorService {
             expectedGeneration: acquired.generation,
             expectedLeaseOwner: leaseOwner
         )
-        await deliver(applied)
+        // A terminal transition freshly discovered by this poll must not await
+        // its wake inline: `wakeSink.wake` runs a complete validation/reasoning
+        // provider session, and `runDueChecks` awaits every poll task — so the
+        // scheduler would stall for every other operation until that session
+        // finished. Deliver the (cheap) notification inline, then hand the wake
+        // to the same tracked, non-awaited path terminal reconciliation uses;
+        // it re-derives notification+wake from the just-applied state and the
+        // acknowledged notification dedupes.
+        if applied.wakeRequest?.observation.executionState.isTerminalObservation == true {
+            await deliver(AppliedObservation(
+                result: applied.result,
+                notification: applied.notification,
+                notificationKey: applied.notificationKey,
+                wakeRequest: nil,
+                wakeKey: nil
+            ))
+            dispatchTerminalDeliveryIfNeeded(operationID: operationID)
+        } else {
+            await deliver(applied)
+        }
         return applied.result
     }
 

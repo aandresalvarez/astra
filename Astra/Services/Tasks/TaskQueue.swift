@@ -904,6 +904,13 @@ final class TaskQueue {
 
     @MainActor
     func resourceKey(for task: AgentTask) -> String {
+        Self.resourceKey(for: task)
+    }
+
+    /// Static so registration can persist the LAUNCH-TIME key on a durable
+    /// external-operation row with the exact same derivation admission uses.
+    @MainActor
+    static func resourceKey(for task: AgentTask) -> String {
         let access = TaskWorkspaceAccess(task: task)
         let rawPath = access.codeWorkingDirectory.isEmpty ? access.effectiveWorkspacePath : access.codeWorkingDirectory
         let expanded = (rawPath as NSString).expandingTildeInPath

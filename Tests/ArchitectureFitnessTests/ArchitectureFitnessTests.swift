@@ -1905,8 +1905,9 @@ struct ArchitectureFitnessTests {
             // External-operation wakes disable reuse at the private continuation decision boundary.
             // + PR #328: failure-reasoning wakes bypass ordinary success
             // validation (deliverables/runTests/aiCheck) so a resume-phase
-            // validation failure can't pre-empt the external-outcome review.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_185, .owner("Runtime worker execution")),
+            // validation failure can't pre-empt the external-outcome review,
+            // and isolation is retained until every terminal wake finishes.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_200, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

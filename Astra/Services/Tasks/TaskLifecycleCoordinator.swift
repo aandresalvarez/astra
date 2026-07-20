@@ -520,6 +520,20 @@ final class TaskLifecycleCoordinator {
         cancelExternalWork: (@MainActor (UUID) async -> Void)? = nil
     ) async -> ExternalWorkDeletionOutcome {
         if let cancelExternalWork {
+            // A terminal wake's validation/reasoning provider session may be
+            // executing RIGHT NOW: the operation is already terminal (so the
+            // nonterminal cancel-and-verify below never touches it) while a
+            // write-capable worker keeps mutating the workspace and will later
+            // persist against the deleted models. Refuse deletion while a
+            // worker session is live for a task that owns operation rows.
+            if taskQueue.taskWorkerMap[task.id] != nil,
+               !TaskExternalOperationRegistrationService
+                   .operations(taskID: task.id, modelContext: modelContext).isEmpty {
+                AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id, fields: [
+                    "result": "blocked_active_wake_session"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
             let nonterminalOperationIDs = TaskExternalOperationRegistrationService
                 .operations(taskID: task.id, modelContext: modelContext)
                 .filter { !$0.executionState.isTerminalObservation }
@@ -625,6 +639,17 @@ final class TaskLifecycleCoordinator {
         if let cancelExternalWork {
             let operations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>())) ?? []
             let initialTaskIDs = Set(ws.tasks.map(\.id))
+            // Same live-wake-session guard as deleteTask: an already-terminal
+            // operation's validation/reasoning worker may be executing for one
+            // of this workspace's tasks.
+            if operations.contains(where: { initialTaskIDs.contains($0.taskID) })
+                && initialTaskIDs.contains(where: { taskQueue.taskWorkerMap[$0] != nil }) {
+                AppLogger.audit(.workspaceDeleted, category: "UI", fields: [
+                    "workspace_id": ws.id.uuidString,
+                    "result": "blocked_active_wake_session"
+                ], level: .warning)
+                return .blockedByActiveExternalWork
+            }
             let nonterminalOperationIDs = operations
                 .filter { initialTaskIDs.contains($0.taskID) && !$0.executionState.isTerminalObservation }
                 .map(\.id)

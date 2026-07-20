@@ -113,7 +113,11 @@ extension AppRuntimeController {
             let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             return holding.compactMap { operation in
                 guard let task = tasksByID[operation.taskID] else { return nil }
-                return (resourceKey: taskQueue.resourceKey(for: task), taskID: operation.taskID, operationID: operation.id)
+                // Prefer the LAUNCH-TIME root persisted at registration; the
+                // task/workspace-derived key is user-mutable while the
+                // detached job keeps writing the root it actually mounted.
+                let resourceKey = operation.launchResourceKey ?? taskQueue.resourceKey(for: task)
+                return (resourceKey: resourceKey, taskID: operation.taskID, operationID: operation.id)
             }
         }
     }

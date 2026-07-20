@@ -189,6 +189,11 @@ enum TaskExternalOperationRegistrationService {
         if initialExecutionState.isTerminalObservation {
             operation.terminalObservedAt = now
         }
+        // Freeze the LAUNCH-TIME execution root for resource exclusion. The
+        // workspace's active path is user-mutable while the detached job runs;
+        // recomputing the holder key later would drift exclusion to the new
+        // path and leave the actually-mounted root unprotected.
+        operation.launchResourceKey = TaskQueue.resourceKey(for: task)
         modelContext.insert(operation)
         // Registration is the durable ownership boundary. Move the task out of
         // provider-owned Running immediately so a later provider timeout,

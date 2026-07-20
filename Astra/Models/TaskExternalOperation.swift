@@ -30,6 +30,13 @@ public final class TaskExternalOperation {
     public var lastNotificationKey: String?
     public var lastWakeKey: String?
     public var consecutiveObservationFailures: Int
+    /// The resource-lock key of the execution root the detached job mounted at
+    /// LAUNCH. Recomputing exclusion from the task/workspace's current paths is
+    /// wrong once the user retargets the workspace default mid-job: the holder
+    /// would drift to the new path while the original root loses protection.
+    /// Optional so pre-existing rows lightweight-migrate; holders fall back to
+    /// recomputation when nil.
+    public var launchResourceKey: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -66,6 +73,7 @@ public final class TaskExternalOperation {
         self.lastNotificationKey = nil
         self.lastWakeKey = nil
         self.consecutiveObservationFailures = 0
+        self.launchResourceKey = nil
         self.createdAt = createdAt
         self.updatedAt = createdAt
     }

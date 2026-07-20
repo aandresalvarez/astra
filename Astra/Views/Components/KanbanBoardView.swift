@@ -591,9 +591,8 @@ struct KanbanBoardView: View {
             AppLogger.warning("Kanban drop rejected: task \(uuid.uuidString) not found", category: "UI")
             return
         }
-        // Don't allow moving running tasks
-        guard task.status != .running else {
-            AppLogger.info("Kanban drop ignored: running task \(task.id.uuidString)", category: "UI")
+        guard !KanbanBoardView.isRuntimeOwned(task) else {
+            AppLogger.info("Kanban drop ignored: runtime-owned task \(task.id.uuidString)", category: "UI")
             return
         }
 
@@ -673,8 +672,15 @@ struct KanbanBoardView: View {
         applyDrop(category: category, idString: task.id.uuidString)
     }
 
+    /// Statuses the runtime (provider worker or external-operation monitor)
+    /// owns: board moves must not pull the task out from under them — a moved
+    /// `.waitingExternal` task's ordinary rerun would race its pending wake.
+    static func isRuntimeOwned(_ task: AgentTask) -> Bool {
+        task.status == .running || task.status == .waitingExternal
+    }
+
     private func canDiscard(_ task: AgentTask) -> Bool {
-        task.status != .running
+        !KanbanBoardView.isRuntimeOwned(task)
     }
 
     private func discardTask(_ task: AgentTask) {
@@ -706,7 +712,7 @@ struct KanbanBoardView: View {
         sourceCategory: KanbanCategory,
         value: DragGesture.Value
     ) {
-        guard task.status != .running else { return }
+        guard !KanbanBoardView.isRuntimeOwned(task) else { return }
         guard let sourceFrame = taskFrames[task.id] else { return }
 
         if dragState?.taskID != task.id {
@@ -732,7 +738,7 @@ struct KanbanBoardView: View {
             }
         }
 
-        guard task.status != .running else { return }
+        guard !KanbanBoardView.isRuntimeOwned(task) else { return }
 
         guard let target = targetCategory(at: value.location, for: task) else {
             AppLogger.info("Kanban gesture drop cancelled task=\(task.id.uuidString)", category: "UI")

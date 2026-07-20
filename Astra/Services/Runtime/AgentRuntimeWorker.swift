@@ -1381,14 +1381,27 @@ final class AgentRuntimeWorker {
         // would check out main underneath it — either corrupts or interrupts
         // the still-running Docker job's mount. That applies both when THIS
         // run detached for durable external monitoring, and when this run is a
-        // wake/continuation (e.g. an ambiguity-reasoning wake) that finished
-        // while a task-owned external operation is STILL nonterminal and using
-        // the retained isolation artifact. Cleanup runs once the external
-        // lifecycle has actually finished — the terminal wake that leaves no
-        // nonterminal operation behind.
+        // wake/continuation that finished while ANOTHER task-owned operation
+        // still needs the artifact: not just nonterminal execution, but also a
+        // terminal operation whose validation is unfinished (`.validating`) or
+        // whose reasoning wake is not yet acknowledged — that later wake would
+        // otherwise re-prepare a CLEAN copy from the original workspace and
+        // validate against a root that no longer contains the external job's
+        // outputs. The current run's own wake operation is excluded (its wake
+        // is completing right now; its acknowledgement lands only after this
+        // method returns).
+        let currentWakeOperationID = executionPolicy.externalOperationID
         let externalWorkStillUsesIsolation = TaskExternalOperationRegistrationService
             .operations(taskID: task.id, modelContext: modelContext)
-            .contains { $0.monitoringState != .quarantined && !$0.executionState.isTerminalObservation }
+            .contains { operation in
+                guard operation.monitoringState != .quarantined,
+                      operation.id != currentWakeOperationID else { return false }
+                if !operation.executionState.isTerminalObservation { return true }
+                if operation.monitoringState == .validating { return true }
+                return operation.monitoringState == .completed
+                    && operation.executionState != .processCompleted
+                    && operation.lastWakeKey == nil
+            }
         if shouldCleanupIsolation, !detachedForExternalMonitoring, !externalWorkStillUsesIsolation {
             IsolationService.cleanup(task: task, executionPath: executionPath)
         }

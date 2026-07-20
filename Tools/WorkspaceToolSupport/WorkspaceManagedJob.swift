@@ -1167,12 +1167,30 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 case "$command_pid" in
                   ''|*[!0-9]*) exit 40 ;;
                 esac
-                kill -0 "$command_pid" 2>/dev/null || exit 41
-                state_line="$(cat "/proc/$command_pid/stat" 2>/dev/null || true)"
-                state_rest="${state_line##*) }"
-                set -- $state_rest
-                [ "$1" = "Z" ] && exit 41
-                exit 0
+                kill_bin=""
+                for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
+                  if [ -x "$candidate" ]; then
+                    kill_bin="$candidate"
+                    break
+                  fi
+                done
+                if kill -0 "$command_pid" 2>/dev/null; then
+                  state_line="$(cat "/proc/$command_pid/stat" 2>/dev/null || true)"
+                  state_rest="${state_line##*) }"
+                  set -- $state_rest
+                  [ "$1" = "Z" ] || exit 0
+                fi
+                # The leader can exit (or sit as a zombie) while a daemonized
+                # descendant lives on in the same setsid process group; leader
+                # absence alone is not authoritative termination. Probe the
+                # negative PGID before declaring the job gone.
+                if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$command_pid" 2>/dev/null; then
+                  exit 0
+                fi
+                if kill -0 -"$command_pid" 2>/dev/null; then
+                  exit 0
+                fi
+                exit 41
                 """
             ],
             commandLabel: "workspace_job_probe \(jobID)",
