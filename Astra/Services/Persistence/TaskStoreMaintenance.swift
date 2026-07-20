@@ -73,22 +73,70 @@ public enum TaskStoreMaintenance {
 
         var removed = 0
         for (_, duplicates) in groups where duplicates.count > 1 {
-            // Keep one copy, delete the rest. Prefer a pinned task (user-curated)
-            // so dedup never drops a pin in favour of an unpinned twin, then the
-            // earliest import, then a stable id tiebreaker — imported sessions
-            // overwrite createdAt with the session start time, so ties are common
-            // and the survivor must be deterministic.
+            // Keep one copy, delete the rest. Prefer a task with an active
+            // durable turn request (its queued user message must survive —
+            // startup dedup runs BEFORE turn recovery, and the scalar
+            // `taskID` reference doesn't cascade, so deleting that task would
+            // strand the request and lose the message), then a pinned task
+            // (user-curated) so dedup never drops a pin in favour of an
+            // unpinned twin, then the earliest import, then a stable id
+            // tiebreaker — imported sessions overwrite createdAt with the
+            // session start time, so ties are common and the survivor must
+            // be deterministic.
             let sorted = duplicates.sorted { lhs, rhs in
+                let lhsActive = hasActiveTurnRequests(lhs, modelContext: modelContext)
+                let rhsActive = hasActiveTurnRequests(rhs, modelContext: modelContext)
+                if lhsActive != rhsActive { return lhsActive }
                 if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
                 if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
             for task in sorted.dropFirst() {
+                // Both copies carrying active requests is possible (a follow-up
+                // was submitted from each before a restart); never delete a
+                // task whose queued message would be lost with it.
+                guard !hasActiveTurnRequests(task, modelContext: modelContext) else { continue }
+                removeTurnRequests(for: task, modelContext: modelContext)
                 modelContext.delete(task)
                 removed += 1
             }
         }
         return removed
+    }
+
+    /// Whether the task has a durable turn request that is not yet terminal.
+    /// Mirrors `TaskTurnRequestRepository.activeRequests` (app target, not
+    /// importable here).
+    @MainActor
+    private static func hasActiveTurnRequests(_ task: AgentTask, modelContext: ModelContext) -> Bool {
+        let taskID = task.id
+        let completed = TaskTurnRequestState.completed.rawValue
+        let failed = TaskTurnRequestState.failed.rawValue
+        let cancelled = TaskTurnRequestState.cancelled.rawValue
+        var descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate {
+                $0.taskID == taskID
+                    && $0.stateRawValue != completed
+                    && $0.stateRawValue != failed
+                    && $0.stateRawValue != cancelled
+            }
+        )
+        descriptor.fetchLimit = 1
+        return ((try? modelContext.fetch(descriptor)) ?? []).isEmpty == false
+    }
+
+    /// Turn requests reference their task by scalar id, so task deletion never
+    /// cascades to them; remove the (terminal) rows with their task or they
+    /// accumulate as permanent orphans.
+    @MainActor
+    private static func removeTurnRequests(for task: AgentTask, modelContext: ModelContext) {
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate { $0.taskID == taskID }
+        )
+        for request in (try? modelContext.fetch(descriptor)) ?? [] {
+            modelContext.delete(request)
+        }
     }
 
     /// A task created by `SessionScanner.importSessions`: a completed, archived

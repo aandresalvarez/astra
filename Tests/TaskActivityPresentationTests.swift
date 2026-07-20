@@ -74,7 +74,6 @@ struct TaskActivityPresentationTests {
         #expect(noRunningRequest.kind == .running)
         #expect(noRunningRequest.waitingRequest?.id == queued.id)
         #expect(noRunningRequest.cancellableQueuedRequest?.id == queued.id)
-        #expect(noRunningRequest.dockRequest?.id == queued.id)
         #expect(noRunningRequest.dockTitle == "Message queued")
         #expect(noRunningRequest.dockSummary?.isEmpty == false)
 
@@ -88,7 +87,6 @@ struct TaskActivityPresentationTests {
         #expect(withRunningRequest.kind == .running)
         #expect(withRunningRequest.request?.id == running.id)
         #expect(withRunningRequest.cancellableQueuedRequest?.id == queued.id)
-        #expect(withRunningRequest.dockRequest?.id == queued.id)
 
         // No queued follow-up: running rows keep their dockless presentation.
         let runningOnly = TaskActivityPresentation.resolve(
@@ -108,7 +106,23 @@ struct TaskActivityPresentationTests {
         )
         #expect(waitingOnly.kind == .waitingForWorker)
         #expect(waitingOnly.cancellableQueuedRequest?.id == queued.id)
-        #expect(waitingOnly.dockRequest?.id == queued.id)
+
+        // An admitted (starting) request is already owned by a worker: scoped
+        // cancellation must never target it, only a queued follow-up.
+        let admitted = request(for: task, sequence: 2, state: .admitted)
+        let starting = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: .completed,
+            requests: [admitted, queued]
+        )
+        #expect(starting.kind == .starting)
+        #expect(starting.cancellableQueuedRequest?.id == queued.id)
+        let startingAlone = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: .completed,
+            requests: [admitted]
+        )
+        #expect(startingAlone.cancellableQueuedRequest == nil)
     }
 
     @Test("Message lifecycle resolves by durable event identity, never message text or timestamp")
@@ -240,6 +254,31 @@ struct TaskActivityPresentationTests {
         // the saved follow-up whenever the workspace drawer is collapsed.
         #expect(index.waitingTaskCount(in: workspace) == 1)
         #expect(SidebarTaskIndex.isSidebarReviewTask(doneTask, activity: activities[doneTask.id]))
+    }
+
+    @Test("Running count keeps done tasks whose durable follow-up is executing")
+    func runningCountIncludesDoneTasksWithRunningRequest() {
+        let workspace = makeWorkspace()
+        let doneTask = makeTask(status: .running, workspace: workspace)
+        doneTask.isDone = true
+        let running = request(for: doneTask, sequence: 1, state: .running)
+        // A done task running WITHOUT a durable request stays excluded — the
+        // user closed it and no explicit follow-up is executing.
+        let doneNoRequest = makeTask(status: .running, workspace: workspace)
+        doneNoRequest.isDone = true
+
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: [doneTask, doneNoRequest],
+            requests: [running]
+        )
+        let index = SidebarTaskIndex(
+            tasks: [doneTask, doneNoRequest],
+            searchText: "",
+            taskActivities: activities
+        )
+        // The waiting count already includes done tasks; the indicator must
+        // not vanish at the exact moment the waiting turn starts running.
+        #expect(index.runningTaskCount(in: workspace) == 1)
     }
 
     @Test("Failure chips distinguish admission failures from post-start failures")

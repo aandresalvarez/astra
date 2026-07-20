@@ -258,6 +258,161 @@ struct TaskTurnRequestAdmissionTests {
         #expect(remaining.isEmpty)
     }
 
+    @Test("Scoped cancellation only touches waiting requests, never admitted or running ones")
+    func cancelTurnRequestIgnoresPostAdmissionStates() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "StaleClick", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Admitted before the click landed",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        #expect(request.state == .admitted)
+
+        _ = TaskTurnRequestStateMachine.transition(request, to: .running)
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        #expect(request.state == .running)
+    }
+
+    @Test("A cancelled pre-admission turn's message stays invisible to prompt scanners")
+    func cancelledWaitingTurnStaysHiddenFromPrompts() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Retracted", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Summarize the report", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Summarize the report"
+        ))
+
+        let retracted = try #require(TaskTurnSubmissionService.submit(
+            message: "new goal is to translate the report to French",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: retracted.requestID, in: context))
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.cancelTurnRequest(id: retracted.requestID, workspace: workspace, modelContext: context)
+        #expect(request.state == .cancelled)
+
+        // The append-only user.message event outlives the cancelled request;
+        // the retracted instruction must not resurface in later prompts.
+        #expect(TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task).contains(retracted.eventID))
+        let resolution = TaskContextStateManager.activeObjectiveResolution(
+            for: task,
+            planState: .empty,
+            startingRequest: task.goal,
+            approvedGoal: nil
+        )
+        #expect(!resolution.objective.localizedCaseInsensitiveContains("French"))
+    }
+
+    @Test("Retry ignores a durable turn that no longer represents the latest failure")
+    func retrySkipsStaleDurableTurn() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "StaleRetry", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        task.status = .failed
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Old durable follow-up",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .failed, terminalReason: "old_failure")
+
+        // A newer non-durable attempt (resume / plan / base run) failed after
+        // the request terminalized: Retry must not resurrect the old message.
+        let newerRun = TaskRun(task: task)
+        newerRun.startedAt = Date().addingTimeInterval(60)
+        newerRun.status = .failed
+        context.insert(newerRun)
+
+        let queue = TaskQueue(poolSize: 0)
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
+        let staleHandle = coordinator.retryTask(task)
+        #expect(request.state == .failed)
+        _ = await staleHandle?.value
+
+        // When every run predates the request's failure, the request IS the
+        // latest failure and the durable path re-queues it.
+        newerRun.startedAt = Date(timeIntervalSince1970: 10)
+        task.status = .failed
+        let freshHandle = coordinator.retryTask(task)
+        #expect(request.state == .waitingForWorker)
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        _ = await freshHandle?.value
+    }
+
+    @Test("Startup dedup never deletes an imported task with an active turn request")
+    func dedupPreservesTasksWithActiveTurnRequests() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Dedup", primaryPath: root.path)
+        context.insert(workspace)
+
+        func importedTask(created: Date) -> AgentTask {
+            let task = AgentTask(title: "Imported", goal: "Imported session", workspace: workspace)
+            task.status = .completed
+            task.isDone = true
+            task.sessionId = "shared-session"
+            task.createdAt = created
+            context.insert(task)
+            context.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: SessionScanner.importedSessionMarker
+            ))
+            return task
+        }
+        // The earlier-created copy would normally survive; the follow-up was
+        // submitted from the LATER copy, which must win instead.
+        let plain = importedTask(created: Date(timeIntervalSince1970: 100))
+        let withFollowUp = importedTask(created: Date(timeIntervalSince1970: 200))
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up on the imported session",
+            for: withFollowUp,
+            into: context
+        ).successValue)
+
+        let removed = TaskStoreMaintenance.deduplicateImportedSessions(
+            [plain, withFollowUp],
+            modelContext: context
+        )
+
+        #expect(removed == 1)
+        #expect(plain.isDeleted)
+        #expect(!withFollowUp.isDeleted)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(request.state.isActive)
+    }
+
     @Test("Presentation fetches stay bounded to active plus visible-window requests")
     func presentationRequestsAreBounded() throws {
         let root = try makeWorkspaceRoot()

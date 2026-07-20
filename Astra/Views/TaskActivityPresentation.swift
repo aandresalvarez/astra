@@ -122,18 +122,18 @@ struct TaskActivityPresentation: Equatable, Sendable {
         }
     }
 
-    /// The request the dock's scoped cancel action targets: the row-owning
-    /// request while waiting or starting, else the queued follow-up behind a
-    /// running run.
-    var dockRequest: TaskTurnRequestSnapshot? {
-        kind == .running ? waitingRequest : request
-    }
-
-    /// The request the sidebar's "Cancel Queued Message" retracts. Waiting
-    /// rows own their request; running and starting rows surface the earliest
-    /// queued follow-up so it stays retractable behind an active run.
+    /// The request scoped cancellation (dock action and sidebar menu) targets.
+    /// Waiting states ONLY, matching `TaskQueue.cancelTurnRequest`: an
+    /// admitted or running request already belongs to a worker, so a stale
+    /// click would mark it cancelled while the provider keeps executing.
+    /// Running and starting rows therefore offer the earliest queued
+    /// follow-up (if any), never their own request.
     var cancellableQueuedRequest: TaskTurnRequestSnapshot? {
-        isWaiting ? (request ?? waitingRequest) : waitingRequest
+        switch kind {
+        case .waitingForWorker, .waitingForResource: return request
+        case .running, .starting: return waitingRequest
+        case .idle: return nil
+        }
     }
 
     static func resolve(

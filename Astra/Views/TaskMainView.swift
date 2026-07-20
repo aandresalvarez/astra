@@ -4334,6 +4334,8 @@ struct TaskMainView: View {
         switch action.kind {
         case .stop:
             onCancelTask?(task)
+        case .stopRun:
+            taskQueue?.stopActiveRun(task: task, modelContext: modelContext)
         case .cancelTurnRequest:
             guard let requestID = action.payload.flatMap(UUID.init) else { return }
             taskQueue?.cancelTurnRequest(id: requestID, workspace: task.workspace, modelContext: modelContext)

@@ -16,20 +16,33 @@ import ASTRAModels
 /// already assume caller-side isolation for `task.events` access, and the
 /// fetch uses the task's own `modelContext` under that same assumption.
 public enum TaskPendingTurnMessageVisibility {
-    /// Event ids of user messages whose turn requests are still waiting for a
-    /// worker or resource. Admitted/running requests are deliberately not
-    /// pending: the turn currently being prompted owns one of those states,
-    /// and FIFO admission guarantees no later turn can reach them first.
+    /// Event ids of user messages that must stay invisible to prompt
+    /// scanners: turns still waiting for a worker or resource, plus turns
+    /// that terminalized without ever starting provider work (`startedAt`
+    /// nil — a cancelled or admission-failed request). A retracted
+    /// instruction (e.g. an objective override the user cancelled while it
+    /// waited) must never leak into a later turn's prompt just because its
+    /// append-only message event outlives the request state.
+    /// Admitted/running requests are deliberately visible: the turn
+    /// currently being prompted owns one of those states, and FIFO admission
+    /// guarantees no later turn can reach them first. Retry-from-terminal
+    /// clears `startedAt`, so a retried turn re-hides until re-admission.
     public static func pendingMessageEventIDs(for task: AgentTask) -> Set<UUID> {
         guard let modelContext = task.modelContext else { return [] }
         let taskID = task.id
         let waitingForWorker = TaskTurnRequestState.waitingForWorker.rawValue
         let waitingForResource = TaskTurnRequestState.waitingForResource.rawValue
+        let cancelled = TaskTurnRequestState.cancelled.rawValue
+        let failed = TaskTurnRequestState.failed.rawValue
         let descriptor = FetchDescriptor<TaskTurnRequest>(
             predicate: #Predicate {
                 $0.taskID == taskID && (
                     $0.stateRawValue == waitingForWorker
                         || $0.stateRawValue == waitingForResource
+                        || (
+                            ($0.stateRawValue == cancelled || $0.stateRawValue == failed)
+                                && $0.startedAt == nil
+                        )
                 )
             }
         )

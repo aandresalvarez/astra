@@ -39,7 +39,12 @@ struct SidebarTaskIndex {
                 taskStatus: task.status,
                 requests: []
             )
-            if activity.isRunning, !task.isDone {
+            // A durable running request (activity.request) means a follow-up
+            // the user explicitly sent is executing right now, so it counts
+            // even when the task itself is still marked done — otherwise the
+            // collapsed-drawer indicator vanishes at the exact moment the
+            // waiting turn (counted below) starts provider work.
+            if activity.isRunning, !task.isDone || activity.request != nil {
                 runningCounts[workspaceID, default: 0] += 1
             }
             // Waiting always reflects a live durable request. A follow-up sent

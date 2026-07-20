@@ -80,25 +80,28 @@ extension TaskMainView {
         // offer the one way to retract a saved turn before it runs — scoped to
         // this request, not `.stop`, so cancelling a queued follow-up never
         // flips the task's own terminal status.
-        let dockRequest = taskActivityPresentation.dockRequest
+        let dockRequest = taskActivityPresentation.cancellableQueuedRequest
         let cancelAction: TaskDecisionDockAction? = {
             guard taskQueue != nil,
                   let requestID = dockRequest?.id else { return nil }
+            let targetsOwnRequest = requestID == taskActivityPresentation.request?.id
             return TaskDecisionDockAction(
                 kind: .cancelTurnRequest,
-                title: taskActivityPresentation.kind == .running ? "Cancel queued message" : "Cancel request",
+                title: targetsOwnRequest ? "Cancel request" : "Cancel queued message",
                 systemImage: "xmark.circle",
                 payload: requestID.uuidString,
                 help: "Cancel this saved message before it runs."
             )
         }()
         // A queued follow-up behind a running run also shows this dock, and
-        // any visible dock suppresses the composer's stop control — so the
-        // whole-run stop must ride along here or it becomes unreachable.
+        // any visible dock suppresses the composer's stop control — so a stop
+        // must ride along here or it becomes unreachable. `.stopRun` (not
+        // `.stop`): the whole-task cancel terminalizes every active request,
+        // which would silently break this action's queued-messages promise.
         let stopAction: TaskDecisionDockAction? = {
-            guard taskActivityPresentation.kind == .running, onCancelTask != nil else { return nil }
+            guard taskActivityPresentation.kind == .running, taskQueue != nil else { return nil }
             return TaskDecisionDockAction(
-                kind: .stop,
+                kind: .stopRun,
                 title: "Stop run",
                 systemImage: "stop.circle",
                 help: "Stop the active run. Queued messages stay saved."

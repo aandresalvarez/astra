@@ -191,13 +191,21 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    /// The durable turn Retry may resurrect: the task's newest request, only
+    /// when it is failed/cancelled AND still represents the task's latest
+    /// failure. A run started after the request terminalized (a resume,
+    /// approved-plan, or base-task attempt) means Retry must target THAT
+    /// failure through the legacy fallbacks — resurrecting an older durable
+    /// message would execute stale instructions.
     private func latestRetryableTurnRequest(for task: AgentTask) -> TaskTurnRequest? {
-        guard let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) else {
+        guard let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext),
+              let candidate = requests.last,
+              candidate.state == .failed || candidate.state == .cancelled else {
             return nil
         }
-        return requests
-            .filter { $0.state == .failed || $0.state == .cancelled }
-            .last
+        let latestRunStart = task.runs.map(\.startedAt).max() ?? .distantPast
+        guard (candidate.terminalAt ?? .distantFuture) >= latestRunStart else { return nil }
+        return candidate
     }
 
     private func message(for request: TaskTurnRequest, task: AgentTask) -> String? {

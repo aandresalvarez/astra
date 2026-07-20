@@ -1183,6 +1183,26 @@ final class TaskQueue {
         }
     }
 
+    /// Stop only the task's active run: cancel the worker and terminalize the
+    /// run/task, but leave queued turn requests saved. The complement of
+    /// `cancelTurnRequest` for the send-while-running dock — its "Stop run"
+    /// promises queued messages survive, while `cancel(task:modelContext:)`
+    /// terminalizes every active request.
+    @MainActor
+    func stopActiveRun(task: AgentTask, modelContext: ModelContext) {
+        cancel(task: task, modelContext: nil)
+        let summary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .userAction
+        )
+        AppLogger.audit(.taskCancelled, category: "Queue", taskID: task.id, fields: [
+            "scope": "active_run",
+            "running_runs_cancelled": String(summary.runsUpdated)
+        ])
+        TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
+    }
+
     @MainActor
     func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
         if let worker = taskWorkerMap[task.id] {
@@ -1217,10 +1237,17 @@ final class TaskQueue {
     /// of the task. `cancel(task:)` is deliberately wider (worker + every
     /// active request); a waiting follow-up on a completed task must be
     /// cancellable without flipping that task's terminal status.
+    ///
+    /// Waiting states ONLY: a stale click can land after the request reached
+    /// `.admitted`/`.running`, when a worker already owns it. Marking it
+    /// cancelled then would not stop the provider, and the runtime finalizer
+    /// cannot overwrite the terminal state — the turn would display as
+    /// cancelled while still mutating the workspace. Post-admission stops go
+    /// through the worker-cancelling paths instead.
     @MainActor
     func cancelTurnRequest(id: UUID, workspace: Workspace?, modelContext: ModelContext) {
         guard let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
-              request.state.isActive else { return }
+              request.state == .waitingForWorker || request.state == .waitingForResource else { return }
         _ = TaskTurnRequestStateMachine.transition(
             request,
             to: .cancelled,
