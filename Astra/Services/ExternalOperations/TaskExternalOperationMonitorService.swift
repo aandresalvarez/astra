@@ -567,16 +567,37 @@ final class TaskExternalOperationMonitorService {
             expectedGeneration: generation,
             expectedLeaseOwner: leaseOwner
         )
-        let delivered = suppressTerminalWake
-            ? AppliedObservation(
+        if suppressTerminalWake {
+            await deliver(AppliedObservation(
                 result: applied.result,
                 notification: applied.notification,
                 notificationKey: applied.notificationKey,
                 wakeRequest: nil,
                 wakeKey: nil
-            )
-            : applied
-        await deliver(delivered)
+            ))
+        } else if applied.wakeRequest?.observation.executionState.isTerminalObservation == true {
+            // Same reasoning as performPoll's identical split: a terminal
+            // wake here can run a complete validation/reasoning provider
+            // session lasting longer than the scheduler interval. Awaiting it
+            // inline (as this used to) leaves no entry in
+            // `inFlightTerminalDeliveries`, so a later scheduler pass's
+            // reconciliation would dispatch the SAME pending wake again —
+            // its semantic-key check passes before the first acknowledgement
+            // lands — launching a duplicate paid, write-capable provider run.
+            // Deliver the cheap notification inline; hand the wake to the
+            // same tracked, non-awaited, per-task-serialized path terminal
+            // reconciliation uses.
+            await deliver(AppliedObservation(
+                result: applied.result,
+                notification: applied.notification,
+                notificationKey: applied.notificationKey,
+                wakeRequest: nil,
+                wakeKey: nil
+            ))
+            dispatchTerminalDeliveryIfNeeded(operationID: operationID, taskID: operation.taskID)
+        } else {
+            await deliver(applied)
+        }
         return applied.result
     }
 

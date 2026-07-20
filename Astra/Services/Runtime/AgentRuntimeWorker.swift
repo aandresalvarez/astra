@@ -1445,11 +1445,20 @@ final class AgentRuntimeWorker {
         // is completing right now; its acknowledgement lands only after this
         // method returns).
         let currentWakeOperationID = executionPolicy.externalOperationID
+        // Scoped to operations sharing THIS artifact's root (`codeDir`, the
+        // same launch-root override resolved above), not task-wide: a task
+        // can own operations on DIFFERENT roots after a retarget, each with
+        // its own separate `.copy`/`.gitBranch` artifact. A still-pending
+        // operation on a DIFFERENT root must not block cleanup of THIS root
+        // (root A finishing must still release root A even while root B is
+        // pending), and conversely must not be treated as satisfied by
+        // cleaning a root it doesn't actually use.
         let externalWorkStillUsesIsolation = TaskExternalOperationRegistrationService
             .operations(taskID: task.id, modelContext: modelContext)
             .contains { operation in
                 guard operation.monitoringState != .quarantined,
-                      operation.id != currentWakeOperationID else { return false }
+                      operation.id != currentWakeOperationID,
+                      operation.launchResourceKey == codeDir else { return false }
                 // Shared derivation with the monitor/holders: pending means
                 // "acknowledged key differs from the CURRENT terminal wake
                 // key" — a previously acknowledged ambiguity/malformed wake

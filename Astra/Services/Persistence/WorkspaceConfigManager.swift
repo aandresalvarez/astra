@@ -1949,7 +1949,30 @@ public enum WorkspaceConfigManager {
             }
             return $0.startedAt < $1.startedAt
         }
-        let mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
+        var mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
+        // A still-relevant (nonterminal, or terminal-with-pending-wake)
+        // external operation's originatingRunID must survive export even when
+        // its run has aged out of the normal suffix window — a long-lived
+        // pending operation on a task that has since accumulated more than
+        // `maxRunsPerTask` later runs would otherwise export with a dangling
+        // run reference, and import's `runIDs.contains(originatingRunID)`
+        // guard silently discards the whole registration (no controls, no
+        // wake, permanently stranded `waitingExternal`).
+        let requiredRunIDs = Set(externalOperations.compactMap { UUID(uuidString: $0.originatingRunID) })
+        if !requiredRunIDs.isEmpty {
+            let mirroredRunIDs = Set(mirroredRuns.map(\.id))
+            let missingRequiredRuns = sortedRuns.filter {
+                requiredRunIDs.contains($0.id) && !mirroredRunIDs.contains($0.id)
+            }
+            if !missingRequiredRuns.isEmpty {
+                mirroredRuns = (mirroredRuns + missingRequiredRuns).sorted {
+                    if $0.startedAt == $1.startedAt {
+                        return $0.id.uuidString < $1.id.uuidString
+                    }
+                    return $0.startedAt < $1.startedAt
+                }
+            }
+        }
         let runIDToIndex = Dictionary(
             mirroredRuns.enumerated().map { ($1.id, $0) },
             uniquingKeysWith: { first, _ in first }

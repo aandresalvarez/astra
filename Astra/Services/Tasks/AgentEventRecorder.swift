@@ -588,7 +588,7 @@ enum AgentEventRecorder {
             // or reasoning wake until a restart adopts it. The receipt
             // validator already rejects synthetic failures that carry no
             // ownership evidence.
-            if let toolName {
+            if isManagedJobStart, let toolName {
                 _ = TaskExternalOperationRegistrationService.registerStructuredStartResult(
                     content,
                     toolResultID: toolID,

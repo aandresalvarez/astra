@@ -15,6 +15,10 @@ final class TaskQueue {
 
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
+    /// FIFO serialization for `continueSession`, per task — see that
+    /// function's doc comment for why the resource lock alone is
+    /// insufficient.
+    private var taskContinuationQueueTail: [UUID: Task<Bool, Never>] = [:]
 
     /// Track active task IDs for status reporting
     var activeTasks: Set<UUID> = []
@@ -302,16 +306,28 @@ final class TaskQueue {
                         }
                         // TaskExternalOperation rows carry only a scalar taskID
                         // (no cascade relationship), so deleting the transient
-                        // task would orphan its completed registrations —
-                        // recurring same-thread routines that complete through
-                        // an external-operation wake would accumulate
-                        // unreachable rows forever.
+                        // task would orphan its registrations. A cancelled
+                        // same-thread turn can still own a NONTERMINAL
+                        // registration whose detached job is genuinely still
+                        // running — deleting that row (like the artifacts
+                        // above did) would drop its only monitor/resource
+                        // holder while the job keeps writing. Transfer
+                        // ownership to the surviving `sourceTask` instead,
+                        // exactly like the artifact reassignment just above;
+                        // only TERMINAL rows (truly finished, otherwise
+                        // unreachable once the transient task is gone) are
+                        // deleted.
                         let transientTaskID = task.id
-                        let orphanedOperations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>(
+                        let transientOperations = (try? modelContext.fetch(FetchDescriptor<TaskExternalOperation>(
                             predicate: #Predicate<TaskExternalOperation> { $0.taskID == transientTaskID }
                         ))) ?? []
-                        for operation in orphanedOperations {
-                            modelContext.delete(operation)
+                        for operation in transientOperations {
+                            if operation.executionState.isTerminalObservation {
+                                modelContext.delete(operation)
+                            } else {
+                                operation.taskID = sourceTask.id
+                                operation.updatedAt = Date()
+                            }
                         }
                         modelContext.delete(task)
                     }
@@ -409,7 +425,19 @@ final class TaskQueue {
         """
     }
 
-    /// Continue a session on the worker that originally ran the task
+    /// Continue a session on the worker that originally ran the task.
+    ///
+    /// Serialized PER TASK regardless of resourceKey: an ordinary user
+    /// follow-up and a monitor-dispatched terminal wake for a DIFFERENT
+    /// operation can carry non-conflicting resource-lock claims (different
+    /// launch roots after a retarget), so the resource lock alone does not
+    /// prevent both `continueSession` calls from proceeding concurrently —
+    /// and both resolve through the SAME shared `taskWorkerMap[task.id]`
+    /// `AgentRuntimeWorker`, which is not reentrant (run identity, process
+    /// runner, cancellation flags, and persistence would all race). Each call
+    /// chains behind this task's current queue tail before doing any of its
+    /// own admission work (including the resource-lock wait), then becomes
+    /// the new tail — a deterministic FIFO drain, not concurrency.
     @MainActor
     func continueSession(
         task: AgentTask,
@@ -418,6 +446,36 @@ final class TaskQueue {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async -> Bool {
+        let taskID = task.id
+        let previousTail = taskContinuationQueueTail[taskID]
+        let work = Task<Bool, Never> { @MainActor [self] in
+            await previousTail?.value
+            return await self.continueSessionAdmitted(
+                task: task,
+                message: message,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy,
+                resourceAccess: resourceAccess,
+                onEvent: onEvent
+            )
+        }
+        taskContinuationQueueTail[taskID] = work
+        let result = await work.value
+        if taskContinuationQueueTail[taskID] == work {
+            taskContinuationQueueTail.removeValue(forKey: taskID)
+        }
+        return result
+    }
+
+    @MainActor
+    private func continueSessionAdmitted(
+        task: AgentTask,
+        message: String,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        resourceAccess: TaskResourceAccessMode,
+        onEvent: @escaping (ParsedEvent) -> Void
     ) async -> Bool {
         let lifecycle = ContinuationLaunchLifecycle(task: task)
 
