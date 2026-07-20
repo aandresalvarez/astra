@@ -966,6 +966,8 @@ struct ExecutionSandboxRunnerTests {
             }
             #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
             #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
+            #expect(plan.sandboxReadablePaths.contains("/Applications/Docker.app/Contents/Resources/bin"))
+            #expect(plan.commandPlannedFields["docker_host_tool_readable_path"] == "/Applications/Docker.app/Contents/Resources/bin")
         }
     }
 

@@ -46,25 +46,33 @@ protocol DockerImageBuilding {
 
 struct DockerImageBuildService: DockerImageBuilding {
     private let runner: any BinaryRunner
-    private let environment: [String: String]
+    private let environmentProvider: @Sendable () -> [String: String]
     private let timeout: TimeInterval
     private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
-        environment: [String: String] = RuntimeProcessEnvironment.enriched(),
+        environment: [String: String]? = nil,
+        environmentProvider: @escaping @Sendable () -> [String: String] = {
+            RuntimeProcessEnvironment.enriched()
+        },
         timeout: TimeInterval = 30 * 60,
         resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
             DockerRuntimeResolver.resolve(environment: $0)
         }
     ) {
         self.runner = runner
-        self.environment = environment
+        if let environment {
+            self.environmentProvider = { environment }
+        } else {
+            self.environmentProvider = environmentProvider
+        }
         self.timeout = timeout
         self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError> {
+        let environment = environmentProvider()
         guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }

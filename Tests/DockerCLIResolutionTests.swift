@@ -6,6 +6,36 @@ import Testing
 
 @Suite("Docker CLI Resolution")
 struct DockerCLIResolutionTests {
+    @Test("Docker inventory refreshes the enriched environment at operation time")
+    func inventoryRefreshesEnvironmentAfterShellProbe() async throws {
+        let environment = DockerEnvironmentBox(["PATH": "/usr/bin:/bin"])
+        let runner = DockerCLIRecordingRunner(results: [
+            .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
+            .exited(code: 0, stdout: "astra/test\tlatest\tsha256:123\n", stderr: "")
+        ])
+        let service = DockerImageInventoryService(
+            runner: runner,
+            environmentProvider: { environment.value },
+            resolveDockerRuntime: { currentEnvironment in
+                guard currentEnvironment["PATH"]?.contains("/nix/profile/bin") == true else {
+                    return nil
+                }
+                return DockerRuntimeResolver.resolution(
+                    executablePath: "/nix/profile/bin/docker",
+                    environment: currentEnvironment
+                )
+            }
+        )
+        environment.value = ["PATH": "/nix/profile/bin:/usr/bin:/bin"]
+
+        let images = try await service.listLoadedImages().get()
+
+        #expect(images.map(\.name) == ["astra/test:latest"])
+        let calls = await runner.recordedCalls()
+        #expect(calls.map(\.path) == ["/nix/profile/bin/docker", "/nix/profile/bin/docker"])
+        #expect(calls.allSatisfy { $0.environmentPath == "/nix/profile/bin:/usr/bin:/bin" })
+    }
+
     @Test("Docker services bypass a production app's minimal PATH after resolving the CLI")
     func servicesUseResolvedExecutableWithMinimalApplicationPath() async throws {
         let runner = DockerCLIRecordingRunner(results: [
@@ -98,6 +128,14 @@ struct DockerCLIResolutionTests {
 
         #expect(viewModel.dockerIssueTitle == "Docker context needs approval")
         #expect(viewModel.dockerIssueSubtitle == "Switch to a local Docker context and unset DOCKER_HOST, then refresh.")
+    }
+}
+
+private final class DockerEnvironmentBox: @unchecked Sendable {
+    var value: [String: String]
+
+    init(_ value: [String: String]) {
+        self.value = value
     }
 }
 

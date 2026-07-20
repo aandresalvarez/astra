@@ -1018,9 +1018,6 @@ enum DockerWorkspaceMCPProjection {
             "ASTRA_WORKSPACE_JOB_ROOT_HOST": jobRootHost,
             "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER": jobRootContainer
         ]
-        if let path = dockerRuntime.environment["PATH"] {
-            variables["PATH"] = path
-        }
         if let dockerConfigDirectory = taskScopedDockerConfigDirectory(task: task, runID: runID) {
             variables["DOCKER_CONFIG"] = dockerConfigDirectory
         }
@@ -1108,8 +1105,7 @@ enum DockerWorkspaceMCPProjection {
         "ASTRA_WORKSPACE_RUN_ID",
         "ASTRA_WORKSPACE_JOB_ROOT_HOST",
         "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER",
-        "DOCKER_CONFIG",
-        "PATH"
+        "DOCKER_CONFIG"
     ]
 
     private struct MountPayload: Codable {

@@ -277,6 +277,16 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             ))
         }
+        if environment.workspaceCommandsRunInsideContainer,
+           !environment.providerRunsInsideContainer {
+            let dockerToolDirectory = URL(fileURLWithPath: dockerRuntime.executablePath)
+                .deletingLastPathComponent()
+                .path
+            plan = plan.addingSandboxReadablePaths(
+                [dockerToolDirectory],
+                plannedFields: ["docker_host_tool_readable_path": dockerToolDirectory]
+            )
+        }
         switch DockerExecutionPlanner.plan(
             base: plan,
             environment: environment,

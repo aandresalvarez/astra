@@ -643,7 +643,7 @@ struct ExecutionEnvironmentTests {
             )
         )
         #expect(mcpVariables["ASTRA_WORKSPACE_DOCKER_EXECUTABLE"] == "/Applications/Docker.app/Contents/Resources/bin/docker")
-        #expect(mcpVariables["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
+        #expect(mcpVariables["PATH"] == nil)
         let mounts = try jsonArray(mcpVariables["ASTRA_WORKSPACE_DOCKER_MOUNTS"])
         let credentialMount = try #require(mounts.first { $0["role"] as? String == "credential" })
         #expect(credentialMount["hostPath"] as? String == gcloudPath)

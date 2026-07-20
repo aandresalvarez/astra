@@ -68,22 +68,30 @@ protocol DockerImageAvailabilityChecking {
 
 struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvailabilityChecking {
     private let runner: any BinaryRunner
-    private let environment: [String: String]
+    private let environmentProvider: @Sendable () -> [String: String]
     private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
-        environment: [String: String] = RuntimeProcessEnvironment.enriched(),
+        environment: [String: String]? = nil,
+        environmentProvider: @escaping @Sendable () -> [String: String] = {
+            RuntimeProcessEnvironment.enriched()
+        },
         resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
             DockerRuntimeResolver.resolve(environment: $0)
         }
     ) {
         self.runner = runner
-        self.environment = environment
+        if let environment {
+            self.environmentProvider = { environment }
+        } else {
+            self.environmentProvider = environmentProvider
+        }
         self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> {
+        let environment = environmentProvider()
         guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }
@@ -128,6 +136,7 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
             return .failure(.invalidImageReference(image))
         }
 
+        let environment = environmentProvider()
         guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }
