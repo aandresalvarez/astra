@@ -151,6 +151,46 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("createApp succeeds for a workspace path under a macOS /private alias")
+    func createAppSucceedsUnderPrivateAliasedWorkspacePath() throws {
+        // Regression test for a live bug found importing a .astra-share package
+        // into a /tmp-rooted destination: `standardizedFileURL` collapses
+        // `/private/tmp` to `/tmp` when the FULL path being standardized
+        // already exists on disk, but does not collapse it for a longer,
+        // not-yet-existing path built from the same prefix as a raw string.
+        // A workspace root under /private/tmp (which exists) and its
+        // ".astra/apps/<id>" subpath (which doesn't exist yet) used to
+        // disagree on this collapsing, so every containment check failed
+        // closed and app import/creation broke for any destination under a
+        // /private-aliased path (/tmp, /var, /etc).
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("workspace-app-private-alias-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("Has Spaces Too", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Has Spaces Too", primaryPath: root.path)
+        context.insert(workspace)
+
+        var manifest = Self.reconciliationManifest()
+        manifest.app.id = "private-alias-app"
+        let result = try WorkspaceAppService().createApp(
+            manifest: manifest,
+            in: workspace,
+            modelContext: context
+        )
+
+        #expect(FileManager.default.fileExists(atPath: result.manifestURL.path))
+        #expect(result.app.logicalID == "private-alias-app")
+    }
+
+    @MainActor
     @Test("updateApp versions in place — same logicalID + record, name updated, no forked sibling")
     func updateAppVersionsInPlace() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

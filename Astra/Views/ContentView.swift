@@ -70,6 +70,7 @@ struct ContentView: View {
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
+    @State private var packageImportPresentation = WorkspacePackageImportSheetPresentation()
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
     @State private var renamingWorkspace: Workspace?
@@ -1067,6 +1068,15 @@ struct ContentView: View {
             if let ws = effectiveWorkspace {
                 ScheduleEditorView(workspace: ws)
             }
+        }
+        .sheet(item: $packageImportPresentation.presented, onDismiss: { packageImportPresentation.sheetDismissed() }) { request in
+            WorkspacePackageImportReviewView(packageURL: request.url) { imported in
+                packageImportPresentation.presented = nil
+                if let imported {
+                    applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(imported))
+                }
+            }
+            .id(request.id)
         }
         .sheet(item: $editingSchedule) { schedule in
             if let ws = schedule.workspace ?? effectiveWorkspace {
@@ -2297,13 +2307,22 @@ struct ContentView: View {
         let urls = WorkspaceImportPanel.selectedURLs()
         guard !urls.isEmpty else { return }
 
+        // .astra-share packages get the review-before-import flow (each selected
+        // one reviewed in turn); everything else stays on the legacy path.
+        let partition = WorkspacePackageImportRouting.partition(urls)
+        if !partition.packageURLs.isEmpty {
+            packageImportPresentation.request(partition.packageURLs.map(WorkspacePackageImportRequest.init(url:)))
+        }
+        guard !partition.legacyURLs.isEmpty else { return }
+
         let result = workspaceActionCoordinator.importWorkspaces(
-            from: urls,
+            from: partition.legacyURLs,
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
     }
+
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {

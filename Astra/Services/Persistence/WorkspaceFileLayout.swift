@@ -61,12 +61,21 @@ public enum WorkspaceFileLayout {
     }
 
     public static func appDirectoryURL(workspacePath: String, appID: String) -> URL? {
-        let root = appRoot(for: workspacePath)
-        guard !root.isEmpty else { return nil }
+        guard !workspacePath.isEmpty else { return nil }
         guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return nil }
-        let rootURL = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        // Derive rootURL/appURL by appending onto the one standardized
+        // workspaceURL, rather than standardizing the longer ".astra/apps/..."
+        // string separately: `standardizedFileURL` only collapses a
+        // `/private/tmp`-style alias when the FULL path it's standardizing
+        // already exists on disk. The workspace root exists at this point but
+        // ".astra/apps/<id>" usually doesn't yet, so standardizing it on its
+        // own can silently disagree with workspaceURL's prefix and make every
+        // containment check below fail closed for an otherwise-valid path.
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
-        let appURL = rootURL.appendingPathComponent(appID, isDirectory: true).standardizedFileURL
+        let rootURL = workspaceURL
+            .appendingPathComponent(supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("apps", isDirectory: true)
+        let appURL = rootURL.appendingPathComponent(appID, isDirectory: true)
         guard isContainedAppDirectory(appURL, inAppRoot: rootURL, workspaceRoot: workspaceURL) else { return nil }
         return appURL
     }
@@ -140,11 +149,13 @@ public enum WorkspaceFileLayout {
     }
 
     public static func appPackageExportRootURL(workspacePath: String) -> URL? {
-        let root = appRoot(for: workspacePath)
-        guard !root.isEmpty else { return nil }
-        let rootURL = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        guard !workspacePath.isEmpty else { return nil }
+        // Same derive-by-appending fix as appDirectoryURL — see its comment.
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
-        let exportURL = rootURL.appendingPathComponent("exports", isDirectory: true).standardizedFileURL
+        let rootURL = workspaceURL
+            .appendingPathComponent(supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("apps", isDirectory: true)
+        let exportURL = rootURL.appendingPathComponent("exports", isDirectory: true)
         guard isContainedAppDirectory(exportURL, inAppRoot: rootURL, workspaceRoot: workspaceURL) else { return nil }
         return exportURL
     }

@@ -55,6 +55,10 @@ struct WorkspaceAppCreationResult {
 enum WorkspaceAppPersistenceMode {
     case saveAndAutoExport
     case saveOnly
+    /// Leaves the model context unsaved so a caller composing several
+    /// mutations (e.g. a multi-app portable-package import) can commit them
+    /// in one save — or roll back everything with `modelContext.rollback()`.
+    case deferSave
 }
 
 struct WorkspaceAppService {
@@ -358,6 +362,8 @@ struct WorkspaceAppService {
             try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
         case .saveOnly:
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
+        case .deferSave:
+            break
         }
     }
 
