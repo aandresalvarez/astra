@@ -555,8 +555,10 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
-        let turnRequest = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
-        defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnRequest, run: run, task: task, in: modelContext) }
+        let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
+        // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
+        guard turnBegin.persisted else { isRunning = false; return }
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
@@ -598,20 +600,11 @@ final class AgentRuntimeWorker {
             return
         }
 
-        guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": runtimeAdapter.missingExecutableAuditReason(),
-                "runtime": selectedRuntime.rawValue
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            if let stopReason = runtimeAdapter.missingExecutableStopReason() {
-                run.typedStopReason = TaskRunStopReason.custom(stopReason)
-            }
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
-            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-                payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
-            modelContext.insert(event)
+        guard AgentRuntimeLaunchPreflight.preflightExecutableBeforeLaunch(
+            task: task, run: run, adapter: runtimeAdapter,
+            executablePath: launchSettings.executablePath,
+            runtime: selectedRuntime.rawValue, modelContext: modelContext
+        ) else {
             isRunning = false
             return
         }

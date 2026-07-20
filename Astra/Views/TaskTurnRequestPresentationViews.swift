@@ -80,27 +80,40 @@ extension TaskMainView {
         // offer the one way to retract a saved turn before it runs — scoped to
         // this request, not `.stop`, so cancelling a queued follow-up never
         // flips the task's own terminal status.
+        let dockRequest = taskActivityPresentation.dockRequest
         let cancelAction: TaskDecisionDockAction? = {
             guard taskQueue != nil,
-                  let requestID = taskActivityPresentation.request?.id else { return nil }
+                  let requestID = dockRequest?.id else { return nil }
             return TaskDecisionDockAction(
                 kind: .cancelTurnRequest,
-                title: "Cancel request",
+                title: taskActivityPresentation.kind == .running ? "Cancel queued message" : "Cancel request",
                 systemImage: "xmark.circle",
                 payload: requestID.uuidString,
                 help: "Cancel this saved message before it runs."
             )
         }()
+        // A queued follow-up behind a running run also shows this dock, and
+        // any visible dock suppresses the composer's stop control — so the
+        // whole-run stop must ride along here or it becomes unreachable.
+        let stopAction: TaskDecisionDockAction? = {
+            guard taskActivityPresentation.kind == .running, onCancelTask != nil else { return nil }
+            return TaskDecisionDockAction(
+                kind: .stop,
+                title: "Stop run",
+                systemImage: "stop.circle",
+                help: "Stop the active run. Queued messages stay saved."
+            )
+        }()
         return TaskDecisionDockPresentation(
-            id: "turn-request-\(taskActivityPresentation.request?.id.uuidString ?? task.id.uuidString)",
+            id: "turn-request-\(dockRequest?.id.uuidString ?? task.id.uuidString)",
             icon: taskActivityPresentation.sidebarSystemImage ?? "clock",
-            tone: .attention,
+            tone: taskActivityPresentation.kind == .running ? .running : .attention,
             title: title,
             summary: summary,
             metrics: [],
             details: [],
             primaryAction: nil,
-            secondaryActions: [cancelAction].compactMap { $0 },
+            secondaryActions: [cancelAction, stopAction].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: false
         )

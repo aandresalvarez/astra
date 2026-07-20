@@ -56,6 +56,61 @@ struct TaskActivityPresentationTests {
         #expect(waitingOnly.dockTitle == "Waiting for workspace")
     }
 
+    @Test("A queued follow-up behind a running task stays individually retractable")
+    func queuedFollowUpBehindRunningTaskStaysCancellable() {
+        let task = makeTask(status: .running)
+        let queued = request(
+            for: task,
+            sequence: 3,
+            state: .waitingForWorker
+        )
+
+        // Initial run active with no running request (send-while-running).
+        let noRunningRequest = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: [queued]
+        )
+        #expect(noRunningRequest.kind == .running)
+        #expect(noRunningRequest.waitingRequest?.id == queued.id)
+        #expect(noRunningRequest.cancellableQueuedRequest?.id == queued.id)
+        #expect(noRunningRequest.dockRequest?.id == queued.id)
+        #expect(noRunningRequest.dockTitle == "Message queued")
+        #expect(noRunningRequest.dockSummary?.isEmpty == false)
+
+        // A running request plus a later queued follow-up.
+        let running = request(for: task, sequence: 2, state: .running)
+        let withRunningRequest = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: [running, queued]
+        )
+        #expect(withRunningRequest.kind == .running)
+        #expect(withRunningRequest.request?.id == running.id)
+        #expect(withRunningRequest.cancellableQueuedRequest?.id == queued.id)
+        #expect(withRunningRequest.dockRequest?.id == queued.id)
+
+        // No queued follow-up: running rows keep their dockless presentation.
+        let runningOnly = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: [running]
+        )
+        #expect(runningOnly.dockTitle == nil)
+        #expect(runningOnly.dockSummary == nil)
+        #expect(runningOnly.cancellableQueuedRequest == nil)
+
+        // Waiting rows keep owning their own request.
+        let waitingOnly = TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: .completed,
+            requests: [queued]
+        )
+        #expect(waitingOnly.kind == .waitingForWorker)
+        #expect(waitingOnly.cancellableQueuedRequest?.id == queued.id)
+        #expect(waitingOnly.dockRequest?.id == queued.id)
+    }
+
     @Test("Message lifecycle resolves by durable event identity, never message text or timestamp")
     func messageLifecycleUsesEventID() {
         let task = makeTask(status: .completed)

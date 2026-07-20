@@ -2097,10 +2097,12 @@ struct TaskSidebarView: View {
         }
 
         // A waiting turn leaves the task in its previous status, so the
-        // running-gated Cancel above never covers it. Retract just the saved
+        // running-gated Cancel above never covers it — and a follow-up queued
+        // behind a running run is only retractable here, since the running
+        // Cancel stops the run and every request. Retract just the saved
         // request rather than cancelling the whole task.
-        if let activity = taskActivities[task.id], activity.isWaiting,
-           let requestID = activity.request?.id {
+        if let activity = taskActivities[task.id],
+           let requestID = activity.cancellableQueuedRequest?.id {
             Button {
                 taskQueue.cancelTurnRequest(
                     id: requestID,

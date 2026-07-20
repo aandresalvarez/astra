@@ -18,6 +18,24 @@ struct TaskActivityPresentation: Equatable, Sendable {
     let taskID: UUID
     let kind: Kind
     let request: TaskTurnRequestSnapshot?
+    /// The earliest still-waiting follow-up, even when the row itself
+    /// presents as running (send-while-running). The scoped
+    /// "cancel queued message" affordance keys off this: while a run is
+    /// active the only status-gated stop cancels the run and every request,
+    /// so a queued follow-up must stay individually retractable here.
+    let waitingRequest: TaskTurnRequestSnapshot?
+
+    init(
+        taskID: UUID,
+        kind: Kind,
+        request: TaskTurnRequestSnapshot?,
+        waitingRequest: TaskTurnRequestSnapshot? = nil
+    ) {
+        self.taskID = taskID
+        self.kind = kind
+        self.request = request
+        self.waitingRequest = waitingRequest
+    }
 
     var isWaiting: Bool {
         switch kind {
@@ -79,7 +97,8 @@ struct TaskActivityPresentation: Equatable, Sendable {
         case .waitingForWorker: return "Waiting for a worker"
         case .waitingForResource: return "Waiting for workspace"
         case .starting: return "Starting task"
-        case .idle, .running: return nil
+        case .running: return waitingRequest == nil ? nil : "Message queued"
+        case .idle: return nil
         }
     }
 
@@ -94,9 +113,27 @@ struct TaskActivityPresentation: Equatable, Sendable {
             return "Your message is saved and will run when this workspace is available."
         case .starting:
             return "Your message is saved. ASTRA is preparing the next run."
-        case .idle, .running:
+        case .running:
+            return waitingRequest == nil
+                ? nil
+                : "Your message is saved and will run when the current run finishes."
+        case .idle:
             return nil
         }
+    }
+
+    /// The request the dock's scoped cancel action targets: the row-owning
+    /// request while waiting or starting, else the queued follow-up behind a
+    /// running run.
+    var dockRequest: TaskTurnRequestSnapshot? {
+        kind == .running ? waitingRequest : request
+    }
+
+    /// The request the sidebar's "Cancel Queued Message" retracts. Waiting
+    /// rows own their request; running and starting rows surface the earliest
+    /// queued follow-up so it stays retractable behind an active run.
+    var cancellableQueuedRequest: TaskTurnRequestSnapshot? {
+        isWaiting ? (request ?? waitingRequest) : waitingRequest
     }
 
     static func resolve(
@@ -111,20 +148,23 @@ struct TaskActivityPresentation: Equatable, Sendable {
                 return lhs.submittedAt < rhs.submittedAt
             }
 
+        let earliestWaiting = taskRequests.first {
+            $0.state == .waitingForWorker || $0.state == .waitingForResource
+        }
         if let running = taskRequests.first(where: { $0.state == .running }) {
-            return Self(taskID: taskID, kind: .running, request: running)
+            return Self(taskID: taskID, kind: .running, request: running, waitingRequest: earliestWaiting)
         }
         if taskStatus == .running {
-            return Self(taskID: taskID, kind: .running, request: nil)
+            return Self(taskID: taskID, kind: .running, request: nil, waitingRequest: earliestWaiting)
         }
         if let admitted = taskRequests.first(where: { $0.state == .admitted }) {
-            return Self(taskID: taskID, kind: .starting, request: admitted)
+            return Self(taskID: taskID, kind: .starting, request: admitted, waitingRequest: earliestWaiting)
         }
         if let resourceWait = taskRequests.first(where: { $0.state == .waitingForResource }) {
-            return Self(taskID: taskID, kind: .waitingForResource, request: resourceWait)
+            return Self(taskID: taskID, kind: .waitingForResource, request: resourceWait, waitingRequest: resourceWait)
         }
         if let workerWait = taskRequests.first(where: { $0.state == .waitingForWorker }) {
-            return Self(taskID: taskID, kind: .waitingForWorker, request: workerWait)
+            return Self(taskID: taskID, kind: .waitingForWorker, request: workerWait, waitingRequest: workerWait)
         }
         return Self(taskID: taskID, kind: .idle, request: nil)
     }

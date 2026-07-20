@@ -109,6 +109,60 @@ enum AgentRuntimeLaunchPreflight {
         prepareTaskFolderForLaunchResult(task, modelContext: modelContext, phase: phase).didPass
     }
 
+    /// Fails the run before launch when the runtime's executable is missing.
+    /// Extracted from the worker so the failure bookkeeping (audit, run
+    /// status, stop reason, task state, user-facing event) lives with the
+    /// other launch preflights.
+    static func preflightExecutableBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        adapter: any AgentRuntimeAdapter,
+        executablePath: String,
+        runtime: String,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard !FileManager.default.isExecutableFile(atPath: executablePath) else { return true }
+        AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            "reason": adapter.missingExecutableAuditReason(),
+            "runtime": runtime
+        ], level: .error)
+        run.status = .failed
+        run.completedAt = Date()
+        if let stopReason = adapter.missingExecutableStopReason() {
+            run.typedStopReason = TaskRunStopReason.custom(stopReason)
+        }
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+            payload: adapter.missingExecutableMessage(executablePath: executablePath), run: run)
+        modelContext.insert(event)
+        return false
+    }
+
+    /// Provider-boundary abort for an unpersisted turn-running state: fail
+    /// the run before any provider work so a restart can safely replay the
+    /// turn. The worker's `finishRuntime` defer then terminalizes the
+    /// request from the failed run.
+    static func failLaunchForUnpersistedTurnState(
+        run: TaskRun,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            "reason": "turn_running_persist_failed",
+            "runtime": run.runtimeID ?? "unknown"
+        ], level: .error)
+        run.status = .failed
+        run.completedAt = Date()
+        run.typedStopReason = TaskRunStopReason.custom("turn_running_persist_failed")
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "Couldn't start this run — the saved message state could not be persisted. Try again in a moment.",
+            run: run
+        ))
+    }
+
     static func preflightConnectorsBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,

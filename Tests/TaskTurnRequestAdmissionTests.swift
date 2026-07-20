@@ -184,6 +184,80 @@ struct TaskTurnRequestAdmissionTests {
         #expect(task.status == .completed)
     }
 
+    @Test("A follow-up parks while the same task's current run holds its worker")
+    func followUpWaitsWhileSameTaskRunIsActive() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "BusyWorker", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up while running",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+
+        // Two workers: an idle one keeps `hasAvailableWorker` true, exactly
+        // the shape where admission used to select the task's busy mapped
+        // worker and fail the saved turn as `runtime_not_started`.
+        let queue = TaskQueue(poolSize: 2)
+        queue.activeTasks.insert(task.id)
+
+        let admission = Task { @MainActor in
+            await queue.continueSession(
+                task: task,
+                message: "Follow-up while running",
+                existingMessageEventID: submission.eventID,
+                turnRequestID: submission.requestID,
+                modelContext: context
+            )
+        }
+        let parkedBehindOwnRun = await waitUntil {
+            request.blockerSummary == "Waiting for the current run in this task to finish."
+        }
+        #expect(parkedBehindOwnRun)
+        #expect(request.state == .waitingForWorker)
+
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        let started = await admission.value
+
+        #expect(!started)
+        #expect(request.state == .cancelled)
+        queue.activeTasks.remove(task.id)
+    }
+
+    @Test("Queue-owned task deletion cancels and removes the task's turn requests")
+    func queueTaskDeletionCleansUpTurnRequests() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "ScheduleMerge", primaryPath: root.path)
+        let task = AgentTask(title: "Scheduled", goal: "Run on schedule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up to a scheduled task",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(request.state.isActive)
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.cancelAndRemoveTurnRequests(for: task, modelContext: context)
+
+        let remaining = try TaskTurnRequestRepository.requests(for: task, in: context)
+        #expect(remaining.isEmpty)
+    }
+
     @Test("Presentation fetches stay bounded to active plus visible-window requests")
     func presentationRequestsAreBounded() throws {
         let root = try makeWorkspaceRoot()

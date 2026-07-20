@@ -8,6 +8,19 @@ import ASTRAPersistence
 /// explicit and independently testable.
 @MainActor
 enum PersistedTurnRuntimeEventLinker {
+    struct RuntimeBegin {
+        let request: TaskTurnRequest?
+        /// False only when the running-state save failed. The running state
+        /// (with its run link) must be durable BEFORE provider work, exactly
+        /// like the admitted save in `TaskQueue`: if the app exits after the
+        /// provider mutates the workspace but before a later successful save,
+        /// startup recovery still sees an admitted request without a run,
+        /// returns it to waiting, and replays the whole turn — duplicating
+        /// whatever the runtime already did. `beginRuntime` has already failed
+        /// the run in this case; the worker must return before provider work.
+        let persisted: Bool
+    }
+
     /// Starts the persisted turn lifecycle as soon as its runtime attempt has
     /// a durable `TaskRun`. Kept outside the worker to avoid making provider
     /// execution own SwiftData turn-state policy.
@@ -16,24 +29,32 @@ enum PersistedTurnRuntimeEventLinker {
         run: TaskRun,
         task: AgentTask,
         in modelContext: ModelContext
-    ) -> TaskTurnRequest? {
+    ) -> RuntimeBegin {
         guard let requestID,
               let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext) else {
-            return nil
+            return RuntimeBegin(request: nil, persisted: true)
         }
         let transition = TaskTurnRequestStateMachine.transition(
             request,
             to: .running,
             runID: run.id
         )
-        if transition.changed {
-            WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "turn_request_running"]
+        guard transition.changed else {
+            return RuntimeBegin(request: request, persisted: true)
+        }
+        let persisted = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "turn_request_running"]
+        )
+        if !persisted {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(
+                run: run,
+                task: task,
+                modelContext: modelContext
             )
         }
-        return request
+        return RuntimeBegin(request: request, persisted: persisted)
     }
 
     /// Terminalizes the request after every runtime exit path, including

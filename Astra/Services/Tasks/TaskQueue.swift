@@ -320,6 +320,7 @@ final class TaskQueue {
                         for artifact in task.artifacts {
                             artifact.task = sourceTask
                         }
+                        cancelAndRemoveTurnRequests(for: task, modelContext: modelContext)
                         modelContext.delete(task)
                     }
                 } else {
@@ -567,6 +568,25 @@ final class TaskQueue {
                 continue
             }
 
+            // A task runs on at most one worker at a time. While this task's
+            // current run holds its mapped worker (e.g. a follow-up sent
+            // while the initial run is still executing with shared read-only
+            // resource access), another idle worker would make
+            // `hasAvailableWorker` true and the shared lock acquirable, but
+            // selecting the busy mapped worker below just makes
+            // `executeRuntimeSession` reject on `isRunning` and fail the
+            // saved turn as `runtime_not_started`. Wait for the run instead.
+            guard !activeTasks.contains(task.id) else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for the current run in this task to finish.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
+            }
+
             guard hasAvailableWorker else {
                 _ = transitionPersistedTurn(
                     request,
@@ -617,6 +637,20 @@ final class TaskQueue {
                 // The post-loop tail terminalizes a still-active request
                 // (queue stopped mid-lock-wait) and no-ops a terminal one.
                 break
+            }
+            // Re-check after the lock wait: the task could have started
+            // running (occupying its mapped worker) while this coroutine was
+            // suspended. A busy mapped worker must never be selected.
+            guard !activeTasks.contains(task.id) else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for the current run in this task to finish.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
             }
             guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
                 releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
@@ -1132,6 +1166,23 @@ final class TaskQueue {
     }
 
     /// Cancel a specific task's worker
+    @MainActor
+    /// Turn requests reference their task by scalar id, so `modelContext
+    /// .delete(task)` never cascades to them. Any queue-owned task deletion
+    /// (e.g. a merged same-thread scheduled task) must cancel active requests
+    /// first — a parked admission coroutine would otherwise wake after the
+    /// resource lock is released and start provider work for a deleted task —
+    /// and then remove the rows so they don't outlive the task as orphans.
+    /// Mirrors `TaskLifecycleCoordinator.cancelAndRemoveTurnRequests`.
+    func cancelAndRemoveTurnRequests(for task: AgentTask, modelContext: ModelContext) {
+        cancel(task: task, modelContext: modelContext)
+        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
+            for request in requests {
+                modelContext.delete(request)
+            }
+        }
+    }
+
     @MainActor
     func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
         if let worker = taskWorkerMap[task.id] {

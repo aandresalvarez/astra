@@ -5585,7 +5585,10 @@ struct TaskMainView: View {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-        if !attachedFiles.isEmpty { attachedFiles = [] }
+        // Attachment paths are already embedded in `msg`, but the composer
+        // state must outlive a failed durable submission: clear alongside
+        // `messageText` in each success branch, never up front, so a retry
+        // from the retained composer rebuilds the message with its files.
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
         AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
             "source": isPlanMode ? "task_plan_chat" : "task_continue_chat",
@@ -5598,12 +5601,14 @@ struct TaskMainView: View {
 
         if isPlanMode {
             messageText = ""
+            attachedFiles = []
             sendPlanningMessage(msg, traceID: traceID)
             return
         }
 
         if task.status == .queued {
             messageText = ""
+            attachedFiles = []
             TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
@@ -5631,6 +5636,7 @@ struct TaskMainView: View {
                 return
             }
             messageText = ""
+            attachedFiles = []
             if task.status != .running {
                 let interruptionSummary = TaskRunLifecycleService.cancelTask(
                     task,
@@ -5660,6 +5666,7 @@ struct TaskMainView: View {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, into: modelContext)
             messageText = ""
+            attachedFiles = []
         }
     }
 
