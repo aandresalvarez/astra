@@ -407,7 +407,9 @@ struct ExecutionEnvironmentTests {
         let service = DockerImageInventoryService(
             runner: runner,
             environment: [:],
-            resolveDockerExecutable: { "/usr/local/bin/docker" }
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
         )
 
         let availability = try await service.checkImageAvailability("astra/test:latest").get()
@@ -431,7 +433,9 @@ struct ExecutionEnvironmentTests {
         let service = DockerImageInventoryService(
             runner: runner,
             environment: [:],
-            resolveDockerExecutable: { "/usr/local/bin/docker" }
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
         )
 
         let availability = await service.checkImageAvailability("astra/missing:latest")
@@ -539,11 +543,12 @@ struct ExecutionEnvironmentTests {
             image: "astra/test:latest",
             runtimeExecutablePath: "/usr/local/bin/claude",
             providerPlacement: .container,
-            environmentKeyAllowlist: ["FOO"]
+            environmentKeyAllowlist: ["FOO", "PATH"]
         )
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(environment)
         let base = makeBasePlan(currentDirectory: root, environment: [
             "FOO": "bar",
+            "PATH": "/container/bin:/usr/bin",
             "SECRET": "nope"
         ])
 
@@ -551,17 +556,23 @@ struct ExecutionEnvironmentTests {
             base: base,
             environment: DockerExecutionPlanner.snapshotForRun(task: task, currentDirectory: root),
             task: task,
-            runID: UUID()
+            runID: UUID(),
+            dockerRuntime: DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
         )
         let plan = try result.get()
 
-        #expect(plan.executablePath == "/usr/bin/env")
-        #expect(plan.arguments.prefix(3) == ["docker", "run", "--rm"])
+        #expect(plan.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
+        #expect(plan.arguments.prefix(2) == ["run", "--rm"])
+        #expect(plan.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
         #expect(plan.arguments.contains("astra/test:latest"))
         let imageIndex = try #require(plan.arguments.firstIndex(of: "astra/test:latest"))
         #expect(imageIndex > 0)
         #expect(plan.arguments[imageIndex - 1] == "--")
         #expect(plan.arguments.contains("/usr/local/bin/claude"))
+        #expect(plan.arguments.contains("PATH=/container/bin:/usr/bin"))
         #expect(plan.arguments.contains("--workdir"))
         #expect(plan.arguments.contains("/workspace"))
         #expect(plan.environment["FOO"] == "bar")
@@ -625,8 +636,14 @@ struct ExecutionEnvironmentTests {
                 credentialProjections: [projection]
             ),
             currentDirectory: root,
-            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
+            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113"),
+            dockerRuntime: DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
         )
+        #expect(mcpVariables["ASTRA_WORKSPACE_DOCKER_EXECUTABLE"] == "/Applications/Docker.app/Contents/Resources/bin/docker")
+        #expect(mcpVariables["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
         let mounts = try jsonArray(mcpVariables["ASTRA_WORKSPACE_DOCKER_MOUNTS"])
         let credentialMount = try #require(mounts.first { $0["role"] as? String == "credential" })
         #expect(credentialMount["hostPath"] as? String == gcloudPath)
@@ -1131,7 +1148,9 @@ struct ExecutionEnvironmentTests {
             runner: runner,
             environment: [:],
             timeout: 42,
-            resolveDockerExecutable: { "/usr/local/bin/docker" }
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
         )
         let request = DockerImageBuildRequest(
             image: "astra-demo:latest",

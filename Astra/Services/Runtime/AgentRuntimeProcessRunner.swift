@@ -62,10 +62,12 @@ protocol AgentRuntimeProcessRunning: AnyObject {
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
+    typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
+    private let dockerRuntimeProvider: DockerRuntimeProvider
 
     init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
         ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
@@ -76,9 +78,12 @@ final class AgentRuntimeProcessRunner {
             contextText: context.contextText,
             repositoryPath: context.workspacePath,
         )
+    }, dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
+        DockerRuntimeResolver.resolve()
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider
+        self.dockerRuntimeProvider = dockerRuntimeProvider
     }
 
     func cancel() {
@@ -257,12 +262,28 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             ))
         }
+        let dockerRuntime = environment.isContainerized ? dockerRuntimeProvider() : .environmentLookup
+        guard let dockerRuntime else {
+            let message = "Docker CLI was not found. Install or reopen Docker Desktop, then retry."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "docker_cli_missing",
+                "execution_environment": environment.kind.rawValue
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "docker_cli_missing",
+                runtimeStopMessage: message
+            ))
+        }
         switch DockerExecutionPlanner.plan(
             base: plan,
             environment: environment,
             task: context.task,
             runID: context.runID,
-            additionalReadOnlyInputPaths: readOnlyInputBoundary.paths
+            additionalReadOnlyInputPaths: readOnlyInputBoundary.paths,
+            dockerRuntime: dockerRuntime
         ) {
         case .success(let resolvedPlan):
             plan = resolvedPlan

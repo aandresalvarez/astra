@@ -619,7 +619,15 @@ struct ExecutionSandboxRunnerTests {
         )
 
         withStandardEnforcement(.off) { sandboxSettingsProvider in
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: {
+                    DockerRuntimeResolver.resolution(
+                        executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                        environment: ["PATH": "/usr/bin:/bin"]
+                    )
+                }
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(
                     currentDirectory: workspace.path,
@@ -633,6 +641,9 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(plan.executionEnvironment.providerRunsInsideContainer)
+            #expect(plan.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
+            #expect(plan.arguments.first == "run")
+            #expect(plan.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
             #expect(plan.readOnlyBoundaryReceipt?.surfaces == [.providerContainer])
             #expect(plan.readOnlyBoundaryReceipt?.protects(input.path) == true)
             #expect(plan.readOnlyBoundaryReceipt?.protects("/mnt/astra/input-1") == true)

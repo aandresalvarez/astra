@@ -69,31 +69,30 @@ protocol DockerImageAvailabilityChecking {
 struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvailabilityChecking {
     private let runner: any BinaryRunner
     private let environment: [String: String]
-    private let resolveDockerExecutable: @Sendable () -> String
+    private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
         environment: [String: String] = RuntimeProcessEnvironment.enriched(),
-        resolveDockerExecutable: @escaping @Sendable () -> String = {
-            RuntimePathResolver.detectDockerPath()
+        resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
+            DockerRuntimeResolver.resolve(environment: $0)
         }
     ) {
         self.runner = runner
         self.environment = environment
-        self.resolveDockerExecutable = resolveDockerExecutable
+        self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> {
-        let dockerExecutable = resolveDockerExecutable()
-        guard !dockerExecutable.isEmpty else {
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }
 
         let contextResult = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["context", "show"],
             timeout: 3,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard contextResult.isSuccess else {
             return .failure(.unavailable(Self.failureDetail(contextResult)))
@@ -102,17 +101,17 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))
         }
 
         let result = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["image", "ls", "--format", "{{.Repository}}\t{{.Tag}}\t{{.ID}}"],
             timeout: 5,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -129,12 +128,11 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
             return .failure(.invalidImageReference(image))
         }
 
-        let dockerExecutable = resolveDockerExecutable()
-        guard !dockerExecutable.isEmpty else {
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }
 
-        switch await localDockerContext(dockerExecutable: dockerExecutable) {
+        switch await localDockerContext(dockerRuntime: dockerRuntime) {
         case .failure(let error):
             return .failure(error)
         case .success:
@@ -142,10 +140,10 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
         }
 
         let result = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["image", "inspect", "--format", "{{.Id}}", image],
             timeout: 5,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             return .failure(Self.availabilityError(for: image, result: result))
@@ -177,12 +175,12 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private func localDockerContext(dockerExecutable: String) async -> Result<Void, DockerImageAvailabilityError> {
+    private func localDockerContext(dockerRuntime: DockerRuntimeResolution) async -> Result<Void, DockerImageAvailabilityError> {
         let contextResult = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["context", "show"],
             timeout: 3,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard contextResult.isSuccess else {
             return .failure(.unavailable(Self.failureDetail(contextResult)))
@@ -191,7 +189,7 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))

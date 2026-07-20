@@ -48,33 +48,32 @@ struct DockerImageBuildService: DockerImageBuilding {
     private let runner: any BinaryRunner
     private let environment: [String: String]
     private let timeout: TimeInterval
-    private let resolveDockerExecutable: @Sendable () -> String
+    private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
         environment: [String: String] = RuntimeProcessEnvironment.enriched(),
         timeout: TimeInterval = 30 * 60,
-        resolveDockerExecutable: @escaping @Sendable () -> String = {
-            RuntimePathResolver.detectDockerPath()
+        resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
+            DockerRuntimeResolver.resolve(environment: $0)
         }
     ) {
         self.runner = runner
         self.environment = environment
         self.timeout = timeout
-        self.resolveDockerExecutable = resolveDockerExecutable
+        self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError> {
-        let dockerExecutable = resolveDockerExecutable()
-        guard !dockerExecutable.isEmpty else {
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)
         }
 
         let contextResult = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["context", "show"],
             timeout: 3,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard contextResult.isSuccess else {
             return .failure(Self.error(from: contextResult))
@@ -83,17 +82,17 @@ struct DockerImageBuildService: DockerImageBuilding {
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))
         }
 
         let result = await runner.run(
-            path: dockerExecutable,
+            path: dockerRuntime.executablePath,
             args: ["build", "-t", request.image, "-f", request.dockerfilePath, request.sourcePath],
             timeout: timeout,
-            environment: environment
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             return .failure(Self.error(from: result))

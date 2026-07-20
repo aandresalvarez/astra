@@ -91,6 +91,30 @@ struct RuntimePathResolverTests {
 
         #expect(resolved == bundlePath)
     }
+
+    @Test("Docker resolver searches the enriched environment PATH")
+    func dockerResolverSearchesProvidedEnvironmentPATH() {
+        let customPath = "/nix/profile/bin/docker"
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: Set([customPath]))
+
+        let resolved = RuntimePathResolver.detectDockerPath(
+            environment: ["PATH": "/nix/profile/bin:/usr/bin:/bin"],
+            fileManager: fileManager
+        )
+
+        #expect(resolved == customPath)
+    }
+
+    @Test("Docker runtime prepends the CLI directory for companion tools")
+    func dockerRuntimePrependsExecutableDirectory() throws {
+        let runtime = DockerRuntimeResolver.resolution(
+            executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+            environment: ["PATH": "/usr/bin:/bin"]
+        )
+
+        #expect(runtime.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
+        #expect(runtime.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
+    }
 }
 
 // MARK: - RuntimeProcessEnvironment

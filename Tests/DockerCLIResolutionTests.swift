@@ -15,7 +15,12 @@ struct DockerCLIResolutionTests {
         let service = DockerImageBuildService(
             runner: runner,
             environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
-            resolveDockerExecutable: { "/usr/local/bin/docker" }
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(
+                    executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                    environment: $0
+                )
+            }
         )
 
         let result = await service.buildImage(DockerImageBuildRequest(
@@ -26,8 +31,11 @@ struct DockerCLIResolutionTests {
 
         #expect(try result.get().image == "astra-production-path:latest")
         let calls = await runner.recordedCalls()
-        #expect(calls.map(\.path) == ["/usr/local/bin/docker", "/usr/local/bin/docker"])
-        #expect(calls.allSatisfy { $0.environmentPath == "/usr/bin:/bin:/usr/sbin:/sbin" })
+        let bundledDirectory = "/Applications/Docker.app/Contents/Resources/bin"
+        #expect(calls.map(\.path) == ["\(bundledDirectory)/docker", "\(bundledDirectory)/docker"])
+        #expect(calls.allSatisfy {
+            $0.environmentPath == "\(bundledDirectory):/usr/bin:/bin:/usr/sbin:/sbin"
+        })
         #expect(calls.allSatisfy { $0.args.first != "docker" })
     }
 
@@ -37,7 +45,7 @@ struct DockerCLIResolutionTests {
         let service = DockerImageBuildService(
             runner: runner,
             environment: ["PATH": "/usr/bin:/bin"],
-            resolveDockerExecutable: { "" }
+            resolveDockerRuntime: { _ in nil }
         )
 
         let result = await service.buildImage(DockerImageBuildRequest(
@@ -73,6 +81,23 @@ struct DockerCLIResolutionTests {
         #expect(viewModel.dockerIssueTitle == "Docker CLI was not found")
         #expect(viewModel.dockerIssueSubtitle == "Install or reopen Docker Desktop, then refresh.")
         #expect(viewModel.imageInventoryIssue == "Docker CLI was not found. Install or reopen Docker Desktop, then refresh.")
+    }
+
+    @MainActor
+    @Test("Docker UI remediation covers a DOCKER_HOST override")
+    func viewModelPresentsDockerHostRemediation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("docker-host-remediation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root.path)
+        let viewModel = WorkspaceDockerViewModel(imageInventory: UnsafeRemoteDockerInventory())
+        viewModel.setWorkspaceForTesting(workspace)
+
+        await viewModel.refresh()
+
+        #expect(viewModel.dockerIssueTitle == "Docker context needs approval")
+        #expect(viewModel.dockerIssueSubtitle == "Switch to a local Docker context and unset DOCKER_HOST, then refresh.")
     }
 }
 
@@ -115,5 +140,11 @@ private actor DockerCLIRecordingRunner: BinaryRunner {
 private struct MissingDockerCLIInventory: DockerImageInventoryListing {
     func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> {
         .failure(.cliMissing)
+    }
+}
+
+private struct UnsafeRemoteDockerInventory: DockerImageInventoryListing {
+    func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> {
+        .failure(.unsafeRemoteContext("Remote Docker host is not approved."))
     }
 }

@@ -344,7 +344,7 @@ final class WorkspaceDockerViewModel: ObservableObject {
         case .unavailable:
             return "Start Docker Desktop, then refresh."
         case .unsafeRemoteContext:
-            return "Switch Docker Desktop to a local context, then refresh."
+            return "Switch to a local Docker context and unset DOCKER_HOST, then refresh."
         case nil:
             return nil
         }
