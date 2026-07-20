@@ -7,6 +7,7 @@ import ASTRAPersistence
 @Observable
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
+    private(set) var currentRunID: UUID?
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: any AgentRuntimeProcessRunning
@@ -555,6 +556,14 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
+        // Exposes exactly which run this worker is currently processing, so
+        // executor-cleanup guards can be scoped by RUN (container names are
+        // run-scoped) instead of merely "is this task's worker busy at all" —
+        // the latter over-blocks cleanup of an older, unrelated run's
+        // already-idle container while a newer run for the same task happens
+        // to be active.
+        currentRunID = run.id
+        defer { currentRunID = nil }
 
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)

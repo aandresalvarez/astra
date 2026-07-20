@@ -568,14 +568,17 @@ final class TaskLifecycleCoordinator {
         // the workspace checked out on the deleted task's `astra/*` branch,
         // so the next unrelated task silently runs in the wrong checkout.
         // Safe to call unconditionally: a no-op when nothing was retained.
-        // Resolved from the registrations' LAUNCH-TIME root — the task's
-        // current working directory may have changed since the job started.
-        let launchRoot = TaskExternalOperationRegistrationService.taskLaunchExecutionRoot(
+        // Resolved from the RETAINED registrations' launch-time roots — the
+        // task's current working directory may have changed since the job
+        // started, and a rerun after retargeting can retain more than one
+        // distinct root simultaneously, so every one is cleaned.
+        for launchRoot in TaskExternalOperationRegistrationService.taskLaunchExecutionRoots(
             taskID: task.id,
             modelContext: modelContext
-        )
-        if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
-            IsolationService.cleanup(task: task, executionPath: retained)
+        ) {
+            if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
+                IsolationService.cleanup(task: task, executionPath: retained)
+            }
         }
         deleteExternalOperationRegistrations(taskIDs: Set([task.id]))
         modelContext.delete(task)
@@ -718,12 +721,13 @@ final class TaskLifecycleCoordinator {
         // orphans or leaves the workspace checked out on a branch that no
         // longer has an owning task.
         for task in ws.tasks {
-            let launchRoot = TaskExternalOperationRegistrationService.taskLaunchExecutionRoot(
+            for launchRoot in TaskExternalOperationRegistrationService.taskLaunchExecutionRoots(
                 taskID: task.id,
                 modelContext: modelContext
-            )
-            if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
-                IsolationService.cleanup(task: task, executionPath: retained)
+            ) {
+                if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {
+                    IsolationService.cleanup(task: task, executionPath: retained)
+                }
             }
         }
 
@@ -901,25 +905,34 @@ final class TaskLifecycleCoordinator {
     ) -> WorkspaceConfigManager.WorkspaceConfig {
         let incomingTaskIDs = Set((config.tasks ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
         guard !incomingTaskIDs.isEmpty else { return config }
-        let collidingCount = (try? modelContext.fetchCount(FetchDescriptor<AgentTask>(
+        let collidingIDs = Set(((try? modelContext.fetch(FetchDescriptor<AgentTask>(
             predicate: #Predicate<AgentTask> { incomingTaskIDs.contains($0.id) }
-        ))) ?? 0
-        guard collidingCount > 0 else { return config }
+        ))) ?? []).map(\.id))
+        guard !collidingIDs.isEmpty else { return config }
         AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
             "operation": reason,
             "result": "task_id_collision_remapped",
-            "colliding_task_count": String(collidingCount)
+            "colliding_task_count": String(collidingIDs.count)
         ], level: .warning)
-        var remapped = WorkspaceConfigManager.remappingTaskIdentities(in: config)
-        // A duplicate's task didn't actually start the ORIGINAL's job, so it
-        // shouldn't inherit "there's a live job running" state — same
-        // reasoning as the Duplicate action's own remap path.
-        remapped.tasks = remapped.tasks?.map { task in
+        let collidingIDStrings = Set(collidingIDs.map(\.uuidString))
+        var config = config
+        // Strip externalOperations for the COLLIDING tasks only, by their
+        // still-original id (before remap changes it) — a duplicate's task
+        // didn't actually start the ORIGINAL's job, so it shouldn't inherit
+        // "there's a live job running" state. Every other, non-colliding
+        // task's exported operations (including a pending quarantined
+        // registration) are left completely untouched.
+        config.tasks = config.tasks?.map { task in
+            guard let id = task.id, collidingIDStrings.contains(id) else { return task }
             var task = task
             task.externalOperations = nil
             return task
         }
-        return remapped
+        // Regenerate ids ONLY for the colliding tasks — remapping every task
+        // in the config merely because one collided would strand unrelated
+        // tasks (dropping their run/id-stable exported operation state) for
+        // no reason.
+        return WorkspaceConfigManager.remappingTaskIdentities(in: config, onlyTaskIDs: collidingIDStrings)
     }
 
     private func scheduleTrustPolicyForConfigReplace(

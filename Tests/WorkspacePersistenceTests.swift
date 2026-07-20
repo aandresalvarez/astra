@@ -2411,6 +2411,13 @@ struct WorkspacePersistenceTests {
             skillID: UUID().uuidString
         )
         let now = Date(timeIntervalSince1970: 1_777_004_000)
+        // A SECOND, non-colliding task in the same config, carrying its own
+        // exported pending (quarantined-on-import) external operation. Its id
+        // must survive untouched — a collision on the FIRST task must not
+        // strand this unrelated task's operation/wake/controls.
+        let unrelatedTaskID = UUID().uuidString
+        let unrelatedRunID = UUID().uuidString
+        let unrelatedIdentity = "\(WorkspaceManagedJobStartReceipt.backend):\(unrelatedTaskID.lowercased()):\(unrelatedRunID.lowercased()):unrelated-job"
         config.tasks = [
             WorkspaceConfigManager.TaskConfig(
                 id: existingTask.id.uuidString,
@@ -2430,6 +2437,51 @@ struct WorkspacePersistenceTests {
                 runs: [],
                 events: [],
                 skillNames: []
+            ),
+            WorkspaceConfigManager.TaskConfig(
+                id: unrelatedTaskID,
+                title: "Unrelated Pending Task",
+                goal: "Owns an unrelated, still-pending exported operation",
+                status: TaskStatus.waitingExternal.rawValue,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 10_000,
+                tokensUsed: 0,
+                model: "default",
+                costUSD: 0,
+                maxTurns: 10,
+                createdAt: now,
+                updatedAt: now,
+                runs: [
+                    WorkspaceConfigManager.RunConfig(
+                        id: unrelatedRunID,
+                        status: "running",
+                        startedAt: now,
+                        completedAt: nil,
+                        tokensUsed: 0,
+                        output: "",
+                        costUSD: 0,
+                        stopReason: "",
+                        fileChangesJSON: ""
+                    )
+                ],
+                events: [],
+                skillNames: [],
+                externalOperations: [
+                    WorkspaceConfigManager.ExternalOperationConfig(
+                        externalIdentity: unrelatedIdentity,
+                        originatingRunID: unrelatedRunID,
+                        backendKind: WorkspaceManagedJobStartReceipt.backend,
+                        backendJobID: "unrelated-job",
+                        executionState: TaskExternalOperationExecutionState.running.rawValue,
+                        observationHealth: TaskExternalOperationObservationHealth.healthy.rawValue,
+                        monitoringState: TaskExternalOperationMonitoringState.active.rawValue,
+                        generation: 0,
+                        createdAt: now,
+                        updatedAt: now
+                    )
+                ]
             )
         ]
 
@@ -2456,6 +2508,20 @@ struct WorkspacePersistenceTests {
             predicate: #Predicate { $0.taskID == importedTaskID }
         ))
         #expect(importedOperations.isEmpty)
+
+        // The unrelated, non-colliding task keeps its stable id AND its
+        // exported pending operation — a collision on the FIRST task must not
+        // strand it.
+        let unrelatedImportedTask = try #require(imported.tasks.first { $0.title == "Unrelated Pending Task" })
+        #expect(unrelatedImportedTask.id.uuidString == unrelatedTaskID)
+        let unrelatedImportedTaskID = unrelatedImportedTask.id
+        let unrelatedImportedOperations = try context.fetch(FetchDescriptor<TaskExternalOperation>(
+            predicate: #Predicate { $0.taskID == unrelatedImportedTaskID }
+        ))
+        #expect(unrelatedImportedOperations.count == 1)
+        #expect(unrelatedImportedOperations.first?.monitoringState == .quarantined)
+        #expect(unrelatedImportedTask.status == .waitingExternal)
+
         // The original's live operation and its ownership are untouched.
         #expect(liveOperation.taskID == existingTask.id)
         #expect(liveOperation.monitoringState == .active)

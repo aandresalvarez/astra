@@ -179,9 +179,12 @@ extension AppRuntimeController {
             // Live worker state, not durable run status: registration finalizes
             // the originating run to `.completed` while the provider turn is
             // still connected and issuing workspace_shell calls in the shared
-            // executor container.
-            providerSessionActive: { [weak taskQueue] taskID in
-                taskQueue?.taskWorkerMap[taskID] != nil
+            // executor container. Scoped to the EXACT run (not just "any
+            // worker busy for this task") since container names are
+            // run-scoped: a newer run's active worker must not block cleanup
+            // of an older, unrelated run's already-idle container.
+            providerSessionActive: { [weak taskQueue] taskID, originatingRunID in
+                taskQueue?.taskWorkerMap[taskID]?.currentRunID == originatingRunID
             }
         )
         let backend = TaskExternalOperationBackendRouter(registry: .init([
@@ -256,8 +259,11 @@ extension AppRuntimeController {
                         && !$0.executionState.isTerminalObservation
                 }
                 if !rootStillInUse {
-                    let launchRoot = TaskExternalOperationRegistrationService.taskLaunchExecutionRoot(
-                        taskID: task.id,
+                    // This specific operation's own launch root — not just
+                    // "any retained root for the task" — since it is the one
+                    // whose isolation was actually retained for this wake.
+                    let launchRoot = TaskExternalOperationRegistrationService.launchExecutionRoot(
+                        operationID: request.operationID,
                         modelContext: modelContext
                     )
                     if let retained = IsolationService.retainedExecutionPath(task: task, launchRootOverride: launchRoot) {

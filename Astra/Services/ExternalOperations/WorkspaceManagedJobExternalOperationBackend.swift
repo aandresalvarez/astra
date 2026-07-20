@@ -149,13 +149,19 @@ struct WorkspaceManagedJobExternalOperationBackend:
     /// at registration (`recordExternalOutcomePending`), long before the
     /// still-connected provider turn stops issuing `workspace_shell` calls, so
     /// run status cannot gate executor cleanup — only live worker state can.
-    private let providerSessionActive: @MainActor (UUID) -> Bool
+    ///
+    /// Scoped by RUN (taskID, originatingRunID), not merely by task: container
+    /// names are run-scoped, so a task-wide "is any worker busy" check
+    /// over-blocks cleanup of an OLDER run's already-idle container merely
+    /// because a NEWER run for the same task (e.g. after a retarget) happens
+    /// to be active — that newer run uses a different container entirely.
+    private let providerSessionActive: @MainActor (UUID, UUID) -> Bool
 
     @MainActor
     init(
         modelContext: ModelContext,
         reachabilityProbe: any DockerContainerReachabilityProbing = DockerCLIContainerReachabilityProbe(),
-        providerSessionActive: @escaping @MainActor (UUID) -> Bool = { _ in false }
+        providerSessionActive: @escaping @MainActor (UUID, UUID) -> Bool = { _, _ in false }
     ) {
         self.locatorResolver = WorkspaceManagedJobBackendLocatorResolver(modelContext: modelContext)
         self.reachabilityProbe = reachabilityProbe
@@ -235,7 +241,7 @@ struct WorkspaceManagedJobExternalOperationBackend:
                // own session-end cleanup while a worker session is still
                // executing for this task (durable run status is finalized at
                // registration and cannot represent session liveness).
-               await !providerSessionActive(request.taskID) {
+               await !providerSessionActive(request.taskID, request.originatingRunID) {
                 let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
                 let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
                 let cleaned = manager.cleanupExecutorIfIdle()
@@ -289,7 +295,7 @@ struct WorkspaceManagedJobExternalOperationBackend:
            // still-connected MCP helper shares this container for ordinary
            // workspace_shell calls, and its own session-end cleanup releases
            // the container once the provider exits.
-           await !providerSessionActive(request.taskID) {
+           await !providerSessionActive(request.taskID, request.originatingRunID) {
             // A confirmed cancellation is terminal and never polled again. The
             // originating provider's cleanup preserved this task/run executor
             // container while the job was still nonterminal, so — mirroring the

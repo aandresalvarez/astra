@@ -194,16 +194,25 @@ enum TaskExternalOperationRegistrationService {
         return key
     }
 
-    /// Any of the task's operations' persisted launch-time root (excluding the
-    /// `task:` no-path fallback). Isolation is prepared once per task and
-    /// reused deterministically, so every operation the task owns shares the
-    /// same launch root; the first one found is sufficient. For callers that
-    /// need the launch root WITHOUT a specific operation in hand (isolation
-    /// cleanup on task/workspace deletion).
-    static func taskLaunchExecutionRoot(taskID: UUID, modelContext: ModelContext) -> String? {
-        operations(taskID: taskID, modelContext: modelContext)
+    /// Every DISTINCT launch-time root a still-RETAINED operation on this task
+    /// persisted (excluding the `task:` no-path fallback). "Retained" mirrors
+    /// the worker's own isolation-retention predicate: nonterminal-and-not-
+    /// quarantined, or terminal with a pending wake. A task rerun after its
+    /// workspace was retargeted can accumulate operations across different
+    /// roots — completed/history rows do NOT count (their artifact may already
+    /// be gone or reused), so a caller iterating this list and cleaning each
+    /// root reaches exactly the retained artifacts, never a stale historical
+    /// one and never only the first-found root when more than one is live.
+    static func taskLaunchExecutionRoots(taskID: UUID, modelContext: ModelContext) -> [String] {
+        let roots = operations(taskID: taskID, modelContext: modelContext)
+            .filter { operation in
+                operation.monitoringState != .quarantined
+                    && (!operation.executionState.isTerminalObservation
+                            || TaskExternalOperationWakeKeyDerivation.hasPendingTerminalWake(operation))
+            }
             .compactMap(\.launchResourceKey)
-            .first { !$0.hasPrefix("task:") }
+            .filter { !$0.hasPrefix("task:") }
+        return Array(Set(roots))
     }
 
     static func operations(taskID: UUID, modelContext: ModelContext) -> [TaskExternalOperation] {
@@ -316,13 +325,21 @@ enum TaskExternalOperationRegistrationService {
             auditFields: ["operation": "external_operation_registered"]
         )
         guard saved else {
-            // A registration that is not on disk is not an ownership boundary.
-            // Reporting `.registered` on a failed save would leave the task
-            // transition, run, and operation in memory only — a crash before a
-            // later successful save loses the run row, startup adoption then
-            // rejects the receipt, and the live detached job faces a duplicate
-            // retry. Roll the half-applied registration back and reject.
-            modelContext.rollback()
+            // A registration that is not on disk is not an ownership boundary,
+            // so this reports `.rejected` rather than `.registered` — but it
+            // deliberately does NOT call `modelContext.rollback()`. This runs
+            // mid-stream in the worker's SHARED context, where the run this
+            // registration attached to (and every provider event recorded so
+            // far this turn) is ALSO still unsaved; a full-context rollback
+            // would discard all of that too, corrupting the recorded turn
+            // while the provider keeps running against a run object that no
+            // longer exists in the context. The operation and task/run
+            // transition are left in place (unsaved) instead: the context's
+            // own fetches (`operations(taskID:)`) already reflect pending
+            // inserts, so `preserveMonitoringAfterProviderExitIfNeeded`'s
+            // reconciliation retry at provider exit — or any earlier
+            // successful save this turn — naturally picks them up and
+            // persists them together with the rest of the turn.
             logRejected(taskID: task.id, reason: "registration_save_failed")
             return .rejected
         }

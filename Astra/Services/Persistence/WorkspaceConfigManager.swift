@@ -634,6 +634,42 @@ public enum WorkspaceConfigManager {
     /// Safe workspace-mirror projection. Deliberately excludes commands,
     /// process ids, paths, output, lease ownership, and backend messages.
     public struct ExternalOperationConfig: Codable, Sendable {
+        public init(
+            id: String? = nil,
+            externalIdentity: String,
+            originatingRunID: String,
+            backendKind: String,
+            backendJobID: String,
+            originatingContextRevision: String? = nil,
+            executionState: String,
+            observationHealth: String,
+            monitoringState: String,
+            nextCheckAt: Date? = nil,
+            generation: Int,
+            createdAt: Date,
+            updatedAt: Date,
+            launchResourceKey: String? = nil,
+            lastNotificationKey: String? = nil,
+            lastWakeKey: String? = nil
+        ) {
+            self.id = id
+            self.externalIdentity = externalIdentity
+            self.originatingRunID = originatingRunID
+            self.backendKind = backendKind
+            self.backendJobID = backendJobID
+            self.originatingContextRevision = originatingContextRevision
+            self.executionState = executionState
+            self.observationHealth = observationHealth
+            self.monitoringState = monitoringState
+            self.nextCheckAt = nextCheckAt
+            self.generation = generation
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.launchResourceKey = launchResourceKey
+            self.lastNotificationKey = lastNotificationKey
+            self.lastWakeKey = lastWakeKey
+        }
+
         public var id: String?
         public var externalIdentity: String
         public var originatingRunID: String
@@ -649,12 +685,12 @@ public enum WorkspaceConfigManager {
         public var updatedAt: Date
         /// Launch-time execution-root key: exclusion must survive export/import
         /// even when the workspace's active path changed while the job ran.
-        public var launchResourceKey: String? = nil
+        public var launchResourceKey: String?
         /// Delivery acknowledgements: `.completed` alone does not prove a
         /// terminal failure's reasoning wake was delivered — import needs the
         /// keys to distinguish delivered terminal failures from pending ones.
-        public var lastNotificationKey: String? = nil
-        public var lastWakeKey: String? = nil
+        public var lastNotificationKey: String?
+        public var lastWakeKey: String?
     }
 
     public struct WorkspaceAppConfig: Codable, Sendable {
@@ -2694,12 +2730,27 @@ public enum WorkspaceConfigManager {
     /// could adopt the original's backend receipt onto the duplicate. Exported
     /// task events reference runs by index, not id, so only `RunConfig.id`
     /// itself needs regeneration.
-    public static func remappingTaskIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
+    /// `onlyTaskIDs`, when non-nil, restricts REGENERATION to tasks whose id
+    /// is in the set — every other task (and its runs, external operations,
+    /// etc.) is left completely untouched. Cross-references are still rewired
+    /// task-config-wide (a non-remapped task's `chainedFromID` pointing at a
+    /// remapped one still needs to follow it). Used for the store-wide
+    /// collision-remap path: regenerating EVERY task merely because one id
+    /// collided would strand unrelated, non-colliding tasks' exported pending
+    /// operations for no reason. `nil` (the default) remaps every task, as
+    /// the Duplicate-workspace action requires.
+    public static func remappingTaskIdentities(
+        in config: WorkspaceConfig,
+        onlyTaskIDs: Set<String>? = nil
+    ) -> WorkspaceConfig {
         var config = config
         var taskIDRemap: [String: String] = [:]
 
         config.tasks = config.tasks?.map { task in
             var task = task
+            guard onlyTaskIDs == nil || task.id.map({ onlyTaskIDs!.contains($0) }) == true else {
+                return task
+            }
             if let oldID = task.id {
                 let newID = UUID().uuidString
                 taskIDRemap[oldID] = newID

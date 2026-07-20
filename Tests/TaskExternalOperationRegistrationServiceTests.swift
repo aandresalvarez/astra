@@ -488,6 +488,53 @@ struct TaskExternalOperationRegistrationServiceTests {
         ))
         #expect(fixture.task.status == .waitingExternal)
     }
+
+    @Test("task launch execution roots only include retained operations, not history")
+    func taskLaunchExecutionRootsExcludeDeliveredHistory() throws {
+        let fixture = try RegistrationFixture()
+        defer { fixture.cleanup() }
+
+        // A fully delivered historical failure: NOT retained (its artifact may
+        // already be gone or reused) — must not appear.
+        let deliveredFailure = TaskExternalOperation(
+            taskID: fixture.task.id,
+            externalIdentity: "docker_workspace_job:delivered-history",
+            originatingRunID: fixture.run.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "job-delivered",
+            executionState: .failed,
+            observationHealth: .healthy,
+            monitoringState: .completed
+        )
+        deliveredFailure.lastWakeKey = "v1|failed|healthy|user_facing_reasoning"
+        deliveredFailure.launchResourceKey = "/tmp/astra-stale-history-root"
+
+        // A still-nonterminal operation on a DIFFERENT root (task was rerun
+        // after retargeting): retained — must appear.
+        let liveRun = TaskRun(task: fixture.task)
+        fixture.context.insert(liveRun)
+        let liveOperation = TaskExternalOperation(
+            taskID: fixture.task.id,
+            externalIdentity: "docker_workspace_job:still-running",
+            originatingRunID: liveRun.id,
+            backendKindRaw: WorkspaceManagedJobStartReceipt.backend,
+            backendJobID: "job-live",
+            executionState: .running,
+            observationHealth: .healthy,
+            monitoringState: .active
+        )
+        liveOperation.launchResourceKey = "/tmp/astra-live-root"
+
+        fixture.context.insert(deliveredFailure)
+        fixture.context.insert(liveOperation)
+        try fixture.context.save()
+
+        let roots = TaskExternalOperationRegistrationService.taskLaunchExecutionRoots(
+            taskID: fixture.task.id,
+            modelContext: fixture.context
+        )
+        #expect(roots == ["/tmp/astra-live-root"])
+    }
 }
 
 @MainActor

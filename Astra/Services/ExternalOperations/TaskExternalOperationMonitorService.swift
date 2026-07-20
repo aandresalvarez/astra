@@ -196,6 +196,16 @@ final class TaskExternalOperationMonitorService {
     private var inFlightPolls: [UUID: InFlightPoll] = [:]
     private var inFlightCancellations: [UUID: InFlightPoll] = [:]
     private var inFlightTerminalDeliveries: [UUID: InFlightDelivery] = [:]
+    /// The most recently ENQUEUED terminal delivery per task (not per
+    /// operation). Two operations owned by one task can have different launch
+    /// roots after a workspace retarget, so their resource-lock claims don't
+    /// conflict and both deliveries could otherwise run concurrently — but
+    /// `wakeSink.wake` → `TaskQueue.continueSession` resolves BOTH through the
+    /// same shared `taskWorkerMap[task.id]` worker, which is not reentrant
+    /// (process runner, cancellation flags, run persistence all race). Each
+    /// new dispatch for a task awaits the current tail before running, then
+    /// becomes the new tail — a deterministic FIFO drain, not concurrency.
+    private var taskTerminalDeliveryQueueTail: [UUID: Task<Void, Never>] = [:]
     /// Set by `stop()` so an in-flight poll that was already awaiting a backend
     /// read cannot deliver a wake/notification after the monitor was stopped
     /// (e.g. for a pending update install). Delivery is what launches provider
@@ -281,6 +291,7 @@ final class TaskExternalOperationMonitorService {
         inFlightPolls.removeAll()
         inFlightCancellations.removeAll()
         inFlightTerminalDeliveries.removeAll()
+        taskTerminalDeliveryQueueTail.removeAll()
     }
 
     func reconcileAfterRestart() async {
@@ -527,7 +538,7 @@ final class TaskExternalOperationMonitorService {
                 wakeRequest: nil,
                 wakeKey: nil
             ))
-            dispatchTerminalDeliveryIfNeeded(operationID: operationID)
+            dispatchTerminalDeliveryIfNeeded(operationID: operationID, taskID: acquired.request.taskID)
         } else {
             await deliver(applied)
         }
@@ -794,7 +805,7 @@ final class TaskExternalOperationMonitorService {
     ) -> [Task<Void, Never>] {
         operations
             .filter(isPendingTerminalDelivery)
-            .map { dispatchTerminalDeliveryIfNeeded(operationID: $0.id) }
+            .map { dispatchTerminalDeliveryIfNeeded(operationID: $0.id, taskID: $0.taskID) }
     }
 
     /// Dispatches one operation's terminal-delivery attempt as its own
@@ -805,18 +816,25 @@ final class TaskExternalOperationMonitorService {
     /// rest of that pass. Tracked in `inFlightTerminalDeliveries` so `stop()`
     /// can cancel it, mirroring `inFlightPolls`/`inFlightCancellations`.
     @discardableResult
-    private func dispatchTerminalDeliveryIfNeeded(operationID: UUID) -> Task<Void, Never> {
+    private func dispatchTerminalDeliveryIfNeeded(operationID: UUID, taskID: UUID) -> Task<Void, Never> {
         if let existing = inFlightTerminalDeliveries[operationID] {
             return existing.task
         }
         let token = UUID()
+        // Chain behind this TASK's current tail (if any) so a second
+        // operation's delivery for the same task never runs its provider
+        // session concurrently with the first's.
+        let previousTail = taskTerminalDeliveryQueueTail[taskID]
         let task = Task { @MainActor [weak self] in
+            await previousTail?.value
             await self?.performTerminalDelivery(operationID: operationID)
-            if self?.inFlightTerminalDeliveries[operationID]?.token == token {
-                self?.inFlightTerminalDeliveries.removeValue(forKey: operationID)
+            guard let self else { return }
+            if self.inFlightTerminalDeliveries[operationID]?.token == token {
+                self.inFlightTerminalDeliveries.removeValue(forKey: operationID)
             }
         }
         inFlightTerminalDeliveries[operationID] = InFlightDelivery(token: token, task: task)
+        taskTerminalDeliveryQueueTail[taskID] = task
         return task
     }
 

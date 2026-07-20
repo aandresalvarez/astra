@@ -526,10 +526,19 @@ final class TaskQueue {
         // so this is the only place its chainedGoal follow-up can be launched.
         // AgentRuntimeWorker creates the chained AgentTask row (queued) when
         // this continuation's terminal completion is itself an external-
-        // operation wake; running it here is what actually starts it. Same
-        // deadlock hazard as executeTask's mirror block: a chained task shares
-        // this task's resourceKey, so the lock must be released before
-        // recursing, not after (waitForResourceLock has no timeout).
+        // operation wake; running it here is what actually starts it.
+        //
+        // Dispatched WITHOUT awaiting (unlike executeTask's mirror block):
+        // releasing the in-memory `resourceClaim` is not enough here. The
+        // DURABLE holder for this wake's own operation is not released until
+        // its acknowledgement (`lastWakeKey`) is recorded by the wake sink —
+        // which only happens once THIS `continueSession` call returns. The
+        // chained task shares this task's resourceKey and carries no
+        // operationID, so it cannot bypass that still-active holder; awaiting
+        // its `executeTask` here would deadlock against this very call's own
+        // pending return. Returning immediately lets the wake be acknowledged
+        // (releasing the holder) while the chained task's own resource-lock
+        // wait polls independently until it clears.
         if task.status == .completed, let ws = task.workspace {
             let taskID = task.id
             let chainedTask = ws.tasks.first { $0.chainedFromID == taskID && $0.status == .queued }
@@ -539,7 +548,9 @@ final class TaskQueue {
                 AppLogger.audit(.taskChained, category: "Queue", taskID: chainedTask.id, fields: [
                     "source_task_id": taskID.uuidString
                 ])
-                await executeTask(chainedTask, modelContext: modelContext, onEvent: onEvent)
+                Task { @MainActor [weak self] in
+                    await self?.executeTask(chainedTask, modelContext: modelContext, onEvent: onEvent)
+                }
             }
         }
         return true
