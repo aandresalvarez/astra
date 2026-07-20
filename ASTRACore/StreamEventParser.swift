@@ -214,6 +214,11 @@ public enum ParsedEvent {
 // MARK: - Parser
 
 public enum StreamEventParser {
+    private static let transientSystemSubtypes: Set<String> = [
+        "post_turn_summary",
+        "status"
+    ]
+
     public static func parse(line: String) -> ParsedEvent? {
         parseAll(line: line).first
     }
@@ -252,7 +257,14 @@ public enum StreamEventParser {
                     name: name
                 )])
             }
-            return .recognized([.systemInit(model: baseEvent.model, sessionId: baseEvent.session_id)])
+            if baseEvent.subtype == "init" {
+                return .recognized([.systemInit(model: baseEvent.model, sessionId: baseEvent.session_id)])
+            }
+            if let subtype = baseEvent.subtype, transientSystemSubtypes.contains(subtype) {
+                return .recognized([.control(type: "system.\(subtype)")])
+            }
+            let type = baseEvent.subtype.map { "system.\($0)" } ?? "system"
+            return .recognized([.unknown(type: type)])
 
         case "assistant":
             guard let event = try? JSONDecoder().decode(StreamAssistantEvent.self, from: data) else {
