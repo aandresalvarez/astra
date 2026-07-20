@@ -277,6 +277,10 @@ struct TaskExternalOperationRegistrationServiceTests {
             observationHealth: .healthy,
             monitoringState: .completed
         )
+        // A genuinely finished operation has its validation wake ACKNOWLEDGED;
+        // without this key the export represents the mid-delivery window and
+        // correctly imports as reactivatable instead of inert.
+        operation.lastWakeKey = "v1|process_completed|healthy|completion_validation"
         fixture.context.insert(operation)
         let config = try #require(WorkspaceConfigManager.export(
             workspace: fixture.workspace,
@@ -371,11 +375,20 @@ struct TaskExternalOperationRegistrationServiceTests {
             operationMonitoringState: .completed,
             taskStatus: .completed
         ))
-        // Reasoning wake resolved = task reached its runtime review.
+        // Reasoning wake resolved = the operation's own durable review event
+        // exists. A generic .pendingUser (e.g. a policy-manifest launch block
+        // that never ran a provider session) is NOT resolution — retry.
         #expect(TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
             intent: .userFacingReasoning,
             operationMonitoringState: .completed,
-            taskStatus: .pendingUser
+            taskStatus: .pendingUser,
+            hasOperationReviewEvent: true
+        ))
+        #expect(!TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
+            intent: .userFacingReasoning,
+            operationMonitoringState: .completed,
+            taskStatus: .pendingUser,
+            hasOperationReviewEvent: false
         ))
         // Reasoning run failed / preflight-exited: task not in review — retry.
         #expect(!TaskExternalOperationWakeAdmission.wakeOutcomeResolved(

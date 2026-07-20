@@ -1102,8 +1102,19 @@ final class TaskQueue {
         if externalOperationResourceHolders().contains(where: { holder in
             guard resourceKeysConflict(holder.resourceKey, claim.resourceKey) else { return false }
             let sameOperation = holder.taskID == claim.taskID && holder.operationID == claim.operationID
-            let bypassAllowed = sameOperation
-                && (claim.accessMode == .readOnly || holder.allowsSameOperationWrite)
+            // A wake claim (any operationID) from the SAME task also bypasses
+            // that task's OTHER terminal holders: their jobs stopped writing
+            // (outputs are static reads for the wake), and without this two
+            // terminal operations' wakes would deadlock — each blocked by the
+            // other's holder forever. Actual serialization still comes from
+            // activeResourceLocks below: the first admitted wake holds a write
+            // lock, so the second waits until it releases. Nonterminal holders
+            // are never bypassed by a different operation's claim.
+            let sameTaskWake = holder.taskID == claim.taskID
+                && claim.operationID != nil
+                && holder.allowsSameOperationWrite
+            let bypassAllowed = sameTaskWake
+                || (sameOperation && (claim.accessMode == .readOnly || holder.allowsSameOperationWrite))
             return !bypassAllowed
         }) {
             return false

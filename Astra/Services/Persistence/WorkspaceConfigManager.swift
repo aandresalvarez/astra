@@ -647,6 +647,14 @@ public enum WorkspaceConfigManager {
         public var generation: Int
         public var createdAt: Date
         public var updatedAt: Date
+        /// Launch-time execution-root key: exclusion must survive export/import
+        /// even when the workspace's active path changed while the job ran.
+        public var launchResourceKey: String? = nil
+        /// Delivery acknowledgements: `.completed` alone does not prove a
+        /// terminal failure's reasoning wake was delivered — import needs the
+        /// keys to distinguish delivered terminal failures from pending ones.
+        public var lastNotificationKey: String? = nil
+        public var lastWakeKey: String? = nil
     }
 
     public struct WorkspaceAppConfig: Codable, Sendable {

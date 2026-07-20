@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// One reviewed backend owns observation, cancellation, and ownership proof
 /// for one bounded backend kind. The registry contains concrete capabilities;

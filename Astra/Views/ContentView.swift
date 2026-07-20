@@ -2666,11 +2666,13 @@ struct ContentView: View {
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
-        // Install external-operation resource exclusion BEFORE the scheduler
-        // starts: the scheduler fires due tasks immediately, so on restart a due
-        // task could otherwise acquire an execution root a persisted external job
-        // is still writing before the deferred monitoring setup runs.
+        // Install external-operation resource exclusion AND adopt trusted
+        // backend receipts BEFORE the scheduler starts: the scheduler fires due
+        // tasks immediately, and after a crash in the launch-to-registration
+        // window there is no operation row yet — holders alone cannot exclude
+        // that job's root; only adoption creates the missing registration.
         runtime.installExternalOperationResourceHolders(modelContext: modelContext)
+        runtime.adoptTrustedExternalOperationReceipts(modelContext: modelContext)
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()

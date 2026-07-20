@@ -1852,7 +1852,7 @@ struct ArchitectureFitnessTests {
             // delete/replace cancel-and-verify outcome handling) — the
             // review UI, import logic, and operation services themselves
             // live in their own files.
-            "Astra/Views/ContentView.swift": .init(4_920, .owner("Workspace shell composition")),
+            "Astra/Views/ContentView.swift": .init(4_930, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body

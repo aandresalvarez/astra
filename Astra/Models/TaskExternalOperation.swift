@@ -130,3 +130,77 @@ public enum TaskExternalOperationMonitoringState: String, Codable, CaseIterable,
     case validating
     case completed
 }
+
+public struct TaskExternalOperationObservation: Equatable, Sendable {
+    public let executionState: TaskExternalOperationExecutionState
+    public let health: TaskExternalOperationObservationHealth
+
+    public init(
+        executionState: TaskExternalOperationExecutionState,
+        health: TaskExternalOperationObservationHealth
+    ) {
+        self.executionState = executionState
+        self.health = health
+    }
+}
+
+public enum TaskExternalOperationWakeIntent: String, Equatable, Sendable {
+    case ambiguousObservation = "ambiguous_observation"
+    case completionValidation = "completion_validation"
+    case userFacingReasoning = "user_facing_reasoning"
+}
+
+/// Single owner of the wake-intent/semantic-key derivation, shared by the
+/// monitor's dedupe, the resource-holder provider, the worker's isolation
+/// retention, and the import/export mirror — "is this operation's terminal
+/// wake still pending?" must mean the same thing everywhere or exclusion,
+/// cleanup, delivery, and import silently disagree.
+public enum TaskExternalOperationWakeKeyDerivation {
+    public static func intent(
+        for observation: TaskExternalOperationObservation
+    ) -> TaskExternalOperationWakeIntent? {
+        if observation.health == .malformed ||
+            (observation.health == .healthy && observation.executionState == .unknown) {
+            return .ambiguousObservation
+        }
+        switch observation.executionState {
+        case .processCompleted:
+            return .completionValidation
+        case .interrupted, .failed, .cancelled, .timedOut:
+            return .userFacingReasoning
+        case .registered, .queued, .running, .unknown:
+            return nil
+        }
+    }
+
+    public static func semanticKey(for observation: TaskExternalOperationObservation) -> String {
+        "v1|\(observation.executionState.rawValue)|\(observation.health.rawValue)"
+    }
+
+    public static func wakeKey(for observation: TaskExternalOperationObservation) -> String? {
+        guard let intent = intent(for: observation) else { return nil }
+        return "\(semanticKey(for: observation))|\(intent.rawValue)"
+    }
+
+    /// Whether a terminal operation's validation/reasoning wake has NOT yet
+    /// been acknowledged. `lastWakeKey == nil` is insufficient: a previously
+    /// acknowledged ambiguity/malformed wake leaves a non-nil, DIFFERENT key
+    /// when the next observation transitions straight to a terminal state —
+    /// any key other than the current terminal wake key means pending.
+    public static func hasPendingTerminalWake(_ operation: TaskExternalOperation) -> Bool {
+        guard operation.executionState.isTerminalObservation else { return false }
+        switch operation.monitoringState {
+        case .validating:
+            return true
+        case .completed:
+            let observation = TaskExternalOperationObservation(
+                executionState: operation.executionState,
+                health: operation.observationHealth
+            )
+            guard let currentKey = wakeKey(for: observation) else { return false }
+            return operation.lastWakeKey != currentKey
+        case .active, .stopped, .quarantined:
+            return false
+        }
+    }
+}

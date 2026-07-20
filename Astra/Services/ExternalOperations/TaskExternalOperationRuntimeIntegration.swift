@@ -36,7 +36,8 @@ enum TaskExternalOperationWakeAdmission {
     static func wakeOutcomeResolved(
         intent: TaskExternalOperationWakeIntent,
         operationMonitoringState: TaskExternalOperationMonitoringState?,
-        taskStatus: TaskStatus
+        taskStatus: TaskStatus,
+        hasOperationReviewEvent: Bool = false
     ) -> Bool {
         switch intent {
         case .completionValidation:
@@ -46,10 +47,12 @@ enum TaskExternalOperationWakeAdmission {
             // on purpose — unresolved, so the wake retries.
             return operationMonitoringState != .validating || taskStatus == .completed
         case .userFacingReasoning:
-            // Resolved when the task reached its runtime review (or completed
-            // via an approval racing this wake). A reasoning run that itself
-            // failed returns the task to `waitingExternal` — unresolved.
-            return taskStatus == .pendingUser || taskStatus == .completed
+            // Resolved only by the OPERATION-SPECIFIC durable review event
+            // (or a completion racing this wake). `.pendingUser` alone is not
+            // proof: preflight gates (e.g. a policy-manifest launch block) can
+            // park the task in runtime review before any provider session ran
+            // or the external review was ever written — that wake must retry.
+            return hasOperationReviewEvent || taskStatus == .completed
         case .ambiguousObservation:
             // Never launches a provider session (suppressed at the sink while
             // the observation is nonterminal); acknowledged unconditionally.
@@ -131,24 +134,22 @@ extension AppRuntimeController {
         }
     }
 
-    func startExternalOperationMonitoring(modelContext: ModelContext) {
-        installExternalOperationResourceHolders(modelContext: modelContext)
-        if let externalOperationMonitor {
-            externalOperationMonitor.start()
-            return
-        }
-
-        // Adopt trusted records before the first due-poll calculation. This is
-        // read-only with respect to the executor and never launches a job.
+    /// Adopts trusted backend receipts into durable registrations. Idempotent;
+    /// read-only with respect to the executor and never launches a job. MUST
+    /// run before any scheduler that can admit workspace work: after a crash
+    /// in the launch-to-registration window there is deliberately no operation
+    /// row yet, so holder installation alone cannot exclude the job's root —
+    /// only adoption creates the missing holder.
+    func adoptTrustedExternalOperationReceipts(modelContext: ModelContext) {
         let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         for task in tasks {
             TaskExternalOperationRegistrationService.reconcileTrustedBackendRecords(
                 task: task,
                 modelContext: modelContext,
-                // Startup-only: no provider session is live yet, so a job that
-                // terminalized while ASTRA was down can release its crash-left
-                // executor container (terminal rows are never polled, so the
-                // backend observe-path cleanup would otherwise never run).
+                // Startup-only path: no provider session is live yet, so a job
+                // that terminalized while ASTRA was down can release its
+                // crash-left executor container (terminal rows are never
+                // polled, so the backend observe-path cleanup never runs).
                 cleanupTerminalExecutors: true
             )
         }
@@ -159,6 +160,19 @@ extension AppRuntimeController {
                 auditFields: ["operation": "external_operation_startup_adoption"]
             )
         }
+    }
+
+    func startExternalOperationMonitoring(modelContext: ModelContext) {
+        installExternalOperationResourceHolders(modelContext: modelContext)
+        if let externalOperationMonitor {
+            externalOperationMonitor.start()
+            return
+        }
+
+        // Adopt trusted records before the first due-poll calculation (a
+        // second, idempotent pass — the pre-scheduler startup step already ran
+        // one so crash-window jobs are excluded before any schedule fires).
+        adoptTrustedExternalOperationReceipts(modelContext: modelContext)
 
         let dockerBackend = WorkspaceManagedJobExternalOperationBackend(
             modelContext: modelContext,
@@ -264,10 +278,15 @@ extension AppRuntimeController {
             )
             operationDescriptor.fetchLimit = 1
             let operation = try? modelContext.fetch(operationDescriptor).first
+            let operationIDString = request.operationID.uuidString
+            let hasReviewEvent = task.events.contains {
+                $0.type == "externalOperation.review.required" && $0.payload.contains(operationIDString)
+            }
             return TaskExternalOperationWakeAdmission.wakeOutcomeResolved(
                 intent: request.intent,
                 operationMonitoringState: operation?.monitoringState,
-                taskStatus: task.status
+                taskStatus: task.status,
+                hasOperationReviewEvent: hasReviewEvent
             )
         }
         let notificationSink = TaskEventExternalOperationNotificationSink { notification in

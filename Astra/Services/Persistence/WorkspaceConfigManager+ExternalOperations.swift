@@ -25,7 +25,10 @@ extension WorkspaceConfigManager {
                     nextCheckAt: operation.nextCheckAt,
                     generation: operation.generation,
                     createdAt: operation.createdAt,
-                    updatedAt: operation.updatedAt
+                    updatedAt: operation.updatedAt,
+                    launchResourceKey: operation.launchResourceKey,
+                    lastNotificationKey: operation.lastNotificationKey,
+                    lastWakeKey: operation.lastWakeKey
                 )
             }
         }
@@ -61,15 +64,25 @@ extension WorkspaceConfigManager {
                 taskID: task.id,
                 modelContext: modelContext
             )
-            // A registration that already reached `.completed` (its validation
-            // finished) must not import as a reactivatable quarantined row:
-            // reactivation reconstructs a quarantined `processCompleted` op as
-            // `.validating`, which would schedule a fresh wake and let admission
-            // move an already-completed task back to running. Import it as the
-            // inert terminal `.completed` state instead — it is never polled,
-            // contacted, or reactivatable, so the no-contact boundary still holds.
+            // A registration that already reached `.completed` AND whose
+            // delivery was acknowledged must not import as a reactivatable
+            // quarantined row: reactivation would schedule a fresh wake and
+            // let admission move an already-completed task back to running.
+            // But `.completed` alone does not prove processing finished — for
+            // failure/cancellation/interruption/timeout observations the
+            // monitor sets `.completed` BEFORE the reasoning wake delivers, so
+            // an export taken in that window must import as reactivatable
+            // (quarantined) or the task is stranded with no wake and no
+            // controls. Delivered-ness is judged against the EXPORTED
+            // observation (health as it was), since import quarantines health.
+            let exportedObservation = TaskExternalOperationObservation(
+                executionState: executionState,
+                health: TaskExternalOperationObservationHealth(rawValue: config.observationHealth) ?? .unknown
+            )
+            let exportedWakeKey = TaskExternalOperationWakeKeyDerivation.wakeKey(for: exportedObservation)
             let wasCompleted =
                 config.monitoringState == TaskExternalOperationMonitoringState.completed.rawValue
+                    && (exportedWakeKey == nil || config.lastWakeKey == exportedWakeKey)
             let operation = TaskExternalOperation(
                 taskID: task.id,
                 externalIdentity: identity,
@@ -97,6 +110,24 @@ extension WorkspaceConfigManager {
                 createdAt: config.createdAt
             )
             operation.updatedAt = max(config.updatedAt, config.createdAt)
+            // Preserve the LAUNCH-TIME execution-root key so a reactivated
+            // registration excludes the root the job actually mounted, not the
+            // workspace's current (user-mutable) path.
+            if let launchKey = config.launchResourceKey,
+               isSafeImportedFreeformValue(launchKey, maximumLength: 1_024) {
+                operation.launchResourceKey = launchKey
+            }
+            // Delivery acknowledgements travel with the row so a later export
+            // of this store keeps distinguishing delivered terminal failures
+            // from pending ones.
+            if let notificationKey = config.lastNotificationKey,
+               isSafeImportedFreeformValue(notificationKey, maximumLength: 256) {
+                operation.lastNotificationKey = notificationKey
+            }
+            if let wakeKey = config.lastWakeKey,
+               isSafeImportedFreeformValue(wakeKey, maximumLength: 256) {
+                operation.lastWakeKey = wakeKey
+            }
             // Preserve the exported row's id when it is a valid, non-colliding
             // UUID: exported `externalOperation.review.required` task events
             // reference operations by this id, and minting a fresh one would
@@ -115,6 +146,11 @@ extension WorkspaceConfigManager {
             insertedActiveRegistration = insertedActiveRegistration
                 || config.monitoringState == TaskExternalOperationMonitoringState.active.rawValue
                 || config.monitoringState == TaskExternalOperationMonitoringState.validating.rawValue
+                // An exported `.completed` failure whose reasoning wake was
+                // still undelivered imports as reactivatable — the task must
+                // keep its waitingExternal state and controls.
+                || (config.monitoringState == TaskExternalOperationMonitoringState.completed.rawValue
+                        && !wasCompleted)
         }
 
         // An explicitly cancelled task stays cancelled: a user can cancel a
@@ -128,6 +164,18 @@ extension WorkspaceConfigManager {
             task.completedAt = nil
             task.updatedAt = Date()
         }
+    }
+
+    /// Bounded, control-character-free validation for imported free-form
+    /// values that are compared or displayed but never executed
+    /// (launchResourceKey, delivery acknowledgement keys).
+    private static func isSafeImportedFreeformValue(
+        _ value: String,
+        maximumLength: Int
+    ) -> Bool {
+        !value.isEmpty
+            && value.count <= maximumLength
+            && !value.unicodeScalars.contains(where: isControlScalar)
     }
 
     private static func isSafeExternalOperationIdentifier(

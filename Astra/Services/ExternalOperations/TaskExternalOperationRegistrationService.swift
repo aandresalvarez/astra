@@ -268,12 +268,23 @@ enum TaskExternalOperationRegistrationService {
         // reconciliation would then reject the receipt (its run row is gone),
         // leaving unregistered work that a retry can duplicate. Commit
         // synchronously before reporting `.registered`.
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
+        let saved = WorkspacePersistenceCoordinator.saveAndAutoExport(
             workspace: task.workspace,
             modelContext: modelContext,
             taskID: task.id,
             auditFields: ["operation": "external_operation_registered"]
         )
+        guard saved else {
+            // A registration that is not on disk is not an ownership boundary.
+            // Reporting `.registered` on a failed save would leave the task
+            // transition, run, and operation in memory only — a crash before a
+            // later successful save loses the run row, startup adoption then
+            // rejects the receipt, and the live detached job faces a duplicate
+            // retry. Roll the half-applied registration back and reject.
+            modelContext.rollback()
+            logRejected(taskID: task.id, reason: "registration_save_failed")
+            return .rejected
+        }
         AppLogger.audit(.taskStarted, category: "ExternalOperation", taskID: task.id, fields: [
             "operation": "register",
             "backend": backendKind,
