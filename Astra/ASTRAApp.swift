@@ -547,9 +547,8 @@ enum AstraStoreStartupCoordinator {
                     actions: [.revealStore, .quit]
                 )
             case .blockedUnknown, .verifiedCorruption:
-                blocker = PersistentStoreRecoveryBlocker(
-                    title: "ASTRA could not safely open its store",
-                    message: "The failure was not proven to be recoverable, so ASTRA left the store unchanged."
+                blocker = PersistentStoreRecoveryPolicy.unknownOpenFailureBlocker(
+                    channel: appInfo.channelRawValue
                 )
             }
             return Result(modelContainer: inMemoryContainer(), lease: lease, blocker: blocker)
