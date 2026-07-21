@@ -99,17 +99,6 @@ private struct NewMainWindowMenuItem: View {
     }
 }
 
-private struct CheckForUpdatesMenuItem: View {
-    @ObservedObject var appUpdateController: AppUpdateController
-
-    var body: some View {
-        Button("Check for Updates…") {
-            appUpdateController.checkForUpdates()
-        }
-        .disabled(!appUpdateController.canCheckForUpdates)
-    }
-}
-
 private struct AboutAstraMenuItem: View {
     @Environment(\.openWindow) private var openWindow
 
@@ -861,6 +850,10 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
+        TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+            modelContext: modelContext,
+            autoExportWorkspaces: !skipWorkspaceRecovery
+        )
     }
 
     /// Legacy Skill data backfills, gated on the build number so they run once
@@ -1021,10 +1014,6 @@ public struct ASTRAApp: App {
 
             CommandGroup(replacing: .appInfo) {
                 AboutAstraMenuItem()
-            }
-
-            CommandGroup(after: .appInfo) {
-                CheckForUpdatesMenuItem(appUpdateController: appUpdateController)
             }
 
             CommandGroup(after: .help) {

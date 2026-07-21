@@ -115,6 +115,33 @@ struct CapabilityLibrary {
         installedPackages(trustedBuiltInIDs: trustedBuiltInIDs).first { $0.id == id }
     }
 
+    /// Every storage name currently occupied in the library directory —
+    /// each `<name>.json` file and each `<name>/` package directory —
+    /// lowercased to match the case-insensitive default filesystem.
+    ///
+    /// Unlike `installedPackages()`, this reflects the raw filesystem and so
+    /// includes malformed/undecodable entries. Import uses it to seed the
+    /// storage-collision set: an occupied-but-undecodable name must be treated
+    /// as a conflict (and skipped), not silently overwritten on a successful
+    /// install just because it failed to decode.
+    func occupiedStorageNames() -> Set<String> {
+        guard let entries = libraryContents(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]
+        ) else {
+            return []
+        }
+        var names: Set<String> = []
+        for entry in entries {
+            if isDirectory(entry) {
+                names.insert(entry.lastPathComponent.lowercased())
+            } else if entry.pathExtension == "json" {
+                names.insert(entry.deletingPathExtension().lastPathComponent.lowercased())
+            }
+        }
+        return names
+    }
+
     func installedVersion(of id: String) -> String? {
         installedPackage(id: id)?.version
     }
@@ -315,10 +342,16 @@ struct CapabilityLibrary {
         let manifestURL = packageManifestURL(for: id)
         let packageDirectoryURL = manifestURL.deletingLastPathComponent()
         let existingStorageURL: URL?
+        var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: manifestURL.path) {
             existingStorageURL = packageDirectoryURL
         } else if fileManager.fileExists(atPath: jsonURL.path) {
             existingStorageURL = jsonURL
+        } else if fileManager.fileExists(atPath: packageDirectoryURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            // A package directory occupying this storage name but MISSING its
+            // manifest is still occupied storage: installing over it removes it,
+            // and a rollback could not restore it. Snapshot the directory.
+            existingStorageURL = packageDirectoryURL
         } else {
             existingStorageURL = nil
         }
@@ -368,7 +401,20 @@ struct CapabilityLibrary {
 
         removePackageStorage(jsonURL: snapshot.jsonURL, packageDirectoryURL: snapshot.packageDirectoryURL)
         if let existingStorageURL = snapshot.existingStorageURL {
-            try? fileManager.copyItem(at: snapshotURL, to: existingStorageURL)
+            do {
+                try fileManager.copyItem(at: snapshotURL, to: existingStorageURL)
+            } catch {
+                // The copy-back failed after the new install was already removed:
+                // the recipient's prior bytes exist ONLY in the snapshot temp now.
+                // Do NOT delete it — that would be silent, unrecoverable data loss.
+                // Keep the snapshot so it can be recovered, and surface the failure.
+                AppLogger.audit(.capabilityStorageRestoreFailed, category: "Capabilities", fields: [
+                    "package_id": snapshot.id,
+                    "snapshot_path": snapshotURL.deletingLastPathComponent().path,
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+                return
+            }
         }
         try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
     }

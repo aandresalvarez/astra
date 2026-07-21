@@ -371,6 +371,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .dismissCorrection, .reportProblem:
             true
         case .stop,
+             .stopRun,
+             .cancelTurnRequest,
              .allowOnce,
              .allowSimilar,
              .reviewGitPublish,
@@ -409,6 +411,10 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         switch action.kind {
         case .stop:
             "CancelTaskButton"
+        case .stopRun:
+            "StopActiveRunButton"
+        case .cancelTurnRequest:
+            "CancelTurnRequestButton"
         case .allowOnce, .approveResult, .dismissReview:
             "ApproveTaskButton"
         case .allowSimilar:

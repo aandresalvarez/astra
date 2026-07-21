@@ -35,6 +35,7 @@ struct WorkspaceDetailView: View {
                 Menu {
                     Button("Export Config...") { exportConfig() }
                     Button("Export to Workspace Folder") { autoExportConfig() }
+                    Button("Export Portable Package...") { exportPortablePackage() }
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
@@ -471,6 +472,67 @@ struct WorkspaceDetailView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { exportMessage = "" }
+        }
+    }
+
+    // Unlike Export Config's NSSavePanel (which picks an existing file type,
+    // .json), this package is a directory bundle the exporter creates fresh —
+    // no allowedContentTypes restriction, the panel just needs a destination
+    // path that doesn't exist yet.
+    private func exportPortablePackage() {
+        let panel = NSSavePanel()
+        let slug = workspace.name.replacingOccurrences(of: " ", with: "-").lowercased()
+        panel.nameFieldStringValue = "\(slug).astra-share"
+        panel.message = "Export a portable workspace package"
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let chosenURL = panel.url else { return }
+        // The import route only recognizes a package by its `.astra-share`
+        // extension. If the user edited the save-panel name and dropped or
+        // changed it, re-append it so the app's own export can still re-enter
+        // the package review flow instead of falling through to the legacy
+        // folder importer.
+        let normalizedExtension = chosenURL.pathExtension != "astra-share"
+        let url = normalizedExtension
+            ? chosenURL.deletingPathExtension().appendingPathExtension("astra-share")
+            : chosenURL
+        let fm = FileManager.default
+        do {
+            // Only when the user picked an existing `.astra-share` in the panel
+            // (so NSSavePanel's Replace prompt named exactly this file) do we
+            // replace it. If we NORMALIZED the extension and that path happens to
+            // already exist, the panel never asked to replace it — don't clobber.
+            if fm.fileExists(atPath: url.path), normalizedExtension {
+                exportMessage = "A package named \(url.lastPathComponent) already exists. Choose that name to replace it."
+                return
+            }
+            // Export to a private temp path FIRST, then atomically swap into place
+            // on success — so a projection/disk/validation error never destroys
+            // the user's previous export.
+            let tempURL = url.deletingLastPathComponent()
+                .appendingPathComponent(".astra-share-export-\(UUID().uuidString).tmp", isDirectory: true)
+            defer { try? fm.removeItem(at: tempURL) }
+            let result = try WorkspacePackageExporter().exportConfigurationPackage(
+                workspace: workspace,
+                modelContext: modelContext,
+                to: tempURL
+            )
+            if fm.fileExists(atPath: url.path) {
+                // Atomic exchange — never leave a window where neither the old nor
+                // the new export exists (a remove-then-move loses the prior export
+                // if the move fails).
+                _ = try fm.replaceItemAt(url, withItemAt: tempURL)
+            } else {
+                try fm.moveItem(at: tempURL, to: url)
+            }
+            withAnimation {
+                exportMessage = "Exported \(result.manifest.appEntries.count) app(s), " +
+                    "\(result.manifest.capabilityEntries.count) capability(ies) to \(url.lastPathComponent)"
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                withAnimation { exportMessage = "" }
+            }
+        } catch {
+            exportMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 }

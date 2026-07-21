@@ -276,6 +276,27 @@ public final class TaskSchedule {
         runResults = results
     }
 
+    /// Returns a `templateVariablesJSON` blob with the routine-paths metadata
+    /// removed. The paths are absolute sender-machine locations that live inside
+    /// this blob (not only in the `routinePaths` accessor), so a portable share
+    /// must strip them here too or the recipient's `routinePaths` getter reads
+    /// them straight back out. Keeps the metadata key encapsulated in this model
+    /// rather than leaking it to the exporter. Unparseable input is returned
+    /// unchanged (nothing to strip that we can safely reason about).
+    public static func templateVariablesJSONWithoutRoutinePaths(_ json: String) -> String {
+        guard let data = json.data(using: .utf8),
+              var variables = try? JSONDecoder().decode([String: String].self, from: data),
+              variables[routinePathsKey] != nil else {
+            return json
+        }
+        variables.removeValue(forKey: routinePathsKey)
+        guard let encoded = try? JSONEncoder().encode(variables),
+              let result = String(data: encoded, encoding: .utf8) else {
+            return json
+        }
+        return result
+    }
+
     private func setRoutineMetadataValue(_ value: String, forKey key: String) {
         var variables = templateVariables
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

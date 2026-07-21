@@ -14,6 +14,8 @@ enum TaskDecisionDockTone: String, Equatable {
 
 enum TaskDecisionDockActionKind: String, Equatable {
     case stop
+    case stopRun
+    case cancelTurnRequest
     case allowOnce
     case allowSimilar
     case reviewGitPublish
@@ -982,6 +984,8 @@ private extension TaskDecisionDockActionKind {
         case .openArtifact, .openPlan, .reportProblem:
             true
         case .stop,
+             .stopRun,
+             .cancelTurnRequest,
              .allowOnce,
              .allowSimilar,
              .reviewGitPublish,

@@ -38,7 +38,8 @@ struct ArchitectureFitnessTests {
             "Startup",
             "Tasks",
             "Validation",
-            "WorkspaceApps"
+            "WorkspaceApps",
+            "WorkspacePackage"
         ])
     }
 
@@ -67,14 +68,21 @@ struct ArchitectureFitnessTests {
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()
         let serviceRoot = root.appendingPathComponent("Astra/Services")
-        let allowedWorkspaceAppPackAdapters: Set<String> = [
-            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift"
+        // Adapters that legitimately consume the pack catalog without owning it:
+        // the WorkspaceApps template-pack bridge, and the portable-workspace
+        // import flow, which must reconcile a share's referenced pack IDs against
+        // the recipient's real catalog (surface missing packs, drop unresolved
+        // ones from the enabled set) rather than trusting arbitrary IDs.
+        let allowedPackAdapters: Set<String> = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"
         ]
         let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
             .compactMap { file -> String? in
                 let path = relativePath(for: file, root: root)
                 guard path.contains("/Packs/") == false else { return nil }
-                guard allowedWorkspaceAppPackAdapters.contains(path) == false else { return nil }
+                guard allowedPackAdapters.contains(path) == false else { return nil }
                 let text = try String(contentsOf: file, encoding: .utf8)
                 return text.contains("AstraPack") ? path : nil
             }
@@ -973,6 +981,38 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Workspace import discovery scans should use HostFileAccessBroker: \(matches)")
     }
 
+    @Test("Workspace package subsystem goes through the file access broker")
+    func workspacePackageSubsystemGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePaths = [
+            "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageService.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
+            "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift",
+            "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift"
+        ]
+        // Raw FileManager-prefixed reads are forbidden; `broker.enumerator(`
+        // (routed through HostFileAccessBroker) and the O_NOFOLLOW reads in
+        // PortablePackageSafeFileReader are the sanctioned paths.
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator(",
+            "FileManager.default.contentsOfDirectory(",
+            "fileManager.contentsOfDirectory("
+        ]
+        var matches: [String] = []
+        for relativePath in relativePaths {
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+                where forbiddenPatterns.contains(where: { String(line).contains($0) }) {
+                matches.append("\(relativePath):\(index + 1)")
+            }
+        }
+
+        #expect(matches.isEmpty, "Workspace package reads should use HostFileAccessBroker: \(matches)")
+    }
+
     @Test("Workspace recovery config loads keep implicit scan intent")
     func workspaceRecoveryConfigLoadsKeepImplicitScanIntent() throws {
         let root = try repositoryRoot()
@@ -1567,6 +1607,37 @@ struct ArchitectureFitnessTests {
         #expect(count <= 130, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
+    @Test("AgentTask/Workspace deletions stay routed through turn-request cleanup")
+    func agentTaskAndWorkspaceDeletionsStayRoutedThroughTurnRequestCleanup() throws {
+        let root = try repositoryRoot()
+        let files = try swiftFiles(under: root.appendingPathComponent("Astra"))
+        let count = try occurrenceCount(pattern: "modelContext.delete(task)", files: files)
+            + occurrenceCount(pattern: "modelContext.delete(ws)", files: files)
+
+        // `TaskTurnRequest.taskID` is a scalar reference with no SwiftData
+        // relationship/cascade (see TaskTurnRequest.swift), so every place
+        // that deletes an AgentTask or Workspace must first route through
+        // TaskQueue.cancelAndRemoveTurnRequests(for:modelContext:) (or the
+        // TaskStoreMaintenance equivalent) or its request rows silently
+        // outlive it as permanent orphans / a parked admission coroutine
+        // keeps running against a deleted task. Four separate review rounds
+        // on the durable-turn-admission PR each found a new call site
+        // missing this before it was fixed. This ratchet doesn't verify a
+        // new site calls the cleanup correctly, but it forces a deliberate,
+        // reviewed bump instead of a silent regression the next time a
+        // deletion call site is added. Baseline 5: TaskLifecycleCoordinator
+        // .deleteTask/.deleteWorkspace, TaskQueue.routeScheduleResult
+        // (same-thread schedule merge), TaskStoreMaintenance
+        // .deduplicateImportedSessions — plus pruneAbandonedDrafts, which is
+        // exempt: it only ever deletes tasks with task.runs.isEmpty, and a
+        // TaskTurnRequest can only be created for a task that has already
+        // been submitted into conversation at least once.
+        #expect(
+            count <= 5,
+            "New AgentTask/Workspace deletion site — route it through cancelAndRemoveTurnRequests (or the equivalent turn-request cleanup) before bumping this ratchet. Current count: \(count)"
+        )
+    }
+
     @Test("Files shelf does not decode image previews from SwiftUI body")
     func filesShelfDoesNotDecodeImagePreviewsFromSwiftUIBody() throws {
         let root = try repositoryRoot()
@@ -1865,15 +1936,17 @@ struct ArchitectureFitnessTests {
 
     private var lineBudgetRegistry: [String: LineBudgetEntry] {
         [
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(
-                2_100,
-                .owner("Repository architecture guardrails")
-            ),
-            "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
+            // Budget raised 6,130 -> 6,136 for the PR #347 review follow-up
+            // that keeps the runtime-permission dock visible over a queued
+            // follow-up's waiting dock: the guard and its "why" comment
+            // aren't safely compressible without losing the reasoning.
+            "Astra/Views/TaskMainView.swift": .init(6_136, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
-            // Budget raised for issue #322: wiring the zero-workspace titlebar
-            // command flag into an already-full file cost one irreducible line.
-            "Astra/Views/ContentView.swift": .init(4_855, .owner("Workspace shell composition")),
+            // Budget raised for issues #322/#323: the zero-workspace titlebar
+            // command flag plus the portable-package import surface (one
+            // @State, one sheet, URL partition in importWorkspace) — the
+            // review UI and import logic themselves live in their own files.
+            "Astra/Views/ContentView.swift": .init(4_890, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body
@@ -1899,6 +1972,14 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
+            // Self-referential: this file crossed its own 2,000-line
+            // threshold from the file-access-broker tests added for issue
+            // #323's WorkspacePackage subsystem. It's a flat suite, not a
+            // companion of one production file, so it owns itself here.
+            // Budget raised 2,150 -> 2,180 for the integration<-main merge:
+            // the file carries the union of main's and the RunBroker
+            // branch's independently added guardrails.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_180, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.

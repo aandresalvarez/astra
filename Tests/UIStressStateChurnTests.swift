@@ -136,7 +136,7 @@ struct UIStressStateChurnTests {
             viewModel.appliedSnapshotTaskID == taskB.id && viewModel.appliedSnapshotRevision > 0
         }
         #expect(settled, "switch churn must settle on the last task")
-        guard case .userMessage(let goalText, _) = viewModel.snapshot?.conversationItems.first else {
+        guard case .userMessage(_, let goalText, _) = viewModel.snapshot?.conversationItems.first else {
             Issue.record("expected the goal user message as the first conversation item")
             return
         }

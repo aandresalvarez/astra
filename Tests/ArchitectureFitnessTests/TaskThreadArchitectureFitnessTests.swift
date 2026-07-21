@@ -67,6 +67,36 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
     }
 
+    @Test("Waiting-turn dock never preempts a live permission decision")
+    func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let dockStart = try #require(
+            taskMainView.range(of: "private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {")
+        )
+        let dockEnd = try #require(
+            taskMainView[dockStart.upperBound...].range(of: "private var taskDecisionArtifactPaths: [String] {")
+        )
+        let dockSource = String(taskMainView[dockStart.lowerBound..<dockEnd.lowerBound])
+
+        // `TaskMainView` is a SwiftUI view and not directly instantiable in
+        // headless tests, so — matching the source-scan style already used
+        // above for this same property — assert the queued-follow-up
+        // waiting dock only preempts `TaskDecisionDockContextBuilder.build`
+        // (which is what actually renders Approve/Deny/Stop) when no
+        // permission request is open. Without this guard, a follow-up
+        // queued behind a running provider that then raises a live
+        // permission request leaves the user unable to approve, deny, or
+        // stop without first cancelling every queued message.
+        #expect(dockSource.contains("!runtimePermissionState.hasOpenApprovalRequest"))
+        let guardRange = try #require(dockSource.range(of: "!runtimePermissionState.hasOpenApprovalRequest"))
+        let waitingReturnRange = try #require(dockSource.range(of: "return waitingPresentation"))
+        #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
+    }
+
     private func source(_ relativePath: String, root: URL) throws -> String {
         try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }
