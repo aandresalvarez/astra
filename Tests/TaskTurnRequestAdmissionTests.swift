@@ -5,7 +5,7 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-@Suite("Durable task-turn admission")
+@Suite("Durable task-turn admission", .serialized)
 @MainActor
 struct TaskTurnRequestAdmissionTests {
     private func makeContainer() throws -> ModelContainer {
@@ -379,6 +379,10 @@ struct TaskTurnRequestAdmissionTests {
         #expect(freshRequest.state == .waitingForWorker)
         queue.cancelTurnRequest(id: freshRequest.id, workspace: workspace, modelContext: context)
         _ = await freshHandle?.value
+        // A zero-worker queue still owns its scheduled processing coroutine.
+        // Drain it before this in-memory SwiftData container is released so
+        // no model object can outlive its context and trap the next test.
+        await queue.cancelAllAndWait()
     }
 
     @Test("Startup dedup never deletes an imported task with an active turn request")
