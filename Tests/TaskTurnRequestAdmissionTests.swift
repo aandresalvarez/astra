@@ -379,10 +379,10 @@ struct TaskTurnRequestAdmissionTests {
         #expect(freshRequest.state == .waitingForWorker)
         queue.cancelTurnRequest(id: freshRequest.id, workspace: workspace, modelContext: context)
         _ = await freshHandle?.value
-        // Invalidate the zero-worker queue's scheduled processing coroutine,
-        // then yield so its generation guard can release captured test models.
-        queue.cancelAll()
-        await Task.yield()
+        // A zero-worker queue still owns its scheduled processing coroutine.
+        // Drain it before this in-memory SwiftData container is released so
+        // no model object can outlive its context and trap the next test.
+        await queue.cancelAllAndWait()
     }
 
     @Test("Startup dedup never deletes an imported task with an active turn request")

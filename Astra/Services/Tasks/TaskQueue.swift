@@ -1217,12 +1217,12 @@ final class TaskQueue {
                 failPersistedTurn(orphan, reason: "task_missing", modelContext: modelContext)
                 requestTaskRegistry.complete(requestID: orphan.id)
             }
+            if !projection.missingTaskRequests.isEmpty { continue }
 
+            let snapshotFields = ExecutionRequestQueueSnapshot.fields(projection: projection)
             guard !projection.ordered.isEmpty else {
                 if dispatchedRequestIDs.isEmpty {
-                    AppLogger.audit(.taskStats, category: "Queue", fields: [
-                        "event": "queue_drained"
-                    ])
+                    ExecutionRequestQueueSnapshot.logDrained(projection: projection, poolSize: poolSize, activeWorkerCount: activeCount)
                     break
                 }
                 do { try await Task.sleep(for: .milliseconds(200)) }
@@ -1316,12 +1316,12 @@ final class TaskQueue {
             // Mark as dispatched BEFORE firing the Task to prevent double-dispatch
             dispatchedRequestIDs.insert(next.request.id)
 
-            AppLogger.audit(.taskDequeued, category: "Queue", taskID: next.task.id, fields: [
+            AppLogger.audit(.taskDequeued, category: "Queue", taskID: next.task.id, fields: snapshotFields.merging([
                 "request_id": next.request.id.uuidString,
-                "queued_count": String(projection.ordered.count),
-                "active_count": String(activeCount),
+                "request_state": next.request.state.rawValue,
+                "active_worker_count": String(activeCount),
                 "pool_size": String(poolSize)
-            ])
+            ], uniquingKeysWith: { _, current in current }))
 
             let queue = self
             let requestID = next.request.id

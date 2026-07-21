@@ -13,6 +13,7 @@ enum ExecutionRequestAdmissionScheduler {
     }
 
     struct Projection {
+        let activeRequests: [TaskTurnRequest]
         let ordered: [Candidate]
         let missingTaskRequests: [TaskTurnRequest]
     }
@@ -23,7 +24,7 @@ enum ExecutionRequestAdmissionScheduler {
             sortBy: [SortDescriptor(\.submittedAt), SortDescriptor(\.sequence)]
         )
         guard !requests.isEmpty else {
-            return Projection(ordered: [], missingTaskRequests: [])
+            return Projection(activeRequests: [], ordered: [], missingTaskRequests: [])
         }
 
         let taskIDs = Array(Set(requests.map(\.taskID)))
@@ -46,7 +47,7 @@ enum ExecutionRequestAdmissionScheduler {
             guard seenTaskIDs.insert(request.taskID).inserted else { continue }
             ordered.append(Candidate(request: request, task: task))
         }
-        return Projection(ordered: ordered, missingTaskRequests: missing)
+        return Projection(activeRequests: requests, ordered: ordered, missingTaskRequests: missing)
     }
 
     static func synthesizeLegacyQueuedRequests(in modelContext: ModelContext) {
