@@ -463,7 +463,7 @@ struct QueueLockTests {
         })
     }
 
-    @Test("queue does not dispatch a queued read-only Git fork")
+    @Test("queue terminalizes but never dispatches a read-only Git fork request")
     func queueSkipsReadOnlyGitFork() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
@@ -490,6 +490,14 @@ struct QueueLockTests {
         source.status = .running
         forked.status = .queued
         try context.save()
+        let submissionResult = ExecutionRequestSubmissionService.submitInitial(for: forked, into: context)
+        let optionalSubmission: ExecutionRequestSubmissionService.Submission?
+        if case let .success(value) = submissionResult {
+            optionalSubmission = value
+        } else {
+            optionalSubmission = nil
+        }
+        let submission = try #require(optionalSubmission)
 
         let queue = TaskQueue(poolSize: 1)
         let processing = Task { @MainActor in
@@ -503,6 +511,11 @@ struct QueueLockTests {
             $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("shared Git worktree")
         })
         #expect(queue.activeTasks.isEmpty)
+        let request = try #require(
+            try TaskTurnRequestRepository.request(id: submission.requestID, in: context)
+        )
+        #expect(request.state == .failed)
+        #expect(request.terminalReason == "read_only_task")
 
         queue.cancelAll()
         await processing.value

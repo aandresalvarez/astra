@@ -12,6 +12,7 @@ final class TaskQueue {
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
     private var processingScheduleGeneration = 0
+    private let requestTaskRegistry: ExecutionRequestTaskRegistry
     /// Recovery replays are scheduled once per process. Their durable request
     /// state, rather than this set, remains the authority after a later restart.
     private var replayingRecoveredTurnIDs: Set<UUID> = []
@@ -19,19 +20,14 @@ final class TaskQueue {
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
 
-    /// Track active task IDs for status reporting
     var activeTasks: Set<UUID> = []
-
     /// Track exclusive/shared resource ownership so write-capable work cannot
     /// mutate the same checkout concurrently.
     private(set) var activeResourceLocks: [TaskResourceLockClaim] = []
     private(set) var waitingResourceLocks: [UUID: TaskResourceLockClaim] = [:]
 
-    /// Track tasks that have been dispatched but may not yet be marked as .running.
-    /// Prevents the queue loop from double-dispatching a task during the brief
-    /// window between dispatch and the worker setting isRunning = true.
-    private var dispatchedTasks: Set<UUID> = []
-
+    private var dispatchedRequestIDs: Set<UUID> = []
+    private var processingModelContext: ModelContext?
     @MainActor
     init(
         poolSize: Int = 3,
@@ -40,8 +36,8 @@ final class TaskQueue {
         self.poolSize = poolSize
         self.workerFactory = workerFactory
         self.workers = (0..<poolSize).map { _ in workerFactory() }
+        self.requestTaskRegistry = ExecutionRequestTaskRegistry()
     }
-
     /// Number of currently busy workers
     var activeCount: Int {
         workers.filter(\.isRunning).count
@@ -149,7 +145,8 @@ final class TaskQueue {
         isProcessingScheduled = true
         processingScheduleGeneration += 1
         let generation = processingScheduleGeneration
-        Task { @MainActor in
+        let processingTask = Task { @MainActor in
+            defer { self.requestTaskRegistry.finishProcessing() }
             guard self.isProcessingScheduled,
                   self.processingScheduleGeneration == generation else {
                 return
@@ -157,13 +154,10 @@ final class TaskQueue {
             self.isProcessingScheduled = false
             await self.processQueue(modelContext: modelContext)
         }
+        requestTaskRegistry.registerProcessing(processingTask)
         return true
     }
 
-    /// Compatibility wake-up for the V16 durable request contract. PR3 will
-    /// replace the legacy task-status queue with a request-native scheduler;
-    /// until then this is the only public signal boundary used by UI/services.
-    /// Waiting work is already durable before this method is called.
     @discardableResult
     @MainActor
     func signalExecutionRequest(
@@ -177,32 +171,15 @@ final class TaskQueue {
               request.state.isActive else {
             return Task {}
         }
-        guard let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
+        guard task.events.contains(where: { $0.id == request.sourceEventID }) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
             return Task {}
         }
 
-        let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)
-        if source?.launchMode == .continuation || request.kind == .followUp {
-            let message = source?.message ?? sourceEvent.payload
-            let resolvedExecutionPolicy = source?.executionPolicyOverride?.executionPolicy ?? executionPolicy
-            return Task { @MainActor in
-                _ = await self.continueSession(
-                    task: task,
-                    message: message,
-                    existingMessageEventID: sourceEvent.id,
-                    turnRequestID: request.id,
-                    modelContext: modelContext,
-                    executionPolicy: resolvedExecutionPolicy
-                )
-            }
-        }
-
         processQueueIfIdle(modelContext: modelContext)
-        // Initial/plan work is owned by the queue loop. Do not create a second
-        // detached polling task that retains SwiftData models after the owning
-        // scene or test context is torn down.
-        return Task {}
+        // A signal is not a reservation; durable work stays queued when busy.
+        guard hasAvailableWorker else { return Task {} }
+        return requestTaskRegistry.completionHandle(requestID: request.id)
     }
 
     /// Get the first available (idle) worker, or nil if all busy
@@ -1215,7 +1192,6 @@ final class TaskQueue {
         }
     }
 
-    /// Process all queued tasks, dispatching to available workers in parallel.
     @MainActor
     func processQueue(modelContext: ModelContext) async {
         guard !isProcessing else {
@@ -1226,25 +1202,24 @@ final class TaskQueue {
         }
         isProcessingScheduled = false
         isProcessing = true
-        dispatchedTasks.removeAll()
+        processingModelContext = modelContext
+        dispatchedRequestIDs.removeAll()
 
         while !Task.isCancelled && isProcessing {
-            guard hasAvailableWorker else {
-                do { try await Task.sleep(for: .milliseconds(500)) }
-                catch { break } // CancellationError
-                continue
+            ExecutionRequestAdmissionScheduler.synthesizeLegacyQueuedRequests(in: modelContext)
+            guard let projection = try? ExecutionRequestAdmissionScheduler.projection(in: modelContext) else {
+                AppLogger.audit(.taskFailed, category: "Queue", fields: [
+                    "reason": "execution_request_projection_failed"
+                ], level: .error)
+                break
+            }
+            for orphan in projection.missingTaskRequests {
+                failPersistedTurn(orphan, reason: "task_missing", modelContext: modelContext)
+                requestTaskRegistry.complete(requestID: orphan.id)
             }
 
-            let queuedStatus = TaskStatus.queued
-            let descriptor = FetchDescriptor<AgentTask>(
-                predicate: #Predicate { $0.status == queuedStatus },
-                sortBy: [SortDescriptor(\.queuePosition)]
-            )
-
-            guard let tasks = try? modelContext.fetch(descriptor),
-                  !tasks.isEmpty else {
-                // Check if we still have dispatched tasks that haven't started yet
-                if dispatchedTasks.isEmpty {
+            guard !projection.ordered.isEmpty else {
+                if dispatchedRequestIDs.isEmpty {
                     AppLogger.audit(.taskStats, category: "Queue", fields: [
                         "event": "queue_drained"
                     ])
@@ -1255,44 +1230,83 @@ final class TaskQueue {
                 continue
             }
 
-            // Read-only Git conversation forks must remain queued without
-            // entering executeTask. Otherwise executeTask's admission guard
-            // returns immediately and this loop repeatedly redispatches the
-            // same task while its sibling still owns the shared worktree.
-            let dispatchableTasks = tasks.filter { task in
-                guard TaskForkPolicyService.readOnlyReason(for: task) == nil else { return false }
-                guard let request = queuedExecutionRequest(for: task, modelContext: modelContext),
-                      let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
-                    // Preserve V15/legacy queued tasks until all creation paths
-                    // have crossed the V16 submission boundary.
-                    return true
+            let readOnlyBlocked = projection.ordered.filter {
+                TaskForkPolicyService.readOnlyReason(for: $0.task) != nil
+            }
+            for blocked in readOnlyBlocked {
+                failPersistedTurn(blocked.request, reason: "read_only_task", modelContext: modelContext)
+                requestTaskRegistry.complete(requestID: blocked.request.id)
+            }
+            // Re-project after terminalization. Reusing the stale candidate
+            // objects below could legally transition `.failed` back to
+            // `.waitingForWorker`, resurrecting a request that must stay
+            // blocked by the read-only boundary.
+            if !readOnlyBlocked.isEmpty { continue }
+
+            guard hasAvailableWorker else {
+                for waiting in projection.ordered where !dispatchedRequestIDs.contains(waiting.request.id) {
+                    _ = transitionPersistedTurn(
+                        waiting.request,
+                        to: .waitingForWorker,
+                        blockerSummary: activeTasks.contains(waiting.task.id)
+                            ? "Waiting for the current run in this task to finish."
+                            : "Waiting for an available worker.",
+                        modelContext: modelContext
+                    )
                 }
-                return ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)?.launchMode != .continuation
+                do { try await Task.sleep(for: .milliseconds(250)) }
+                catch { break }
+                continue
             }
 
-            // Skip tasks already dispatched and tasks waiting on an exclusive
-            // resource lock. Later tasks in different roots may still run.
-            guard let next = dispatchableTasks.first(where: {
-                !dispatchedTasks.contains($0.id)
-                    && canAcquireResourceLock(for: $0, accessMode: resourceAccess(for: $0))
-            }) else {
-                if let blocked = dispatchableTasks.first(where: { !dispatchedTasks.contains($0.id) }) {
-                    let accessMode = resourceAccess(for: blocked)
+            // Global FIFO gives old work priority; filtering only unavailable
+            // tasks/resources avoids head-of-line blocking across projects.
+            guard let next = ExecutionRequestAdmissionScheduler.nextCandidate(
+                from: projection,
+                dispatchedRequestIDs: dispatchedRequestIDs,
+                activeTaskIDs: activeTasks,
+                resourceIsAvailable: {
+                    TaskForkPolicyService.readOnlyReason(for: $0) == nil
+                        && canAcquireResourceLock(for: $0, accessMode: resourceAccess(for: $0))
+                }
+            ) else {
+                if let blocked = projection.ordered.first(where: {
+                    !dispatchedRequestIDs.contains($0.request.id) && !activeTasks.contains($0.task.id)
+                }) {
+                    let accessMode = resourceAccess(for: blocked.task)
                     let claim = TaskResourceLockClaim(
-                        taskID: blocked.id,
-                        resourceKey: resourceKey(for: blocked),
+                        taskID: blocked.task.id,
+                        resourceKey: resourceKey(for: blocked.task),
                         accessMode: accessMode,
-                        runMode: "task"
+                        runMode: "request"
                     )
-                    if waitingResourceLocks[blocked.id] == nil {
-                        waitingResourceLocks[blocked.id] = claim
-                        AppLogger.audit(.resourceLockWaiting, category: "Queue", taskID: blocked.id, fields: [
+                    if waitingResourceLocks[blocked.task.id] == nil {
+                        waitingResourceLocks[blocked.task.id] = claim
+                        _ = transitionPersistedTurn(
+                            blocked.request,
+                            to: .waitingForResource,
+                            blockingTaskID: activeResourceLocks.first {
+                                resourceKeysConflict($0.resourceKey, claim.resourceKey)
+                            }?.taskID,
+                            blockerSummary: resourceLockBlockerSummary(for: claim),
+                            modelContext: modelContext
+                        )
+                        AppLogger.audit(.resourceLockWaiting, category: "Queue", taskID: blocked.task.id, fields: [
                             "resource_key": claim.resourceKey,
                             "access_mode": claim.accessMode.rawValue,
                             "run_mode": claim.runMode,
                             "reason": resourceLockBlockerSummary(for: claim)
                         ], level: .warning)
                     }
+                } else if let blocked = projection.ordered.first(where: {
+                    !dispatchedRequestIDs.contains($0.request.id) && activeTasks.contains($0.task.id)
+                }) {
+                    _ = transitionPersistedTurn(
+                        blocked.request,
+                        to: .waitingForWorker,
+                        blockerSummary: "Waiting for the current run in this task to finish.",
+                        modelContext: modelContext
+                    )
                 }
                 do { try await Task.sleep(for: .milliseconds(500)) }
                 catch { break }
@@ -1300,45 +1314,30 @@ final class TaskQueue {
             }
 
             // Mark as dispatched BEFORE firing the Task to prevent double-dispatch
-            dispatchedTasks.insert(next.id)
+            dispatchedRequestIDs.insert(next.request.id)
 
-            AppLogger.audit(.taskDequeued, category: "Queue", taskID: next.id, fields: [
-                "queued_count": String(tasks.count),
+            AppLogger.audit(.taskDequeued, category: "Queue", taskID: next.task.id, fields: [
+                "request_id": next.request.id.uuidString,
+                "queued_count": String(projection.ordered.count),
                 "active_count": String(activeCount),
                 "pool_size": String(poolSize)
             ])
 
             let queue = self
-            Task { @MainActor in
-                if let request = queue.queuedExecutionRequest(for: next, modelContext: modelContext) {
-                    await queue.executeQueuedRequest(
-                        request,
-                        task: next,
-                        modelContext: modelContext,
-                        resourceAccess: queue.resourceAccess(for: next)
-                    )
-                } else if case .success(let submission) = ExecutionRequestSubmissionService.submitInitial(
-                    for: next,
-                    into: modelContext
-                ), let request = try? TaskTurnRequestRepository.request(
-                    id: submission.requestID,
-                    in: modelContext
-                ) {
-                    await queue.executeQueuedRequest(
-                        request,
-                        task: next,
-                        modelContext: modelContext,
-                        resourceAccess: queue.resourceAccess(for: next)
-                    )
-                } else {
-                    TaskStateMachine.failFromRuntime(next, modelContext: modelContext)
-                    WorkspacePersistenceCoordinator.saveAndAutoExport(
-                        workspace: next.workspace,
-                        modelContext: modelContext
-                    )
+            let requestID = next.request.id
+            let dispatchTask = Task { @MainActor in
+                defer {
+                    queue.dispatchedRequestIDs.remove(requestID)
+                    queue.requestTaskRegistry.finishDispatch(requestID: requestID)
                 }
-                queue.dispatchedTasks.remove(next.id)
+                await queue.executeQueuedRequest(
+                    next.request,
+                    task: next.task,
+                    modelContext: modelContext,
+                    resourceAccess: queue.resourceAccess(for: next.task)
+                )
             }
+            requestTaskRegistry.registerDispatch(dispatchTask, requestID: requestID)
 
             // Brief yield to let the task start
             do { try await Task.sleep(for: .milliseconds(100)) }
@@ -1351,16 +1350,9 @@ final class TaskQueue {
             catch { break }
         }
 
-        dispatchedTasks.removeAll()
+        dispatchedRequestIDs.removeAll()
+        processingModelContext = nil
         isProcessing = false
-    }
-
-    @MainActor
-    private func queuedExecutionRequest(
-        for task: AgentTask,
-        modelContext: ModelContext
-    ) -> TaskTurnRequest? {
-        try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext).first
     }
 
     @MainActor
@@ -1375,6 +1367,17 @@ final class TaskQueue {
             return
         }
         let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)
+        if source?.launchMode == .continuation || request.kind == .followUp {
+            _ = await continuePersistedTurn(
+                task: task,
+                requestID: request.id,
+                modelContext: modelContext,
+                executionPolicy: source?.executionPolicyOverride?.executionPolicy ?? .default,
+                resourceAccess: resourceAccess,
+                onEvent: { _ in }
+            )
+            return
+        }
         if source?.launchMode == .approvedPlan || request.kind == .planStep {
             guard let source,
                   let requestedPlanID = source.planID,
@@ -1516,6 +1519,7 @@ final class TaskQueue {
             ], level: .error)
             return
         }
+        requestTaskRegistry.complete(requestID: request.id)
         AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
             "scope": "turn_request",
             "request_id": request.id.uuidString
@@ -1560,7 +1564,32 @@ final class TaskQueue {
         }
         taskWorkerMap.removeAll()
         activeTasks.removeAll()
-        dispatchedTasks.removeAll()
+        let cancelledDispatchIDs = dispatchedRequestIDs
+        requestTaskRegistry.cancelOwnedTasks()
+        dispatchedRequestIDs.removeAll()
+        let waitingRequestIDs = requestTaskRegistry.waitingRequestIDs
+        var completedRequestIDs = cancelledDispatchIDs
+        if let processingModelContext,
+           let requests = try? TaskTurnRequestRepository.allActiveRequests(in: processingModelContext) {
+            for request in requests {
+                _ = TaskTurnRequestStateMachine.transition(
+                    request,
+                    to: .cancelled,
+                    terminalReason: "queue_cancelled"
+                )
+                if completedRequestIDs.insert(request.id).inserted {
+                    requestTaskRegistry.complete(requestID: request.id)
+                }
+            }
+            _ = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: processingModelContext,
+                auditFields: ["operation": "cancel_all_execution_requests"]
+            )
+        }
+        for requestID in waitingRequestIDs where !completedRequestIDs.contains(requestID) {
+            requestTaskRegistry.complete(requestID: requestID)
+        }
+        processingModelContext = nil
         activeResourceLocks.removeAll()
         waitingResourceLocks.removeAll()
         isProcessingScheduled = false
@@ -1574,6 +1603,17 @@ final class TaskQueue {
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
         ])
+    }
+
+    /// Scene/test teardown boundary. `cancelAll()` synchronously revokes queue
+    /// authority; this variant additionally waits until every task that had
+    /// already received SwiftData objects has returned them, preventing those
+    /// objects from outliving their ModelContext.
+    @MainActor
+    func cancelAllAndWait() async {
+        let drain = requestTaskRegistry.drainSnapshot()
+        cancelAll()
+        await drain.wait()
     }
 
     /// Resize the worker pool at runtime (only adds/removes idle workers).
