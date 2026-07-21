@@ -35,6 +35,7 @@ public enum RunLedgerError: Error, Equatable, Sendable {
     case missingLedger
     case closed
     case unsafeStorage(String)
+    case exclusiveWriterConflict(String)
     case corrupt(String)
     case incompatibleSchema(expected: Int, found: Int)
     case applicationIdentityMismatch(expected: Int32, found: Int32)
