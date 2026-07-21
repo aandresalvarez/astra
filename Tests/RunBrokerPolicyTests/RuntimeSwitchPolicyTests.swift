@@ -289,6 +289,67 @@ struct DurableGracefulRuntimeSwitchTests {
         }
     }
 
+    @Test("Replacement-dispatch doubt is a distinct claim from source doubt")
+    func replacementDispatchDoubtIsDistinctFromSourceDoubt() throws {
+        let fixture = try Fixture()
+        let prepared = try fixture.preparedGracefulState(effectID: effectID(70))
+        let effect = try #require(prepared.record?.controlEffect)
+        let acceptedControl = RuntimeSwitchPolicy.acknowledgeControl(
+            prepared,
+            acceptance: .init(
+                evidenceID: evidenceID(71),
+                effectID: effect.effectID,
+                source: fixture.source,
+                ledgerSequence: 60
+            )
+        ).state
+
+        // Before terminal evidence exists, replacement doubt is not claimable:
+        // there is no replacement whose dispatch could be in doubt.
+        #expect(RuntimeSwitchPolicy.markReplacementDispatchInDoubt(
+            acceptedControl,
+            source: fixture.source
+        ).blockedReason == .invalidTransition)
+
+        let replacementReady = RuntimeSwitchPolicy.observeSourceTerminal(
+            acceptedControl,
+            attestation: try fixture.terminal(replacementEffectID: effectID(72))
+        ).state
+        #expect(replacementReady.record?.progress == .replacementDispatchPending)
+
+        // Fence mismatch is blocked before any state changes.
+        #expect(RuntimeSwitchPolicy.markReplacementDispatchInDoubt(
+            replacementReady,
+            source: try fixture.sourceFence(installationID: installationID(92))
+        ).blockedReason == .invalidTransition)
+
+        // An ambiguous replacement dispatch may claim doubt, and the record
+        // keeps its terminal evidence so recovery reconciles the replacement
+        // by stable effect identity instead of re-observing a dead source.
+        let doubted = RuntimeSwitchPolicy.markReplacementDispatchInDoubt(
+            replacementReady,
+            source: fixture.source
+        )
+        #expect(doubted.blockedReason == nil)
+        #expect(doubted.state.record?.progress == .inDoubt)
+        #expect(doubted.state.record?.replacementEffect != nil)
+        #expect(RuntimeSwitchPolicy.markReplacementDispatchInDoubt(
+            doubted.state,
+            source: fixture.source
+        ).disposition == .idempotent)
+
+        // Source doubt remains not claimable once the source is attested
+        // terminal — including on the replacement-doubt record itself.
+        #expect(RuntimeSwitchPolicy.markSourceInDoubt(
+            replacementReady,
+            source: fixture.source
+        ).blockedReason == .invalidTransition)
+        #expect(RuntimeSwitchPolicy.markSourceInDoubt(
+            doubted.state,
+            source: fixture.source
+        ).blockedReason == .invalidTransition)
+    }
+
     @Test("Replacement launch requires exact authoritative terminal evidence and completes only when target runs")
     func terminalThenReplacementThenRunning() throws {
         let fixture = try Fixture()
