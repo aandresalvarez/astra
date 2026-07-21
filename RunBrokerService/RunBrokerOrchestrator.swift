@@ -373,6 +373,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         guard let execution = try ledger.projection().executions[executionID] else {
             throw RunBrokerServiceError.supervisorIdentityMismatch
         }
+        // Two distinct identities meet here. The supervisor process and its
+        // vaulted capability are bound forever to the immutable LAUNCH
+        // identity from the manifest; a journaled authority transfer never
+        // re-bootstraps the child. Ledger appends, by contrast, must carry
+        // the CURRENT authority from the projection or the fencing primitive
+        // rejects them as stale. Conflating the two turned every legal
+        // transfer into a permanent capability/identity mismatch.
+        let launchIdentity = RunSupervisorIdentity(manifest: execution.manifest)
         let identity = RunSupervisorIdentity(
             installationID: execution.manifest.installationID,
             storeID: execution.manifest.storeID,
@@ -382,7 +390,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         guard let capability = try vault.load(executionID: executionID) else {
             return try markInDoubt(identity: identity, reason: "missing_capability")
         }
-        guard capability.identity == identity,
+        guard capability.identity == launchIdentity,
               capability.manifestSHA256 == (try RunSupervisorDigests.manifest(execution.manifest)) else {
             return try markInDoubt(identity: identity, reason: "capability_identity_mismatch")
         }
@@ -391,28 +399,29 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         }
 
         var state = try journalState(executionID: executionID)
-        // A crash may commit an authenticated observation but not its derived
-        // execution-control transition. Repair from canonical journal truth
-        // before asking the supervisor for events after the durable cursor.
-        for observation in state.observations.values.sorted(by: {
-            $0.supervisorSequence < $1.supervisorSequence
-        }) {
-            try ensureDerivedControl(
-                for: supervisorEvent(from: observation),
-                identity: identity,
-                state: &state
-            )
-        }
         var lastSource: RunBrokerSupervisorReplaySource?
         var acknowledgedThisPass: UInt64 = 0
         do {
+            // A crash may commit an authenticated observation but not its
+            // derived execution-control transition. Repair from canonical
+            // journal truth before asking the supervisor for events after
+            // the durable cursor.
+            for observation in state.observations.values.sorted(by: {
+                $0.supervisorSequence < $1.supervisorSequence
+            }) {
+                try ensureDerivedControl(
+                    for: supervisorEvent(from: observation),
+                    identity: identity,
+                    state: &state
+                )
+            }
             while true {
                 let batch = try transport.replay(
-                    identity: identity,
+                    identity: launchIdentity,
                     capability: capability.capability,
                     after: state.lastSequence
                 )
-                guard batch.identity == identity else {
+                guard batch.identity == launchIdentity else {
                     return try markInDoubt(identity: identity, reason: "supervisor_identity_mismatch")
                 }
                 guard batch.lastSequence >= state.lastSequence,
@@ -430,7 +439,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                     }
                     if state.lastSequence > acknowledgedThisPass {
                         try transport.acknowledge(
-                            identity: identity,
+                            identity: launchIdentity,
                             capability: capability.capability,
                             source: batch.source,
                             through: state.lastSequence
@@ -443,13 +452,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                     try persist(
                         event,
                         identity: identity,
+                        manifestCreatedAt: execution.manifest.createdAt,
                         policy: policy,
                         state: &state,
                         startFaultsEnabled: startFaultsEnabled
                     )
                 }
                 try transport.acknowledge(
-                    identity: identity,
+                    identity: launchIdentity,
                     capability: capability.capability,
                     source: batch.source,
                     through: state.lastSequence
@@ -471,6 +481,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 RunSupervisorError.invalidIdentity,
                 RunSupervisorError.launchPayloadConflict {
             return try markInDoubt(identity: identity, reason: "authentication_failed")
+        } catch RunLedgerError.eventIDReuse {
+            // Deterministic observation/derived-control event IDs are bound
+            // to exact recorded facts. A same-ID different-content collision
+            // means supervisor evidence and journal truth diverge. That is
+            // observable recovery state, not a programming error: mark the
+            // execution in-doubt instead of letting reconcile throw the raw
+            // ledger error forever without ever reaching a durable verdict.
+            return try markInDoubt(identity: identity, reason: "durable_evidence_conflict")
         }
 
         let projected = try ledger.projection().executions[executionID]
@@ -486,13 +504,26 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
     private func persist(
         _ event: RunSupervisorEvent,
         identity: RunSupervisorIdentity,
+        manifestCreatedAt: Date,
         policy: ExecutionSupervisionPolicySnapshot,
         state: inout JournalState,
         startFaultsEnabled: Bool
     ) throws {
         if let existing = state.observations[event.sequence] {
-            let requested = observation(event, identity: identity)
-            guard existing == requested else {
+            let requested = observation(
+                event,
+                identity: identity,
+                manifestCreatedAt: manifestCreatedAt
+            )
+            // The recording authority is broker-side metadata, not supervisor
+            // evidence. Identical supervisor content journaled before an
+            // authority transfer replays under the successor epoch and must
+            // be recognized as the same recorded fact.
+            guard supervisorContentMatches(recorded: existing, derived: requested),
+                  isRecordedUnderCurrentOrEarlierAuthority(
+                    existing.authority,
+                    current: identity.authority
+                  ) else {
                 throw RunBrokerServiceError.supervisorEventConflict(sequence: event.sequence)
             }
             try ensureDerivedControl(for: event, identity: identity, state: &state)
@@ -519,10 +550,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             }
         }
 
-        let durable = observation(event, identity: identity)
+        let durable = observation(
+            event,
+            identity: identity,
+            manifestCreatedAt: manifestCreatedAt
+        )
         _ = try ledger.append(.init(
             eventID: deterministicEventID(event.id, domain: "supervisor-observation"),
-            occurredAt: event.timestamp,
+            occurredAt: durable.occurredAt,
             event: .supervisorObservationRecorded(durable)
         ))
         state.observations[event.sequence] = durable
@@ -611,9 +646,44 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         event: RunSupervisorEvent,
         domain: String
     ) throws {
+        let eventID = deterministicEventID(event.id, domain: domain)
+        // A derived control event is a fact derived exactly once from its
+        // source observation, journaled under the authority that was current
+        // at that moment. Replay re-derives under the projection's CURRENT
+        // authority, so after a journaled authority transfer the same
+        // deterministic ID would carry a different payload and the ledger's
+        // event-ID fence would reject every subsequent reconcile. Recognize
+        // the journaled fact by exact ID and provenance instead of
+        // re-deriving it; only a genuinely different fact under this ID is a
+        // conflict.
+        if let existing = try ledger.event(eventID: eventID) {
+            guard case .executionControlTransitioned(
+                let recordedExecutionID,
+                let recordedAuthority,
+                let recordedTransition,
+                let recordedCapabilities
+            ) = existing.envelope.event,
+                recordedExecutionID == identity.executionID,
+                recordedTransition == transition,
+                recordedCapabilities == [.observe, .cancel],
+                isRecordedUnderCurrentOrEarlierAuthority(
+                    recordedAuthority,
+                    current: identity.authority
+                ) else {
+                throw RunLedgerError.eventIDReuse(eventID)
+            }
+            return
+        }
+        // The supervisor's clock is not the ledger's clock. The projector
+        // enforces per-execution monotonicity, so anchor the fresh fact to
+        // its observation time but never behind the durable execution state
+        // (mirrors markInDoubt's clamp). Replays never recompute this value:
+        // the exact-ID recognition above accepts the journaled event.
+        let executionUpdatedAt = try ledger.projection()
+            .executions[identity.executionID]?.updatedAt
         _ = try ledger.append(.init(
-            eventID: deterministicEventID(event.id, domain: domain),
-            occurredAt: event.timestamp,
+            eventID: eventID,
+            occurredAt: max(event.timestamp, executionUpdatedAt ?? event.timestamp),
             event: .executionControlTransitioned(
                 executionID: identity.executionID,
                 authority: identity.authority,
@@ -621,6 +691,35 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 backendCapabilities: [.observe, .cancel]
             )
         ))
+    }
+
+    /// A fact recorded under an earlier fencing epoch stays true after a
+    /// journaled authority transfer. Only a same-epoch different-identity or
+    /// future-epoch recording conflicts with the current authority.
+    private func isRecordedUnderCurrentOrEarlierAuthority(
+        _ recorded: RunBrokerAuthority,
+        current: RunBrokerAuthority
+    ) -> Bool {
+        recorded.epoch < current.epoch || recorded == current
+    }
+
+    /// Supervisor-evidence equality independent of broker-side recording
+    /// metadata (the journaling authority).
+    private func supervisorContentMatches(
+        recorded: RunBrokerSupervisorObservation,
+        derived: RunBrokerSupervisorObservation
+    ) -> Bool {
+        recorded.executionID == derived.executionID
+            && recorded.supervisorSequence == derived.supervisorSequence
+            && recorded.supervisorEventID == derived.supervisorEventID
+            && recorded.occurredAt == derived.occurredAt
+            && recorded.kind == derived.kind
+            && recorded.output == derived.output
+            && recorded.exitCode == derived.exitCode
+            && recorded.terminationSignal == derived.terminationSignal
+            && recorded.terminationReason == derived.terminationReason
+            && recorded.cancellationIntent == derived.cancellationIntent
+            && recorded.quarantinedByteCount == derived.quarantinedByteCount
     }
 
     private func journalState(executionID: RunBrokerExecutionID) throws -> JournalState {
@@ -662,14 +761,20 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
 
     private func observation(
         _ event: RunSupervisorEvent,
-        identity: RunSupervisorIdentity
+        identity: RunSupervisorIdentity,
+        manifestCreatedAt: Date
     ) -> RunBrokerSupervisorObservation {
         .init(
             executionID: identity.executionID,
             authority: identity.authority,
             supervisorSequence: event.sequence,
             supervisorEventID: event.id,
-            occurredAt: event.timestamp,
+            // The supervisor's clock may regress behind the app clock that
+            // stamped the manifest. The ledger fails such evidence closed
+            // (invalidEvent) and would wedge reconcile while the supervisor
+            // keeps running; clamping to the immutable manifest instant is
+            // deterministic across replays and mirrors markInDoubt's clamp.
+            occurredAt: max(event.timestamp, manifestCreatedAt),
             kind: .init(rawValue: event.kind.rawValue)!,
             output: event.payload.data,
             exitCode: event.payload.exitCode,
