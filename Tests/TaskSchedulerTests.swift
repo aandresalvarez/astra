@@ -235,7 +235,7 @@ struct SchedulerLifecycleTests {
     }
 
     @Test("Firing a schedule wakes the queue instead of directly executing it")
-    func fireScheduleWakesQueue() throws {
+    func fireScheduleWakesQueue() async throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let scheduler = TaskScheduler()
@@ -269,7 +269,7 @@ struct SchedulerLifecycleTests {
         #expect(queue.hasProcessingLoop)
         #expect(queue.processQueueIfIdle(modelContext: ctx) == false)
 
-        queue.cancelAll()
+        await queue.cancelAllAndWait()
     }
 }
 
