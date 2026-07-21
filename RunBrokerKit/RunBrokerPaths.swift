@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import ASTRACore
 
 public struct RunBrokerChannelIdentity: Equatable, Sendable {

@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import Darwin
 
 /// Cross-process serialization for one channel's complete installation

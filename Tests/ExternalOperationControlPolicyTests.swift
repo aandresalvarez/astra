@@ -21,34 +21,22 @@ struct ExternalOperationControlPolicyTests {
             binding: decodedBinding,
             cancellationIntent: .immediate
         )
-        #expect(forged.observation.kind == .allowed)
+        #expect(forged.observation == .init(
+            kind: .blocked,
+            reason: .unverifiedProvenance
+        ))
         #expect(forged.cancellation == .init(
             kind: .blocked,
             reason: .unverifiedProvenance
         ))
-
-        let evidence = try verifiedEvidence(for: context)
-        #expect(!((evidence as Any) is any Encodable))
-        let verified = ExternalOperationControlPolicy.assess(
-            target: context.target,
-            binding: context.binding,
-            cancellationIntent: .immediate,
-            verifiedEvidence: evidence
-        )
-        #expect(verified.cancellation == .init(
-            kind: .allowed,
-            reason: .verifiedImmediateTermination,
-            auditRequirement: .immediateTermination
-        ))
-
         let wire = String(decoding: try JSONEncoder().encode(context.binding), as: UTF8.self)
         #expect(!wire.contains("ownership"))
         #expect(!wire.contains("provenance"))
         #expect(!wire.contains("authenticated"))
     }
 
-    @Test("Immediate supervisor termination is provider-neutral and explicitly audited")
-    func supervisorImmediateTerminationCoversEveryRuntime() throws {
+    @Test("Untrusted supervisor declarations cannot self-authorize any runtime")
+    func supervisorDeclarationsRemainUnverifiedForEveryRuntime() throws {
         let runtimes: [AgentRuntimeID] = [
             .claudeCode,
             .copilotCLI,
@@ -63,13 +51,13 @@ struct ExternalOperationControlPolicyTests {
             let result = ExternalOperationControlPolicy.assess(
                 target: context.target,
                 binding: context.binding,
-                cancellationIntent: .immediate,
-                verifiedEvidence: try verifiedEvidence(for: context)
+                cancellationIntent: .immediate
             )
 
             #expect(result.cancellationIntent == .immediate)
-            #expect(result.cancellation.kind == .allowed, "runtime: \(runtime.rawValue)")
-            #expect(result.cancellation.auditRequirement == .immediateTermination)
+            #expect(result.cancellation.kind == .blocked, "runtime: \(runtime.rawValue)")
+            #expect(result.cancellation.reason == .unverifiedProvenance)
+            #expect(result.cancellation.auditRequirement == .none)
         }
     }
 
@@ -78,28 +66,25 @@ struct ExternalOperationControlPolicyTests {
         let immediateOnly = try makeSupervisorContext(
             capabilities: [.observe, .immediateTermination]
         )
-        let evidence = try verifiedEvidence(for: immediateOnly)
         let graceful = ExternalOperationControlPolicy.assess(
             target: immediateOnly.target,
             binding: immediateOnly.binding,
-            cancellationIntent: .graceful,
-            verifiedEvidence: evidence
+            cancellationIntent: .graceful
         )
         #expect(graceful.cancellationIntent == .graceful)
         #expect(graceful.cancellation == .init(
             kind: .blocked,
-            reason: .gracefulCancellationCapabilityMissing
+            reason: .unverifiedProvenance
         ))
         #expect(graceful.cancellation.auditRequirement == .none)
 
         let immediate = ExternalOperationControlPolicy.assess(
             target: immediateOnly.target,
             binding: immediateOnly.binding,
-            cancellationIntent: .immediate,
-            verifiedEvidence: evidence
+            cancellationIntent: .immediate
         )
-        #expect(immediate.cancellation.kind == .allowed)
-        #expect(immediate.cancellation.reason == .verifiedImmediateTermination)
+        #expect(immediate.cancellation.kind == .blocked)
+        #expect(immediate.cancellation.reason == .unverifiedProvenance)
 
         let gracefulContext = try makeSupervisorContext(
             seed: 11,
@@ -108,12 +93,11 @@ struct ExternalOperationControlPolicyTests {
         let supportedGraceful = ExternalOperationControlPolicy.assess(
             target: gracefulContext.target,
             binding: gracefulContext.binding,
-            cancellationIntent: .graceful,
-            verifiedEvidence: try verifiedEvidence(for: gracefulContext)
+            cancellationIntent: .graceful
         )
         #expect(supportedGraceful.cancellation == .init(
-            kind: .allowed,
-            reason: .verifiedGracefulCancellation
+            kind: .blocked,
+            reason: .unverifiedProvenance
         ))
     }
 
@@ -125,7 +109,7 @@ struct ExternalOperationControlPolicyTests {
             binding: monitored.binding,
             cancellationIntent: .immediate
         )
-        #expect(result.observation.kind == .allowed)
+        #expect(result.observation == .init(kind: .blocked, reason: .unverifiedProvenance))
         #expect(result.cancellation == .init(
             kind: .monitoringOnly,
             reason: .managedDockerPendingAuthenticatedControl
@@ -144,7 +128,7 @@ struct ExternalOperationControlPolicyTests {
                 binding: overclaim.binding,
                 cancellationIntent: .immediate
             )
-            #expect(blocked.observation.kind == .allowed)
+            #expect(blocked.observation == .init(kind: .blocked, reason: .unverifiedProvenance))
             #expect(blocked.cancellation == .init(
                 kind: .blocked,
                 reason: .cancellationCapabilityOverclaim
@@ -170,7 +154,7 @@ struct ExternalOperationControlPolicyTests {
                 binding: context.binding,
                 cancellationIntent: .graceful
             )
-            #expect(result.observation.kind == .allowed)
+            #expect(result.observation == .init(kind: .blocked, reason: .unverifiedProvenance))
             #expect(result.cancellation == .init(kind: .monitoringOnly, reason: reason))
         }
     }
@@ -181,26 +165,30 @@ struct ExternalOperationControlPolicyTests {
         let immediateResult = ExternalOperationControlPolicy.assess(
             target: immediateOnly.target,
             binding: immediateOnly.binding,
-            cancellationIntent: .immediate,
-            verifiedEvidence: try verifiedEvidence(for: immediateOnly)
+            cancellationIntent: .immediate
         )
         #expect(immediateResult.observation == .init(
             kind: .blocked,
             reason: .observationCapabilityMissing
         ))
-        #expect(immediateResult.cancellation.kind == .allowed)
+        #expect(immediateResult.cancellation == .init(
+            kind: .blocked,
+            reason: .unverifiedProvenance
+        ))
 
         let observationOnly = try makeSupervisorContext(capabilities: [.observe])
         let observationResult = ExternalOperationControlPolicy.assess(
             target: observationOnly.target,
             binding: observationOnly.binding,
-            cancellationIntent: .immediate,
-            verifiedEvidence: try verifiedEvidence(for: observationOnly)
+            cancellationIntent: .immediate
         )
-        #expect(observationResult.observation.kind == .allowed)
+        #expect(observationResult.observation == .init(
+            kind: .blocked,
+            reason: .unverifiedProvenance
+        ))
         #expect(observationResult.cancellation == .init(
             kind: .blocked,
-            reason: .immediateTerminationCapabilityMissing
+            reason: .unverifiedProvenance
         ))
     }
 
@@ -231,7 +219,7 @@ struct ExternalOperationControlPolicyTests {
             binding: context.binding,
             cancellationIntent: .immediate
         )
-        #expect(result.observation.kind == .allowed)
+        #expect(result.observation == .init(kind: .blocked, reason: .unverifiedProvenance))
         #expect(result.cancellation == .init(kind: .blocked, reason: .unsupportedBackend))
     }
 
@@ -300,7 +288,7 @@ struct ExternalOperationControlPolicyTests {
             binding: mismatchedBinding,
             cancellationIntent: .immediate
         )
-        #expect(result.observation.kind == .allowed)
+        #expect(result.observation == .init(kind: .blocked, reason: .unverifiedProvenance))
         #expect(result.cancellation == .init(
             kind: .blocked,
             reason: .staleSupervisorIdentity
@@ -389,65 +377,11 @@ struct ExternalOperationControlPolicyTests {
         }
     }
 
-    @Test("Verifier refuses mismatched descriptors and monitoring backends")
-    func verifierBoundaryFailsClosed() throws {
-        let context = try makeSupervisorContext()
-        let other = try makeSupervisorContext(seed: 41)
-        #expect(throws: ExternalOperationControlVerificationError.descriptorMismatch) {
-            try ExternalOperationControlProvenanceVerifier.verify(
-                target: other.target,
-                binding: context.binding,
-                authenticator: ExpectedSupervisorAuthenticator(
-                    identity: try #require(context.binding.backendIdentity.supervisorIdentity)
-                )
-            )
-        }
-
-        let docker = try makeMonitoringContext(kind: .managedDockerJob)
-        #expect(throws: ExternalOperationControlVerificationError.unsupportedBackend) {
-            try ExternalOperationControlProvenanceVerifier.verify(
-                target: docker.target,
-                binding: docker.binding,
-                authenticator: ExpectedSupervisorAuthenticator(
-                    identity: try #require(context.binding.backendIdentity.supervisorIdentity)
-                )
-            )
-        }
-    }
 }
 
 private struct ExternalOperationControlTestContext {
     let target: ExternalOperationControlTarget
     let binding: ExternalOperationControlBinding
-}
-
-private enum TestAuthenticatorError: Error {
-    case identityMismatch
-}
-
-private struct ExpectedSupervisorAuthenticator: ExternalOperationControlProvenanceAuthenticating {
-    let identity: ExternalOperationSupervisorIdentity
-
-    func authenticate(
-        target: ExternalOperationControlTarget,
-        binding: ExternalOperationControlBinding
-    ) throws {
-        guard target.backendIdentity.supervisorIdentity == identity,
-              binding.backendIdentity.supervisorIdentity == identity else {
-            throw TestAuthenticatorError.identityMismatch
-        }
-    }
-}
-
-private func verifiedEvidence(
-    for context: ExternalOperationControlTestContext
-) throws -> ExternalOperationVerifiedEvidence {
-    let identity = try #require(context.binding.backendIdentity.supervisorIdentity)
-    return try ExternalOperationControlProvenanceVerifier.verify(
-        target: context.target,
-        binding: context.binding,
-        authenticator: ExpectedSupervisorAuthenticator(identity: identity)
-    )
 }
 
 private func makeSupervisorContext(

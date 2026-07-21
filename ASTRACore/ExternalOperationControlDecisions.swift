@@ -1,10 +1,10 @@
-public enum ExternalOperationControlDecisionKind: String, Equatable, Sendable {
+public enum ExternalOperationControlDecisionKind: String, Codable, Equatable, Sendable {
     case allowed
     case monitoringOnly = "monitoring_only"
     case blocked
 }
 
-public enum ExternalOperationControlDecisionReason: String, Equatable, Sendable {
+public enum ExternalOperationControlDecisionReason: String, Codable, Equatable, Sendable {
     case observationCapabilityVerified = "observation_capability_verified"
     case verifiedGracefulCancellation = "verified_graceful_cancellation"
     case verifiedImmediateTermination = "verified_immediate_termination"
@@ -26,12 +26,12 @@ public enum ExternalOperationControlDecisionReason: String, Equatable, Sendable 
     case unsupportedBackend = "unsupported_backend"
 }
 
-public enum ExternalOperationControlAuditRequirement: String, Equatable, Sendable {
+public enum ExternalOperationControlAuditRequirement: String, Codable, Equatable, Sendable {
     case none
     case immediateTermination = "immediate_termination"
 }
 
-public struct ExternalOperationControlDecision: Equatable, Sendable {
+public struct ExternalOperationControlDecision: Codable, Equatable, Sendable {
     public let kind: ExternalOperationControlDecisionKind
     public let reason: ExternalOperationControlDecisionReason
     public let auditRequirement: ExternalOperationControlAuditRequirement
@@ -50,7 +50,7 @@ public struct ExternalOperationControlDecision: Equatable, Sendable {
 /// Observation and cancellation are evaluated separately. The requested
 /// cancellation intent remains explicit in the result so callers cannot turn a
 /// blocked graceful request into an immediate termination.
-public struct ExternalOperationControlAssessment: Equatable, Sendable {
+public struct ExternalOperationControlAssessment: Codable, Equatable, Sendable {
     public let cancellationIntent: ExecutionCancellationIntent
     public let observation: ExternalOperationControlDecision
     public let cancellation: ExternalOperationControlDecision

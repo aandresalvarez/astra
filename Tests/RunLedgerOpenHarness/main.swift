@@ -16,23 +16,30 @@ do {
         installationID: .init(rawValue: installationUUID),
         busyTimeoutMilliseconds: 10_000
     )
-    let crashPoint: RunLedgerInitializationCrashPoint?
+    let initializationCrashPoint: RunLedgerInitializationCrashPoint?
+    let migrationCrashPoint: RunLedgerMigrationCrashPoint?
     if CommandLine.arguments.count == 5 {
-        guard let parsed = RunLedgerInitializationCrashPoint(
-            rawValue: CommandLine.arguments[4]
-        ) else {
+        let rawValue = CommandLine.arguments[4]
+        initializationCrashPoint = RunLedgerInitializationCrashPoint(rawValue: rawValue)
+        migrationCrashPoint = RunLedgerMigrationCrashPoint(rawValue: rawValue)
+        guard initializationCrashPoint != nil || migrationCrashPoint != nil else {
             FileHandle.standardError.write(Data("unknown crash point\n".utf8))
             exit(64)
         }
-        crashPoint = parsed
     } else {
-        crashPoint = nil
+        initializationCrashPoint = nil
+        migrationCrashPoint = nil
     }
     let ledger: RunLedger
-    if let crashPoint {
+    if let initializationCrashPoint {
         ledger = try RunLedger(
             configuration: configuration,
-            crashingInitializationAt: crashPoint
+            crashingInitializationAt: initializationCrashPoint
+        )
+    } else if let migrationCrashPoint {
+        ledger = try RunLedger(
+            configuration: configuration,
+            crashingMigrationAt: migrationCrashPoint
         )
     } else {
         ledger = try RunLedger(configuration: configuration)

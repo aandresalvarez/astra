@@ -464,8 +464,7 @@ public struct RuntimeSwitchRecord: Codable, Equatable, Hashable, Sendable {
                 && completionEvidenceID != nil
                 && completionLedgerSequence != nil
         case .inDoubt:
-            return replacementEffect == nil
-                && replacementAcceptanceID == nil
+            return replacementAcceptanceID == nil
                 && replacementAcceptanceLedgerSequence == nil
                 && completionEvidenceID == nil
                 && completionLedgerSequence == nil
@@ -1189,6 +1188,49 @@ public enum RuntimeSwitchPolicy {
             return .blocked(state, .invalidTransition)
         }
         if record.progress == .inDoubt { return .result(state, .idempotent) }
+        let next = RuntimeSwitchRecord(
+            request: record.request,
+            requestDigest: record.requestDigest,
+            sourceLedgerSequence: record.sourceLedgerSequence,
+            targetReservation: record.targetReservation,
+            progress: .inDoubt,
+            forceChallenge: record.forceChallenge,
+            controlEffect: record.controlEffect,
+            controlAcceptanceID: record.controlAcceptanceID,
+            controlAcceptanceLedgerSequence: record.controlAcceptanceLedgerSequence,
+            replacementEffect: record.replacementEffect,
+            replacementAcceptanceID: record.replacementAcceptanceID
+        )
+        return .result(
+            .init(record: next, lastArchivedCompletion: state.lastArchivedCompletion),
+            .inDoubt
+        )
+    }
+
+    /// Records doubt about the REPLACEMENT dispatch outcome — a distinct claim
+    /// from `markSourceInDoubt`. Here the source is already attested terminal
+    /// (`replacementEffect` carries that evidence), and what is unknown is
+    /// whether the reserved replacement launch reached the backend. The record
+    /// keeps its terminal evidence so recovery reconciles the replacement by
+    /// its stable reservation/effect identity instead of re-observing a source
+    /// that is proven dead — and never generates a second launch. Once the
+    /// backend has acknowledged the replacement (`replacementAcceptanceID`),
+    /// its outcome is known and doubt is no longer claimable.
+    public static func markReplacementDispatchInDoubt(
+        _ state: RuntimeSwitchPolicyState,
+        source: RuntimeSwitchSourceFence
+    ) -> RuntimeSwitchPolicyReduction {
+        guard let record = state.record,
+              record.request.intent.expectedSource == source,
+              record.replacementEffect != nil,
+              record.replacementAcceptanceID == nil,
+              record.progress != .completed else {
+            return .blocked(state, .invalidTransition)
+        }
+        if record.progress == .inDoubt { return .result(state, .idempotent) }
+        guard record.progress == .replacementDispatchPending else {
+            return .blocked(state, .invalidTransition)
+        }
         let next = RuntimeSwitchRecord(
             request: record.request,
             requestDigest: record.requestDigest,

@@ -8,7 +8,9 @@ public enum RunBrokerExecutionAuthorityMode: String, Codable, Equatable, Sendabl
     case appLocal = "app_local"
 }
 
-public struct RunBrokerStartRequest: Sendable {
+public struct RunBrokerStartRequest:
+    Sendable, CustomStringConvertible, CustomDebugStringConvertible
+{
     public let authorityMode: RunBrokerExecutionAuthorityMode
     public let manifest: ExecutionLaunchManifest
     public let primaryOperationID: RunBrokerOperationID
@@ -31,6 +33,12 @@ public struct RunBrokerStartRequest: Sendable {
         self.arguments = arguments
         self.environment = environment
     }
+
+    public var description: String {
+        "RunBrokerStartRequest(execution: \(manifest.executionID.rawValue), arguments: <redacted:\(arguments.count)>, environment: <redacted:\(environment.count)>)"
+    }
+
+    public var debugDescription: String { description }
 }
 
 public enum RunBrokerStartCrashPoint: String, CaseIterable, Sendable {
@@ -60,6 +68,8 @@ public enum RunBrokerServiceError: Error, Equatable, Sendable, CustomStringConve
     case installationIdentityMismatch
     case storeIdentityMismatch
     case invalidManifest
+    case idempotencyKeyConflict
+    case launchMaterialConflict
     case missingCapability
     case capabilityIdentityMismatch
     case supervisorIdentityMismatch
@@ -80,6 +90,8 @@ public enum RunBrokerServiceError: Error, Equatable, Sendable, CustomStringConve
         case .installationIdentityMismatch: "installation identity mismatch"
         case .storeIdentityMismatch: "store identity mismatch"
         case .invalidManifest: "launch manifest validation failed"
+        case .idempotencyKeyConflict: "idempotency key was reused for another mutation"
+        case .launchMaterialConflict: "ephemeral launch material conflicts with prepared admission"
         case .missingCapability: "execution capability is missing"
         case .capabilityIdentityMismatch: "execution capability identity mismatch"
         case .supervisorIdentityMismatch: "supervisor identity mismatch"
@@ -102,6 +114,13 @@ public enum RunBrokerSupervisorReplaySource: String, Equatable, Sendable {
     case offlineAuthenticatedSpool
 }
 
+public enum RunBrokerSupervisorPresence: Equatable, Sendable {
+    /// No execution directory exists, so supervisor spawn has not begun.
+    case absent
+    /// Exact capability-gated live control or offline spool evidence exists.
+    case authenticated
+}
+
 public struct RunBrokerSupervisorReplayBatch: Equatable, Sendable {
     public let identity: RunSupervisorIdentity
     public let source: RunBrokerSupervisorReplaySource
@@ -122,6 +141,11 @@ public struct RunBrokerSupervisorReplayBatch: Equatable, Sendable {
 }
 
 public protocol RunBrokerSupervisorTransporting: Sendable {
+    func presence(
+        identity: RunSupervisorIdentity,
+        capability: RunSupervisorCapability
+    ) throws -> RunBrokerSupervisorPresence
+
     func replay(
         identity: RunSupervisorIdentity,
         capability: RunSupervisorCapability,
@@ -152,15 +176,20 @@ public struct RunBrokerCapabilityRecord: Sendable, CustomStringConvertible, Cust
     public let identity: RunSupervisorIdentity
     public let manifestSHA256: ExecutionLaunchArgumentsSHA256
     public let capability: RunSupervisorCapability
+    /// Keyed digest of the complete ephemeral supervisor bootstrap. Raw argv
+    /// and environment values never enter this record.
+    public let launchMaterialAuthenticator: String?
 
     public init(
         identity: RunSupervisorIdentity,
         manifestSHA256: ExecutionLaunchArgumentsSHA256,
-        capability: RunSupervisorCapability
+        capability: RunSupervisorCapability,
+        launchMaterialAuthenticator: String? = nil
     ) {
         self.identity = identity
         self.manifestSHA256 = manifestSHA256
         self.capability = capability
+        self.launchMaterialAuthenticator = launchMaterialAuthenticator
     }
 
     public var description: String {
@@ -226,6 +255,8 @@ struct RunBrokerImmediateTerminationAuthorization: Sendable {
 /// Implemented inside the broker composition root. App/UI code submits only an
 /// untrusted request and cannot mint the returned authorization value.
 protocol RunBrokerImmediateTerminationAuthorizing: Sendable {
+    var allowsImmediateTermination: Bool { get }
+
     func authorize(
         request: RunBrokerImmediateTerminationRequest,
         expectedIdentity: RunSupervisorIdentity
@@ -234,6 +265,8 @@ protocol RunBrokerImmediateTerminationAuthorizing: Sendable {
 
 struct DenyRunBrokerImmediateTerminationAuthorizer: RunBrokerImmediateTerminationAuthorizing {
     init() {}
+    let allowsImmediateTermination = false
+
     func authorize(
         request: RunBrokerImmediateTerminationRequest,
         expectedIdentity: RunSupervisorIdentity
@@ -244,6 +277,8 @@ struct DenyRunBrokerImmediateTerminationAuthorizer: RunBrokerImmediateTerminatio
 
 struct AllowExactRunBrokerImmediateTerminationAuthorizer: RunBrokerImmediateTerminationAuthorizing {
     init() {}
+    let allowsImmediateTermination = true
+
     func authorize(
         request: RunBrokerImmediateTerminationRequest,
         expectedIdentity: RunSupervisorIdentity

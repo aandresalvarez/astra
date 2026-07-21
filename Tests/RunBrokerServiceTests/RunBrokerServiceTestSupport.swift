@@ -180,6 +180,16 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
     private(set) var replayCursors: [UInt64] = []
     private(set) var immediateTerminationCount = 0
 
+    func presence(
+        identity: RunSupervisorIdentity,
+        capability: RunSupervisorCapability
+    ) throws -> RunBrokerSupervisorPresence {
+        lock.lock()
+        defer { lock.unlock() }
+        if let replayError { throw replayError }
+        return events.isEmpty ? .absent : .authenticated
+    }
+
     func replay(
         identity: RunSupervisorIdentity,
         capability: RunSupervisorCapability,

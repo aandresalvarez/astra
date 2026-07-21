@@ -219,7 +219,9 @@ public final class RunSupervisorTrustedRoot: @unchecked Sendable {
     public func openExecutionDirectory(_ executionID: RunBrokerExecutionID) throws -> RunSupervisorRunDirectory {
         let name = "execution-\(executionID.rawValue.uuidString.lowercased())"
         let fd = openat(fileDescriptor, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else { throw RunSupervisorError.systemCall("openat execution directory", errno) }
+        guard fd >= 0 else {
+            throw RunSupervisorError.systemCall(Self.openExecutionDirectoryOperation, errno)
+        }
         do {
             try Self.validateDirectory(fd)
             return .init(fileDescriptor: fd, path: try Self.path(for: fd))
@@ -227,6 +229,20 @@ public final class RunSupervisorTrustedRoot: @unchecked Sendable {
             close(fd)
             throw error
         }
+    }
+
+    private static let openExecutionDirectoryOperation = "openat execution directory"
+
+    /// True exactly when `error` is the typed signal thrown by
+    /// `openExecutionDirectory` because the execution directory does not
+    /// exist. This distinguishes supervisor absence (no directory was ever
+    /// created, or spawn has not progressed that far yet) from
+    /// authentication, tamper, and I/O failures, which never match.
+    public static func isExecutionDirectoryAbsence(_ error: Error) -> Bool {
+        guard case RunSupervisorError.systemCall(let operation, let code) = error else {
+            return false
+        }
+        return operation == openExecutionDirectoryOperation && code == ENOENT
     }
 
     private static func validateDirectory(_ fd: Int32) throws {

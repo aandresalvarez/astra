@@ -235,7 +235,7 @@ public struct RuntimeSwitchResolvedTarget: Codable, Equatable, Hashable, Sendabl
             createdAt: manifest.createdAt
         )
         guard canonicalManifest == manifest,
-              let encoded = try? JSONEncoder().encode(canonicalManifest),
+              let encoded = try? ASTRACanonicalJSON.encode(canonicalManifest),
               encoded.count <= 1_048_576 else {
             throw RuntimeSwitchContractError.invalidTargetManifest
         }

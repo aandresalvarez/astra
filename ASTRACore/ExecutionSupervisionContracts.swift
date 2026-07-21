@@ -5,6 +5,12 @@ public enum ExecutionSupervisionPolicyError: Error, Equatable, Sendable {
     case invalidOutputLimit
 }
 
+public enum RunBrokerTerminationReason: String, Codable, Equatable, Sendable {
+    case exited
+    case signaled
+    case waitFailed = "wait_failed"
+}
+
 /// Immutable, secret-free limits captured at admission. A later settings
 /// change cannot silently alter the watchdog or backpressure contract of an
 /// already-running execution.
@@ -35,6 +41,39 @@ public struct ExecutionSupervisionPolicySnapshot: Codable, Equatable, Hashable, 
         self.idleProgressTimeoutSeconds = idleProgressTimeoutSeconds
         self.maximumOutputEventBytes = maximumOutputEventBytes
         self.maximumPersistedOutputBytes = maximumPersistedOutputBytes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hardTimeoutSeconds
+        case idleProgressTimeoutSeconds
+        case maximumOutputEventBytes
+        case maximumPersistedOutputBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            try self.init(
+                hardTimeoutSeconds: container.decode(UInt64.self, forKey: .hardTimeoutSeconds),
+                idleProgressTimeoutSeconds: container.decode(
+                    UInt64.self,
+                    forKey: .idleProgressTimeoutSeconds
+                ),
+                maximumOutputEventBytes: container.decode(
+                    UInt64.self,
+                    forKey: .maximumOutputEventBytes
+                ),
+                maximumPersistedOutputBytes: container.decode(
+                    UInt64.self,
+                    forKey: .maximumPersistedOutputBytes
+                )
+            )
+        } catch let error as ExecutionSupervisionPolicyError {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Invalid execution supervision policy: \(error)"
+            ))
+        }
     }
 }
 
@@ -68,6 +107,8 @@ public struct RunBrokerSupervisorObservation: Codable, Equatable, Sendable {
     public let kind: Kind
     public let output: Data?
     public let exitCode: Int32?
+    public let terminationSignal: Int32?
+    public let terminationReason: RunBrokerTerminationReason?
     public let cancellationIntent: ExecutionCancellationIntent?
     public let quarantinedByteCount: UInt64?
 
@@ -80,6 +121,8 @@ public struct RunBrokerSupervisorObservation: Codable, Equatable, Sendable {
         kind: Kind,
         output: Data? = nil,
         exitCode: Int32? = nil,
+        terminationSignal: Int32? = nil,
+        terminationReason: RunBrokerTerminationReason? = nil,
         cancellationIntent: ExecutionCancellationIntent? = nil,
         quarantinedByteCount: UInt64? = nil
     ) {
@@ -91,6 +134,8 @@ public struct RunBrokerSupervisorObservation: Codable, Equatable, Sendable {
         self.kind = kind
         self.output = output
         self.exitCode = exitCode
+        self.terminationSignal = terminationSignal
+        self.terminationReason = terminationReason
         self.cancellationIntent = cancellationIntent
         self.quarantinedByteCount = quarantinedByteCount
     }

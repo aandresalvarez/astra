@@ -271,6 +271,16 @@ struct RunLedgerJournalTests {
                 transition: .backendAcceptedCancellation,
                 backendCapabilities: [.observe, .cancel]
             ),
+            .supervisorObservationRecorded(.init(
+                executionID: manifest.executionID,
+                authority: authority,
+                supervisorSequence: 1,
+                supervisorEventID: fixedUUID(190),
+                occurredAt: fixture.date(offset: 5),
+                kind: .providerExited,
+                exitCode: 0,
+                terminationReason: .exited
+            )),
             .executionControlTransitioned(
                 executionID: manifest.executionID,
                 authority: authority,
@@ -308,13 +318,57 @@ struct RunLedgerJournalTests {
         let report = RunLedger.inspect(fixture.configuration)
         #expect(report.status == .incompatibleSchema)
         #expect(sqliteInt(fixture.configuration.databaseURL, sql: "PRAGMA user_version") == 99)
-        guard case .incompatibleSchema(expected: 1, found: 99) = ledgerError({
+        guard case .incompatibleSchema(let expected, found: 99) = ledgerError({
             _ = try fixture.open()
-        }) else {
+        }), expected == RunLedgerSchema.version else {
             Issue.record("Expected typed incompatible schema error")
             return
         }
         #expect(sqliteInt(fixture.configuration.databaseURL, sql: "PRAGMA user_version") == 99)
+    }
+
+    @Test("Missing required outbox index fails health closed")
+    func missingOutboxIndexFailsClosed() throws {
+        let fixture = try LedgerFixture()
+        defer { fixture.cleanup() }
+        let ledger = try fixture.open()
+        #expect(ledger.verifyHealth().status == .healthy)
+        try ledger.close()
+
+        try executeSQLite(
+            fixture.configuration.databaseURL,
+            "DROP INDEX outbox_execution_stream"
+        )
+
+        #expect(RunLedger.inspect(fixture.configuration).status == .incompatibleSchema)
+        guard case .incompatibleSchema = ledgerError({ _ = try fixture.open() }) else {
+            Issue.record("Expected missing outbox index to fail schema verification")
+            return
+        }
+    }
+
+    @Test("Outbox index column direction drift fails health closed")
+    func changedOutboxIndexDefinitionFailsClosed() throws {
+        let fixture = try LedgerFixture()
+        defer { fixture.cleanup() }
+        let ledger = try fixture.open()
+        #expect(ledger.verifyHealth().status == .healthy)
+        try ledger.close()
+
+        try executeSQLite(
+            fixture.configuration.databaseURL,
+            """
+            DROP INDEX outbox_execution_terminal;
+            CREATE INDEX outbox_execution_terminal
+            ON outbox (execution_id, has_terminal, sequence ASC);
+            """
+        )
+
+        #expect(RunLedger.inspect(fixture.configuration).status == .incompatibleSchema)
+        guard case .incompatibleSchema = ledgerError({ _ = try fixture.open() }) else {
+            Issue.record("Expected changed outbox index definition to fail schema verification")
+            return
+        }
     }
 
     @Test("Non-SQLite corruption is reported without modifying the file")

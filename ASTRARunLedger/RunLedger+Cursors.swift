@@ -19,7 +19,11 @@ extension RunLedger {
             let acknowledged = try outboxAcknowledgement(database: database)
             let statement = try connection.statement(
                 """
-                SELECT sequence, message_id, event_kind, payload, occurred_at
+                SELECT sequence, message_id, event_kind, payload, occurred_at,
+                       projection_schema_version, projection_payload, projection_sha256,
+                       execution_id, supervisor_sequence, stream_channel,
+                       stream_ends_logical_line, stream_fragment_byte_count,
+                       stream_fragment_truncated, has_terminal
                 FROM outbox WHERE sequence > ? ORDER BY sequence LIMIT ?
                 """,
                 bindings: [.integer(sequence), .integer(Int64(safeLimit))],
@@ -32,16 +36,84 @@ extension RunLedger {
                     rawValue: try uuid(try statement.text(at: 1), field: "outbox.message_id")
                 )
                 let messageSequence = statement.int64(at: 0)
+                guard statement.int64(at: 5)
+                        == Int64(RunLedgerPersistedOutboxProjection.currentSchemaVersion) else {
+                    throw RunLedgerError.projectionDrift("Unsupported stored outbox projection schema")
+                }
+                let projection = try RunLedgerOutboxProjectionCodec.decode(
+                    payload: try statement.blob(at: 6),
+                    sha256: try statement.blob(at: 7)
+                )
+                try Self.validateOutboxMetadata(
+                    projection: projection,
+                    eventKind: try statement.text(at: 2),
+                    executionID: try statement.optionalText(at: 8),
+                    supervisorSequence: statement.isNull(at: 9) ? nil : statement.int64(at: 9),
+                    streamChannel: try statement.optionalText(at: 10),
+                    streamEndsLogicalLine: statement.isNull(at: 11) ? nil : statement.int64(at: 11),
+                    streamFragmentByteCount: statement.isNull(at: 12) ? nil : statement.int64(at: 12),
+                    streamFragmentTruncated: statement.isNull(at: 13) ? nil : statement.int64(at: 13),
+                    hasTerminal: statement.int64(at: 14)
+                )
                 messages.append(.init(
                     sequence: messageSequence,
                     messageID: messageID,
                     eventKind: try statement.text(at: 2),
                     payload: try statement.blob(at: 3),
                     occurredAt: Date(timeIntervalSince1970: statement.double(at: 4)),
-                    isAcknowledged: messageSequence <= acknowledged
+                    isAcknowledged: messageSequence <= acknowledged,
+                    projection: projection
                 ))
             }
             return messages
+        }
+    }
+
+    /// Reads the immutable durable head without walking the backlog. The
+    /// recursive connection lock keeps the MAX lookup and exact row decode in
+    /// one serialized view while reusing the strict outbox decoder above.
+    public func outboxHead() throws -> RunLedgerOutboxMessage? {
+        try connection.withLock { database in
+            guard let maximum = try connection.scalarInt64(
+                "SELECT MAX(sequence) FROM outbox",
+                database: database
+            ) else { return nil }
+            guard maximum > 0 else {
+                throw RunLedgerError.projectionDrift("Outbox head sequence is invalid")
+            }
+            guard let head = try outbox(after: maximum - 1, limit: 1).first,
+                  head.sequence == maximum else {
+                throw RunLedgerError.projectionDrift("Outbox head row is missing")
+            }
+            return head
+        }
+    }
+
+    static func validateOutboxMetadata(
+        projection: RunLedgerOutboxProjectionV1,
+        eventKind: String,
+        executionID: String?,
+        supervisorSequence: Int64?,
+        streamChannel: String?,
+        streamEndsLogicalLine: Int64?,
+        streamFragmentByteCount: Int64?,
+        streamFragmentTruncated: Int64?,
+        hasTerminal: Int64
+    ) throws {
+        let expectedExecutionID = projection.executionID.map {
+            RunLedgerSchema.uuid($0.rawValue)
+        }
+        let expectedSupervisorSequence = projection.supervisorSequence.flatMap(Int64.init(exactly:))
+        let stream = projection.stream
+        guard projection.matches(eventKind: eventKind),
+              executionID == expectedExecutionID,
+              supervisorSequence == expectedSupervisorSequence,
+              streamChannel == stream?.channel.rawValue,
+              streamEndsLogicalLine == stream.map({ $0.endsLogicalLine ? 1 : 0 }),
+              streamFragmentByteCount == stream.map({ Int64($0.trailingFragmentByteCount) }),
+              streamFragmentTruncated == stream.map({ $0.fragmentTruncated ? 1 : 0 }),
+              hasTerminal == (projection.hasTerminalEvidence ? 1 : 0) else {
+            throw RunLedgerError.projectionDrift("Stored outbox projection metadata mismatch")
         }
     }
 
