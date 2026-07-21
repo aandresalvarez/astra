@@ -14,6 +14,62 @@ enum RunLedgerStorageSecurity {
     }
 
     private static let initializationMarkerSuffix = ".initializing"
+    private static let exclusiveWriterLockFileName = "run-ledger.writer.lock"
+
+    /// Claims the process-lifetime exclusive-writer lock for a ledger
+    /// directory and returns the descriptor that holds it. The caller must
+    /// keep the descriptor open for as long as writer exclusivity is required
+    /// and release it with `releaseExclusiveWriterLock`. The kernel releases
+    /// the lock automatically if the process dies, so a crashed broker never
+    /// strands the ledger. `O_CLOEXEC` keeps spawned supervisors and providers
+    /// from inheriting the held lock. Fails immediately (`LOCK_NB`) instead of
+    /// queueing behind a live holder: a second broker must exit, not wait.
+    static func acquireExclusiveWriterLock(directory: URL) throws -> Int32 {
+        try validateExistingPathComponents(directory)
+        try validateDedicatedDirectory(directory)
+        let lockPath = directory.appendingPathComponent(
+            exclusiveWriterLockFileName, isDirectory: false
+        ).path
+        let descriptor = Darwin.open(
+            lockPath,
+            O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw RunLedgerError.unsafeStorage(
+                "Could not open exclusive-writer lock file: \(posixError())"
+            )
+        }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              !isDirectory(status),
+              status.st_uid == getuid(),
+              status.st_mode & 0o077 == 0 else {
+            Darwin.close(descriptor)
+            throw RunLedgerError.unsafeStorage(
+                "Exclusive-writer lock file failed private ownership checks"
+            )
+        }
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            if errno == EINTR { continue }
+            let heldElsewhere = errno == EWOULDBLOCK
+            Darwin.close(descriptor)
+            if heldElsewhere {
+                throw RunLedgerError.exclusiveWriterConflict(
+                    "Another process already holds the exclusive ledger writer lock"
+                )
+            }
+            throw RunLedgerError.unsafeStorage(
+                "Could not acquire exclusive-writer lock: \(posixError())"
+            )
+        }
+        return descriptor
+    }
+
+    static func releaseExclusiveWriterLock(_ descriptor: Int32) {
+        flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
+    }
 
     static func withInitializationLock<T>(
         at databaseURL: URL,

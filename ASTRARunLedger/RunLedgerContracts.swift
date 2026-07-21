@@ -49,17 +49,28 @@ public struct RunLedgerConfiguration: Sendable, Equatable {
     public let installationID: RunBrokerInstallationID
     public let expectedStoreID: RunBrokerStoreID?
     public let busyTimeoutMilliseconds: Int32
+    /// Holds a process-lifetime exclusive writer lock for as long as the ledger
+    /// is open. The broker daemon must claim this: observation ordering and
+    /// output-limit invariants for `.supervisorObservationRecorded` are
+    /// serialized by the orchestrator's in-process lock, so a second live
+    /// broker process over the same ledger could interleave appends that the
+    /// schema accepts but reconcile can never repair. Secondary read/verify
+    /// connections (health inspection, tests, in-process fencing checks) do
+    /// not claim exclusivity and are unaffected.
+    public let exclusiveWriter: Bool
 
     public init(
         ledgerDirectoryURL: URL,
         installationID: RunBrokerInstallationID,
         expectedStoreID: RunBrokerStoreID? = nil,
-        busyTimeoutMilliseconds: Int32 = 5_000
+        busyTimeoutMilliseconds: Int32 = 5_000,
+        exclusiveWriter: Bool = false
     ) {
         self.ledgerDirectoryURL = ledgerDirectoryURL
         self.installationID = installationID
         self.expectedStoreID = expectedStoreID
         self.busyTimeoutMilliseconds = max(1, busyTimeoutMilliseconds)
+        self.exclusiveWriter = exclusiveWriter
     }
 
     public var databaseURL: URL {

@@ -6,6 +6,11 @@ public final class RunLedger: @unchecked Sendable {
 
     let configuration: RunLedgerConfiguration
     let connection: RunLedgerSQLiteConnection
+    /// Held for the ledger's whole lifetime when `configuration.exclusiveWriter`
+    /// is set; the kernel drops it on process death. See
+    /// `RunLedgerConfiguration.exclusiveWriter` for why the broker requires it.
+    private var exclusiveWriterLockDescriptor: Int32?
+    private let exclusiveWriterLockGuard = NSLock()
 
     public convenience init(configuration: RunLedgerConfiguration) throws {
         try self.init(
@@ -40,11 +45,23 @@ public final class RunLedger: @unchecked Sendable {
         self.configuration = configuration
         connection = opened.0
         identity = opened.1
+        if configuration.exclusiveWriter {
+            do {
+                exclusiveWriterLockDescriptor =
+                    try RunLedgerStorageSecurity.acquireExclusiveWriterLock(
+                        directory: configuration.ledgerDirectoryURL
+                    )
+            } catch {
+                try? connection.close()
+                throw RunLedgerSchema.classify(error)
+            }
+        }
         do {
             try connection.withLock { database in
                 _ = try assertIntegrity(database: database)
             }
         } catch {
+            releaseExclusiveWriterLockIfHeld()
             try? connection.close()
             throw RunLedgerSchema.classify(error)
         }
@@ -67,6 +84,20 @@ public final class RunLedger: @unchecked Sendable {
 
     public func close() throws {
         try connection.close()
+        releaseExclusiveWriterLockIfHeld()
+    }
+
+    deinit {
+        releaseExclusiveWriterLockIfHeld()
+    }
+
+    private func releaseExclusiveWriterLockIfHeld() {
+        exclusiveWriterLockGuard.lock()
+        defer { exclusiveWriterLockGuard.unlock() }
+        if let descriptor = exclusiveWriterLockDescriptor {
+            RunLedgerStorageSecurity.releaseExclusiveWriterLock(descriptor)
+            exclusiveWriterLockDescriptor = nil
+        }
     }
 
     @discardableResult

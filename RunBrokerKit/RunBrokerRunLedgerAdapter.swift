@@ -12,15 +12,21 @@ public final class RunBrokerRunLedgerAdapter: RunBrokerMonitorLedger, @unchecked
         self.ledger = ledger
     }
 
+    /// The broker daemon's composition path. Claims the process-lifetime
+    /// exclusive-writer lock by default so two live broker processes can never
+    /// interleave appends over one ledger; observation ordering is serialized
+    /// in-process and a second writer would corrupt it undetectably.
     public convenience init(
         identity: RunBrokerChannelIdentity,
-        installationID: RunBrokerInstallationID
+        installationID: RunBrokerInstallationID,
+        exclusiveWriter: Bool = true
     ) throws {
         try self.init(
             ledger: RunLedger(
                 configuration: .init(
                     ledgerDirectoryURL: identity.ledgerDirectoryURL,
-                    installationID: installationID
+                    installationID: installationID,
+                    exclusiveWriter: exclusiveWriter
                 )
             )
         )
