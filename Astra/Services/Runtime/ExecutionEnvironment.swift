@@ -1006,7 +1006,9 @@ enum DockerWorkspaceMCPProjection {
         let jobRootContainer = mapper.containerPath(forHostPath: jobRootHost)
             ?? (workdir as NSString).appendingPathComponent(".astra/tasks/\(String(task.id.uuidString.prefix(8)))/jobs")
         var variables = [
-            "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": dockerRuntime.executablePath,
+            "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": dockerRuntime.usesEnvironmentLookup
+                ? "docker"
+                : dockerRuntime.executablePath,
             "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
             "ASTRA_WORKSPACE_DOCKER_CONTAINER": containerName,
             "ASTRA_WORKSPACE_DOCKER_WORKDIR": workdir,

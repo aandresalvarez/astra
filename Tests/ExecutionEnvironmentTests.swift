@@ -654,6 +654,21 @@ struct ExecutionEnvironmentTests {
         #expect(containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
     }
 
+    @Test("Docker workspace executable falls back to the bare docker command when the CLI could not be resolved")
+    func dockerWorkspaceExecutableFallsBackToBareCommandWhenUnresolved() throws {
+        let root = try makeTempDir("docker-executable-fallback")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let task = AgentTask(title: "Run", goal: "Run", workspace: Workspace(name: "Docker", primaryPath: root))
+        let mcpVariables = DockerWorkspaceMCPProjection.environmentVariables(
+            task: task,
+            environment: WorkspaceExecutionEnvironment(id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest"),
+            currentDirectory: root,
+            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113"),
+            dockerRuntime: .environmentLookup
+        )
+        #expect(mcpVariables["ASTRA_WORKSPACE_DOCKER_EXECUTABLE"] == "docker")
+    }
+
     @Test("Docker credential readiness blocks BigQuery workspaces when host ADC is not projected")
     func dockerCredentialReadinessBlocksBigQueryWorkspaceWithoutProjection() throws {
         let root = try makeTempDir("docker-credential-readiness-missing")

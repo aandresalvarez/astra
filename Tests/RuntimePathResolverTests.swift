@@ -115,6 +115,32 @@ struct RuntimePathResolverTests {
         #expect(runtime.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
         #expect(runtime.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
     }
+
+    @Test("Docker runtime also prepends the symlink's resolved target directory")
+    func dockerRuntimePrependsResolvedSymlinkTargetDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-docker-path-symlink-\(UUID().uuidString)")
+        let targetDirectory = root.appendingPathComponent("Docker.app/Contents/Resources/bin", isDirectory: true)
+        let linkDirectory = root.appendingPathComponent("usr-local-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkDirectory, withIntermediateDirectories: true)
+        let targetExecutable = targetDirectory.appendingPathComponent("docker")
+        try Data().write(to: targetExecutable)
+        let linkExecutable = linkDirectory.appendingPathComponent("docker")
+        try FileManager.default.createSymbolicLink(at: linkExecutable, withDestinationURL: targetExecutable)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Sanity check the fixture actually exercises a symlink whose
+        // resolved target differs from the link's own directory.
+        try #require((linkExecutable.path as NSString).resolvingSymlinksInPath != linkExecutable.path)
+
+        let runtime = DockerRuntimeResolver.resolution(
+            executablePath: linkExecutable.path,
+            environment: ["PATH": "/usr/bin:/bin"]
+        )
+
+        #expect(runtime.environment["PATH"] == "\(linkDirectory.path):\(targetDirectory.path):/usr/bin:/bin")
+    }
 }
 
 // MARK: - RuntimeProcessEnvironment

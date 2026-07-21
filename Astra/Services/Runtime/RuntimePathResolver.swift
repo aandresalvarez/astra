@@ -220,12 +220,25 @@ enum DockerRuntimeResolver {
         let executableDirectory = URL(fileURLWithPath: executablePath)
             .deletingLastPathComponent()
             .path
+        // Docker Desktop's system-wide CLI is often a symlink (e.g.
+        // /usr/local/bin/docker) into its app bundle, where companion tools
+        // such as docker-credential-desktop actually live. Prepending only
+        // the symlink's own directory leaves those companion tools
+        // undiscoverable, so the resolved target's directory is prepended too.
+        let resolvedExecutablePath = (executablePath as NSString).resolvingSymlinksInPath
+        let resolvedExecutableDirectory = URL(fileURLWithPath: resolvedExecutablePath)
+            .deletingLastPathComponent()
+            .path
+        var toolDirectories = [executableDirectory]
+        if resolvedExecutableDirectory != executableDirectory {
+            toolDirectories.append(resolvedExecutableDirectory)
+        }
         var resolvedEnvironment = environment
         let existingDirectories = environment["PATH", default: ""]
             .split(separator: ":")
             .map(String.init)
-            .filter { !$0.isEmpty && $0 != executableDirectory }
-        resolvedEnvironment["PATH"] = ([executableDirectory] + existingDirectories)
+            .filter { !$0.isEmpty && !toolDirectories.contains($0) }
+        resolvedEnvironment["PATH"] = (toolDirectories + existingDirectories)
             .joined(separator: ":")
         return DockerRuntimeResolution(
             executablePath: executablePath,
