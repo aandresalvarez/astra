@@ -158,7 +158,11 @@ public final class TaskTurnRequest {
     public var kindRawValue: String = TaskExecutionRequestKind.followUp.rawValue
     /// Nil is reserved for rows migrated from V15, whose launch configuration
     /// was not captured at submission time. Every V16 submission initializes
-    /// these immutable snapshots.
+    /// these immutable snapshots; `runtimeIDSnapshot` stores the RESOLVED
+    /// runtime raw value (`AgentTask.resolvedRuntimeID`), never the task's
+    /// raw optional `runtimeID`, so a legacy task with a nil or unrecognized
+    /// runtime still records the provider that would actually launch instead
+    /// of persisting a nil that is indistinguishable from a migrated row.
     public var runtimeIDSnapshot: String?
     public var modelSnapshot: String?
     public var tokenBudgetSnapshot: Int?
@@ -188,7 +192,7 @@ public final class TaskTurnRequest {
         self.blockingTaskID = nil
         self.blockerSummary = nil
         self.kindRawValue = kind.rawValue
-        self.runtimeIDSnapshot = task.runtimeID
+        self.runtimeIDSnapshot = task.resolvedRuntimeID.rawValue
         self.modelSnapshot = task.model
         self.tokenBudgetSnapshot = task.tokenBudget
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(task: task))
@@ -212,6 +216,59 @@ public final class TaskTurnRequest {
 
     public var executionPolicySnapshot: TaskExecutionPolicySnapshotV1? {
         Self.decode(TaskExecutionPolicySnapshotV1.self, from: executionPolicySnapshotJSON)
+    }
+
+    /// Restores the owning task's mutable launch-input fields from this
+    /// request's immutable submission snapshots. Queue admission calls this
+    /// immediately before launch so the request executes with the runtime,
+    /// model, budget, and policy advertised at submission — not whatever the
+    /// still-editable composer wrote to the task while the request waited.
+    /// Nil top-level snapshots mark rows migrated from V15, whose launch
+    /// configuration was never captured; those keep the launch-from-task
+    /// fallback untouched. A present policy snapshot is applied whole:
+    /// captured nils (e.g. `executionRootPath`) are meaningful and restored.
+    /// Returns true when any task field actually changed.
+    @discardableResult
+    public func applyLaunchInputSnapshots(to task: AgentTask) -> Bool {
+        guard task.id == taskID else { return false }
+        var changed = false
+        func write<Value: Equatable>(_ value: Value, _ keyPath: ReferenceWritableKeyPath<AgentTask, Value>) {
+            guard task[keyPath: keyPath] != value else { return }
+            task[keyPath: keyPath] = value
+            changed = true
+        }
+        if let runtimeIDSnapshot {
+            write(runtimeIDSnapshot as String?, \.runtimeID)
+        }
+        if let modelSnapshot {
+            write(modelSnapshot, \.model)
+        }
+        if let tokenBudgetSnapshot {
+            write(tokenBudgetSnapshot, \.tokenBudget)
+        }
+        if let policy = executionPolicySnapshot {
+            write(policy.runtimeExplicitlySelected, \.runtimeExplicitlySelected)
+            write(policy.maxTurns, \.maxTurns)
+            if let isolation = IsolationStrategy(rawValue: policy.isolationStrategyRawValue) {
+                write(isolation, \.isolationStrategy)
+            }
+            if let validation = ValidationStrategy(rawValue: policy.validationStrategyRawValue) {
+                write(validation, \.validationStrategy)
+            }
+            write(policy.testCommand, \.testCommand)
+            write(policy.useAgentTeam, \.useAgentTeam)
+            write(policy.teamSize, \.teamSize)
+            write(policy.teamInstructions, \.teamInstructions)
+            write(policy.executionRootPath, \.executionRootPath)
+            write(policy.executionEnvironmentSnapshotJSON, \.executionEnvironmentSnapshotJSON)
+            write(policy.templateHooksJSON, \.templateHooksJSON)
+            write(policy.skillSnapshotsJSON, \.skillSnapshotsJSON)
+            write(policy.runtimePermissionGrantsJSON, \.runtimePermissionGrantsJSON)
+        }
+        if changed {
+            task.updatedAt = Date()
+        }
+        return changed
     }
 
     public var resourceClaims: [TaskExecutionResourceClaim] {
