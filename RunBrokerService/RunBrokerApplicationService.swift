@@ -498,6 +498,7 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
             let authenticator = RunBrokerSupervisorProvenanceAuthenticator(
                 vault: vault,
                 orchestrator: orchestrator,
+                launchIdentity: RunSupervisorIdentity(manifest: execution.manifest),
                 expectedManifestSHA256: try RuntimeSwitchDigests.manifest(execution.manifest),
                 expectedCapabilities: [.observe, .immediateTermination]
             )
@@ -555,6 +556,11 @@ struct RunBrokerSupervisorProvenanceAuthenticator:
 {
     let vault: any RunBrokerCapabilityVaulting
     let orchestrator: RunBrokerOrchestrator
+    /// The immutable manifest-derived identity the supervisor child and its
+    /// vault record are bound to. The descriptor's claimed authority is
+    /// fenced against the CURRENT `target.authority`; the vault record keeps
+    /// its launch epoch across journaled authority transfers.
+    let launchIdentity: RunSupervisorIdentity
     let expectedManifestSHA256: ExecutionLaunchArgumentsSHA256
     let expectedCapabilities: ExternalOperationControlCapabilities
 
@@ -566,11 +572,11 @@ struct RunBrokerSupervisorProvenanceAuthenticator:
               let claimed = binding.backendIdentity.supervisorIdentity,
               claimed.executionID == target.executionID,
               claimed.authority == target.authority,
+              claimed.installationID == launchIdentity.installationID,
+              claimed.storeID == launchIdentity.storeID,
+              claimed.executionID == launchIdentity.executionID,
               let record = try vault.load(executionID: target.executionID),
-              record.identity.installationID == claimed.installationID,
-              record.identity.storeID == claimed.storeID,
-              record.identity.executionID == claimed.executionID,
-              record.identity.authority == claimed.authority,
+              record.identity == launchIdentity,
               record.manifestSHA256 == expectedManifestSHA256 else {
             throw RunBrokerExternalOperationVerificationError.descriptorMismatch
         }

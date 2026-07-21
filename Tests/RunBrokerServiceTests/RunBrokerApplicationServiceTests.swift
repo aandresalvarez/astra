@@ -1109,6 +1109,147 @@ struct RunBrokerApplicationServiceTests {
         #expect(fixture.transport.immediateTerminationCount == 0)
     }
 
+    @Test("immediate cancellation still verifies and terminates after an authority transfer")
+    func immediateCancellationSurvivesAuthorityTransfer() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let successor = try transferCurrentAuthority(
+            fixture,
+            eventID: 150,
+            newAuthorityID: 151
+        )
+
+        // The challenge is minted against the CURRENT (successor) authority
+        // fence while provenance authenticates the launch-epoch supervisor.
+        let (request, challenge) = try issueImmediateChallenge(
+            fixture: fixture,
+            service: service,
+            idempotencyKey: brokerUUID(152)
+        )
+        #expect(request.fence.authority == successor)
+        let confirmation = immediateConfirmation(
+            request: request,
+            challenge: challenge,
+            effectID: .init(rawValue: brokerUUID(153))
+        )
+        _ = try service.handle(
+            .confirmImmediateCancellation(confirmation),
+            idempotencyKey: brokerUUID(154),
+            now: brokerTestDate.addingTimeInterval(5)
+        )
+        #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
+    @Test("a stale-authority fence cannot observe or control after a transfer")
+    func staleAuthorityFenceRejectedAfterTransfer() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let launchAuthority = try currentAuthority(fixture)
+        _ = try transferCurrentAuthority(fixture, eventID: 155, newAuthorityID: 156)
+
+        // Destructive control authorizes on the current authority: the
+        // launch-epoch fence a stale caller still holds is rejected before
+        // any challenge or supervisor effect.
+        let stale = RunBrokerApplicationImmediateCancellationRequest(
+            requestID: brokerUUID(119),
+            fence: .init(
+                executionID: fixture.manifest.executionID,
+                authority: launchAuthority,
+                expectedSupervisorSequence: 2
+            ),
+            actorID: try .init(rawValue: "operator-1"),
+            sessionID: brokerUUID(119),
+            audit: .init(
+                auditID: .init(rawValue: brokerUUID(119)),
+                source: .diagnostics,
+                reasonCode: .operatorEmergencyStop
+            )
+        )
+        #expect(throws: RunBrokerApplicationEndpointError.executionNotFound) {
+            _ = try service.handle(
+                .requestImmediateCancellationChallenge(stale),
+                idempotencyKey: brokerUUID(157),
+                now: brokerTestDate.addingTimeInterval(4)
+            )
+        }
+
+        let staleSupervisor = try ExternalOperationSupervisorIdentity(
+            installationID: fixture.manifest.installationID,
+            storeID: fixture.manifest.storeID,
+            executionID: fixture.manifest.executionID,
+            authority: launchAuthority
+        )
+        let staleBackend = ExternalOperationBackendIdentity(supervisorIdentity: staleSupervisor)
+        let staleExternal = RunBrokerApplicationExternalOperationRequest(
+            target: .init(
+                executionID: fixture.manifest.executionID,
+                authority: launchAuthority,
+                backendIdentity: staleBackend
+            ),
+            binding: .init(
+                executionID: fixture.manifest.executionID,
+                authority: launchAuthority,
+                backendIdentity: staleBackend,
+                declaredCapabilities: [.observe, .immediateTermination]
+            ),
+            cancellationIntent: .immediate
+        )
+        #expect(throws: RunBrokerApplicationEndpointError.executionNotFound) {
+            _ = try service.handle(
+                .externalOperation(.control(staleExternal)),
+                idempotencyKey: brokerUUID(158),
+                now: brokerTestDate.addingTimeInterval(4)
+            )
+        }
+        #expect(fixture.transport.immediateTerminationCount == 0)
+        #expect(try fixture.ledger.projection().executionForceChallenges.isEmpty)
+    }
+
+    @Test("verified external immediate control survives an authority transfer")
+    func externalControlSurvivesAuthorityTransfer() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        _ = try transferCurrentAuthority(fixture, eventID: 159, newAuthorityID: 160)
+
+        // The descriptor claims the current authority; the vault record and
+        // supervisor keep their immutable launch identity.
+        let external = try localExternalOperation(fixture, intent: .immediate)
+        guard case .externalOperation(let assessment) = try service.handle(
+            .externalOperation(.control(external)),
+            idempotencyKey: brokerUUID(161),
+            now: brokerTestDate.addingTimeInterval(4)
+        ) else {
+            Issue.record("Expected an external operation assessment")
+            return
+        }
+        #expect(assessment.cancellation.kind == .allowed)
+        #expect(assessment.cancellation.reason == .verifiedImmediateTermination)
+        #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
+    @discardableResult
+    private func transferCurrentAuthority(
+        _ fixture: BrokerFixture,
+        eventID: UInt8,
+        newAuthorityID: UInt8,
+        at offset: TimeInterval = 3
+    ) throws -> RunBrokerAuthority {
+        let successor = RunBrokerAuthority(
+            id: .init(rawValue: brokerUUID(newAuthorityID)),
+            epoch: .init(rawValue: 2)
+        )
+        _ = try fixture.ledger.append(.init(
+            eventID: .init(rawValue: brokerUUID(eventID)),
+            occurredAt: brokerTestDate.addingTimeInterval(offset),
+            event: .executionAuthorityTransferred(
+                executionID: fixture.manifest.executionID,
+                expectedAuthority: try currentAuthority(fixture),
+                newAuthority: successor
+            )
+        ))
+        return successor
+    }
+
     private func applicationService(_ fixture: BrokerFixture) -> RunBrokerApplicationService {
         let orchestrator = RunBrokerOrchestrator(
             ledger: fixture.ledger,
