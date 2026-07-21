@@ -1,11 +1,11 @@
-/// Initial-release backend policy. Destructive control is granted only to a
-/// typed local supervisor identity with verifier-produced provenance.
+/// Initial-release policy for untrusted descriptors. This module can classify
+/// monitoring-only backends but cannot mint verified observation or control;
+/// those decisions require a broker-owned provenance boundary.
 public enum ExternalOperationControlPolicy {
     public static func assess(
         target: ExternalOperationControlTarget,
         binding: ExternalOperationControlBinding,
-        cancellationIntent: ExecutionCancellationIntent,
-        verifiedEvidence: ExternalOperationVerifiedEvidence? = nil
+        cancellationIntent: ExecutionCancellationIntent
     ) -> ExternalOperationControlAssessment {
         if target.executionID != binding.executionID {
             return blockedAssessment(intent: cancellationIntent, reason: .staleExecution)
@@ -25,10 +25,8 @@ public enum ExternalOperationControlPolicy {
 
         let observation = observationDecision(capabilities: binding.declaredCapabilities)
         let cancellation = cancellationDecision(
-            target: target,
             binding: binding,
-            intent: cancellationIntent,
-            verifiedEvidence: verifiedEvidence
+            intent: cancellationIntent
         )
         return .init(
             cancellationIntent: cancellationIntent,
@@ -47,16 +45,17 @@ public enum ExternalOperationControlPolicy {
         capabilities: ExternalOperationControlCapabilities
     ) -> ExternalOperationControlDecision {
         if capabilities.canObserve {
-            return .init(kind: .allowed, reason: .observationCapabilityVerified)
+            // A wire/durable declaration is not provenance. The broker-owned
+            // verifier may promote this decision after authenticating its own
+            // local capability or a future durable backend receipt.
+            return .init(kind: .blocked, reason: .unverifiedProvenance)
         }
         return .init(kind: .blocked, reason: .observationCapabilityMissing)
     }
 
     private static func cancellationDecision(
-        target: ExternalOperationControlTarget,
         binding: ExternalOperationControlBinding,
-        intent: ExecutionCancellationIntent,
-        verifiedEvidence: ExternalOperationVerifiedEvidence?
+        intent: ExecutionCancellationIntent
     ) -> ExternalOperationControlDecision {
         guard intent != .none else {
             return .init(kind: .blocked, reason: .cancellationIntentMissing)
@@ -64,12 +63,7 @@ public enum ExternalOperationControlPolicy {
 
         switch binding.backendIdentity.kind {
         case .localRunSupervisor:
-            return supervisorCancellationDecision(
-                target: target,
-                binding: binding,
-                intent: intent,
-                verifiedEvidence: verifiedEvidence
-            )
+            return supervisorCancellationDecision(binding: binding)
 
         case .managedDockerJob:
             return monitoringOnlyDecision(
@@ -101,40 +95,14 @@ public enum ExternalOperationControlPolicy {
     }
 
     private static func supervisorCancellationDecision(
-        target: ExternalOperationControlTarget,
-        binding: ExternalOperationControlBinding,
-        intent: ExecutionCancellationIntent,
-        verifiedEvidence: ExternalOperationVerifiedEvidence?
+        binding: ExternalOperationControlBinding
     ) -> ExternalOperationControlDecision {
         guard let supervisorIdentity = binding.backendIdentity.supervisorIdentity,
               supervisorIdentity.executionID == binding.executionID,
               supervisorIdentity.authority == binding.authority else {
             return .init(kind: .blocked, reason: .staleSupervisorIdentity)
         }
-        guard let verifiedEvidence,
-              verifiedEvidence.target == target,
-              verifiedEvidence.binding == binding else {
-            return .init(kind: .blocked, reason: .unverifiedProvenance)
-        }
-
-        switch intent {
-        case .none:
-            return .init(kind: .blocked, reason: .cancellationIntentMissing)
-        case .graceful:
-            guard binding.declaredCapabilities.canGracefullyCancel else {
-                return .init(kind: .blocked, reason: .gracefulCancellationCapabilityMissing)
-            }
-            return .init(kind: .allowed, reason: .verifiedGracefulCancellation)
-        case .immediate:
-            guard binding.declaredCapabilities.canImmediatelyTerminate else {
-                return .init(kind: .blocked, reason: .immediateTerminationCapabilityMissing)
-            }
-            return .init(
-                kind: .allowed,
-                reason: .verifiedImmediateTermination,
-                auditRequirement: .immediateTermination
-            )
-        }
+        return .init(kind: .blocked, reason: .unverifiedProvenance)
     }
 
     private static func monitoringOnlyDecision(

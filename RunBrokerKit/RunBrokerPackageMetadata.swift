@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import Darwin
 
 public enum RunBrokerPackageMetadataError: Error, Equatable, Sendable {

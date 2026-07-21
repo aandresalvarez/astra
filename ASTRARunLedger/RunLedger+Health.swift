@@ -63,6 +63,38 @@ extension RunLedger {
         guard mismatchCount == 0 else {
             throw RunLedgerError.projectionDrift("Outbox rows differ from their journal events")
         }
+        let typedOutbox = try connection.statement(
+            """
+            SELECT event_kind, projection_schema_version, projection_payload, projection_sha256,
+                   execution_id, supervisor_sequence, stream_channel,
+                   stream_ends_logical_line, stream_fragment_byte_count,
+                   stream_fragment_truncated, has_terminal
+            FROM outbox ORDER BY sequence
+            """,
+            database: database
+        )
+        defer { typedOutbox.finalize() }
+        while try typedOutbox.step() == .row {
+            guard typedOutbox.int64(at: 1)
+                    == Int64(RunLedgerPersistedOutboxProjection.currentSchemaVersion) else {
+                throw RunLedgerError.projectionDrift("Unsupported stored outbox projection schema")
+            }
+            let projection = try RunLedgerOutboxProjectionCodec.decode(
+                payload: try typedOutbox.blob(at: 2),
+                sha256: try typedOutbox.blob(at: 3)
+            )
+            try Self.validateOutboxMetadata(
+                projection: projection,
+                eventKind: try typedOutbox.text(at: 0),
+                executionID: try typedOutbox.optionalText(at: 4),
+                supervisorSequence: typedOutbox.isNull(at: 5) ? nil : typedOutbox.int64(at: 5),
+                streamChannel: try typedOutbox.optionalText(at: 6),
+                streamEndsLogicalLine: typedOutbox.isNull(at: 7) ? nil : typedOutbox.int64(at: 7),
+                streamFragmentByteCount: typedOutbox.isNull(at: 8) ? nil : typedOutbox.int64(at: 8),
+                streamFragmentTruncated: typedOutbox.isNull(at: 9) ? nil : typedOutbox.int64(at: 9),
+                hasTerminal: typedOutbox.int64(at: 10)
+            )
+        }
         let acknowledgement = try outboxAcknowledgement(database: database)
         if acknowledgement > 0 {
             guard try connection.scalarInt64(
@@ -116,6 +148,82 @@ extension RunLedger {
                 found: identity.schemaVersion
             )
         }
+        try verifyOutboxIndexes(database: database)
+    }
+
+    private func verifyOutboxIndexes(database: OpaquePointer) throws {
+        let expected: [String: [RunLedgerExpectedIndexColumn]] = [
+            "outbox_execution_supervisor": [
+                .init(name: "execution_id", descending: false),
+                .init(name: "supervisor_sequence", descending: false),
+            ],
+            "outbox_execution_stream": [
+                .init(name: "execution_id", descending: false),
+                .init(name: "stream_channel", descending: false),
+                .init(name: "sequence", descending: true),
+            ],
+            "outbox_execution_terminal": [
+                .init(name: "execution_id", descending: false),
+                .init(name: "has_terminal", descending: false),
+                .init(name: "sequence", descending: true),
+            ],
+        ]
+        let statement = try connection.statement(
+            "PRAGMA index_list('outbox')",
+            database: database
+        )
+        defer { statement.finalize() }
+        var found: Set<String> = []
+        while try statement.step() == .row {
+            let name = try statement.text(at: 1)
+            let origin = try statement.text(at: 3)
+            guard origin == "c" else { continue }
+            guard let columns = expected[name],
+                  statement.int64(at: 2) == 0,
+                  statement.int64(at: 4) == 0 else {
+                throw RunLedgerError.incompatibleSchema(
+                    expected: RunLedgerSchema.version,
+                    found: identity.schemaVersion
+                )
+            }
+            try verifyOutboxIndex(name, expected: columns, database: database)
+            found.insert(name)
+        }
+        guard found == Set(expected.keys) else {
+            throw RunLedgerError.incompatibleSchema(
+                expected: RunLedgerSchema.version,
+                found: identity.schemaVersion
+            )
+        }
+    }
+
+    private func verifyOutboxIndex(
+        _ name: String,
+        expected: [RunLedgerExpectedIndexColumn],
+        database: OpaquePointer
+    ) throws {
+        // `name` has already been proven to be one of the hard-coded expected
+        // identifiers above, so interpolating it into this PRAGMA is safe.
+        let statement = try connection.statement(
+            "PRAGMA index_xinfo(\(name))",
+            database: database
+        )
+        defer { statement.finalize() }
+        var actual: [RunLedgerExpectedIndexColumn] = []
+        while try statement.step() == .row {
+            guard statement.int64(at: 5) == 1 else { continue }
+            actual.append(.init(
+                name: try statement.text(at: 2),
+                descending: statement.int64(at: 3) == 1,
+                collation: try statement.text(at: 4)
+            ))
+        }
+        guard actual == expected else {
+            throw RunLedgerError.incompatibleSchema(
+                expected: RunLedgerSchema.version,
+                found: identity.schemaVersion
+            )
+        }
     }
 
     static func healthReport(for error: RunLedgerError) -> RunLedgerHealthReport {
@@ -137,5 +245,17 @@ extension RunLedger {
             status = .unavailable
         }
         return .init(status: status, detail: String(describing: error))
+    }
+}
+
+private struct RunLedgerExpectedIndexColumn: Equatable {
+    let name: String
+    let descending: Bool
+    let collation: String
+
+    init(name: String, descending: Bool, collation: String = "BINARY") {
+        self.name = name
+        self.descending = descending
+        self.collation = collation
     }
 }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum ExecutionLaunchContractError: Error, Equatable, Sendable {
@@ -9,6 +10,10 @@ public enum ExecutionLaunchContractError: Error, Equatable, Sendable {
 /// belong only in supervisor IPC and must never enter durable launch records.
 public struct ExecutionLaunchArgumentsSHA256: Codable, Equatable, Hashable, Sendable {
     public let hexValue: String
+
+    fileprivate init(validatedHexValue: String) {
+        self.hexValue = validatedHexValue
+    }
 
     public init(hexValue: String) throws {
         let normalized = hexValue.lowercased()
@@ -59,6 +64,27 @@ public struct ExecutionLaunchArgumentSummary: Codable, Equatable, Hashable, Send
         }
         self.argumentCount = argumentCount
         self.argumentsSHA256 = argumentsSHA256
+    }
+
+    /// Builds the durable one-way identity for ephemeral argv without storing
+    /// any argument value in the manifest.
+    public init(redacting arguments: [String]) {
+        guard !arguments.isEmpty else {
+            self = .none
+            return
+        }
+        var data = Data()
+        for argument in arguments {
+            let bytes = Data(argument.utf8)
+            var length = UInt64(bytes.count).bigEndian
+            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+            data.append(bytes)
+        }
+        let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        self.init(
+            argumentCount: UInt(arguments.count),
+            argumentsSHA256: ExecutionLaunchArgumentsSHA256(validatedHexValue: hex)
+        )
     }
 
     private init(
@@ -124,6 +150,45 @@ public struct ExecutionLaunchConfigurationSnapshot: Codable, Equatable, Hashable
         self.workingDirectory = workingDirectory
         self.environmentVariableNames = Array(Set(environmentVariableNames)).sorted()
         self.configurationRevision = configurationRevision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runtimeID
+        case modelID
+        case executablePath
+        case launchArguments
+        case workingDirectory
+        case environmentVariableNames
+        case configurationRevision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedModelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+        let decodedEnvironmentNames = try container.decode(
+            [String].self,
+            forKey: .environmentVariableNames
+        )
+        let canonical = Self(
+            runtimeID: try container.decode(AgentRuntimeID.self, forKey: .runtimeID),
+            modelID: decodedModelID,
+            executablePath: try container.decode(String.self, forKey: .executablePath),
+            launchArguments: try container.decode(
+                ExecutionLaunchArgumentSummary.self,
+                forKey: .launchArguments
+            ),
+            workingDirectory: try container.decode(String.self, forKey: .workingDirectory),
+            environmentVariableNames: decodedEnvironmentNames,
+            configurationRevision: try container.decode(String.self, forKey: .configurationRevision)
+        )
+        guard canonical.modelID == decodedModelID,
+              canonical.environmentVariableNames == decodedEnvironmentNames else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Launch configuration values are not canonical"
+            ))
+        }
+        self = canonical
     }
 }
 

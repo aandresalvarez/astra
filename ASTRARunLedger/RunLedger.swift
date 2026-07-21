@@ -16,7 +16,8 @@ public final class RunLedger: @unchecked Sendable {
         try self.init(
             configuration: configuration,
             createIfMissing: true,
-            initializationCrashPoint: nil
+            initializationCrashPoint: nil,
+            migrationCrashPoint: nil
         )
     }
 
@@ -28,19 +29,35 @@ public final class RunLedger: @unchecked Sendable {
         try self.init(
             configuration: configuration,
             createIfMissing: true,
-            initializationCrashPoint: crashPoint
+            initializationCrashPoint: crashPoint,
+            migrationCrashPoint: nil
+        )
+    }
+
+    @_spi(RunLedgerTesting)
+    public convenience init(
+        configuration: RunLedgerConfiguration,
+        crashingMigrationAt crashPoint: RunLedgerMigrationCrashPoint
+    ) throws {
+        try self.init(
+            configuration: configuration,
+            createIfMissing: true,
+            initializationCrashPoint: nil,
+            migrationCrashPoint: crashPoint
         )
     }
 
     private init(
         configuration: RunLedgerConfiguration,
         createIfMissing: Bool,
-        initializationCrashPoint: RunLedgerInitializationCrashPoint?
+        initializationCrashPoint: RunLedgerInitializationCrashPoint?,
+        migrationCrashPoint: RunLedgerMigrationCrashPoint?
     ) throws {
         let opened = try RunLedgerSchema.open(
             configuration: configuration,
             createIfMissing: createIfMissing,
-            initializationCrashPoint: initializationCrashPoint
+            initializationCrashPoint: initializationCrashPoint,
+            migrationCrashPoint: migrationCrashPoint
         )
         self.configuration = configuration
         connection = opened.0
@@ -72,7 +89,8 @@ public final class RunLedger: @unchecked Sendable {
             let ledger = try RunLedger(
                 configuration: configuration,
                 createIfMissing: false,
-                initializationCrashPoint: nil
+                initializationCrashPoint: nil,
+                migrationCrashPoint: nil
             )
             let report = ledger.verifyHealth()
             try? ledger.close()
@@ -97,6 +115,65 @@ public final class RunLedger: @unchecked Sendable {
         if let descriptor = exclusiveWriterLockDescriptor {
             RunLedgerStorageSecurity.releaseExclusiveWriterLock(descriptor)
             exclusiveWriterLockDescriptor = nil
+        }
+    }
+
+    /// Exact idempotency preflight used before external launch preparation.
+    /// It lets callers reject a reused event ID before creating capabilities
+    /// or spawning a process; `append` remains the authoritative CAS.
+    public func event(eventID: RunLedgerEventID) throws -> StoredRunLedgerEvent? {
+        try connection.withLock { database in
+            guard let existing = try existingEvent(eventID: eventID, database: database) else {
+                return nil
+            }
+            let envelope = try RunLedgerCodec.envelope(eventID: eventID, from: existing.payload)
+            guard envelope.event.kind == existing.eventKind,
+                  envelope.event.aggregateKind == existing.aggregateKind,
+                  envelope.event.aggregateID == existing.aggregateID else {
+                throw RunLedgerError.corrupt("Event index columns do not match canonical payload")
+            }
+            return .init(sequence: existing.sequence, envelope: envelope)
+        }
+    }
+
+    /// Runs the exact event-id and pure projection checks used by `append`
+    /// without changing SQLite or the outbox. Effect owners use this before
+    /// preparing immutable capabilities so a rejected domain event cannot leave
+    /// orphaned external state. `append` remains the authoritative transaction.
+    func preflightAppend(_ envelope: RunLedgerEventEnvelope) throws -> RunLedgerAppendResult {
+        let (canonicalEnvelope, payload) = try RunLedgerCodec.canonicalize(envelope)
+        return try connection.withLock { database in
+            if let existing = try existingEvent(
+                eventID: canonicalEnvelope.eventID,
+                database: database
+            ) {
+                guard existing.payload == payload,
+                      existing.eventKind == canonicalEnvelope.event.kind,
+                      existing.aggregateKind == canonicalEnvelope.event.aggregateKind,
+                      existing.aggregateID == canonicalEnvelope.event.aggregateID else {
+                    throw RunLedgerError.eventIDReuse(canonicalEnvelope.eventID)
+                }
+                return .init(sequence: existing.sequence, disposition: .exactReplay)
+            }
+
+            let previous = try RunLedgerProjectionStore.load(
+                connection: connection,
+                database: database
+            )
+            let last = try connection.scalarInt64(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events",
+                database: database
+            ) ?? 0
+            guard last < Int64.max else {
+                throw RunLedgerError.corrupt("Event sequence is exhausted")
+            }
+            let sequence = last + 1
+            _ = try RunLedgerProjector.reduce(
+                previous,
+                storedEvent: .init(sequence: sequence, envelope: canonicalEnvelope),
+                storeID: identity.storeID
+            )
+            return .init(sequence: sequence, disposition: .appended)
         }
     }
 
@@ -166,6 +243,12 @@ public final class RunLedger: @unchecked Sendable {
                     storedEvent: storedEvent,
                     storeID: identity.storeID
                 )
+                let outboxProjection = try RunLedgerOutboxProjectionMaterializer.materialize(
+                    storedEvent: storedEvent,
+                    projection: next,
+                    connection: connection,
+                    database: database
+                )
                 try RunLedgerProjectionWriter.persist(
                     from: previous,
                     to: next,
@@ -183,6 +266,7 @@ public final class RunLedger: @unchecked Sendable {
                     sequence: sequence,
                     envelope: canonicalEnvelope,
                     payload: payload,
+                    projection: outboxProjection,
                     database: database
                 )
                 // WAL and SHM can be created lazily by the first write. Tighten
@@ -211,6 +295,17 @@ public final class RunLedger: @unchecked Sendable {
     public func replayedProjection() throws -> RunLedgerProjection {
         try connection.withLock { database in
             try replayProjection(database: database)
+        }
+    }
+
+    /// Deterministic historical projection used to materialize one exact
+    /// outbox message. Later journal events cannot change its semantic body.
+    public func replayedProjection(through sequence: Int64) throws -> RunLedgerProjection {
+        guard sequence >= 0 else {
+            throw RunLedgerError.invalidEvent("Historical projection cursor cannot be negative")
+        }
+        return try connection.withLock { database in
+            try replayState(database: database, through: sequence).projection
         }
     }
 
@@ -253,12 +348,18 @@ public final class RunLedger: @unchecked Sendable {
         sequence: Int64,
         envelope: RunLedgerEventEnvelope,
         payload: Data,
+        projection: RunLedgerOutboxProjectionMaterialization,
         database: OpaquePointer
     ) throws {
         let statement = try connection.statement(
             """
-            INSERT INTO outbox (sequence, message_id, event_kind, payload, occurred_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO outbox (
+                sequence, message_id, event_kind, payload, occurred_at,
+                projection_schema_version, projection_payload, projection_sha256,
+                execution_id, supervisor_sequence, stream_channel,
+                stream_ends_logical_line, stream_fragment_byte_count,
+                stream_fragment_truncated, has_terminal
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             bindings: [
                 .integer(sequence),
@@ -266,6 +367,22 @@ public final class RunLedger: @unchecked Sendable {
                 .text(envelope.event.kind),
                 .blob(payload),
                 .real(envelope.occurredAt.timeIntervalSince1970),
+                .integer(Int64(RunLedgerPersistedOutboxProjection.currentSchemaVersion)),
+                .blob(projection.payload),
+                .blob(projection.sha256),
+                projection.projection.executionID.map {
+                    .text(RunLedgerSchema.uuid($0.rawValue))
+                } ?? .null,
+                projection.projection.supervisorSequence.flatMap(Int64.init(exactly:)).map {
+                    .integer($0)
+                } ?? .null,
+                projection.projection.stream.map { .text($0.channel.rawValue) } ?? .null,
+                projection.projection.stream.map { .integer($0.endsLogicalLine ? 1 : 0) } ?? .null,
+                projection.projection.stream.map {
+                    .integer(Int64($0.trailingFragmentByteCount))
+                } ?? .null,
+                projection.projection.stream.map { .integer($0.fragmentTruncated ? 1 : 0) } ?? .null,
+                .integer(projection.projection.hasTerminalEvidence ? 1 : 0),
             ],
             database: database
         )
@@ -283,7 +400,12 @@ public final class RunLedger: @unchecked Sendable {
     ) throws {
         let statement = try connection.statement(
             """
-            SELECT message_id, event_kind, payload, occurred_at FROM outbox WHERE sequence = ?
+            SELECT message_id, event_kind, payload, occurred_at,
+                   projection_schema_version, projection_payload, projection_sha256,
+                   execution_id, supervisor_sequence, stream_channel,
+                   stream_ends_logical_line, stream_fragment_byte_count,
+                   stream_fragment_truncated, has_terminal
+            FROM outbox WHERE sequence = ?
             """,
             bindings: [.integer(sequence)],
             database: database
@@ -294,8 +416,27 @@ public final class RunLedger: @unchecked Sendable {
               try statement.text(at: 1) == envelope.event.kind,
               try statement.blob(at: 2) == payload,
               statement.double(at: 3) == envelope.occurredAt.timeIntervalSince1970,
-              try statement.step() == .done else {
+              statement.int64(at: 4)
+                == Int64(RunLedgerPersistedOutboxProjection.currentSchemaVersion),
+              let projection = try? RunLedgerOutboxProjectionCodec.decode(
+                  payload: statement.blob(at: 5),
+                  sha256: statement.blob(at: 6)
+              ) else {
             throw RunLedgerError.projectionDrift("Exact event replay has no exact outbox materialization")
+        }
+        try Self.validateOutboxMetadata(
+            projection: projection,
+            eventKind: try statement.text(at: 1),
+            executionID: try statement.optionalText(at: 7),
+            supervisorSequence: statement.isNull(at: 8) ? nil : statement.int64(at: 8),
+            streamChannel: try statement.optionalText(at: 9),
+            streamEndsLogicalLine: statement.isNull(at: 10) ? nil : statement.int64(at: 10),
+            streamFragmentByteCount: statement.isNull(at: 11) ? nil : statement.int64(at: 11),
+            streamFragmentTruncated: statement.isNull(at: 12) ? nil : statement.int64(at: 12),
+            hasTerminal: statement.int64(at: 13)
+        )
+        guard try statement.step() == .done else {
+            throw RunLedgerError.projectionDrift("Exact event replay has duplicate outbox materialization")
         }
     }
 
@@ -333,11 +474,12 @@ public final class RunLedger: @unchecked Sendable {
     }
 
     func replayProjection(database: OpaquePointer) throws -> RunLedgerProjection {
-        try replayState(database: database).projection
+        try replayState(database: database, through: nil).projection
     }
 
     func replayState(
-        database: OpaquePointer
+        database: OpaquePointer,
+        through maximumSequence: Int64? = nil
     ) throws -> (
         projection: RunLedgerProjection,
         monitorAudits: [RunLedgerEventID: RunLedgerMonitorAttemptProjection]
@@ -349,6 +491,9 @@ public final class RunLedger: @unchecked Sendable {
             let page = try loadEvents(after: cursor, limit: 1_000, database: database)
             guard !page.isEmpty else { break }
             for event in page {
+                if let maximumSequence, event.sequence > maximumSequence {
+                    return (projection, monitorAudits)
+                }
                 guard event.sequence > cursor else {
                     throw RunLedgerError.corrupt("Event sequence did not increase monotonically")
                 }
@@ -362,11 +507,20 @@ public final class RunLedger: @unchecked Sendable {
                         )
                     }
                 }
-                projection = try RunLedgerProjector.reduce(
+                let reduced = try RunLedgerProjector.reduce(
                     projection,
                     storedEvent: event,
                     storeID: identity.storeID
                 )
+                switch event.envelope.event {
+                case .runtimeSwitchTargetReserved, .runtimeSwitchAdmitted,
+                     .runtimeSwitchPolicyTransitioned,
+                     .runtimeSwitchCompletionArchived,
+                     .executionForceChallengeRecorded, .executionForceChallengeConsumed:
+                    projection = reduced
+                default:
+                    projection = reduced.preservingRuntimeSwitch(from: projection)
+                }
                 cursor = event.sequence
             }
         }

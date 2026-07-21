@@ -1,5 +1,6 @@
 import ASTRACore
 import ASTRARunLedger
+import Darwin
 import Foundation
 import RunSupervisorSupport
 import Testing
@@ -150,6 +151,43 @@ struct RunBrokerOrchestratorTests {
         #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
             .control.observedExecution == .registered)
         #expect(fixture.transport.acknowledgements.isEmpty)
+    }
+
+    @Test("launch-window supervisor absence stays admitted and reconciles once evidence appears")
+    func launchWindowAbsenceStaysAdmittedAndReconciles() throws {
+        let fixture = try BrokerFixture()
+        // The production spawner returns before the supervisor child has
+        // created its execution directory; the Darwin transport surfaces that
+        // window as this exact typed ENOENT from openExecutionDirectory.
+        fixture.transport.replayError = RunSupervisorError.systemCall(
+            "openat execution directory", ENOENT
+        )
+
+        let outcome = try fixture.orchestrator().start(fixture.request())
+        #expect(outcome.state == .admitted)
+        #expect(outcome.lastSupervisorSequence == 0)
+        #expect(outcome.replaySource == nil)
+        #expect(fixture.spawner.payloads.count == 1)
+        #expect(fixture.transport.acknowledgements.isEmpty)
+        // Admitted-but-not-yet-observable, never a rejection or in-doubt mark.
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .registered)
+        #expect(fixture.logger.rendered.contains("run_broker.supervisor_launch_pending"))
+
+        // The supervisor finishes bootstrap: directory and authenticated
+        // spool now exist. Broker-owned reconciliation observes by identity.
+        fixture.transport.replayError = nil
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+        let reconciled = try fixture.orchestrator().reconcile(
+            executionID: fixture.manifest.executionID
+        )
+        #expect(reconciled.state == .running)
+        #expect(fixture.transport.acknowledgements == [2])
+        // Reconciliation by identity never generated a second launch.
+        #expect(fixture.spawner.payloads.count == 1)
     }
 
     @Test("broker crash after durable evidence replays exactly and acknowledges without duplicate records")
@@ -327,6 +365,41 @@ struct RunBrokerOrchestratorTests {
             auditID: brokerUUID(90)
         )
         #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
+    @Test("an exact retry resumes the effect after a crash immediately after audit")
+    func terminationRetryAfterAuditOnly() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+        let service = fixture.orchestrator(authorizer: AllowExactRunBrokerImmediateTerminationAuthorizer())
+        _ = try service.start(fixture.request())
+        let auditID = brokerUUID(92)
+        _ = try fixture.ledger.append(.init(
+            eventID: .init(rawValue: auditID),
+            occurredAt: brokerTestDate.addingTimeInterval(10),
+            event: .executionControlTransitioned(
+                executionID: fixture.manifest.executionID,
+                authority: fixture.manifest.authority,
+                transition: .requestCancellation(.immediate),
+                backendCapabilities: [.observe, .cancel]
+            )
+        ))
+
+        try service.requestImmediateTermination(
+            .init(executionID: fixture.manifest.executionID, intent: .immediate),
+            requestedAt: brokerTestDate.addingTimeInterval(60),
+            auditID: auditID
+        )
+
+        #expect(fixture.transport.immediateTerminationCount == 1)
+        let auditEvents = try fixture.ledger.events(limit: 100).filter {
+            $0.envelope.eventID.rawValue == auditID
+        }
+        #expect(auditEvents.count == 1)
+        #expect(auditEvents.first?.envelope.occurredAt == brokerTestDate.addingTimeInterval(10))
     }
 
     @Test("default authorizer denies immediate termination without an audit or effect")

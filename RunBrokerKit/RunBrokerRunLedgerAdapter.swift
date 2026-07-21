@@ -1,6 +1,7 @@
 import ASTRACore
 import ASTRARunLedger
 import Foundation
+import RunBrokerClient
 
 /// Concrete scheduler persistence boundary over the canonical RunLedger.
 /// Conversion is field-for-field so authority, generation, and causal audit

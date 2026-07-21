@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import Darwin
 
 public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked Sendable {

@@ -28,7 +28,13 @@ enum RunLedgerAdmissionProjector {
         )
     }
 
-    private static func register(
+    /// Registration without the primary effect claim. Besides atomic
+    /// admission above, the projection store's runtime-switch replay uses
+    /// this to rebuild the exact as-of `executions` history: replaying
+    /// cross-execution effect admission there against a partial operations
+    /// view could reject a legal journal, and the runtime-switch projector
+    /// never consults `operations`.
+    static func register(
         manifest: ExecutionLaunchManifest,
         projection: RunLedgerProjection,
         storedEvent: StoredRunLedgerEvent,

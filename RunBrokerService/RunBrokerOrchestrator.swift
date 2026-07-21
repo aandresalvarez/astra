@@ -24,6 +24,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
     private let terminationAuthorizer: any RunBrokerImmediateTerminationAuthorizing
     private let logger: any RunBrokerServiceLogging
     private let lock = NSRecursiveLock()
+    public let supportsAuthenticatedImmediateTermination: Bool
 
     public init(
         ledger: RunLedger,
@@ -32,6 +33,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         transport: any RunBrokerSupervisorTransporting,
         installedBrokerExecutableURL: URL,
         faultInjector: any RunBrokerStartFaultInjecting = NoOpRunBrokerStartFaultInjector(),
+        allowAuthenticatedImmediateTermination: Bool = false,
         logger: any RunBrokerServiceLogging = NoOpRunBrokerServiceLogger()
     ) {
         self.ledger = ledger
@@ -40,7 +42,10 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         self.transport = transport
         self.installedBrokerExecutableURL = installedBrokerExecutableURL
         self.faultInjector = faultInjector
-        self.terminationAuthorizer = DenyRunBrokerImmediateTerminationAuthorizer()
+        self.terminationAuthorizer = allowAuthenticatedImmediateTermination
+            ? AllowExactRunBrokerImmediateTerminationAuthorizer()
+            : DenyRunBrokerImmediateTerminationAuthorizer()
+        self.supportsAuthenticatedImmediateTermination = allowAuthenticatedImmediateTermination
         self.logger = logger
     }
 
@@ -61,6 +66,8 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         self.installedBrokerExecutableURL = installedBrokerExecutableURL
         self.faultInjector = faultInjector
         self.terminationAuthorizer = terminationAuthorizer
+        self.supportsAuthenticatedImmediateTermination =
+            terminationAuthorizer.allowsImmediateTermination
         self.logger = logger
     }
 
@@ -80,6 +87,16 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             }
             guard request.manifest.supervisionPolicy != nil else {
                 throw RunBrokerServiceError.missingSupervisionPolicy
+            }
+            do {
+                _ = try ledger.preflightExecutionAdmission(
+                    manifest: request.manifest,
+                    primaryOperationID: request.primaryOperationID,
+                    admittedAt: request.manifest.createdAt,
+                    idempotencyKey: request.admissionID
+                )
+            } catch RunLedgerError.eventIDReuse {
+                throw RunBrokerServiceError.idempotencyKeyConflict
             }
             let identity = RunSupervisorIdentity(manifest: request.manifest)
             let digest = try RunSupervisorDigests.manifest(request.manifest)
@@ -106,16 +123,27 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             } catch {
                 throw RunBrokerServiceError.invalidManifest
             }
+            let launchMaterialAuthenticator = try RunSupervisorDigests.launchAuthenticator(
+                payload: payload,
+                capability: capability
+            )
+            if let existing,
+               existing.launchMaterialAuthenticator != launchMaterialAuthenticator {
+                throw RunBrokerServiceError.launchMaterialConflict
+            }
             try faultInjector.checkpoint(.afterValidation)
 
-            try vault.persistAndSynchronize(.init(
-                identity: identity,
-                manifestSHA256: digest,
-                capability: capability
-            ))
+            if existing == nil {
+                try vault.persistAndSynchronize(.init(
+                    identity: identity,
+                    manifestSHA256: digest,
+                    capability: capability,
+                    launchMaterialAuthenticator: launchMaterialAuthenticator
+                ))
+            }
             try faultInjector.checkpoint(.afterCapabilitySync)
 
-            _ = try ledger.admitExecution(
+            let admission = try ledger.admitExecution(
                 manifest: request.manifest,
                 primaryOperationID: request.primaryOperationID,
                 admittedAt: request.manifest.createdAt,
@@ -123,16 +151,59 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             )
             try faultInjector.checkpoint(.afterLedgerAdmission)
 
+            if admission.disposition == .exactReplay {
+                do {
+                    switch try transport.presence(identity: identity, capability: capability) {
+                    case .authenticated:
+                        // A running or offline exact supervisor already owns
+                        // the execution. Reconcile durable evidence; never
+                        // blindly respawn on an application retry.
+                        return try reconcileLocked(
+                            executionID: request.manifest.executionID,
+                            startFaultsEnabled: false
+                        )
+                    case .absent:
+                        // Absence of the execution directory is the only
+                        // proof that a crash happened before spawn began.
+                        break
+                    }
+                } catch {
+                    // Existing but unauthenticated/ambiguous supervisor state
+                    // is recovery truth, not permission to spawn a replacement.
+                    return try reconcileLocked(
+                        executionID: request.manifest.executionID,
+                        startFaultsEnabled: false
+                    )
+                }
+            }
+
             try spawner.spawn(
                 payload: payload,
                 installedBrokerExecutableURL: installedBrokerExecutableURL
             )
             logger.record(event: "run_broker.supervisor_spawned", fields: safeFields(identity))
             try faultInjector.checkpoint(.afterSupervisorSpawn)
-            return try reconcileLocked(
-                executionID: request.manifest.executionID,
-                startFaultsEnabled: true
-            )
+            do {
+                return try reconcileLocked(
+                    executionID: request.manifest.executionID,
+                    startFaultsEnabled: true
+                )
+            } catch let error where RunSupervisorTrustedRoot.isExecutionDirectoryAbsence(error) {
+                // The production spawner returns as soon as the bootstrap
+                // payload is handed to the child; the supervisor creates its
+                // execution directory and authenticated spool asynchronously.
+                // Absence of transport evidence inside this launch window is
+                // not an application failure: admission, capability, and the
+                // launch binding are already durable, so report the admitted
+                // state and let broker-owned reconciliation observe the
+                // supervisor by identity once it publishes evidence. This
+                // path never generates a second launch.
+                logger.record(
+                    event: "run_broker.supervisor_launch_pending",
+                    fields: safeFields(identity)
+                )
+                return .init(state: .admitted, lastSupervisorSequence: 0, replaySource: nil)
+            }
         }
     }
 
@@ -141,6 +212,40 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
     ) throws -> RunBrokerReconciliationOutcome {
         try lock.withLock {
             try reconcileLocked(executionID: executionID, startFaultsEnabled: false)
+        }
+    }
+
+    /// Proves that the exact execution-scoped supervisor handle is currently
+    /// authenticated by live control or its capability-authenticated offline
+    /// spool. A durable vault record alone is preparation state, not runtime
+    /// provenance and cannot authorize observation or destructive control.
+    func authenticateSupervisorProvenance(
+        identity: RunSupervisorIdentity,
+        expectedManifestSHA256: ExecutionLaunchArgumentsSHA256
+    ) throws {
+        try lock.withLock {
+            guard let execution = try ledger.projection().executions[identity.executionID],
+                  execution.manifest.installationID == identity.installationID,
+                  execution.manifest.storeID == identity.storeID,
+                  execution.authority == identity.authority,
+                  try RunSupervisorDigests.manifest(execution.manifest)
+                    == expectedManifestSHA256,
+                  let capability = try vault.load(executionID: identity.executionID),
+                  capability.identity == identity,
+                  capability.manifestSHA256 == expectedManifestSHA256,
+                  try transport.presence(
+                    identity: identity,
+                    capability: capability.capability
+                  ) == .authenticated else {
+                throw RunBrokerServiceError.supervisorUnavailable
+            }
+            let outcome = try reconcileLocked(
+                executionID: identity.executionID,
+                startFaultsEnabled: false
+            )
+            guard outcome.state != .inDoubt, outcome.replaySource != nil else {
+                throw RunBrokerServiceError.supervisorUnavailable
+            }
         }
     }
 
@@ -177,23 +282,87 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 throw RunBrokerServiceError.missingCapability
             }
 
-            // Audit commit precedes the destructive control effect.
-            _ = try ledger.append(.init(
-                eventID: .init(rawValue: auditID),
-                occurredAt: requestedAt,
-                event: .executionControlTransitioned(
-                    executionID: request.executionID,
-                    authority: identity.authority,
-                    transition: .requestCancellation(.immediate),
-                    backendCapabilities: [.observe, .cancel]
-                )
-            ))
+            // The caller's wall-clock is not part of mutation identity. A
+            // response-lost retry arrives at a later time but must still be an
+            // exact replay of the same durable control intent.
+            let replay = try preflightImmediateTerminationAudit(
+                executionID: request.executionID,
+                authority: identity.authority,
+                auditID: auditID
+            )
+            if !replay {
+                _ = try ledger.append(.init(
+                    eventID: .init(rawValue: auditID),
+                    occurredAt: requestedAt,
+                    event: .executionControlTransitioned(
+                        executionID: request.executionID,
+                        authority: identity.authority,
+                        transition: .requestCancellation(.immediate),
+                        backendCapabilities: [.observe, .cancel]
+                    )
+                ))
+            }
             logger.record(event: "run_broker.immediate_termination_audited", fields: safeFields(identity))
+
+            if replay {
+                let outcome = try reconcileLocked(
+                    executionID: request.executionID,
+                    startFaultsEnabled: false
+                )
+                guard outcome.state != .inDoubt else {
+                    throw RunBrokerServiceError.supervisorUnavailable
+                }
+                // The supervisor durably spools cancellation_requested before
+                // touching its owned process. Seeing that exact immediate
+                // request (or terminal truth) proves the destructive command
+                // was accepted; do not issue it twice after a lost response.
+                if try hasAcceptedImmediateTermination(executionID: request.executionID) {
+                    return
+                }
+            }
             try transport.requestImmediateTermination(
                 identity: identity,
                 capability: capability.capability
             )
             logger.record(event: "run_broker.immediate_termination_issued", fields: safeFields(identity))
+        }
+    }
+
+    private func preflightImmediateTerminationAudit(
+        executionID: RunBrokerExecutionID,
+        authority: RunBrokerAuthority,
+        auditID: UUID
+    ) throws -> Bool {
+        guard let existing = try ledger.event(eventID: .init(rawValue: auditID)) else {
+            return false
+        }
+        guard case .executionControlTransitioned(
+            let recordedExecutionID,
+            let recordedAuthority,
+            .requestCancellation(.immediate),
+            let capabilities
+        ) = existing.envelope.event,
+              recordedExecutionID == executionID,
+              recordedAuthority == authority,
+              capabilities == [.observe, .cancel] else {
+            throw RunBrokerServiceError.idempotencyKeyConflict
+        }
+        return true
+    }
+
+    private func hasAcceptedImmediateTermination(
+        executionID: RunBrokerExecutionID
+    ) throws -> Bool {
+        let journal = try journalState(executionID: executionID)
+        return journal.terminal || journal.observations.values.contains { observation in
+            switch observation.kind {
+            case .cancellationRequested:
+                observation.cancellationIntent == .immediate
+            case .terminationStarted, .cancellationConfirmed:
+                true
+            default:
+                false
+            }
         }
     }
 
@@ -340,8 +509,10 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             throw RunBrokerServiceError.providerStartedBeforeReady
         }
         if let output = event.payload.data {
-            guard UInt64(output.count) <= policy.maximumOutputEventBytes,
-                  state.persistedOutputBytes <= policy.maximumPersistedOutputBytes - UInt64(output.count) else {
+            let outputBytes = UInt64(output.count)
+            guard outputBytes <= policy.maximumOutputEventBytes,
+                  outputBytes <= policy.maximumPersistedOutputBytes,
+                  state.persistedOutputBytes <= policy.maximumPersistedOutputBytes - outputBytes else {
                 throw RunBrokerServiceError.outputLimitExceeded(
                     limit: policy.maximumPersistedOutputBytes
                 )
@@ -502,6 +673,10 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             kind: .init(rawValue: event.kind.rawValue)!,
             output: event.payload.data,
             exitCode: event.payload.exitCode,
+            terminationSignal: event.payload.terminationSignal,
+            terminationReason: event.payload.terminationReason.map {
+                RunBrokerTerminationReason(rawValue: $0.rawValue)!
+            },
             cancellationIntent: event.payload.cancellationIntent,
             quarantinedByteCount: event.payload.quarantinedByteCount
         )
@@ -520,7 +695,10 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 exitCode: observation.exitCode,
                 cancellationIntent: observation.cancellationIntent,
                 quarantinedByteCount: observation.quarantinedByteCount,
-                terminationReason: observation.kind == .providerExited ? .exited : nil
+                terminationSignal: observation.terminationSignal,
+                terminationReason: observation.terminationReason.map {
+                    RunSupervisorTerminationReason(rawValue: $0.rawValue)!
+                }
             )
         )
     }

@@ -1,5 +1,71 @@
 enum RunLedgerSchemaSQL {
-    static let v1 = """
+    static let v1 = commonTables + outboxV1 + commonSchemaTail
+    static let v2 = commonTables + outboxV2 + commonSchemaTail
+
+    /// Exact schema shipped before typed application projections were made
+    /// durable. This definition is migration input and must never be edited in
+    /// place; a future change requires a new schema version and migration.
+    static let outboxV1 = """
+    CREATE TABLE outbox (
+        sequence INTEGER PRIMARY KEY REFERENCES events(sequence),
+        message_id TEXT NOT NULL UNIQUE CHECK (length(message_id) = 36),
+        event_kind TEXT NOT NULL,
+        payload BLOB NOT NULL CHECK (length(payload) > 0),
+        occurred_at REAL NOT NULL
+    ) STRICT;
+    """
+
+    /// Schema-v2 outbox. Raw payload remains duplicated from `events` on
+    /// purpose: exact event/outbox identity is an integrity invariant and lets
+    /// callers verify an immutable delivery row without joining mutable state.
+    /// Storage compaction can be considered in a future schema migration after
+    /// measurements justify weakening that local redundancy.
+    static let outboxV2 = """
+    CREATE TABLE outbox (
+        sequence INTEGER PRIMARY KEY REFERENCES events(sequence),
+        message_id TEXT NOT NULL UNIQUE CHECK (length(message_id) = 36),
+        event_kind TEXT NOT NULL,
+        payload BLOB NOT NULL CHECK (length(payload) > 0),
+        occurred_at REAL NOT NULL,
+        projection_schema_version INTEGER NOT NULL CHECK (projection_schema_version = 1),
+        projection_payload BLOB NOT NULL CHECK (length(projection_payload) > 0),
+        projection_sha256 BLOB NOT NULL CHECK (length(projection_sha256) = 32),
+        execution_id TEXT CHECK (execution_id IS NULL OR length(execution_id) = 36),
+        supervisor_sequence INTEGER CHECK (supervisor_sequence IS NULL OR supervisor_sequence > 0),
+        stream_channel TEXT CHECK (stream_channel IS NULL OR stream_channel IN ('stdout', 'stderr')),
+        stream_ends_logical_line INTEGER CHECK (
+            stream_ends_logical_line IS NULL OR stream_ends_logical_line IN (0, 1)
+        ),
+        stream_fragment_byte_count INTEGER CHECK (
+            stream_fragment_byte_count IS NULL
+                OR stream_fragment_byte_count BETWEEN 0 AND 131072
+        ),
+        stream_fragment_truncated INTEGER CHECK (
+            stream_fragment_truncated IS NULL OR stream_fragment_truncated IN (0, 1)
+        ),
+        has_terminal INTEGER NOT NULL CHECK (has_terminal IN (0, 1)),
+        CHECK (
+            (stream_channel IS NULL AND stream_ends_logical_line IS NULL
+                AND stream_fragment_byte_count IS NULL AND stream_fragment_truncated IS NULL)
+            OR
+            (stream_channel IS NOT NULL AND stream_ends_logical_line IS NOT NULL
+                AND stream_fragment_byte_count IS NOT NULL AND stream_fragment_truncated IS NOT NULL)
+        ),
+        CHECK (supervisor_sequence IS NULL OR execution_id IS NOT NULL),
+        CHECK (has_terminal = 0 OR supervisor_sequence IS NOT NULL)
+    ) STRICT;
+
+    CREATE INDEX outbox_execution_supervisor
+    ON outbox (execution_id, supervisor_sequence);
+
+    CREATE INDEX outbox_execution_stream
+    ON outbox (execution_id, stream_channel, sequence DESC);
+
+    CREATE INDEX outbox_execution_terminal
+    ON outbox (execution_id, has_terminal, sequence DESC);
+    """
+
+    static let commonTables = """
     CREATE TABLE ledger_metadata (
         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
         schema_version INTEGER NOT NULL CHECK (schema_version > 0),
@@ -110,14 +176,9 @@ enum RunLedgerSchemaSQL {
         )
     ) STRICT;
 
-    CREATE TABLE outbox (
-        sequence INTEGER PRIMARY KEY REFERENCES events(sequence),
-        message_id TEXT NOT NULL UNIQUE CHECK (length(message_id) = 36),
-        event_kind TEXT NOT NULL,
-        payload BLOB NOT NULL CHECK (length(payload) > 0),
-        occurred_at REAL NOT NULL
-    ) STRICT;
+    """
 
+    static let commonSchemaTail = """
     CREATE TABLE outbox_state (
         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
         last_acknowledged_sequence INTEGER NOT NULL CHECK (last_acknowledged_sequence >= 0)

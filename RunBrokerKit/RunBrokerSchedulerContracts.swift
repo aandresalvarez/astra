@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import ASTRACore
 
 public protocol RunBrokerSchedulerClock: Sendable {

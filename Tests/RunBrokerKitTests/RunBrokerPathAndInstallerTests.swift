@@ -590,6 +590,40 @@ struct RunBrokerPathAndInstallerTests {
             try store.loadOrCreate(identity: fixture.identity)
         }
     }
+
+    @Test("Existing installation ID must use the exact bounded canonical form")
+    func existingInstallationIDRequiresCanonicalForm() throws {
+        let canonical = "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"
+        let malformedValues = [
+            canonical.lowercased() + "\n",
+            canonical + "\n\n",
+            canonical + " \n",
+            " " + canonical + "\n",
+            String(repeating: "A", count: 65)
+        ]
+
+        for malformedValue in malformedValues {
+            let fixture = try InstallerFixture()
+            defer { fixture.cleanup() }
+            _ = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+            try FileManager.default.removeItem(at: fixture.identity.installationIDURL)
+            try FileManager.default.removeItem(at: fixture.identity.capabilitySecretURL)
+            let malformedData = Data(malformedValue.utf8)
+            try malformedData.write(to: fixture.identity.installationIDURL)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: fixture.identity.installationIDURL.path
+            )
+
+            #expect(throws: RunBrokerSecureFileError.invalidInstallationID) {
+                try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+            }
+            #expect(try Data(contentsOf: fixture.identity.installationIDURL) == malformedData)
+            #expect(!FileManager.default.fileExists(
+                atPath: fixture.identity.capabilitySecretURL.path
+            ))
+        }
+    }
 }
 
 private final class InstallerFixture {

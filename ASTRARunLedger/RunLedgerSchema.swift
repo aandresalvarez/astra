@@ -3,14 +3,17 @@ import Foundation
 import SQLite3
 
 enum RunLedgerSchema {
-    static let version = 1
+    static let version = 2
+    static let legacyVersion = 1
     static let applicationID: Int32 = 0x4153_5452 // "ASTR"
-    static let fingerprint = "astra.run-ledger.sqlite.v1.2026-07-16"
+    static let legacyFingerprint = "astra.run-ledger.sqlite.v1.2026-07-16"
+    static let fingerprint = "astra.run-ledger.sqlite.v2.2026-07-17-typed-outbox"
 
     static func open(
         configuration: RunLedgerConfiguration,
         createIfMissing: Bool,
-        initializationCrashPoint: RunLedgerInitializationCrashPoint?
+        initializationCrashPoint: RunLedgerInitializationCrashPoint?,
+        migrationCrashPoint: RunLedgerMigrationCrashPoint? = nil
     ) throws -> (RunLedgerSQLiteConnection, RunLedgerIdentity) {
         try RunLedgerStorageSecurity.withInitializationLock(
             at: configuration.databaseURL,
@@ -19,7 +22,8 @@ enum RunLedgerSchema {
             try openWhileInitializationLocked(
                 configuration: configuration,
                 createIfMissing: createIfMissing,
-                initializationCrashPoint: initializationCrashPoint
+                initializationCrashPoint: initializationCrashPoint,
+                migrationCrashPoint: migrationCrashPoint
             )
         }
     }
@@ -27,7 +31,8 @@ enum RunLedgerSchema {
     private static func openWhileInitializationLocked(
         configuration: RunLedgerConfiguration,
         createIfMissing: Bool,
-        initializationCrashPoint: RunLedgerInitializationCrashPoint?
+        initializationCrashPoint: RunLedgerInitializationCrashPoint?,
+        migrationCrashPoint: RunLedgerMigrationCrashPoint?
     ) throws -> (RunLedgerSQLiteConnection, RunLedgerIdentity) {
         let preparation = try RunLedgerStorageSecurity.prepareStorage(
             at: configuration.databaseURL,
@@ -81,7 +86,9 @@ enum RunLedgerSchema {
                     return try validateExisting(
                         connection,
                         database: database,
-                        configuration: configuration
+                        configuration: configuration,
+                        migrateIfNeeded: createIfMissing,
+                        migrationCrashPoint: migrationCrashPoint
                     )
                 }
             }
@@ -148,7 +155,7 @@ enum RunLedgerSchema {
         try connection.withImmediateTransaction(database: database) {
             try connection.execute("PRAGMA application_id = \(applicationID)", database: database)
             try connection.execute("PRAGMA user_version = \(version)", database: database)
-            try connection.execute(RunLedgerSchemaSQL.v1, database: database)
+            try connection.execute(RunLedgerSchemaSQL.v2, database: database)
 
             let statement = try connection.statement(
                 """
@@ -208,7 +215,9 @@ enum RunLedgerSchema {
     private static func validateExisting(
         _ connection: RunLedgerSQLiteConnection,
         database: OpaquePointer,
-        configuration: RunLedgerConfiguration
+        configuration: RunLedgerConfiguration,
+        migrateIfNeeded: Bool,
+        migrationCrashPoint: RunLedgerMigrationCrashPoint?
     ) throws -> RunLedgerIdentity {
         guard try connection.scalarText("PRAGMA quick_check", database: database) == "ok" else {
             throw RunLedgerError.corrupt("SQLite quick_check failed")
@@ -223,42 +232,64 @@ enum RunLedgerSchema {
             )
         }
         let foundVersion = Int(try connection.scalarInt64("PRAGMA user_version", database: database) ?? -1)
-        guard foundVersion == version else {
-            throw RunLedgerError.incompatibleSchema(expected: version, found: foundVersion)
-        }
         guard try connection.scalarText("PRAGMA journal_mode", database: database)?.lowercased() == "wal" else {
             throw RunLedgerError.corrupt("Existing ledger is not in WAL mode")
         }
 
-        let statement = try connection.statement(
-            """
-            SELECT schema_version, schema_fingerprint, store_id, installation_id, created_at
-            FROM ledger_metadata WHERE singleton_id = 1
-            """,
-            database: database
-        )
-        defer { statement.finalize() }
-        guard try statement.step() == .row else {
-            throw RunLedgerError.corrupt("Ledger metadata row is missing")
+        let metadata = try { () throws -> (
+            version: Int,
+            fingerprint: String,
+            storeID: RunBrokerStoreID,
+            installationID: RunBrokerInstallationID,
+            createdAt: Date
+        ) in
+            let statement = try connection.statement(
+                """
+                SELECT schema_version, schema_fingerprint, store_id, installation_id, created_at
+                FROM ledger_metadata WHERE singleton_id = 1
+                """,
+                database: database
+            )
+            defer { statement.finalize() }
+            guard try statement.step() == .row else {
+                throw RunLedgerError.corrupt("Ledger metadata row is missing")
+            }
+            let value = (
+                version: Int(statement.int64(at: 0)),
+                fingerprint: try statement.text(at: 1),
+                storeID: try RunBrokerStoreID(rawValue: parsedUUID(try statement.text(at: 2))),
+                installationID: try RunBrokerInstallationID(
+                    rawValue: parsedUUID(try statement.text(at: 3))
+                ),
+                createdAt: Date(timeIntervalSince1970: statement.double(at: 4))
+            )
+            guard try statement.step() == .done else {
+                throw RunLedgerError.corrupt("Ledger metadata contains duplicate singleton rows")
+            }
+            return value
+        }()
+        let metadataVersion = metadata.version
+        let expectedFingerprint: String
+        switch foundVersion {
+        case legacyVersion:
+            expectedFingerprint = legacyFingerprint
+        case version:
+            expectedFingerprint = fingerprint
+        default:
+            throw RunLedgerError.incompatibleSchema(expected: version, found: foundVersion)
         }
-        let metadataVersion = Int(statement.int64(at: 0))
-        guard metadataVersion == version else {
+        guard metadataVersion == foundVersion else {
             throw RunLedgerError.incompatibleSchema(expected: version, found: metadataVersion)
         }
-        guard try statement.text(at: 1) == fingerprint else {
+        guard metadata.fingerprint == expectedFingerprint else {
             throw RunLedgerError.incompatibleSchema(expected: version, found: metadataVersion)
         }
-        let storeID = try RunBrokerStoreID(rawValue: parsedUUID(try statement.text(at: 2)))
-        let installationID = try RunBrokerInstallationID(rawValue: parsedUUID(try statement.text(at: 3)))
         let identity = RunLedgerIdentity(
-            storeID: storeID,
-            installationID: installationID,
+            storeID: metadata.storeID,
+            installationID: metadata.installationID,
             schemaVersion: metadataVersion,
-            createdAt: Date(timeIntervalSince1970: statement.double(at: 4))
+            createdAt: metadata.createdAt
         )
-        guard try statement.step() == .done else {
-            throw RunLedgerError.corrupt("Ledger metadata contains duplicate singleton rows")
-        }
         if let expectedStoreID = configuration.expectedStoreID,
            expectedStoreID != identity.storeID {
             throw RunLedgerError.storeIdentityMismatch(
@@ -270,6 +301,24 @@ enum RunLedgerSchema {
             throw RunLedgerError.installationIdentityMismatch(
                 expected: configuration.installationID,
                 found: identity.installationID
+            )
+        }
+        if foundVersion == legacyVersion {
+            guard migrateIfNeeded else {
+                throw RunLedgerError.incompatibleSchema(expected: version, found: foundVersion)
+            }
+            try RunLedgerV1ToV2Migration.migrate(
+                connection: connection,
+                database: database,
+                identity: identity,
+                crashPoint: migrationCrashPoint
+            )
+            return try validateExisting(
+                connection,
+                database: database,
+                configuration: configuration,
+                migrateIfNeeded: false,
+                migrationCrashPoint: nil
             )
         }
         return identity

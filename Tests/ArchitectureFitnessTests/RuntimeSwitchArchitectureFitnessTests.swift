@@ -3,6 +3,56 @@ import Testing
 
 @Suite("Runtime switch architecture fitness")
 struct RuntimeSwitchArchitectureFitnessTests {
+    @Test("RunBroker client is authority-free and runtime backend injection is broker-internal")
+    func clientAndBackendCapabilityBoundaries() throws {
+        let root = try repositoryRoot()
+        let packageText = try String(
+            contentsOf: root.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let targets = try SwiftPMTargetParser.parse(packageText)
+        let client = try #require(targets.first { $0.name == "RunBrokerClient" })
+        #expect(client.dependencies == ["ASTRACore"])
+        #expect(client.path == "RunBrokerKit")
+        #expect(!client.dependencies.contains("ASTRARunLedger"))
+        #expect(!client.dependencies.contains("RunBrokerPolicy"))
+        #expect(!client.dependencies.contains("RunBrokerService"))
+
+        let service = try String(
+            contentsOf: root.appendingPathComponent(
+                "RunBrokerService/RunBrokerRuntimeSwitchService.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(!service.contains("public protocol RunBrokerRuntimeSwitchBackend"))
+        #expect(!service.contains("public struct RunBrokerCheckpointEvidence"))
+        #expect(!service.contains("public final class RunBrokerRuntimeSwitchService"))
+
+        let application = try String(
+            contentsOf: root.appendingPathComponent(
+                "RunBrokerService/RunBrokerApplicationService.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(!application.contains(
+            "public init(\n        ledger: RunLedger,\n        orchestrator: RunBrokerOrchestrator,\n        vault: any RunBrokerCapabilityVaulting,\n        runtimeSwitchBackend:"
+        ))
+
+        let bootstrap = try String(
+            contentsOf: root.appendingPathComponent(
+                "RunBrokerKit/RunBrokerClientBootstrap.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(bootstrap.contains("public init(expectedUserID: UInt32 = getuid())"))
+        #expect(!bootstrap.contains("public init(installationID:"))
+        #expect(!bootstrap.contains("public init(expectedUserID: UInt32, testingHomeDirectoryURL:"))
+        #expect(!bootstrap.contains("public func load(homeDirectoryURL:"))
+        #expect(!bootstrap.contains("public func load(supportDirectoryURL:"))
+        #expect(!bootstrap.contains("public func create"))
+        #expect(!bootstrap.contains("public func write"))
+    }
+
     @Test("Verified runtime-switch policy stays in the broker-only target")
     func policyTargetHasAnIsolatedDependencyTopology() throws {
         let root = try repositoryRoot()
@@ -17,6 +67,10 @@ struct RuntimeSwitchArchitectureFitnessTests {
         #expect(policy.path == "RunBrokerPolicy")
 
         let allowedConsumers: Set<String> = [
+            // The canonical ledger persists and replays the policy state and
+            // performs its optimistic CAS; it does not mint attestations.
+            "ASTRARunLedger",
+            "ASTRARunLedgerTests",
             "RunBrokerPolicyTests",
             // Reserved broker service targets. Broker executables compose
             // through RunBrokerService; they never mint policy evidence.
@@ -60,6 +114,8 @@ struct RuntimeSwitchArchitectureFitnessTests {
         ))
 
         let allowedImportPrefixes = [
+            "ASTRARunLedger/",
+            "Tests/ASTRARunLedgerTests/",
             "RunBrokerService/",
             "Tests/RunBrokerPolicyTests/",
             "Tests/RunBrokerServiceTests/"

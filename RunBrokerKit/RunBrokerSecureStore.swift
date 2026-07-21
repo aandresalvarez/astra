@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import Darwin
 import ASTRACore
 
@@ -25,6 +26,8 @@ public struct RunBrokerInstallationSecrets: Equatable, Sendable {
 }
 
 public struct RunBrokerSecureStore: Sendable {
+    private static let installationIDMaximumByteCount = 64
+
     private let expectedUserID: UInt32
     private let random: any RunBrokerRandomGenerating
 
@@ -42,9 +45,14 @@ public struct RunBrokerSecureStore: Sendable {
 
         let installationID: RunBrokerInstallationID
         if fileExistsWithoutFollowingSymlink(identity.installationIDURL) {
-            let data = try readPrivateFile(identity.installationIDURL)
-            guard let string = String(data: data, encoding: .utf8),
-                  let uuid = UUID(uuidString: string.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            let data = try readPrivateFile(
+                identity.installationIDURL,
+                maximumByteCount: Self.installationIDMaximumByteCount
+            )
+            guard let text = String(data: data, encoding: .utf8),
+                  text.last == "\n",
+                  let uuid = UUID(uuidString: String(text.dropLast())),
+                  text == uuid.uuidString + "\n" else {
                 throw RunBrokerSecureFileError.invalidInstallationID
             }
             installationID = RunBrokerInstallationID(rawValue: uuid)
@@ -81,6 +89,53 @@ public struct RunBrokerSecureStore: Sendable {
         try validateFileDescriptor(descriptor, expectedMode: 0o600)
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         return try handle.readToEnd() ?? Data()
+    }
+
+    private func readPrivateFile(_ url: URL, maximumByteCount: Int) throws -> Data {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw RunBrokerSecureFileError.systemCall(operation: "open", code: errno)
+        }
+        defer { close(descriptor) }
+        try validateFileDescriptor(descriptor, expectedMode: 0o600)
+
+        var initial = stat()
+        guard fstat(descriptor, &initial) == 0 else {
+            throw RunBrokerSecureFileError.systemCall(operation: "fstat", code: errno)
+        }
+        guard initial.st_size >= 0,
+              initial.st_size <= maximumByteCount else {
+            throw RunBrokerSecureFileError.invalidInstallationID
+        }
+
+        let count = Int(initial.st_size)
+        var data = Data(count: count)
+        var offset = 0
+        while offset < count {
+            let readCount = data.withUnsafeMutableBytes { bytes in
+                Darwin.read(
+                    descriptor,
+                    bytes.baseAddress?.advanced(by: offset),
+                    count - offset
+                )
+            }
+            if readCount < 0, errno == EINTR { continue }
+            guard readCount > 0 else {
+                throw RunBrokerSecureFileError.systemCall(operation: "read", code: errno)
+            }
+            offset += readCount
+        }
+
+        var final = stat()
+        guard fstat(descriptor, &final) == 0 else {
+            throw RunBrokerSecureFileError.systemCall(operation: "fstat", code: errno)
+        }
+        guard final.st_dev == initial.st_dev,
+              final.st_ino == initial.st_ino,
+              final.st_size == initial.st_size else {
+            throw RunBrokerSecureFileError.invalidInstallationID
+        }
+        return data
     }
 
     public func ensurePrivateDirectory(_ url: URL) throws {

@@ -93,6 +93,67 @@ struct RunSupervisorContractAndAuthTests {
         #expect(try root.acquireExecutionDirectory(executionID).wasCreated)
     }
 
+    @Test("execution-directory absence classifier matches only the exact typed ENOENT signal")
+    func executionDirectoryAbsenceClassifier() throws {
+        let rootURL = try RunSupervisorTestSupport.temporaryDirectory("absence-classifier")
+        let root = try RunSupervisorTrustedRoot(path: rootURL.path)
+        let executionID = try RunSupervisorTestSupport.payload(identitySeed: 26).manifest.executionID
+        do {
+            _ = try root.openExecutionDirectory(executionID)
+            Issue.record("Expected a typed absence error for a missing execution directory")
+        } catch {
+            // The production error thrown for a missing directory is the
+            // exact signal the broker classifies as launch-window absence.
+            #expect(RunSupervisorTrustedRoot.isExecutionDirectoryAbsence(error))
+        }
+        #expect(!RunSupervisorTrustedRoot.isExecutionDirectoryAbsence(
+            RunSupervisorError.systemCall("openat execution directory", EACCES)
+        ))
+        #expect(!RunSupervisorTrustedRoot.isExecutionDirectoryAbsence(
+            RunSupervisorError.systemCall("connect unix socket", ENOENT)
+        ))
+        #expect(!RunSupervisorTrustedRoot.isExecutionDirectoryAbsence(
+            RunSupervisorError.authenticationFailed
+        ))
+    }
+
+    @Test("concurrent spawned supervisors grant one launch owner and fence the loser in-doubt")
+    func concurrentRunDirectoryAdmission() async throws {
+        let rootURL = try RunSupervisorTestSupport.temporaryDirectory("spawn-directory-race")
+        let root = try RunSupervisorTrustedRoot(path: rootURL.path)
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 25)
+        let creationResults = try await withThrowingTaskGroup(of: Bool.self) { group in
+            for _ in 0..<2 {
+                group.addTask {
+                    try root.acquireExecutionDirectory(payload.manifest.executionID).wasCreated
+                }
+            }
+            var values: [Bool] = []
+            for try await value in group { values.append(value) }
+            return values
+        }
+        #expect(creationResults.filter { $0 }.count == 1)
+        #expect(creationResults.filter { !$0 }.count == 1)
+
+        // This is the post-posix_spawn/pre-discovery race: only the mkdirat
+        // winner may return launchNew. The loser sees an existing directory
+        // without authenticated discovery and must stop before provider launch.
+        #expect(try RunSupervisorAdmission.decide(
+            payload: payload,
+            existing: nil,
+            wasDirectoryCreated: true,
+            authenticatedLiveness: false
+        ) == .launchNew)
+        #expect(throws: RunSupervisorError.alreadyRunningOrInDoubt) {
+            try RunSupervisorAdmission.decide(
+                payload: payload,
+                existing: nil,
+                wasDirectoryCreated: false,
+                authenticatedLiveness: false
+            )
+        }
+    }
+
     @Test("authenticated control rejects wrong uid key stale timestamp and nonce replay")
     func authenticatedControl() throws {
         let payload = try RunSupervisorTestSupport.payload()

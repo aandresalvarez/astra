@@ -93,20 +93,35 @@ public enum RunBrokerSchedulerCommand: Codable, Equatable, Sendable {
     case status
 }
 
-public enum RunBrokerCommand: Codable, Equatable, Sendable {
+public enum RunBrokerCommand:
+    Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible
+{
     case negotiate(RunBrokerNegotiationRequest)
     case health
     case capabilities
     case scheduler(RunBrokerSchedulerCommand)
+    case application(RunBrokerApplicationCommand)
 
     public var isSafeForEphemeralReplay: Bool {
         switch self {
         case .negotiate, .health, .capabilities:
             true
-        case .scheduler:
+        case .scheduler, .application:
             false
         }
     }
+
+    public var description: String {
+        switch self {
+        case .negotiate: "negotiate"
+        case .health: "health"
+        case .capabilities: "capabilities"
+        case .scheduler: "scheduler"
+        case .application(let command): "application(\(command.description))"
+        }
+    }
+
+    public var debugDescription: String { description }
 }
 
 public struct RunBrokerRequestAuthentication: Codable, Equatable, Sendable {
@@ -168,6 +183,7 @@ public struct RunBrokerRequestEnvelope: Codable, Equatable, Sendable {
 
 public enum RunBrokerErrorCode: String, Codable, Sendable {
     case incompatibleProtocol = "incompatible_protocol"
+    case updateRequired = "update_required"
     case insecureDowngrade = "insecure_downgrade"
     case authenticationFailed = "authentication_failed"
     case replayDetected = "replay_detected"
@@ -180,6 +196,11 @@ public enum RunBrokerErrorCode: String, Codable, Sendable {
     case ledgerUnavailable = "ledger_unavailable"
     case monitorUnavailable = "monitor_unavailable"
     case monitorScheduleConflict = "monitor_schedule_conflict"
+    case applicationUnavailable = "application_unavailable"
+    case applicationRequestRejected = "application_request_rejected"
+    case executionNotFound = "execution_not_found"
+    case projectionAcknowledgementConflict = "projection_acknowledgement_conflict"
+    case externalOperationBlocked = "external_operation_blocked"
     case internalFailure = "internal_failure"
 }
 
@@ -200,6 +221,7 @@ public enum RunBrokerResponsePayload: Codable, Equatable, Sendable {
     case health(RunBrokerHealth)
     case capabilities(RunBrokerCapabilities)
     case schedulerStatus([RunBrokerMonitorDeadline])
+    case application(RunBrokerApplicationResponse)
     case accepted
 }
 

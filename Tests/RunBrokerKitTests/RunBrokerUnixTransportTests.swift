@@ -141,6 +141,67 @@ struct RunBrokerUnixTransportTests {
         #expect(serverResult.error == nil)
     }
 
+    @Test("Client rejects an authenticated application response for another execution")
+    func authenticatedApplicationResponseIsCommandCorrelated() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let authenticator = RunBrokerRequestAuthenticator(
+            secret: secrets.capabilitySecret,
+            random: SocketSequenceRandom()
+        )
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        let finished = DispatchSemaphore(value: 0)
+        let serverResult = SocketServerResult()
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                let connection = try listener.accept()
+                defer { connection.close() }
+                let wire = RunBrokerWireCodec()
+                let received = try connection.receiveFrame(using: wire.frameCodec)
+                let frame = try #require(received)
+                let request = try wire.decodeRequest(frame: frame)
+                let wrongExecution = RunBrokerExecutionID(
+                    rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+                )
+                let body = RunBrokerResponseEnvelope(
+                    protocolVersion: .current,
+                    requestID: request.requestID,
+                    result: .application(.executionStatus(.init(
+                        executionID: wrongExecution,
+                        authority: .init(
+                            id: .init(rawValue: UUID(
+                                uuidString: "00000000-0000-0000-0000-000000000103"
+                            )!),
+                            epoch: .initial
+                        ),
+                        state: .running,
+                        lastSupervisorSequence: 2
+                    )))
+                )
+                let response = try authenticator.authenticatedResponse(body, for: request)
+                try connection.send(frame: wire.encode(response: response))
+            } catch {
+                serverResult.error = error
+            }
+        }
+
+        let expectedExecution = RunBrokerExecutionID(
+            rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
+        )
+        let client = fixture.client(secrets: secrets, authenticator: authenticator)
+        #expect(throws: RunBrokerApplicationContractError.invalidExecutionStatus) {
+            try client.perform(.application(.executionStatus(expectedExecution)))
+        }
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(serverResult.error == nil)
+    }
+
     @Test("A stalled connection cannot block an independent broker request")
     func stalledConnectionDoesNotBlockIndependentRequest() throws {
         let fixture = try SocketFixture()
@@ -307,8 +368,8 @@ struct RunBrokerUnixTransportTests {
         #expect(diagnostics.events == [.socketCleanupSkipped])
     }
 
-    @Test("A second listener refuses to unlink the active broker socket")
-    func duplicateListenerPreservesActiveSocket() throws {
+    @Test("A duplicate broker fails ownership before recovery work")
+    func duplicateListenerPreventsRecovery() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
         let listener = try RunBrokerUnixSocketListener(
@@ -318,14 +379,22 @@ struct RunBrokerUnixTransportTests {
         )
         var original = stat()
         #expect(lstat(fixture.identity.socketURL.path, &original) == 0)
+        var recoveryCount = 0
 
-        #expect(throws: RunBrokerTransportError.socketAlreadyActive) {
-            try RunBrokerUnixSocketListener(
+        func acquireOwnershipThenRecover() throws -> RunBrokerUnixSocketListener {
+            let duplicate = try RunBrokerUnixSocketListener(
                 identity: fixture.identity,
                 secureStore: fixture.secureStore,
                 expectedUserID: getuid()
             )
+            recoveryCount += 1
+            return duplicate
         }
+
+        #expect(throws: RunBrokerTransportError.socketAlreadyActive) {
+            try acquireOwnershipThenRecover()
+        }
+        #expect(recoveryCount == 0)
 
         var afterRejectedDuplicate = stat()
         #expect(lstat(fixture.identity.socketURL.path, &afterRejectedDuplicate) == 0)

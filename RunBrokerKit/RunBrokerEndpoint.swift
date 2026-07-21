@@ -1,4 +1,5 @@
 import Foundation
+import RunBrokerClient
 import ASTRACore
 
 public final class RunBrokerRequestEndpoint: @unchecked Sendable {
@@ -34,6 +35,7 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
     private let replayProtector: RunBrokerReplayProtector
     private let peerPolicy: RunBrokerPeerIdentityPolicy
     private let scheduler: RunBrokerMonitorScheduler
+    private let applicationHandler: (any RunBrokerApplicationCommandHandling)?
     private let safeResponseCacheCapacity: Int
     private var cachedResponses: [UUID: CachedResponse] = [:]
     private var cacheOrder: [UUID] = []
@@ -46,6 +48,7 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         replayProtector: RunBrokerReplayProtector = .init(),
         peerPolicy: RunBrokerPeerIdentityPolicy,
         scheduler: RunBrokerMonitorScheduler,
+        applicationHandler: (any RunBrokerApplicationCommandHandling)? = nil,
         supportedVersions: RunBrokerProtocolRange = .current,
         securityFloor: RunBrokerProtocolVersion = .minimumSecure,
         safeResponseCacheCapacity: Int = 256
@@ -58,6 +61,7 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         self.replayProtector = replayProtector
         self.peerPolicy = peerPolicy
         self.scheduler = scheduler
+        self.applicationHandler = applicationHandler
         self.supportedVersions = supportedVersions
         self.securityFloor = securityFloor
         self.safeResponseCacheCapacity = safeResponseCacheCapacity
@@ -118,14 +122,17 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
             return cached.rebound(to: request.requestID)
         }
 
-        let response = route(request)
+        let response = route(request, now: now)
         if request.command.isSafeForEphemeralReplay {
             cache(response, command: request.command, key: request.idempotencyKey)
         }
         return response
     }
 
-    private func route(_ request: RunBrokerRequestEnvelope) -> RunBrokerResponseEnvelope {
+    private func route(
+        _ request: RunBrokerRequestEnvelope,
+        now: Date
+    ) -> RunBrokerResponseEnvelope {
         switch request.command {
         case .negotiate(let negotiation):
             do {
@@ -190,7 +197,12 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                     .init(
                         schedulerRead: scheduler.isOperational,
                         schedulerMutation: scheduler.isOperational && scheduler.monitorAvailable,
-                        durableIdempotency: scheduler.isOperational
+                        durableIdempotency: scheduler.isOperational,
+                        applicationControl: applicationHandler != nil,
+                        gracefulCancellation:
+                            applicationHandler?.supportsGracefulCancellation == true,
+                        immediateTermination:
+                            applicationHandler?.supportsImmediateTermination == true
                     )
                 )
             )
@@ -271,6 +283,56 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
                     retryable: true
                 )
             }
+
+        case .application(let command):
+            guard request.protocolVersion == .current else {
+                return incompatibleVersion(request)
+            }
+            guard let applicationHandler else {
+                return failure(
+                    request,
+                    code: .applicationUnavailable,
+                    message: "Durable application control is unavailable."
+                )
+            }
+            do {
+                try command.validate(now: now)
+                return .init(
+                    protocolVersion: .current,
+                    requestID: request.requestID,
+                    result: .application(try applicationHandler.handle(
+                        command,
+                        idempotencyKey: request.idempotencyKey,
+                        now: now
+                    ))
+                )
+            } catch RunBrokerApplicationEndpointError.executionNotFound {
+                return failure(request, code: .executionNotFound, message: "Execution was not found.")
+            } catch RunBrokerApplicationEndpointError.projectionAcknowledgementConflict {
+                return failure(
+                    request,
+                    code: .projectionAcknowledgementConflict,
+                    message: "Projection acknowledgement does not match the next durable message."
+                )
+            } catch RunBrokerApplicationEndpointError.externalOperationBlocked {
+                return failure(
+                    request,
+                    code: .externalOperationBlocked,
+                    message: "External-operation control is not authorized."
+                )
+            } catch is RunBrokerApplicationContractError {
+                return failure(
+                    request,
+                    code: .applicationRequestRejected,
+                    message: "Application request is invalid."
+                )
+            } catch {
+                return failure(
+                    request,
+                    code: .applicationRequestRejected,
+                    message: "Application request was rejected."
+                )
+            }
         }
     }
 
@@ -283,8 +345,8 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
     ) -> RunBrokerResponseEnvelope {
         failure(
             request,
-            code: .incompatibleProtocol,
-            message: "Negotiate protocol compatibility before sending this command."
+            code: .updateRequired,
+            message: "Update ASTRA and the RunBroker cohort before sending this command."
         )
     }
 
