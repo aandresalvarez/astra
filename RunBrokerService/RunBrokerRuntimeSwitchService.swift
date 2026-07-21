@@ -434,7 +434,12 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             do {
                 try backend.handoffIf(directive)
             } catch {
-                return try markInDoubt(current, now: now, domain: "control-dispatch-ambiguous")
+                return try markInDoubt(
+                    current,
+                    via: RuntimeSwitchPolicy.markSourceInDoubt,
+                    now: now,
+                    domain: "control-dispatch-ambiguous"
+                )
             }
             guard let raw = try backend.controlAcceptance(for: record) else {
                 return try RunBrokerRuntimeSwitchProjection.status(current)
@@ -500,7 +505,12 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
                     directive: directive
                 )
             } catch {
-                return try markInDoubt(current, now: now, domain: "replacement-dispatch-ambiguous")
+                return try markInDoubt(
+                    current,
+                    via: RuntimeSwitchPolicy.markReplacementDispatchInDoubt,
+                    now: now,
+                    domain: "replacement-dispatch-ambiguous"
+                )
             }
             guard let raw else { return try RunBrokerRuntimeSwitchProjection.status(current) }
             let acceptance = VerifiedRuntimeSwitchReplacementAcceptance(
@@ -583,13 +593,15 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
 
     private func markInDoubt(
         _ state: RuntimeSwitchPolicyState,
+        via reducer: (RuntimeSwitchPolicyState, RuntimeSwitchSourceFence)
+            -> RuntimeSwitchPolicyReduction,
         now: Date,
         domain: String
     ) throws -> RunBrokerApplicationRuntimeSwitchStatus {
         guard let source = state.record?.request.intent.expectedSource else {
             throw RunBrokerApplicationEndpointError.requestRejected
         }
-        let reduction = RuntimeSwitchPolicy.markSourceInDoubt(state, source: source)
+        let reduction = reducer(state, source)
         try commit(reduction, expected: state, effectID: nil, now: now, domain: domain)
         return try RunBrokerRuntimeSwitchProjection.status(reduction.state)
     }
