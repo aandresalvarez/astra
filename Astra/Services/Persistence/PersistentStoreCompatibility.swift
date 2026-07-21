@@ -45,6 +45,8 @@ public enum PersistentStoreKnownShape: Equatable, Sendable {
     case runtimeSelectionOnlyV12
     case feedbackOnlyV12
     case productionV12
+    case externalOperationV15
+    case externalOperationInitialV15
     case other
 
     /// Stable value for persisted migration records and structured audit logs.
@@ -56,22 +58,50 @@ public enum PersistentStoreKnownShape: Equatable, Sendable {
             return "feedback_only_v12"
         case .productionV12:
             return "production_v12"
+        case .externalOperationV15:
+            return "external_operation_v15"
+        case .externalOperationInitialV15:
+            return "external_operation_initial_v15"
         case .other:
             return "other"
         }
     }
+
+    /// The schema version identifier the shape's stores carry on disk.
+    public var sourceSchemaVersion: Int? {
+        switch self {
+        case .runtimeSelectionOnlyV12, .feedbackOnlyV12, .productionV12:
+            return 12
+        case .externalOperationV15, .externalOperationInitialV15:
+            return 15
+        case .other:
+            return nil
+        }
+    }
 }
 
-/// Identifies the three V12 shapes that reached disk under the same Core Data
-/// version identifier. Entity names are only a routing hint: the dedicated
-/// migration plan still verifies every model hash before it can open a copy.
+/// Identifies the colliding store shapes that reached disk under an already
+/// claimed Core Data version identifier: the three 12.0.0 shapes and the two
+/// external-operation 15.0.0 sub-shapes. Entity names are only a routing
+/// hint: the dedicated migration plan still verifies every model hash before
+/// it can open a copy.
 public enum PersistentStoreModelShapeService {
     private static let v12Identifier = "12.0.0"
+    private static let v15Identifier = "15.0.0"
     // These checksums were captured from sanitized stores produced by the
     // actual historical builds. Entity names alone cannot distinguish the two
     // incompatible 17-entity V12 models.
     private static let feedbackOnlyV12Checksum = "hTf3SZACvFlI82r2SNAsEWesdpFXcA6hSkiPUnH0Erk="
     private static let productionV12Checksum = "aRvGJIZNZ/lwoob9yJ52572ipBYvz/ipXn6a6nJO6oU="
+    // The abandoned external-operation branch reused 15.0.0 for a schema
+    // whose extra entity is TaskExternalOperation instead of the canonical
+    // TaskTurnRequest, and its Dev builds wrote two sub-shapes because
+    // launchResourceKey was added mid-branch. The initial (pre-
+    // launchResourceKey) checksum is the one observed on disk and documented
+    // in SchemaVersionTests' canonical-V15 pin; both frozen schemas are
+    // pinned to these values there.
+    private static let externalOperationV15Checksum = "Y4VRug2MsVnb+dlybKvYqRGpwBl3EHlI5Ukk3Eqttr8="
+    private static let externalOperationInitialV15Checksum = "fjNnIAoVBrprvCS0R9NHWeJKEu/l0I7XjMZHs9trXEk="
     private static let runtimeSelectionOnlyV12Entities: Set<String> = [
         "Workspace",
         "AgentTask",
@@ -102,20 +132,45 @@ public enum PersistentStoreModelShapeService {
         return shape(from: metadata)
     }
 
+    private static var externalOperationV15Entities: Set<String> {
+        runtimeSelectionOnlyV12Entities.union([
+            "FeedbackReport",
+            "PersistentStoreMigrationRecord",
+            "TaskExternalOperation"
+        ])
+    }
+
     public static func shape(from metadata: [String: Any]) -> PersistentStoreKnownShape {
-        guard versionIdentifiers(from: metadata).contains(v12Identifier),
-              let entities = entityNames(from: metadata) else {
+        let identifiers = versionIdentifiers(from: metadata)
+        guard let entities = entityNames(from: metadata) else {
             return .other
         }
-        if entities == runtimeSelectionOnlyV12Entities {
-            return .runtimeSelectionOnlyV12
+        if identifiers.contains(v12Identifier) {
+            if entities == runtimeSelectionOnlyV12Entities {
+                return .runtimeSelectionOnlyV12
+            }
+            if entities == runtimeSelectionOnlyV12Entities.union(["FeedbackReport"]) {
+                switch modelChecksum(from: metadata) {
+                case feedbackOnlyV12Checksum:
+                    return .feedbackOnlyV12
+                case productionV12Checksum:
+                    return .productionV12
+                default:
+                    return .other
+                }
+            }
+            return .other
         }
-        if entities == runtimeSelectionOnlyV12Entities.union(["FeedbackReport"]) {
+        if identifiers.contains(v15Identifier), entities == externalOperationV15Entities {
+            // A canonical V15 store carries TaskTurnRequest, never
+            // TaskExternalOperation, so the entity set alone separates the
+            // branches; the checksum additionally pins WHICH sub-shape wrote
+            // the store so recovery opens it with the exact frozen model.
             switch modelChecksum(from: metadata) {
-            case feedbackOnlyV12Checksum:
-                return .feedbackOnlyV12
-            case productionV12Checksum:
-                return .productionV12
+            case externalOperationV15Checksum:
+                return .externalOperationV15
+            case externalOperationInitialV15Checksum:
+                return .externalOperationInitialV15
             default:
                 return .other
             }

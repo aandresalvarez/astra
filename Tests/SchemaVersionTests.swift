@@ -3,6 +3,7 @@ import CoreData
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -364,6 +365,240 @@ struct SchemaVersionTests {
         #expect(
             try modelChecksum(for: ASTRASchemaV15.self) == "20EX/Ki6+0dMVN122sYI+u0kxAw7mMDBSRVharTGbbQ="
         )
+    }
+
+    @Test("Frozen external-operation V15 schemas match both observed sub-shapes")
+    func frozenExternalOperationV15FingerprintsMatchObservedStores() throws {
+        #expect(ASTRASchemaV15ExternalOperation.versionIdentifier == Schema.Version(15, 0, 0))
+        #expect(ASTRASchemaV15ExternalOperationInitial.versionIdentifier == Schema.Version(15, 0, 0))
+        #expect(ASTRASchemaV15ExternalOperation.models.count == 19)
+        #expect(ASTRASchemaV15ExternalOperationInitial.models.count == 19)
+        #expect(ASTRASchemaV15ExternalOperation.models.contains {
+            $0 == ASTRASchemaV15ExternalOperationModels.TaskExternalOperation.self
+        })
+        #expect(ASTRASchemaV15ExternalOperationInitial.models.contains {
+            $0 == ASTRASchemaV15ExternalOperationInitialModels.TaskExternalOperation.self
+        })
+
+        // These are the on-disk checksums the external-operation branch's Dev
+        // builds wrote (initial pre-launchResourceKey shape, then the final
+        // shape after the optional field was added mid-branch). The initial
+        // value matches the observed store checksum documented alongside the
+        // canonical V15 pin above. Shape detection routes on these; drifting
+        // either frozen declaration would silently orphan those stores again.
+        let finalChecksum = try modelChecksum(for: ASTRASchemaV15ExternalOperation.self)
+        #expect(
+            finalChecksum == "Y4VRug2MsVnb+dlybKvYqRGpwBl3EHlI5Ukk3Eqttr8=",
+            "Actual final external-operation V15 checksum: \(finalChecksum)"
+        )
+        let initialChecksum = try modelChecksum(for: ASTRASchemaV15ExternalOperationInitial.self)
+        #expect(
+            initialChecksum == "fjNnIAoVBrprvCS0R9NHWeJKEu/l0I7XjMZHs9trXEk=",
+            "Actual initial external-operation V15 checksum: \(initialChecksum)"
+        )
+
+        // The isolated recovery plans mirror the colliding-V12 precedent:
+        // each colliding 15.0.0 shape migrates to V16 outside the normal plan.
+        #expect(ASTRAExternalOperationV15MigrationPlan.schemas.count == 2)
+        #expect(ASTRAExternalOperationV15MigrationPlan.stages.count == 1)
+        #expect(ASTRAExternalOperationInitialV15MigrationPlan.schemas.count == 2)
+        #expect(ASTRAExternalOperationInitialV15MigrationPlan.stages.count == 1)
+    }
+
+    @MainActor
+    @Test("External-operation V15 store is rejected by the canonical plan and recovered through an isolated copy")
+    func externalOperationV15StoreRecoversThroughIsolatedPlan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v15-external-operation-recovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source.store")
+        let destinationURL = root.appendingPathComponent("recovery.store")
+        let taskID = UUID(uuidString: "00000000-0000-0000-0000-000000000311")!
+        let reportID = UUID(uuidString: "00000000-0000-0000-0000-000000000312")!
+
+        do {
+            var sourceContainer: ModelContainer? = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV15ExternalOperation.self),
+                configurations: [ModelConfiguration(url: sourceURL)]
+            )
+            let context = try #require(sourceContainer?.mainContext)
+            let task = AgentTask(title: "External-operation V15 task", goal: "Survive the V15 collision")
+            task.id = taskID
+            context.insert(task)
+
+            let report = FeedbackReport(
+                id: reportID,
+                installationID: "installation-v15",
+                evidenceWindowStart: Date(timeIntervalSince1970: 100),
+                evidenceWindowEnd: Date(timeIntervalSince1970: 200),
+                consentVersion: "v1"
+            )
+            context.insert(report)
+
+            for index in 0..<2 {
+                let operation = ASTRASchemaV15ExternalOperationModels.TaskExternalOperation()
+                operation.taskID = taskID
+                operation.externalIdentity = "job-\(index)"
+                operation.backendKindRaw = "workspace_shell"
+                operation.backendJobID = "job-\(index)"
+                context.insert(operation)
+            }
+            try context.save()
+            sourceContainer = nil
+        }
+        let sourceBytes = try Data(contentsOf: sourceURL)
+
+        // The version-based compatibility preflight cannot catch this store:
+        // it reads 15.0.0 and reports it openable by this binary.
+        #expect(
+            PersistentStoreCompatibilityService.assess(
+                storeURL: sourceURL,
+                latestSupportedSchemaVersion: ASTRASchema.currentVersion
+            ) == .compatible(storeSchemaVersion: 15)
+        )
+        // Failure signature this recovery path exists for: the canonical plan
+        // resolves 15.0.0 to the canonical checksum, so Core Data rejects the
+        // incompatible store before any migration stage can run.
+        #expect(throws: (any Error).self) {
+            _ = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: sourceURL)]
+            )
+        }
+
+        #expect(try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .externalOperationV15)
+        #expect(
+            OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL)
+                == .required(shape: .externalOperationV15)
+        )
+
+        let report = try OrphanedV12StoreMigrator.migrateCopy(
+            from: sourceURL,
+            to: destinationURL
+        )
+        #expect(report.sourceShapeRaw == "external_operation_v15")
+        #expect(report.sourceSchemaVersion == 15)
+        #expect(report.droppedRowCounts == ["ZTASKEXTERNALOPERATION": 2])
+        #expect(try Data(contentsOf: sourceURL) == sourceBytes)
+
+        let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            type: .sqlite,
+            at: destinationURL
+        )
+        #expect(PersistentStoreCompatibilityService.schemaVersion(from: metadata) == ASTRASchema.currentVersion)
+        let entityHashes = try #require(metadata["NSStoreModelVersionHashes"] as? [String: Any])
+        #expect(entityHashes["TaskExternalOperation"] == nil)
+        #expect(entityHashes["TaskTurnRequest"] != nil)
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: destinationURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedTask.id == taskID)
+        #expect(migratedTask.title == "External-operation V15 task")
+        let migratedReport = try #require(try context.fetch(FetchDescriptor<FeedbackReport>()).first)
+        #expect(migratedReport.id == reportID)
+        #expect(try context.fetch(FetchDescriptor<TaskTurnRequest>()).isEmpty)
+        let migrationRecord = try #require(
+            try context.fetch(FetchDescriptor<PersistentStoreMigrationRecord>()).first
+        )
+        #expect(migrationRecord.sourceSchemaVersion == 15)
+        #expect(migrationRecord.sourceShapeRaw == "external_operation_v15")
+        #expect(migrationRecord.destinationSchemaVersion == ASTRASchema.currentVersion)
+        #expect(migrationRecord.reason == "reconcile_colliding_v15_shapes")
+    }
+
+    @MainActor
+    @Test("Pre-launchResourceKey external-operation V15 store recovers through its own isolated plan")
+    func initialExternalOperationV15StoreRecoversThroughIsolatedPlan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v15-external-operation-initial-recovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source.store")
+        let destinationURL = root.appendingPathComponent("recovery.store")
+        let taskID = UUID(uuidString: "00000000-0000-0000-0000-000000000321")!
+
+        do {
+            var sourceContainer: ModelContainer? = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV15ExternalOperationInitial.self),
+                configurations: [ModelConfiguration(url: sourceURL)]
+            )
+            let context = try #require(sourceContainer?.mainContext)
+            let task = AgentTask(title: "Initial-shape V15 task", goal: "Survive the earlier sub-shape")
+            task.id = taskID
+            context.insert(task)
+            let operation = ASTRASchemaV15ExternalOperationInitialModels.TaskExternalOperation()
+            operation.taskID = taskID
+            operation.externalIdentity = "job-initial"
+            context.insert(operation)
+            try context.save()
+            sourceContainer = nil
+        }
+
+        #expect(throws: (any Error).self) {
+            _ = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: sourceURL)]
+            )
+        }
+        #expect(
+            try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL)
+                == .externalOperationInitialV15
+        )
+        #expect(
+            OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL)
+                == .required(shape: .externalOperationInitialV15)
+        )
+
+        let report = try OrphanedV12StoreMigrator.migrateCopy(
+            from: sourceURL,
+            to: destinationURL
+        )
+        #expect(report.sourceShapeRaw == "external_operation_initial_v15")
+        #expect(report.sourceSchemaVersion == 15)
+        #expect(report.droppedRowCounts == ["ZTASKEXTERNALOPERATION": 1])
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: destinationURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedTask.id == taskID)
+        #expect(try context.fetch(FetchDescriptor<TaskTurnRequest>()).isEmpty)
+        let migrationRecord = try #require(
+            try context.fetch(FetchDescriptor<PersistentStoreMigrationRecord>()).first
+        )
+        #expect(migrationRecord.sourceSchemaVersion == 15)
+        #expect(migrationRecord.sourceShapeRaw == "external_operation_initial_v15")
+    }
+
+    @MainActor
+    @Test("Canonical V15 store is never routed through external-operation recovery")
+    func canonicalV15StoreIsNotRoutedThroughExternalOperationRecovery() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v15-canonical-shape-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+
+        var container: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV15.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        #expect(container != nil)
+        container = nil
+
+        #expect(try PersistentStoreModelShapeService.shape(ofStoreAt: storeURL) == .other)
+        #expect(OrphanedV12StoreMigrator.migrationProbe(storeURL: storeURL) == .notRequired)
     }
 
     @Test("ModelContainer can be created with versioned schema")
