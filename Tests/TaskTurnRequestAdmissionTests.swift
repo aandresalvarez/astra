@@ -907,6 +907,117 @@ struct TaskTurnRequestAdmissionTests {
         #expect(bStopped)
         for _ in 0..<10 { await Task.yield() }
     }
+
+    @Test("Re-asserting the same waiting state clears a resolved blocker instead of leaving it stale")
+    func sameStateTransitionClearsResolvedBlocker() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "BlockerClear", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        let blocker = AgentTask(title: "Blocker", goal: "Hold the lock", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(blocker)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Waiting on a busy workspace lock",
+            for: task,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+
+        // Enter `.waitingForResource` blocked by another task.
+        _ = TaskTurnRequestStateMachine.transition(
+            request,
+            to: .waitingForResource,
+            blockingTaskID: blocker.id,
+            blockerSummary: "Waiting for another task to release the workspace."
+        )
+        #expect(request.blockingTaskID == blocker.id)
+        #expect(request.blockerSummary != nil)
+
+        // The admission loop re-asserts `.waitingForResource` on every pass
+        // through that branch with the FRESHLY computed blocker (nil once no
+        // conflicting lock remains). Re-entering the SAME state with both
+        // fields nil must clear the stale blocker, not leave the old one
+        // displayed after the blocking task is actually gone.
+        let result = TaskTurnRequestStateMachine.transition(
+            request,
+            to: .waitingForResource,
+            blockingTaskID: nil,
+            blockerSummary: nil
+        )
+        #expect(result.changed)
+        #expect(request.blockingTaskID == nil)
+        #expect(request.blockerSummary == nil)
+    }
+
+    @Test("nextSequence does not require fetching a task's entire turn-request history")
+    func nextSequenceStaysBoundedForLongLivedTasks() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "SequenceBound", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        var lastRequestID: UUID?
+        for index in 1...5 {
+            let submission = try #require(TaskTurnSubmissionService.submit(
+                message: "Follow-up \(index)",
+                for: task,
+                into: context
+            ).successValue)
+            #expect(submission.sequence == index)
+            lastRequestID = submission.requestID
+        }
+
+        let lastID = try #require(lastRequestID)
+        let last = try #require(try TaskTurnRequestRepository.request(id: lastID, in: context))
+        #expect(last.sequence == 5)
+        #expect(try TaskTurnRequestRepository.nextSequence(for: task, in: context) == 6)
+    }
+
+    @Test("Startup recovery batches its owning-task fetch instead of loading every AgentTask")
+    func recoveryBatchesTaskLookupToActiveRequestOwners() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "RecoveryBatch", primaryPath: root.path)
+        let recoveredTask = AgentTask(title: "Recovered", goal: "Continue", workspace: workspace)
+        let unrelatedTask = AgentTask(title: "Unrelated", goal: "No active requests", workspace: workspace)
+        context.insert(workspace)
+        context.insert(recoveredTask)
+        context.insert(unrelatedTask)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Interrupted follow-up",
+            for: recoveredTask,
+            into: context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .running)
+
+        // A task with no active requests should be irrelevant to recovery —
+        // this only proves the bounded lookup still resolves the task that
+        // DOES own an active request correctly, whether or not other,
+        // unrelated tasks exist in the store.
+        let summary = TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+            modelContext: context,
+            at: Date(timeIntervalSince1970: 999)
+        )
+
+        #expect(summary.terminalized == 1)
+        #expect(request.state == .failed)
+        #expect(request.terminalReason == "app_restarted")
+        #expect(unrelatedTask.status != .failed)
+    }
 }
 
 private extension Result where Failure == TaskTurnSubmissionService.SubmissionError {

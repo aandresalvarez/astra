@@ -173,8 +173,16 @@ struct TaskActivityPresentation: Equatable, Sendable {
         tasks: [AgentTask],
         requests: [TaskTurnRequestSnapshot]
     ) -> [UUID: TaskActivityPresentation] {
-        Dictionary(uniqueKeysWithValues: tasks.map { task in
-            (task.id, resolve(taskID: task.id, taskStatus: task.status, requests: requests))
+        // Group once so each task's `resolve` call filters only its own
+        // slice — passing the full array to every call made this
+        // O(tasks × requests) in the sidebar, which recomputes on every body
+        // re-render.
+        let requestsByTaskID = Dictionary(grouping: requests, by: \.taskID)
+        return Dictionary(uniqueKeysWithValues: tasks.map { task in
+            (
+                task.id,
+                resolve(taskID: task.id, taskStatus: task.status, requests: requestsByTaskID[task.id] ?? [])
+            )
         })
     }
 }

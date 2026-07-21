@@ -33,10 +33,14 @@ enum TaskTurnRequestStateMachine {
             let previousBlockerID = request.blockingTaskID
             let previousBlockerSummary = request.blockerSummary
             if let runID { request.runID = runID }
-            if blockingTaskID != nil || blockerSummary != nil {
-                request.blockingTaskID = blockingTaskID
-                request.blockerSummary = blockerSummary
-            }
+            // Always assign, never conditionally: callers re-asserting the
+            // same state (e.g. the admission loop's repeated
+            // `.waitingForResource` polls) must be able to CLEAR a resolved
+            // blocker by passing nil, not just set a new one. Skipping the
+            // assignment when both are nil left a stale blockingTaskID /
+            // blockerSummary on screen after the blocking lock was released.
+            request.blockingTaskID = blockingTaskID
+            request.blockerSummary = blockerSummary
             let changed = previousRunID != request.runID
                 || previousBlockerID != request.blockingTaskID
                 || previousBlockerSummary != request.blockerSummary
@@ -179,7 +183,16 @@ enum TaskTurnRequestRepository {
         return try modelContext.fetch(descriptor).first
     }
 
+    /// The table is append-only, so computing the next sequence must not
+    /// fetch a task's entire submission history — only the single highest
+    /// `sequence` row is needed.
     static func nextSequence(for task: AgentTask, in modelContext: ModelContext) throws -> Int {
-        (try requests(for: task, in: modelContext).last?.sequence ?? 0) + 1
+        let taskID = task.id
+        var descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate { $0.taskID == taskID },
+            sortBy: [SortDescriptor(\.sequence, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return (try modelContext.fetch(descriptor).first?.sequence ?? 0) + 1
     }
 }

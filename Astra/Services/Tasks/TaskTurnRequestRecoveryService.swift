@@ -34,13 +34,19 @@ enum TaskTurnRequestRecoveryService {
             ], level: .error)
             return Summary()
         }
+        guard !requests.isEmpty else { return Summary() }
 
         var summary = Summary()
         var affectedWorkspaces: [UUID: Workspace] = [:]
         // Resolve the owning task via the scalar `taskID` (there is no
-        // relationship). Fetch once into a map rather than per request.
+        // relationship). Fetch once into a map, bounded to the distinct
+        // task ids the active requests actually reference — not every
+        // `AgentTask` row in the store.
+        let taskIDs = Array(Set(requests.map(\.taskID)))
         let tasksByID = Dictionary(
-            ((try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []).map { ($0.id, $0) },
+            ((try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
+            )) ?? []).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         for request in requests {

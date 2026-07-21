@@ -314,4 +314,28 @@ struct TaskActivityPresentationTests {
         #expect(admissionChip?.title == "Couldn’t start")
         #expect(runtimeChip?.title == "Run failed")
     }
+
+    @Test("resolveByTaskID matches each task to only its own requests")
+    func resolveByTaskIDGroupsRequestsPerTaskCorrectly() {
+        let workspace = makeWorkspace()
+        let taskA = makeTask(status: .completed, workspace: workspace)
+        let taskB = makeTask(status: .completed, workspace: workspace)
+        let taskC = makeTask(status: .completed, workspace: workspace)
+        let waitingA = request(for: taskA, sequence: 1, state: .waitingForWorker)
+        let runningB = request(for: taskB, sequence: 1, state: .running)
+        // taskC has no requests at all — its presentation must idle out
+        // rather than pick up a sibling task's request from the shared array.
+
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: [taskA, taskB, taskC],
+            requests: [waitingA, runningB]
+        )
+
+        #expect(activities[taskA.id]?.kind == .waitingForWorker)
+        #expect(activities[taskA.id]?.request?.id == waitingA.id)
+        #expect(activities[taskB.id]?.kind == .running)
+        #expect(activities[taskB.id]?.request?.id == runningB.id)
+        #expect(activities[taskC.id]?.kind == .idle)
+        #expect(activities[taskC.id]?.request == nil)
+    }
 }
