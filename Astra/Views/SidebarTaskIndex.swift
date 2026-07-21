@@ -13,6 +13,11 @@ struct SidebarTaskIndex {
 
     let pinnedTasks: [AgentTask]
     let unreadTasks: [AgentTask]
+    /// Cross-workspace supervision list. This is derived from the same
+    /// durable request projection as workspace rows and deliberately ignores
+    /// search, pinning, and drawer state so live work cannot disappear.
+    let activeTasks: [AgentTask]
+    let activityCounts: SidebarWorkspaceActivityCounts
 
     init(
         tasks: [AgentTask],
@@ -29,16 +34,24 @@ struct SidebarTaskIndex {
         var waitingCounts: [UUID: Int] = [:]
         var pinned: [AgentTask] = []
         var unread: [AgentTask] = []
+        var active: [AgentTask] = []
+        var allActivityCounts = SidebarWorkspaceActivityCounts()
         var reviewTaskCount = 0
 
         for task in tasks {
-            guard let workspaceID = task.workspace?.id else { continue }
-            workspaceIDs.insert(workspaceID)
             let activity = taskActivities[task.id] ?? TaskActivityPresentation.resolve(
                 taskID: task.id,
                 taskStatus: task.status,
                 requests: []
             )
+            if activity.showsPersistentSidebarGlyph {
+                active.append(task)
+                if activity.isRunning { allActivityCounts.running += 1 }
+                if activity.isWaiting { allActivityCounts.waiting += 1 }
+            }
+
+            guard let workspaceID = task.workspace?.id else { continue }
+            workspaceIDs.insert(workspaceID)
             // A durable running request (activity.request) means a follow-up
             // the user explicitly sent is executing right now, so it counts
             // even when the task itself is still marked done — otherwise the
@@ -94,6 +107,10 @@ struct SidebarTaskIndex {
         unreadTasks = unread.sorted {
             ($0.unreadAt ?? $0.updatedAt) > ($1.unreadAt ?? $1.updatedAt)
         }
+        activeTasks = active.sorted {
+            Self.taskSortsBefore($0, $1, taskActivities: taskActivities)
+        }
+        activityCounts = allActivityCounts
         PerformanceTelemetry.logIfNeeded(
             "sidebar_index_build",
             start: start,
