@@ -2655,6 +2655,17 @@ struct DockerProcessInvocation: Equatable, Sendable {
 extension DockerWorkspaceCommandExecutor {
     private func dockerClientEnvironment(_ environment: [String: String]) -> [String: String] {
         var dockerEnvironment = environment.filter { key, _ in key != "PATH" }
+        if configuration.dockerExecutable.hasPrefix("/") {
+            let dockerToolDirectory = URL(fileURLWithPath: configuration.dockerExecutable)
+                .deletingLastPathComponent()
+                .path
+            let inheritedPATH = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            let pathComponents = ([dockerToolDirectory] + inheritedPATH.split(separator: ":").map(String.init))
+            var seen: Set<String> = []
+            dockerEnvironment["PATH"] = pathComponents
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+                .joined(separator: ":")
+        }
         prepareDockerClientConfigDirectory()
         dockerEnvironment["DOCKER_CONFIG"] = configuration.dockerClientConfigPath
         return dockerEnvironment

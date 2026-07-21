@@ -28,6 +28,7 @@ enum RuntimePathResolver {
         named executableName: String,
         candidates: [String] = [],
         fallback: String = "",
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> String {
         let executableName = executableName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,7 +46,7 @@ enum RuntimePathResolver {
             return path
         }
 
-        let pathCandidates = ProcessInfo.processInfo.environment["PATH", default: ""]
+        let pathCandidates = environment["PATH", default: ""]
             .split(separator: ":")
             .map(String.init)
             .filter { !$0.isEmpty }
@@ -142,6 +143,25 @@ enum RuntimePathResolver {
         )
     }
 
+    /// Resolves Docker independently of the GUI app's inherited PATH.
+    /// Docker Desktop can expose the CLI through a system link or only inside
+    /// its application bundle, so both installation forms are authoritative.
+    static func detectDockerPath(
+        environment: [String: String] = RuntimeProcessEnvironment.enriched(),
+        fileManager: FileManager = .default
+    ) -> String {
+        detectExecutablePath(
+            named: "docker",
+            candidates: [
+                "\(usrLocalBin)/docker",
+                "\(homebrewBin)/docker",
+                "/Applications/Docker.app/Contents/Resources/bin/docker"
+            ],
+            environment: environment,
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         defaultExecutableSearchDirectories.map {
             URL(fileURLWithPath: $0, isDirectory: true)
@@ -159,6 +179,72 @@ enum RuntimePathResolver {
         astraToolsPath,
         usrBin
     ]
+}
+
+/// One immutable Docker launch contract. Keeping the executable and environment
+/// together prevents readiness checks and real task launches from resolving
+/// different Docker installations under Finder's minimal process environment.
+struct DockerRuntimeResolution: Equatable, Sendable {
+    let executablePath: String
+    let environment: [String: String]
+
+    static let environmentLookup = DockerRuntimeResolution(
+        executablePath: "/usr/bin/env",
+        environment: [
+            "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        ]
+    )
+
+    var usesEnvironmentLookup: Bool {
+        executablePath == "/usr/bin/env"
+    }
+}
+
+enum DockerRuntimeResolver {
+    static func resolve(
+        environment: [String: String] = RuntimeProcessEnvironment.enriched(),
+        fileManager: FileManager = .default
+    ) -> DockerRuntimeResolution? {
+        let executablePath = RuntimePathResolver.detectDockerPath(
+            environment: environment,
+            fileManager: fileManager
+        )
+        guard !executablePath.isEmpty else { return nil }
+        return resolution(executablePath: executablePath, environment: environment)
+    }
+
+    static func resolution(
+        executablePath: String,
+        environment: [String: String]
+    ) -> DockerRuntimeResolution {
+        let executableDirectory = URL(fileURLWithPath: executablePath)
+            .deletingLastPathComponent()
+            .path
+        // Docker Desktop's system-wide CLI is often a symlink (e.g.
+        // /usr/local/bin/docker) into its app bundle, where companion tools
+        // such as docker-credential-desktop actually live. Prepending only
+        // the symlink's own directory leaves those companion tools
+        // undiscoverable, so the resolved target's directory is prepended too.
+        let resolvedExecutablePath = (executablePath as NSString).resolvingSymlinksInPath
+        let resolvedExecutableDirectory = URL(fileURLWithPath: resolvedExecutablePath)
+            .deletingLastPathComponent()
+            .path
+        var toolDirectories = [executableDirectory]
+        if resolvedExecutableDirectory != executableDirectory {
+            toolDirectories.append(resolvedExecutableDirectory)
+        }
+        var resolvedEnvironment = environment
+        let existingDirectories = environment["PATH", default: ""]
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !$0.isEmpty && !toolDirectories.contains($0) }
+        resolvedEnvironment["PATH"] = (toolDirectories + existingDirectories)
+            .joined(separator: ":")
+        return DockerRuntimeResolution(
+            executablePath: executablePath,
+            environment: resolvedEnvironment
+        )
+    }
 }
 
 // MARK: - Centralized process environment
