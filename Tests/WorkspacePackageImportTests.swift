@@ -473,7 +473,20 @@ struct WorkspacePackageImportTests {
         let targetContainer = try Self.makeContainer()
         let destinationParent = root.appendingPathComponent("destination", isDirectory: true)
         try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        // The coordinator stages its private copy under `fileManager
+        // .temporaryDirectory`, which defaults to the shared SYSTEM temp
+        // directory — scanning that directly for `astra-share-import-*`
+        // residue is racy under Swift Testing's parallel execution, since a
+        // concurrently-running sibling test's own (still in-flight) staging
+        // directory lands there too and gets misattributed to THIS test.
+        // Redirect the coordinator's temp directory to a subdirectory no
+        // other test can ever write into, so the residue check only ever
+        // sees what THIS import created.
+        let isolatedSystemTemp = root.appendingPathComponent("system-temp", isDirectory: true)
+        try FileManager.default.createDirectory(at: isolatedSystemTemp, withIntermediateDirectories: true)
         var coordinator = WorkspacePackageImportCoordinator()
+        coordinator.fileManager = IsolatedTemporaryDirectoryFileManager(temporaryDirectory: isolatedSystemTemp)
         coordinator.capabilityLibrary = CapabilityLibrary(
             directory: root.appendingPathComponent("target-capabilities", isDirectory: true)
         )
@@ -486,7 +499,7 @@ struct WorkspacePackageImportTests {
 
         // The staged private copy is removed once the import completes.
         let leftovers = try FileManager.default.contentsOfDirectory(
-            at: FileManager.default.temporaryDirectory,
+            at: isolatedSystemTemp,
             includingPropertiesForKeys: nil
         ).filter { $0.lastPathComponent.hasPrefix("astra-share-import-") }
         #expect(leftovers.isEmpty)
@@ -841,6 +854,20 @@ struct WorkspacePackageImportTests {
             governance: governance
         )
     }
+}
+
+/// Redirects `temporaryDirectory` to a caller-owned subdirectory so tests
+/// that stage into "the system temp dir" can scope their assertions to a
+/// location no concurrently-running test can also write into.
+private final class IsolatedTemporaryDirectoryFileManager: FileManager {
+    private let isolatedTemporaryDirectory: URL
+
+    init(temporaryDirectory: URL) {
+        self.isolatedTemporaryDirectory = temporaryDirectory
+        super.init()
+    }
+
+    override var temporaryDirectory: URL { isolatedTemporaryDirectory }
 }
 
 // MARK: - Review sheet state
