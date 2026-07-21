@@ -56,7 +56,9 @@ struct RunLedgerExclusiveWriterTests {
         let fixture = try LedgerFixture()
         defer { fixture.cleanup() }
         let holder = try RunLedger(configuration: exclusive(fixture.configuration))
-        #expect(throws: RunLedgerError.self) {
+        #expect(throws: RunLedgerError.exclusiveWriterConflict(
+            "Another process already holds the exclusive ledger writer lock"
+        )) {
             try RunLedger(configuration: exclusive(fixture.configuration))
         }
         try holder.close()
@@ -69,6 +71,8 @@ struct RunLedgerExclusiveWriterTests {
         .init(
             ledgerDirectoryURL: base.ledgerDirectoryURL,
             installationID: base.installationID,
+            expectedStoreID: base.expectedStoreID,
+            busyTimeoutMilliseconds: base.busyTimeoutMilliseconds,
             exclusiveWriter: true
         )
     }

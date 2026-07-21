@@ -41,14 +41,17 @@ enum RunLedgerStorageSecurity {
             )
         }
         var status = stat()
-        guard fstat(descriptor, &status) == 0,
-              !isDirectory(status),
-              status.st_uid == getuid(),
-              status.st_mode & 0o077 == 0 else {
+        guard fstat(descriptor, &status) == 0 else {
             Darwin.close(descriptor)
             throw RunLedgerError.unsafeStorage(
-                "Exclusive-writer lock file failed private ownership checks"
+                "Could not inspect exclusive-writer lock file: \(posixError())"
             )
+        }
+        do {
+            try validateArtifact(status, path: lockPath, requireSecureMode: true)
+        } catch {
+            Darwin.close(descriptor)
+            throw error
         }
         while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
             if errno == EINTR { continue }
