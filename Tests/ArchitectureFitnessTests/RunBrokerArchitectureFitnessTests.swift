@@ -78,6 +78,79 @@ struct RunBrokerArchitectureFitnessTests {
         #expect(transitiveDependencies(of: "ASTRA", in: graph).contains("RunBrokerService"))
     }
 
+    @Test("ledger outbox materializer and application contract accept identical event kinds per payload case")
+    func outboxEventKindParity() throws {
+        let root = repositoryRoot()
+        let ledgerTable = try matchesKindTable(
+            in: text("ASTRARunLedger/RunLedgerOutboxProjection.swift", root: root))
+        let contractTable = try matchesKindTable(
+            in: text("RunBrokerKit/RunBrokerApplicationV2Contracts.swift", root: root))
+        #expect(!ledgerTable.isEmpty)
+        #expect(
+            ledgerTable == contractTable,
+            """
+            The ledger materializer and the application contract disagree on which event kinds \
+            each projection payload case accepts. A kind the ledger emits but the contract \
+            rejects permanently wedges projection delivery head-of-line: the client throws on \
+            validate(), acknowledgement is exact-next-only, and outbox rows are immutable. \
+            Ledger-only: \(diffDescription(ledgerTable, minus: contractTable)) \
+            Contract-only: \(diffDescription(contractTable, minus: ledgerTable))
+            """
+        )
+    }
+
+    private func matchesKindTable(in source: String) throws -> [String: Set<String>] {
+        guard let signature = source.range(of: "func matches(eventKind: String) -> Bool {") else {
+            throw FitnessScanError.missingMatchesFunction
+        }
+        var depth = 1
+        var end = signature.upperBound
+        while end < source.endIndex, depth > 0 {
+            let character = source[end]
+            if character == "{" { depth += 1 }
+            if character == "}" { depth -= 1 }
+            end = source.index(after: end)
+        }
+        let body = String(source[signature.upperBound..<end])
+        var table: [String: Set<String>] = [:]
+        let caseChunks = body.components(separatedBy: "case .").dropFirst()
+        for chunk in caseChunks {
+            guard let colon = chunk.firstIndex(of: ":") else { continue }
+            let label = String(chunk[chunk.startIndex..<colon])
+            let kinds = quotedStrings(in: String(chunk[colon...]))
+            table[label] = kinds
+        }
+        guard !table.isEmpty else { throw FitnessScanError.missingMatchesFunction }
+        return table
+    }
+
+    private func quotedStrings(in source: String) -> Set<String> {
+        var kinds: Set<String> = []
+        var remainder = Substring(source)
+        while let open = remainder.firstIndex(of: "\"") {
+            let afterOpen = remainder.index(after: open)
+            guard let close = remainder[afterOpen...].firstIndex(of: "\"") else { break }
+            kinds.insert(String(remainder[afterOpen..<close]))
+            remainder = remainder[remainder.index(after: close)...]
+        }
+        return kinds
+    }
+
+    private func diffDescription(
+        _ table: [String: Set<String>], minus other: [String: Set<String>]
+    ) -> String {
+        let entries = table.keys.sorted().compactMap { label -> String? in
+            let extra = table[label, default: []].subtracting(other[label, default: []])
+            guard !extra.isEmpty else { return nil }
+            return "\(label): \(extra.sorted().joined(separator: ", "))"
+        }
+        return entries.isEmpty ? "none" : entries.joined(separator: "; ")
+    }
+
+    private enum FitnessScanError: Error {
+        case missingMatchesFunction
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

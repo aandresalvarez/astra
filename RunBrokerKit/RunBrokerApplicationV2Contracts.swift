@@ -657,7 +657,9 @@ public enum RunBrokerApplicationProjectionEvent: Codable, Equatable, Sendable {
                 || eventKind == "monitor.deadline_removed"
                 || eventKind == "monitor.attempt_recorded"
         case .runtimeSwitch:
-            eventKind == "runtime_switch.policy_transitioned"
+            eventKind == "runtime_switch.admitted"
+                || eventKind == "runtime_switch.policy_transitioned"
+                || eventKind == "runtime_switch.completion_archived"
         case .runtimeSwitchReservation:
             eventKind == "runtime_switch.target_reserved"
         case .executionControl:
