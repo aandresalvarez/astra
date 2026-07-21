@@ -570,6 +570,59 @@ struct TaskTurnRequestAdmissionTests {
         #expect(legacyRun.status != .failed)
     }
 
+    @Test("Linking the event to its run before the running-state save persists both together")
+    func linkBeforeBeginRuntimePersistsEventRunTogether() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "LinkOrdering", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up to link",
+            for: task,
+            into: context
+        ).successValue)
+
+        let run = TaskRun(task: task)
+        context.insert(run)
+
+        // Mirrors AgentRuntimeWorker's launch order: link the event to its
+        // run BEFORE the running-state save, so a single save durably
+        // persists both facts together. Nothing later in a real launch path
+        // is guaranteed to save again before the provider starts, so a link
+        // set only in memory here would risk staying unpersisted forever if
+        // the app terminates before any later save.
+        PersistedTurnRuntimeEventLinker.link(
+            eventID: submission.eventID,
+            to: run,
+            for: task,
+            fallbackType: "runtime.started",
+            fallbackPayload: "",
+            in: context
+        )
+        let begin = PersistedTurnRuntimeEventLinker.beginRuntime(
+            requestID: submission.requestID,
+            run: run,
+            task: task,
+            in: context
+        )
+
+        // `begin.persisted` IS the ground truth for durability: it is the
+        // return value of the running-state `modelContext.save()` call.
+        // Since `link()` set `event.run` before that call, and a SwiftData
+        // context save is atomic over the whole context, a `true` here
+        // means the event-run link and the request's `.running` transition
+        // were written to the store together, in the same save — not that
+        // the link merely lives in this context's in-memory object graph.
+        #expect(begin.persisted)
+        let event = try #require(task.events.first { $0.id == submission.eventID })
+        #expect(event.run?.id == run.id)
+    }
+
     @Test("Presentation fetches stay bounded to active plus visible-window requests")
     func presentationRequestsAreBounded() throws {
         let root = try makeWorkspaceRoot()

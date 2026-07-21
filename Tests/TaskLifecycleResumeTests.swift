@@ -419,6 +419,54 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.contains { $0.type == "task.retried" } == false)
     }
 
+    @Test("Retry fallback does not resurrect a stale durable message superseded by a later run")
+    func retryDoesNotResurrectStaleDurableMessage() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Retry Stale Durable", primaryPath: env.root)
+        let task = AgentTask(title: "Retry Stale Durable", goal: "Initial request", workspace: workspace)
+        task.status = .failed
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Stale queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: env.context))
+        let requestTerminalAt = Date()
+        TaskTurnRequestStateMachine.transition(request, to: .failed, terminalReason: "runtime_not_started", at: requestTerminalAt)
+
+        // A later, non-durable run (e.g. an approved-plan or base-task
+        // retry) fails AFTER the durable request terminalized, without
+        // adding a newer `user.message` event — the exact scenario where
+        // `latestRetryableTurnRequest` correctly rejects the stale durable
+        // request as the retry candidate.
+        let laterRun = TaskRun(task: task)
+        laterRun.status = .failed
+        laterRun.stopReason = "no_usable_result"
+        laterRun.startedAt = requestTerminalAt.addingTimeInterval(1)
+        laterRun.completedAt = requestTerminalAt.addingTimeInterval(2)
+        env.context.insert(laterRun)
+        try env.context.save()
+
+        await env.coordinator.retryTask(task)?.value
+
+        // The legacy fallback must not resurrect the stale durable message:
+        // retry falls back to the original task seed, recorded via the
+        // "Task re-queued for retry." wording — not "Latest follow-up
+        // re-queued for retry.", which would mean it replayed the stale
+        // "Stale queued follow-up" text instead. Asserted against the
+        // durable `task.retried` event rather than `AppLogger.entries`
+        // (a bounded, process-wide ring buffer that can evict this test's
+        // entries under full-suite parallel load).
+        let retriedEvent = try #require(task.events.first { $0.type == "task.retried" })
+        #expect(retriedEvent.payload == "Task re-queued for retry.")
+        #expect(task.status == .queued)
+    }
+
     @Test("Deleting a task cancels and removes its durable turn requests")
     func deleteTaskCancelsAndRemovesTurnRequests() async throws {
         let env = try makeEnvironment()

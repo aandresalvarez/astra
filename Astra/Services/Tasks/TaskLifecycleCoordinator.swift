@@ -100,8 +100,16 @@ final class TaskLifecycleCoordinator {
             return nil
         }
         let retryTurn = latestRetryableTurnRequest(for: task)
+        // Any durable message still eligible for retry was already picked up
+        // above via `retryTurn`. Exclude every durably-tracked message (not
+        // just the rejected candidate) from the legacy fallback below, or a
+        // stale/superseded durable follow-up can be resurrected and executed
+        // through the non-durable continuation path.
+        let durableMessageEventIDs = Set(
+            (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?.map(\.messageEventID) ?? []
+        )
         let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
-            ?? Self.latestRetryableFollowUpMessage(for: task)
+            ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
         let retryMode = retryTurn != nil
             ? "durable_follow_up"
             : (retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up")
@@ -522,19 +530,27 @@ final class TaskLifecycleCoordinator {
         return request ?? (fallback.isEmpty ? nil : fallback)
     }
 
-    private static func latestRetryableFollowUpMessage(for task: AgentTask) -> String? {
+    private static func latestRetryableFollowUpMessage(
+        for task: AgentTask,
+        excludingMessageEventIDs: Set<UUID> = []
+    ) -> String? {
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let message = latestActionableUserMessage(for: task) else { return nil }
+        guard let message = latestActionableUserMessage(
+            for: task,
+            excludingMessageEventIDs: excludingMessageEventIDs
+        ) else { return nil }
         return message == goal ? nil : message
     }
 
     private static func latestActionableUserMessage(
         for task: AgentTask,
-        before cutoff: Date = Date.distantFuture
+        before cutoff: Date = Date.distantFuture,
+        excludingMessageEventIDs: Set<UUID> = []
     ) -> String? {
         task.events
             .filter { $0.type == "user.message" }
             .filter { $0.timestamp <= cutoff }
+            .filter { !excludingMessageEventIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
             .reversed()
             .compactMap { event -> String? in

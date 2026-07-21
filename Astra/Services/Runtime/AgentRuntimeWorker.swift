@@ -555,12 +555,19 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
+        // Link the event to its run BEFORE the running-state save below, so
+        // the same save durably persists both facts together. No later save
+        // in this launch path is guaranteed to run before the provider
+        // starts (e.g. a clean-workspace git baseline capture skips its own
+        // save) — if the link were set only in memory here, a crash before
+        // any later save would leave the durable user message permanently
+        // detached from the run that answered it.
+        let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
+        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
         defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { isRunning = false; return }
-        let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
-        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,

@@ -1542,6 +1542,37 @@ struct ArchitectureFitnessTests {
         #expect(count <= 130, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
+    @Test("AgentTask/Workspace deletions stay routed through turn-request cleanup")
+    func agentTaskAndWorkspaceDeletionsStayRoutedThroughTurnRequestCleanup() throws {
+        let root = try repositoryRoot()
+        let files = try swiftFiles(under: root.appendingPathComponent("Astra"))
+        let count = try occurrenceCount(pattern: "modelContext.delete(task)", files: files)
+            + occurrenceCount(pattern: "modelContext.delete(ws)", files: files)
+
+        // `TaskTurnRequest.taskID` is a scalar reference with no SwiftData
+        // relationship/cascade (see TaskTurnRequest.swift), so every place
+        // that deletes an AgentTask or Workspace must first route through
+        // TaskQueue.cancelAndRemoveTurnRequests(for:modelContext:) (or the
+        // TaskStoreMaintenance equivalent) or its request rows silently
+        // outlive it as permanent orphans / a parked admission coroutine
+        // keeps running against a deleted task. Four separate review rounds
+        // on the durable-turn-admission PR each found a new call site
+        // missing this before it was fixed. This ratchet doesn't verify a
+        // new site calls the cleanup correctly, but it forces a deliberate,
+        // reviewed bump instead of a silent regression the next time a
+        // deletion call site is added. Baseline 5: TaskLifecycleCoordinator
+        // .deleteTask/.deleteWorkspace, TaskQueue.routeScheduleResult
+        // (same-thread schedule merge), TaskStoreMaintenance
+        // .deduplicateImportedSessions — plus pruneAbandonedDrafts, which is
+        // exempt: it only ever deletes tasks with task.runs.isEmpty, and a
+        // TaskTurnRequest can only be created for a task that has already
+        // been submitted into conversation at least once.
+        #expect(
+            count <= 5,
+            "New AgentTask/Workspace deletion site — route it through cancelAndRemoveTurnRequests (or the equivalent turn-request cleanup) before bumping this ratchet. Current count: \(count)"
+        )
+    }
+
     @Test("Files shelf does not decode image previews from SwiftUI body")
     func filesShelfDoesNotDecodeImagePreviewsFromSwiftUIBody() throws {
         let root = try repositoryRoot()
@@ -1840,7 +1871,11 @@ struct ArchitectureFitnessTests {
 
     private var lineBudgetRegistry: [String: LineBudgetEntry] {
         [
-            "Astra/Views/TaskMainView.swift": .init(6_130, .owner("Task detail and run surface")),
+            // Budget raised 6,130 -> 6,136 for the PR #347 review follow-up
+            // that keeps the runtime-permission dock visible over a queued
+            // follow-up's waiting dock: the guard and its "why" comment
+            // aren't safely compressible without losing the reasoning.
+            "Astra/Views/TaskMainView.swift": .init(6_136, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one

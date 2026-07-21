@@ -3916,7 +3916,13 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
-        if let waitingPresentation = taskTurnWaitingDockPresentation {
+        // A queued follow-up must not hide a LIVE permission request: the
+        // provider is still waiting on an approve/deny decision, and that
+        // dock's Approve/Deny/Stop controls are unreachable from the waiting
+        // dock. Only prefer the waiting dock when no permission decision is
+        // outstanding.
+        if !runtimePermissionState.hasOpenApprovalRequest,
+           let waitingPresentation = taskTurnWaitingDockPresentation {
             return waitingPresentation
         }
         return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
