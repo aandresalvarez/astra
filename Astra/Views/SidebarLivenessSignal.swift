@@ -1,5 +1,12 @@
 import Foundation
 
+struct SidebarWorkspaceActivityCounts: Equatable, Sendable {
+    var running: Int = 0
+    var waiting: Int = 0
+
+    var isEmpty: Bool { running == 0 && waiting == 0 }
+}
+
 /// The rail's liveness invariant: running work is always signalled
 /// somewhere. Each visible workspace row carries its own signal (the
 /// collapsed-drawer dot, or the task row's spinner when expanded), so the
@@ -20,6 +27,23 @@ enum SidebarLivenessSignal {
             guard entry.count > 0 else { return total }
             let rowCanSignal = isSectionExpanded && visibleWorkspaceIDs.contains(entry.workspaceID)
             return rowCanSignal ? total : total + entry.count
+        }
+    }
+
+    /// The waiting count follows the same liveness rule as running work: when
+    /// a workspace row is hidden, the section header becomes the truthful
+    /// owner of its active-work signal.
+    static func headerActivityCounts(
+        activityCounts: [(workspaceID: UUID, counts: SidebarWorkspaceActivityCounts)],
+        visibleWorkspaceIDs: Set<UUID>,
+        isSectionExpanded: Bool
+    ) -> SidebarWorkspaceActivityCounts {
+        activityCounts.reduce(into: SidebarWorkspaceActivityCounts()) { total, entry in
+            guard !entry.counts.isEmpty else { return }
+            let rowCanSignal = isSectionExpanded && visibleWorkspaceIDs.contains(entry.workspaceID)
+            guard !rowCanSignal else { return }
+            total.running += entry.counts.running
+            total.waiting += entry.counts.waiting
         }
     }
 }

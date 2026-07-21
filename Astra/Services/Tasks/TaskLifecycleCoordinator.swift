@@ -67,7 +67,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func cancelTask(_ task: AgentTask) {
-        taskQueue.cancel(task: task)
+        taskQueue.cancel(task: task, modelContext: modelContext)
         let summary = TaskRunLifecycleService.cancelTask(
             task,
             modelContext: modelContext,
@@ -86,8 +86,33 @@ final class TaskLifecycleCoordinator {
     /// `@discardableResult` — production callers ignore it.
     @discardableResult
     func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
-        let retryFollowUpMessage = Self.latestRetryableFollowUpMessage(for: task)
-        let retryMode = retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up"
+        // A durable submission leaves the task's terminal status untouched
+        // while it waits, so status-gated Retry surfaces can still fire.
+        // Starting a second continuation here would race the pending
+        // admission into out-of-order or duplicate execution.
+        if let activeTurns = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext),
+           let activeTurn = activeTurns.first {
+            AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
+                "retry_mode": "rejected_active_turn",
+                "active_request_id": activeTurn.id.uuidString,
+                "active_request_state": activeTurn.state.rawValue
+            ], level: .warning)
+            return nil
+        }
+        let retryTurn = latestRetryableTurnRequest(for: task)
+        // Any durable message still eligible for retry was already picked up
+        // above via `retryTurn`. Exclude every durably-tracked message (not
+        // just the rejected candidate) from the legacy fallback below, or a
+        // stale/superseded durable follow-up can be resurrected and executed
+        // through the non-durable continuation path.
+        let durableMessageEventIDs = Set(
+            (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?.map(\.messageEventID) ?? []
+        )
+        let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
+            ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
+        let retryMode = retryTurn != nil
+            ? "durable_follow_up"
+            : (retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up")
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
             "retry_mode": retryMode
         ])
@@ -96,9 +121,18 @@ final class TaskLifecycleCoordinator {
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
-        task.tokensUsed = 0
-        task.costUSD = 0
+        let isDurableFollowUpRetry = retryTurn != nil && retryFollowUpMessage != nil
+        // A base-task retry re-runs the whole goal through the queue. A durable
+        // follow-up retry must NOT re-enqueue the task: `.queued` invites
+        // processQueue/executeTask to re-run the base goal, racing
+        // continuePersistedTurn (double execution). continuePersistedTurn
+        // promotes the task to `.running` itself, and the follow-up's cumulative
+        // token/cost totals must not be reset.
+        if !isDurableFollowUpRetry {
+            TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
+            task.tokensUsed = 0
+            task.costUSD = 0
+        }
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.retried,
@@ -115,7 +149,36 @@ final class TaskLifecycleCoordinator {
             ], level: .warning)
         }
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        if let retryFollowUpMessage {
+        if let retryTurn, let retryFollowUpMessage {
+            _ = TaskTurnRequestStateMachine.transition(retryTurn, to: .waitingForWorker)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: [
+                    "operation": "retry_turn_request",
+                    "request_id": retryTurn.id.uuidString
+                ]
+            )
+            AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
+                "source": "retry_durable_follow_up",
+                "request_id": retryTurn.id.uuidString
+            ])
+            return Task {
+                let didStart = await taskQueue.continueSession(
+                    task: task,
+                    message: retryFollowUpMessage,
+                    existingMessageEventID: retryTurn.messageEventID,
+                    turnRequestID: retryTurn.id,
+                    modelContext: modelContext
+                )
+                guard didStart else { return }
+                AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                    "status": task.status.rawValue,
+                    "source": "retry_durable_follow_up"
+                ])
+            }
+        } else if let retryFollowUpMessage {
             AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
                 "source": "retry_latest_follow_up"
             ])
@@ -134,6 +197,28 @@ final class TaskLifecycleCoordinator {
         } else {
             return runSingleTask(task)
         }
+    }
+
+    /// The durable turn Retry may resurrect: the task's newest request, only
+    /// when it is failed/cancelled AND still represents the task's latest
+    /// failure. A run started after the request terminalized (a resume,
+    /// approved-plan, or base-task attempt) means Retry must target THAT
+    /// failure through the legacy fallbacks — resurrecting an older durable
+    /// message would execute stale instructions.
+    private func latestRetryableTurnRequest(for task: AgentTask) -> TaskTurnRequest? {
+        guard let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext),
+              let candidate = requests.last,
+              candidate.state == .failed || candidate.state == .cancelled else {
+            return nil
+        }
+        let latestRunStart = task.runs.map(\.startedAt).max() ?? .distantPast
+        guard (candidate.terminalAt ?? .distantFuture) >= latestRunStart else { return nil }
+        return candidate
+    }
+
+    private func message(for request: TaskTurnRequest, task: AgentTask) -> String? {
+        task.events.first(where: { $0.id == request.messageEventID })?.payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @discardableResult
@@ -445,19 +530,27 @@ final class TaskLifecycleCoordinator {
         return request ?? (fallback.isEmpty ? nil : fallback)
     }
 
-    private static func latestRetryableFollowUpMessage(for task: AgentTask) -> String? {
+    private static func latestRetryableFollowUpMessage(
+        for task: AgentTask,
+        excludingMessageEventIDs: Set<UUID> = []
+    ) -> String? {
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let message = latestActionableUserMessage(for: task) else { return nil }
+        guard let message = latestActionableUserMessage(
+            for: task,
+            excludingMessageEventIDs: excludingMessageEventIDs
+        ) else { return nil }
         return message == goal ? nil : message
     }
 
     private static func latestActionableUserMessage(
         for task: AgentTask,
-        before cutoff: Date = Date.distantFuture
+        before cutoff: Date = Date.distantFuture,
+        excludingMessageEventIDs: Set<UUID> = []
     ) -> String? {
         task.events
             .filter { $0.type == "user.message" }
             .filter { $0.timestamp <= cutoff }
+            .filter { !excludingMessageEventIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
             .reversed()
             .compactMap { event -> String? in
@@ -478,9 +571,25 @@ final class TaskLifecycleCoordinator {
         TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
+    /// Turn requests reference their task by scalar id, so neither the
+    /// workspace→task cascade nor task deletion reaches them. Cancel first —
+    /// terminalizing every active request makes a waiting admission coroutine
+    /// exit instead of resuming provider work for a task that no longer
+    /// exists — then remove the rows so terminal history doesn't accumulate
+    /// as permanent orphans.
+    private func cancelAndRemoveTurnRequests(for task: AgentTask) {
+        taskQueue.cancel(task: task, modelContext: modelContext)
+        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
+            for request in requests {
+                modelContext.delete(request)
+            }
+        }
+    }
+
     func deleteTask(_ task: AgentTask) -> Workspace? {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
+        cancelAndRemoveTurnRequests(for: task)
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         return workspace
@@ -543,6 +652,14 @@ final class TaskLifecycleCoordinator {
     }
 
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
+        // The workspace→task cascade never reaches scalar turn-request rows,
+        // and cascaded task deletion would leave their admission coroutines
+        // parked; cancel and remove them per task before deleting. This runs
+        // BEFORE mirror removal: cancelling live requests saves-and-exports,
+        // which must not resurrect the mirrors removed below.
+        for task in ws.tasks {
+            cancelAndRemoveTurnRequests(for: task)
+        }
         removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
         for connector in ws.connectors {

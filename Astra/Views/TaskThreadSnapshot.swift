@@ -4,7 +4,10 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum TaskConversationItem: Identifiable, Sendable {
-    case userMessage(text: String, timestamp: Date)
+    /// `eventID` is nil only for the synthetic goal bubble. Durable follow-up
+    /// messages retain their event identity so a turn-request lifecycle chip
+    /// always attaches to the exact message the user submitted.
+    case userMessage(eventID: UUID?, text: String, timestamp: Date)
     case agentResponse(run: TaskRunSnapshot)
     case planUserMessage(text: String, timestamp: Date)
     case planAssistantMessage(text: String, timestamp: Date)
@@ -16,7 +19,8 @@ enum TaskConversationItem: Identifiable, Sendable {
 
     var id: String {
         switch self {
-        case .userMessage(_, let timestamp): return "user-\(timestamp.timeIntervalSince1970)"
+        case .userMessage(let eventID, _, let timestamp):
+            return eventID.map { "user-\($0.uuidString)" } ?? "user-\(timestamp.timeIntervalSince1970)"
         case .agentResponse(let run): return "agent-\(run.id)"
         case .planUserMessage(_, let timestamp): return "plan-user-\(timestamp.timeIntervalSince1970)"
         case .planAssistantMessage(_, let timestamp): return "plan-assistant-\(timestamp.timeIntervalSince1970)"
@@ -1109,7 +1113,7 @@ struct TaskThreadSnapshot: Sendable {
         }
         var items: [TaskConversationItem] = planEchoesGoal
             ? []
-            : [.userMessage(text: goal, timestamp: createdAt)]
+            : [.userMessage(eventID: nil, text: goal, timestamp: createdAt)]
         let visibleRuns = runs.filter { run in
             shouldShowAgentResponse(
                 for: run,
@@ -1136,7 +1140,7 @@ struct TaskThreadSnapshot: Sendable {
 
             switch event.type {
             case "user.message":
-                items.append(.userMessage(text: event.payload, timestamp: event.timestamp))
+                items.append(.userMessage(eventID: event.id, text: event.payload, timestamp: event.timestamp))
             case "task.approved":
                 items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp, count: 1))
             case TaskPlanConversationEventTypes.userMessage:
@@ -1458,7 +1462,7 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
             if itemIndex.isMultiple(of: 16) { try cancellationCheck() }
             let text: String
             switch item {
-            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _, _), .recapResult(let value, _):
+            case .userMessage(_, let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _, _), .recapResult(let value, _):
                 text = value
             case .agentResponse(let run):
                 text = run.output

@@ -390,6 +390,152 @@ struct TaskLifecycleResumeTests {
         )
     }
 
+    @Test("Retry is rejected while a durable turn request is still active")
+    func retryRejectedWhileDurableTurnActive() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Retry Active Turn", primaryPath: env.root)
+        let task = AgentTask(title: "Retry Active Turn", goal: "Initial request", workspace: workspace)
+        task.status = .failed
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: env.context))
+        try env.context.save()
+
+        let handle = env.coordinator.retryTask(task)
+
+        #expect(handle == nil)
+        // The rejected retry must not re-queue the task or disturb the saved
+        // turn: the pending admission still owns the next execution.
+        #expect(task.status == .failed)
+        #expect(request.state == .waitingForWorker)
+        #expect(task.events.contains { $0.type == "task.retried" } == false)
+    }
+
+    @Test("Retry fallback does not resurrect a stale durable message superseded by a later run")
+    func retryDoesNotResurrectStaleDurableMessage() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Retry Stale Durable", primaryPath: env.root)
+        let task = AgentTask(title: "Retry Stale Durable", goal: "Initial request", workspace: workspace)
+        task.status = .failed
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Stale queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: env.context))
+        let requestTerminalAt = Date()
+        TaskTurnRequestStateMachine.transition(request, to: .failed, terminalReason: "runtime_not_started", at: requestTerminalAt)
+
+        // A later, non-durable run (e.g. an approved-plan or base-task
+        // retry) fails AFTER the durable request terminalized, without
+        // adding a newer `user.message` event — the exact scenario where
+        // `latestRetryableTurnRequest` correctly rejects the stale durable
+        // request as the retry candidate.
+        let laterRun = TaskRun(task: task)
+        laterRun.status = .failed
+        laterRun.stopReason = "no_usable_result"
+        laterRun.startedAt = requestTerminalAt.addingTimeInterval(1)
+        laterRun.completedAt = requestTerminalAt.addingTimeInterval(2)
+        env.context.insert(laterRun)
+        try env.context.save()
+
+        await env.coordinator.retryTask(task)?.value
+
+        // The legacy fallback must not resurrect the stale durable message:
+        // retry falls back to the original task seed, recorded via the
+        // "Task re-queued for retry." wording — not "Latest follow-up
+        // re-queued for retry.", which would mean it replayed the stale
+        // "Stale queued follow-up" text instead. Asserted against the
+        // durable `task.retried` event rather than `AppLogger.entries`
+        // (a bounded, process-wide ring buffer that can evict this test's
+        // entries under full-suite parallel load).
+        let retriedEvent = try #require(task.events.first { $0.type == "task.retried" })
+        #expect(retriedEvent.payload == "Task re-queued for retry.")
+        #expect(task.status == .queued)
+    }
+
+    @Test("Deleting a task cancels and removes its durable turn requests")
+    func deleteTaskCancelsAndRemovesTurnRequests() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Delete Turn Cleanup", primaryPath: env.root)
+        let task = AgentTask(title: "Delete Turn Cleanup", goal: "Initial request", workspace: workspace)
+        task.status = .completed
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let taskID = task.id
+
+        let submission = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        try env.context.save()
+
+        // A zero-size pool keeps the admission coroutine parked in its
+        // waiting-for-worker poll, exactly where deletion must interrupt it.
+        let admission = Task { @MainActor in
+            await env.queue.continueSession(
+                task: task,
+                message: "Queued follow-up",
+                existingMessageEventID: submission.eventID,
+                turnRequestID: submission.requestID,
+                modelContext: env.context
+            )
+        }
+        await Task.yield()
+
+        _ = env.coordinator.deleteTask(task)
+        let started = await admission.value
+
+        #expect(!started)
+        let remaining = try env.context.fetch(FetchDescriptor<TaskTurnRequest>())
+            .filter { $0.taskID == taskID }
+        #expect(remaining.isEmpty)
+    }
+
+    @Test("Deleting a workspace cancels and removes its tasks' turn requests")
+    func deleteWorkspaceRemovesTurnRequests() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Delete WS Cleanup", primaryPath: env.root)
+        let task = AgentTask(title: "Delete WS Cleanup", goal: "Initial request", workspace: workspace)
+        task.status = .completed
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let taskID = task.id
+
+        _ = try #require(TaskTurnSubmissionService.submit(
+            message: "Queued follow-up",
+            for: task,
+            into: env.context
+        ).successValue)
+        try env.context.save()
+
+        // The workspace→task cascade cannot reach scalar turn-request rows;
+        // deleteWorkspace must cancel and remove them per task first.
+        _ = env.coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+
+        let remaining = try env.context.fetch(FetchDescriptor<TaskTurnRequest>())
+            .filter { $0.taskID == taskID }
+        #expect(remaining.isEmpty)
+    }
+
     private static func fakeOpenCodeScript(argsFile: URL) -> String {
         """
         #!/bin/sh
@@ -402,5 +548,12 @@ struct TaskLifecycleResumeTests {
         printf '%s\\n' '{"type":"step_finish","sessionID":"retry-session","part":{"type":"step-finish","reason":"stop","tokens":{"total":4,"input":3,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}'
         exit 0
         """
+    }
+}
+
+private extension Result where Failure == TaskTurnSubmissionService.SubmissionError {
+    var successValue: Success? {
+        guard case let .success(value) = self else { return nil }
+        return value
     }
 }

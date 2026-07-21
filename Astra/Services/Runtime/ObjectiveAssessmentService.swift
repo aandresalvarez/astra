@@ -460,8 +460,10 @@ enum ObjectiveAssessmentService {
     @MainActor
     private static func assessmentRecentUserMessages(for task: AgentTask, limit: Int = 4) -> [String] {
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
         let userMessages = task.events
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+            .filter { !pendingTurnMessageIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
 
         let candidates = userMessages.compactMap { event -> String? in

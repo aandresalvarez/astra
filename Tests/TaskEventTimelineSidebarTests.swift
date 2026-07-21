@@ -588,7 +588,7 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
         #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
-        #expect(SidebarLeanPresentation.sidebarTaskStatusesNeverAddSecondLine)
+        #expect(!SidebarLeanPresentation.sidebarTaskStatusesNeverAddSecondLine)
         #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
         #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
         #expect(SidebarLeanPresentation.workspaceSectionHorizontalInset == 10)

@@ -64,7 +64,7 @@ extension TaskThreadSnapshotTests {
 
         #expect(snapshot.conversationItems.count == 4)
 
-        if case .userMessage(let text, _) = snapshot.conversationItems[0] {
+        if case .userMessage(_, let text, _) = snapshot.conversationItems[0] {
             #expect(text == "Original goal")
         } else {
             Issue.record("Expected original goal as first conversation item")
@@ -76,7 +76,7 @@ extension TaskThreadSnapshotTests {
             Issue.record("Expected completed first run before the follow-up")
         }
 
-        if case .userMessage(let text, _) = snapshot.conversationItems[2] {
+        if case .userMessage(_, let text, _) = snapshot.conversationItems[2] {
             #expect(text == "Continue")
         } else {
             Issue.record("Expected follow-up user message")
@@ -179,7 +179,7 @@ extension TaskThreadSnapshotTests {
         )
 
         #expect(snapshot.conversationItems.count == 1)
-        if case .userMessage(let text, _) = snapshot.conversationItems[0] {
+        if case .userMessage(_, let text, _) = snapshot.conversationItems[0] {
             #expect(text == "Original goal")
         } else {
             Issue.record("Expected only the original user message")
@@ -953,7 +953,7 @@ extension TaskThreadSnapshotTests {
             return false
         })
         #expect(!snapshot.conversationItems.contains {
-            if case .userMessage(let text, _) = $0 {
+            if case .userMessage(_, let text, _) = $0 {
                 return text.contains("ASTRA approved one-time runtime permission")
             }
             return false

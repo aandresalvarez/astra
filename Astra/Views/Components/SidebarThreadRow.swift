@@ -72,6 +72,10 @@ struct SidebarThreadRow: View {
     var contentLeadingPadding: CGFloat = 0
     var attemptCount: Int = 1
     var subtitle: String?
+    /// Durable turn-admission state supplied by the sidebar projection. It is
+    /// intentionally optional so callers that do not have a request snapshot
+    /// retain the historic task-status presentation.
+    var activity: TaskActivityPresentation?
     /// Optional context shown when hovering the title. Pinned tasks use this
     /// for workspace identity instead of spending a second line on it.
     var titleHelp: String?
@@ -109,12 +113,13 @@ struct SidebarThreadRow: View {
             isUnread: task.shouldShowUnread,
             isHovered: isHovered,
             isKeyboardFocused: isKeyboardFocused,
-            isSelected: isSelected
+            isSelected: isSelected,
+            activity: activity
         )
     }
 
     private var isActionableStatus: Bool {
-        SidebarThreadRowLayout.isActionableStatus(task.status)
+        SidebarThreadRowLayout.isActionableStatus(task.status, activity: activity)
     }
 
     private var showsHoverChrome: Bool {
@@ -140,6 +145,7 @@ struct SidebarThreadRow: View {
     /// no longer renders as a second line, so the glyph has to speak.
     private var statusGlyphDescription: String {
         if showsUnreadDot { return "Unread result" }
+        if let description = activity?.sidebarDescription { return description }
         switch task.status {
         case .running:        return "Running"
         case .pendingUser:    return "Needs input"
@@ -154,6 +160,10 @@ struct SidebarThreadRow: View {
 
     private var titlePresentation: Formatters.SidebarTaskTitlePresentation {
         SidebarTaskActionPresentation.rowTitle(for: task.title)
+    }
+
+    private var presentationSubtitle: String? {
+        activity?.sidebarSubtitle ?? subtitle
     }
 
     var body: some View {
@@ -201,7 +211,7 @@ struct SidebarThreadRow: View {
                     }
                 }
 
-                if let subtitle {
+                if let subtitle = presentationSubtitle {
                     Text(subtitle)
                         .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
@@ -300,40 +310,64 @@ struct SidebarThreadRow: View {
 
     @ViewBuilder
     private var statusGlyph: some View {
-        switch task.status {
-        case .running:
-            ProgressView()
-                .controlSize(.small)
-                .tint(Stanford.lagunita)
-                .scaleEffect(0.8)
-        case .completed:
-            Image(systemName: "checkmark.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.completed)
-        case .pendingUser:
-            Image(systemName: "person.crop.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.pendingUser)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.failed)
-        case .budgetExceeded:
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.poppy)
-        case .cancelled:
-            Image(systemName: "minus.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .queued:
-            Image(systemName: "clock")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .draft:
-            Image(systemName: "pencil")
-                .font(Stanford.ui(11))
-                .foregroundStyle(.secondary)
+        if let activity, activity.kind != .idle {
+            switch activity.kind {
+            case .idle:
+                EmptyView()
+            case .running:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+                    .scaleEffect(0.8)
+            case .waitingForWorker:
+                Image(systemName: "clock")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.poppy)
+            case .waitingForResource:
+                Image(systemName: "lock.clock")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.poppy)
+            case .starting:
+                Image(systemName: "play.circle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+        } else {
+            switch task.status {
+            case .running:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+                    .scaleEffect(0.8)
+            case .completed:
+                Image(systemName: "checkmark.circle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.completed)
+            case .pendingUser:
+                Image(systemName: "person.crop.circle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.pendingUser)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.failed)
+            case .budgetExceeded:
+                Image(systemName: "exclamationmark.triangle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.poppy)
+            case .cancelled:
+                Image(systemName: "minus.circle")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(.secondary)
+            case .queued:
+                Image(systemName: "clock")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(.secondary)
+            case .draft:
+                Image(systemName: "pencil")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

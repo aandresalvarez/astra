@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
-
 enum TaskComposerPresentation {
     static let usesCompactInputSpacing = true
     static let usesForcedExpandedInputHeight = false
@@ -33,12 +32,10 @@ enum TaskComposerPresentation {
     static let inputTopPaddingWithAttachments: CGFloat = 8
     static let inputBottomPadding: CGFloat = 9
 }
-
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
 }
-
 private struct ScheduleSourceContext {
     let taskID: UUID
     let title: String
@@ -48,7 +45,6 @@ private struct ScheduleSourceContext {
     let tokenBudget: Int
     let conversationContext: String
 }
-
 // ChatBottomPositionPreferenceKey lives in ChatScrollSupport.swift, shared with
 // ChatPanelView. ChatTopPositionPreferenceKey stays private here — it drives this
 // view's older-runs window expansion, which has no analogue in ChatPanelView.
@@ -59,12 +55,10 @@ private struct ChatTopPositionPreferenceKey: PreferenceKey {
         value = nextValue()
     }
 }
-
 private enum RunNoticeProminence {
     case actionable
     case detail
 }
-
 private extension View {
     @ViewBuilder
     func taskAnswerTextSelection(_ isSelectable: Bool) -> some View {
@@ -75,7 +69,6 @@ private extension View {
         }
     }
 }
-
 /// Streaming agent text rendered through the shared markdown block pipeline so
 /// headings, lists, and code style while the run is live instead of popping in
 /// at completion. Isolated into its own `View` so SwiftUI can diff this subtree
@@ -1439,7 +1432,7 @@ struct TaskMainView: View {
 
         for item in currentThreadSnapshot.conversationItems.dropFirst().suffix(24) {
             switch item {
-            case .userMessage(let text, _):
+            case .userMessage(_, let text, _):
                 lines.append("User: \(text)")
             case .planUserMessage(let text, _):
                 if includePlanningAndSystem {
@@ -1770,8 +1763,18 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        ForEach(currentThreadSnapshot.conversationItems) { item in
-            conversationItemView(item, decisionDockVisible: decisionDockVisible)
+        conversationItemsList(decisionDockVisible: decisionDockVisible)
+    }
+
+    // Fetch turn-request snapshots once per body pass, not per `.userMessage`
+    // row (was O(messages) DB fetches per render), bounded to active requests
+    // plus the visible window's own bubbles. Plain func so `let` is legal.
+    private func conversationItemsList(decisionDockVisible: Bool) -> some View {
+        let snapshots = turnRequestSnapshots(visibleMessageEventIDs: currentThreadSnapshot.conversationItems.compactMap { item -> UUID? in
+            if case .userMessage(let eventID, _, _) = item { return eventID } else { return nil }
+        })
+        return ForEach(currentThreadSnapshot.conversationItems) { item in
+            conversationItemView(item, turnRequestSnapshots: snapshots, decisionDockVisible: decisionDockVisible)
                 .id(item.id)
         }
     }
@@ -2127,12 +2130,23 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private func conversationItemView(_ item: TaskConversationItem, decisionDockVisible: Bool) -> some View {
+    private func conversationItemView(
+        _ item: TaskConversationItem,
+        turnRequestSnapshots: [TaskTurnRequestSnapshot],
+        decisionDockVisible: Bool
+    ) -> some View {
         switch item {
-        case .userMessage(let text, let timestamp):
-            chatUserBubble(text: text, timestamp: timestamp)
+        case .userMessage(let eventID, let text, let timestamp):
+            chatUserBubble(
+                text: text,
+                timestamp: timestamp,
+                lifecycle: eventID.flatMap { TaskTurnMessageLifecyclePresentation.resolve(
+                    messageEventID: $0,
+                    requests: turnRequestSnapshots
+                ) }
+            )
         case .planUserMessage(let text, let timestamp):
-            chatUserBubble(text: text, timestamp: timestamp)
+            chatUserBubble(text: text, timestamp: timestamp, lifecycle: nil)
         case .planAssistantMessage(let text, let timestamp):
             planAssistantBubble(text: text, timestamp: timestamp)
         case .agentResponse(let run):
@@ -2318,13 +2332,27 @@ struct TaskMainView: View {
 
     // MARK: - Chat Bubbles
 
-    private func chatUserBubble(text: String, timestamp _: Date) -> some View {
-        ChatTranscriptUserBubble(
-            attributedText: MarkdownTextView.markdownAttributed(text),
-            style: .task
-        )
+    private func chatUserBubble(
+        text: String,
+        timestamp _: Date,
+        lifecycle: TaskTurnMessageLifecyclePresentation?
+    ) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            ChatTranscriptUserBubble(
+                attributedText: MarkdownTextView.markdownAttributed(text),
+                style: .task
+            )
+
+            if let lifecycle, lifecycle.isVisible {
+                TaskTurnMessageLifecycleChip(presentation: lifecycle)
+                    .padding(.trailing, 4)
+            }
+        }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Your message: \(text)")
+        .accessibilityLabel(
+            lifecycle.map { "Your message: \(text). \($0.accessibilityLabel)" }
+                ?? "Your message: \(text)"
+        )
     }
 
     private func scheduleResultBubble(text: String, timestamp _: Date) -> some View {
@@ -3888,7 +3916,16 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
-        TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
+        // A queued follow-up must not hide a LIVE permission request: the
+        // provider is still waiting on an approve/deny decision, and that
+        // dock's Approve/Deny/Stop controls are unreachable from the waiting
+        // dock. Only prefer the waiting dock when no permission decision is
+        // outstanding.
+        if !runtimePermissionState.hasOpenApprovalRequest,
+           let waitingPresentation = taskTurnWaitingDockPresentation {
+            return waitingPresentation
+        }
+        return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
@@ -4303,6 +4340,11 @@ struct TaskMainView: View {
         switch action.kind {
         case .stop:
             onCancelTask?(task)
+        case .stopRun:
+            taskQueue?.stopActiveRun(task: task, modelContext: modelContext)
+        case .cancelTurnRequest:
+            guard let requestID = action.payload.flatMap(UUID.init) else { return }
+            taskQueue?.cancelTurnRequest(id: requestID, workspace: task.workspace, modelContext: modelContext)
         case .allowOnce, .approveResult, .dismissReview:
             onApproveTask?(task)
         case .allowSimilar:
@@ -5551,8 +5593,10 @@ struct TaskMainView: View {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-        if !attachedFiles.isEmpty { attachedFiles = [] }
-        messageText = ""
+        // Attachment paths are already embedded in `msg`, but the composer
+        // state must outlive a failed durable submission: clear alongside
+        // `messageText` in each success branch, never up front, so a retry
+        // from the retained composer rebuilds the message with its files.
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
         AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
             "source": isPlanMode ? "task_plan_chat" : "task_continue_chat",
@@ -5564,11 +5608,15 @@ struct TaskMainView: View {
         ])
 
         if isPlanMode {
+            messageText = ""
+            attachedFiles = []
             sendPlanningMessage(msg, traceID: traceID)
             return
         }
 
         if task.status == .queued {
+            messageText = ""
+            attachedFiles = []
             TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
@@ -5579,28 +5627,55 @@ struct TaskMainView: View {
                 "source": "chat_message"
             ])
             onMoveToDraft?(task)
-        } else if [.pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
-            // Note: don't insert user.message here — continueSession() does it with the TaskRun link
-            let interruptionSummary = TaskRunLifecycleService.cancelTask(
-                task,
-                modelContext: modelContext,
-                source: .supersededByNewRun
+        } else if [.running, .pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
+            // Persist the user's turn before waiting for a worker or the
+            // workspace lock. The runtime links this existing event to its run
+            // on admission instead of inserting a duplicate message.
+            let submission = TaskTurnSubmissionService.submit(
+                message: msg,
+                for: task,
+                into: modelContext
             )
-            if interruptionSummary.runsUpdated > 0 {
-                AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                    "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                    "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                    "next_action": "continue_session"
-                ], level: .warning)
+            guard case let .success(savedTurn) = submission else {
+                AppLogger.audit(.runtimePersistenceSummary, category: "UI", taskID: task.id, fields: [
+                    "operation": "turn_submission",
+                    "result": "failed"
+                ], level: .error)
+                return
+            }
+            messageText = ""
+            attachedFiles = []
+            if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
+            if task.status != .running {
+                let interruptionSummary = TaskRunLifecycleService.cancelTask(
+                    task,
+                    modelContext: modelContext,
+                    source: .supersededByNewRun
+                )
+                if interruptionSummary.runsUpdated > 0 {
+                    AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
+                        "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
+                        "running_runs_cancelled": String(interruptionSummary.runsUpdated),
+                        "next_action": "continue_session"
+                    ], level: .warning)
+                }
             }
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
             Task {
-                _ = await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
+                _ = await taskQueue.continueSession(
+                    task: task,
+                    message: msg,
+                    existingMessageEventID: savedTurn.eventID,
+                    turnRequestID: savedTurn.requestID,
+                    modelContext: modelContext
+                ) { _ in }
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, into: modelContext)
+            messageText = ""
+            attachedFiles = []
         }
     }
 
@@ -5724,7 +5799,7 @@ struct TaskMainView: View {
         ]
         messages.append(contentsOf: recentSnapshotItems.compactMap { item in
             switch item {
-            case .userMessage(let text, _), .planUserMessage(let text, _):
+            case .userMessage(_, let text, _), .planUserMessage(let text, _):
                 return (role: "user", content: text)
             case .planAssistantMessage(let text, _):
                 return (role: "assistant", content: text)
