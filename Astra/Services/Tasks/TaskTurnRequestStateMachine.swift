@@ -129,6 +129,24 @@ enum TaskTurnRequestRepository {
         return try modelContext.fetch(descriptor)
     }
 
+    /// Same active-state predicate as `activeRequests(for:in:)`, but across
+    /// every task. Startup replay/recovery must not fetch the full
+    /// append-only history just to filter it down to active rows in memory.
+    static func allActiveRequests(
+        in modelContext: ModelContext,
+        sortBy sortDescriptors: [SortDescriptor<TaskTurnRequest>] = []
+    ) throws -> [TaskTurnRequest] {
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate {
+                $0.stateRawValue != "completed"
+                    && $0.stateRawValue != "failed"
+                    && $0.stateRawValue != "cancelled"
+            },
+            sortBy: sortDescriptors
+        )
+        return try modelContext.fetch(descriptor)
+    }
+
     /// Bounded fetch for transcript presentation: every active request (they
     /// drive the dock, chips, and sidebar state) plus the requests owning a
     /// message bubble inside the visible transcript window. Terminal requests

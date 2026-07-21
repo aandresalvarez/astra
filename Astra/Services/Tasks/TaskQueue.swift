@@ -73,9 +73,10 @@ final class TaskQueue {
     func replayRecoveredTurns(modelContext: ModelContext) {
         let requests: [TaskTurnRequest]
         do {
-            requests = try modelContext.fetch(FetchDescriptor<TaskTurnRequest>(
+            requests = try TaskTurnRequestRepository.allActiveRequests(
+                in: modelContext,
                 sortBy: [SortDescriptor(\.submittedAt), SortDescriptor(\.sequence)]
-            ))
+            )
         } catch {
             AppLogger.audit(.taskFailed, category: "Persistence", fields: [
                 "operation": "replay_recovered_turns_fetch",
@@ -83,12 +84,20 @@ final class TaskQueue {
             ], level: .error)
             return
         }
+        guard !requests.isEmpty else { return }
 
-        for request in requests where request.state.isActive {
-            let taskID = request.taskID
-            guard let task = (try? modelContext.fetch(
-                      FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-                  ))?.first,
+        // Resolve every owning task in one fetch rather than per request —
+        // the scalar `taskID` back-reference has no relationship to join on.
+        let taskIDs = Array(Set(requests.map(\.taskID)))
+        let tasksByID = Dictionary(
+            ((try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
+            )) ?? []).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for request in requests {
+            guard let task = tasksByID[request.taskID],
                   task.events.contains(where: { $0.id == request.messageEventID }),
                   replayingRecoveredTurnIDs.insert(request.id).inserted else {
                 continue
@@ -1250,6 +1259,8 @@ final class TaskQueue {
         guard let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
               request.state == .waitingForWorker || request.state == .waitingForResource else { return }
         let previousState = request.state
+        let previousBlockingTaskID = request.blockingTaskID
+        let previousBlockerSummary = request.blockerSummary
         let result = transitionPersistedTurn(
             request,
             to: .cancelled,
@@ -1263,7 +1274,12 @@ final class TaskQueue {
             // coroutine (already woken by the failed transition above)
             // re-parks as still-waiting instead of treating this as
             // terminal — memory and disk both keep the pre-cancel state.
-            _ = TaskTurnRequestStateMachine.transition(request, to: previousState)
+            Self.revertFailedCancellation(
+                request,
+                to: previousState,
+                blockingTaskID: previousBlockingTaskID,
+                blockerSummary: previousBlockerSummary
+            )
             AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
                 "scope": "turn_request",
                 "request_id": request.id.uuidString,
@@ -1275,6 +1291,36 @@ final class TaskQueue {
             "scope": "turn_request",
             "request_id": request.id.uuidString
         ])
+    }
+
+    /// Reverts a request to its pre-cancellation snapshot after
+    /// `cancelTurnRequest` fails to persist. `.cancelled -> .waitingForWorker`
+    /// is the only path the state machine allows back out of `.cancelled`; a
+    /// request that was `.waitingForResource` before the failed cancel can't
+    /// take it, so this falls back to restoring the captured fields directly
+    /// (still posting the same change notification the state machine would
+    /// have) instead of leaving the request stuck `.cancelled` in memory with
+    /// its blocker metadata wiped.
+    @MainActor
+    static func revertFailedCancellation(
+        _ request: TaskTurnRequest,
+        to previousState: TaskTurnRequestState,
+        blockingTaskID: UUID?,
+        blockerSummary: String?
+    ) {
+        let reverted = TaskTurnRequestStateMachine.transition(
+            request,
+            to: previousState,
+            blockingTaskID: blockingTaskID,
+            blockerSummary: blockerSummary
+        )
+        guard reverted.rejection != nil else { return }
+        request.state = previousState
+        request.blockingTaskID = blockingTaskID
+        request.blockerSummary = blockerSummary
+        request.terminalAt = nil
+        request.terminalReason = nil
+        TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(previousState.rawValue)")
     }
 
     /// Cancel all running workers

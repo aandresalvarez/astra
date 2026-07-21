@@ -760,6 +760,153 @@ struct TaskTurnRequestAdmissionTests {
         #expect(afterAdmission.hasExplicitOverride)
         #expect(afterAdmission.objective.localizedCaseInsensitiveContains("French"))
     }
+
+    @Test("A failed cancellation rolls back the exact prior snapshot, even when the state machine can't take the direct path back")
+    func revertFailedCancellationRestoresPriorSnapshot() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "RollbackSnapshot", primaryPath: root.path)
+        let task = AgentTask(title: "Task", goal: "Continue", workspace: workspace)
+        let blocker = AgentTask(title: "Blocker", goal: "Hold the lock", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(blocker)
+
+        // `.cancelled -> .waitingForResource` is NOT in the state machine's
+        // allowed-transition table (only `.cancelled -> .waitingForWorker`
+        // is), so a request that was waiting on a resource lock before a
+        // failed cancellation persist can't take the direct path back. The
+        // fix must fall back to restoring the captured snapshot directly
+        // instead of leaving the request stuck `.cancelled` with its blocker
+        // metadata wiped.
+        let resourceSubmission = try #require(TaskTurnSubmissionService.submit(
+            message: "Waiting on a busy workspace lock",
+            for: task,
+            into: context
+        ).successValue)
+        let resourceRequest = try #require(
+            try TaskTurnRequestRepository.request(id: resourceSubmission.requestID, in: context)
+        )
+        _ = TaskTurnRequestStateMachine.transition(
+            resourceRequest,
+            to: .waitingForResource,
+            blockingTaskID: blocker.id,
+            blockerSummary: "Waiting for another task to release the workspace."
+        )
+        // Simulate cancelTurnRequest's in-memory `.cancelled` transition
+        // after its persist attempt fails.
+        _ = TaskTurnRequestStateMachine.transition(resourceRequest, to: .cancelled, terminalReason: "cancelled_by_user")
+        #expect(resourceRequest.state == .cancelled)
+
+        TaskQueue.revertFailedCancellation(
+            resourceRequest,
+            to: .waitingForResource,
+            blockingTaskID: blocker.id,
+            blockerSummary: "Waiting for another task to release the workspace."
+        )
+        #expect(resourceRequest.state == .waitingForResource)
+        #expect(resourceRequest.blockingTaskID == blocker.id)
+        #expect(resourceRequest.blockerSummary == "Waiting for another task to release the workspace.")
+        #expect(resourceRequest.terminalAt == nil)
+        #expect(resourceRequest.terminalReason == nil)
+
+        // `.cancelled -> .waitingForWorker` IS a legal transition, but the
+        // captured blocker text must still be threaded through it — without
+        // that, the legal path would silently null the blocker summary too.
+        let workerSubmission = try #require(TaskTurnSubmissionService.submit(
+            message: "Waiting for an available worker",
+            for: task,
+            into: context
+        ).successValue)
+        let workerRequest = try #require(
+            try TaskTurnRequestRepository.request(id: workerSubmission.requestID, in: context)
+        )
+        _ = TaskTurnRequestStateMachine.transition(
+            workerRequest,
+            to: .waitingForWorker,
+            blockerSummary: "Waiting for an available worker."
+        )
+        _ = TaskTurnRequestStateMachine.transition(workerRequest, to: .cancelled, terminalReason: "cancelled_by_user")
+        #expect(workerRequest.state == .cancelled)
+
+        TaskQueue.revertFailedCancellation(
+            workerRequest,
+            to: .waitingForWorker,
+            blockingTaskID: nil,
+            blockerSummary: "Waiting for an available worker."
+        )
+        #expect(workerRequest.state == .waitingForWorker)
+        #expect(workerRequest.blockerSummary == "Waiting for an available worker.")
+        #expect(workerRequest.terminalAt == nil)
+        #expect(workerRequest.terminalReason == nil)
+    }
+
+    @Test("Startup replay fetches only active requests and matches each to its own task")
+    func replayRecoveredTurnsResumesActiveRequestsAcrossTasks() async throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Replay", primaryPath: root.path)
+        let taskA = AgentTask(title: "Task A", goal: "Continue", workspace: workspace)
+        let taskB = AgentTask(title: "Task B", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(taskA)
+        context.insert(taskB)
+
+        let submissionA = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up on A",
+            for: taskA,
+            into: context
+        ).successValue)
+        let submissionB = try #require(TaskTurnSubmissionService.submit(
+            message: "Follow-up on B",
+            for: taskB,
+            into: context
+        ).successValue)
+        let requestA = try #require(try TaskTurnRequestRepository.request(id: submissionA.requestID, in: context))
+        let requestB = try #require(try TaskTurnRequestRepository.request(id: submissionB.requestID, in: context))
+
+        // A terminal request on the same task as an active one — the bounded
+        // fetch this replay now uses must never touch it.
+        let cancelledSubmission = try #require(TaskTurnSubmissionService.submit(
+            message: "Already retracted",
+            for: taskA,
+            into: context
+        ).successValue)
+        let cancelledRequest = try #require(
+            try TaskTurnRequestRepository.request(id: cancelledSubmission.requestID, in: context)
+        )
+        _ = TaskTurnRequestStateMachine.transition(cancelledRequest, to: .cancelled, terminalReason: "cancelled_by_user")
+
+        // No workers: replayed admissions park rather than run, giving an
+        // observable signal (the blocker text) that each request reached the
+        // queue's admission loop for ITS OWN task, not a mismatched one from
+        // the batched task lookup.
+        let queue = TaskQueue(poolSize: 0)
+        queue.replayRecoveredTurns(modelContext: context)
+
+        let aResumed = await waitUntil { requestA.blockerSummary == "Waiting for an available worker." }
+        let bResumed = await waitUntil { requestB.blockerSummary == "Waiting for an available worker." }
+        #expect(aResumed)
+        #expect(bResumed)
+        #expect(cancelledRequest.state == .cancelled)
+        #expect(cancelledRequest.blockerSummary == nil)
+
+        // `replayRecoveredTurns` doesn't hand back a Task handle for its
+        // internally-spawned replay coroutines, so drain them explicitly
+        // before this test's in-memory container goes out of scope —
+        // otherwise a still-parked coroutine can touch a model whose store
+        // was just torn down.
+        queue.cancelAll()
+        let aStopped = await waitUntil { requestA.state == .cancelled }
+        let bStopped = await waitUntil { requestB.state == .cancelled }
+        #expect(aStopped)
+        #expect(bStopped)
+        for _ in 0..<10 { await Task.yield() }
+    }
 }
 
 private extension Result where Failure == TaskTurnSubmissionService.SubmissionError {

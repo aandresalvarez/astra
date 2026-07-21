@@ -23,7 +23,10 @@ enum TaskTurnRequestRecoveryService {
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
-            requests = try modelContext.fetch(FetchDescriptor<TaskTurnRequest>())
+            // The table is append-only; recovery only ever acts on active
+            // (non-terminal) rows, so bound the fetch at the store rather
+            // than pulling the full history into memory to filter it.
+            requests = try TaskTurnRequestRepository.allActiveRequests(in: modelContext)
         } catch {
             AppLogger.audit(.taskFailed, category: "Persistence", fields: [
                 "operation": "recover_turn_requests_fetch",
@@ -40,7 +43,7 @@ enum TaskTurnRequestRecoveryService {
             ((try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        for request in requests where request.state.isActive {
+        for request in requests {
             guard let task = tasksByID[request.taskID] else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
