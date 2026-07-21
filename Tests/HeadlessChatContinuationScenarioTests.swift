@@ -1428,4 +1428,91 @@ extension HeadlessChatScenarioTests {
         #expect(chained.runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(chained.runtimeExplicitlySelected == true)
     }
+
+    @Test("A queued turn launches with its submission snapshots, not later composer edits")
+    func queuedTurnLaunchesFromSubmissionSnapshots() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-snapshot-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"snapshot-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Snapshot answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Snapshot answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """, argsFile: argsFile)
+        )
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Launch as advertised", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+        let submittedBudget = task.tokenBudget
+
+        // Durable submission captures the launch inputs the user saw when
+        // pressing send.
+        let result = TaskTurnSubmissionService.submit(
+            message: "Continue with the advertised settings",
+            for: task,
+            into: harness.context
+        )
+        guard case let .success(submission) = result else {
+            Issue.record("Expected durable submission")
+            return
+        }
+
+        // Composer edits landing while the request waits in the queue. The
+        // edited model is a valid Claude alias, so nothing later in the
+        // launch path would rewrite it back on its own.
+        task.model = "haiku"
+        task.tokenBudget = submittedBudget + 4_321
+        task.maxTurns = 7
+        task.runtimeExplicitlySelected = true
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1) {
+            AgentRuntimeWorker.scenarioWorker()
+        }
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        queue.applySettings(
+            claudePath: claudePath,
+            providerSettings: settings,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 5,
+            validationModel: "claude-sonnet-4-6"
+        )
+
+        let didStart = await queue.continueSession(
+            task: task,
+            message: "Continue with the advertised settings",
+            existingMessageEventID: submission.eventID,
+            turnRequestID: submission.requestID,
+            modelContext: harness.context
+        )
+
+        #expect(didStart)
+        // The provider was launched with the SNAPSHOT model, not the edit.
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs.split(separator: "\n").map(String.init)
+        let modelIndex = try #require(args.firstIndex(of: "--model"))
+        #expect(args.count > modelIndex + 1)
+        if args.count > modelIndex + 1 {
+            #expect(args[modelIndex + 1] == "claude-sonnet-4-6")
+        }
+        // Admission restored every advertised launch input on the task.
+        #expect(task.model == "claude-sonnet-4-6")
+        #expect(task.tokenBudget == submittedBudget)
+        #expect(task.maxTurns == 0)
+        #expect(task.runtimeExplicitlySelected == false)
+        #expect(task.runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(runs.last?.runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: harness.context))
+        #expect(request.state == .completed)
+        #expect(task.status == .completed)
+    }
 }

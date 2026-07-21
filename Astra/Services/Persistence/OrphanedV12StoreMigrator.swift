@@ -7,16 +7,24 @@ import SwiftData
 public struct OrphanedV12StoreMigrationReport: Equatable, Sendable {
   public let destinationStoreURL: URL
   public let preservedRowCounts: [String: Int]
+  /// Rows that recovery intentionally discards because their entity exists in
+  /// no canonical schema (the external-operation V15 orphan entity).
+  public let droppedRowCounts: [String: Int]
   public let sourceShapeRaw: String
+  public let sourceSchemaVersion: Int
 
   public init(
     destinationStoreURL: URL,
     preservedRowCounts: [String: Int],
-    sourceShapeRaw: String
+    droppedRowCounts: [String: Int] = [:],
+    sourceShapeRaw: String,
+    sourceSchemaVersion: Int = 12
   ) {
     self.destinationStoreURL = destinationStoreURL
     self.preservedRowCounts = preservedRowCounts
+    self.droppedRowCounts = droppedRowCounts
     self.sourceShapeRaw = sourceShapeRaw
+    self.sourceSchemaVersion = sourceSchemaVersion
   }
 }
 
@@ -28,6 +36,8 @@ public enum OrphanedV12StoreMigrationError: Error, Equatable {
   case rowCountMismatch(table: String, expected: Int, actual: Int?)
   case feedbackTableMissingOrPopulated(actual: Int?)
   case migrationRecordMissing(actual: Int?)
+  case orphanTableNotDropped(table: String, actual: Int?)
+  case turnRequestTableMissingOrPopulated(actual: Int?)
 }
 
 public enum OrphanedV12StoreMigrationProbe: Equatable, Sendable {
@@ -36,9 +46,11 @@ public enum OrphanedV12StoreMigrationProbe: Equatable, Sendable {
   case unavailable(errorType: String)
 }
 
-/// Recovers either colliding historical V12 shape without touching the active
-/// store. The caller supplies a new recovery URL and atomically selects it only
-/// after this service returns a validated report.
+/// Recovers colliding historical store shapes without touching the active
+/// store: the two orphaned V12 shapes and the two external-operation V15
+/// sub-shapes (see `ASTRASchemaV15ExternalOperationModels`). The caller
+/// supplies a new recovery URL and atomically selects it only after this
+/// service returns a validated report.
 public enum OrphanedV12StoreMigrator {
   private static let commonPreservedTables = [
     "ZWORKSPACE",
@@ -91,6 +103,17 @@ public enum OrphanedV12StoreMigrator {
     guard preservedTables.allSatisfy({ sourceCounts[$0] != nil }) else {
       throw OrphanedV12StoreMigrationError.sourceSnapshotFailed
     }
+    // V15 sources already carry migration-record rows from earlier
+    // reconciliations; V12 sources predate the table (counts as zero).
+    let sourceMigrationRecords = try tableRowCounts(
+      at: sourceStoreURL,
+      tables: ["ZPERSISTENTSTOREMIGRATIONRECORD"]
+    )["ZPERSISTENTSTOREMIGRATIONRECORD"] ?? 0
+    let droppedTables = droppedTables(for: sourceShape)
+    let droppedRowCounts = try tableRowCounts(at: sourceStoreURL, tables: droppedTables)
+    guard droppedTables.allSatisfy({ droppedRowCounts[$0] != nil }) else {
+      throw OrphanedV12StoreMigrationError.sourceSnapshotFailed
+    }
 
     var stagedCopyCreated = false
     do {
@@ -119,6 +142,10 @@ public enum OrphanedV12StoreMigrator {
         verificationTables.append("ZFEEDBACKREPORT")
       }
       verificationTables.append("ZPERSISTENTSTOREMIGRATIONRECORD")
+      verificationTables.append(contentsOf: droppedTables)
+      if sourceShape.sourceSchemaVersion == 15 {
+        verificationTables.append("ZTASKTURNREQUEST")
+      }
       let migratedCounts = try tableRowCounts(
         at: destinationStoreURL,
         tables: verificationTables
@@ -139,7 +166,22 @@ public enum OrphanedV12StoreMigrator {
           actual: migratedCounts["ZFEEDBACKREPORT"]
         )
       }
-      guard migratedCounts["ZPERSISTENTSTOREMIGRATIONRECORD"] == 1 else {
+      // The orphan entity exists in no canonical schema: migration must have
+      // dropped its table entirely, and the V16 turn-request table must exist
+      // and start empty.
+      for table in droppedTables where migratedCounts[table] != nil {
+        throw OrphanedV12StoreMigrationError.orphanTableNotDropped(
+          table: table,
+          actual: migratedCounts[table]
+        )
+      }
+      if sourceShape.sourceSchemaVersion == 15,
+         migratedCounts["ZTASKTURNREQUEST"] != 0 {
+        throw OrphanedV12StoreMigrationError.turnRequestTableMissingOrPopulated(
+          actual: migratedCounts["ZTASKTURNREQUEST"]
+        )
+      }
+      guard migratedCounts["ZPERSISTENTSTOREMIGRATIONRECORD"] == sourceMigrationRecords + 1 else {
         throw OrphanedV12StoreMigrationError.migrationRecordMissing(
           actual: migratedCounts["ZPERSISTENTSTOREMIGRATIONRECORD"]
         )
@@ -148,7 +190,9 @@ public enum OrphanedV12StoreMigrator {
       return OrphanedV12StoreMigrationReport(
         destinationStoreURL: destinationStoreURL,
         preservedRowCounts: sourceCounts,
-        sourceShapeRaw: sourceShape.auditValue
+        droppedRowCounts: droppedRowCounts,
+        sourceShapeRaw: sourceShape.auditValue,
+        sourceSchemaVersion: sourceShape.sourceSchemaVersion ?? 12
       )
     } catch {
       if stagedCopyCreated {
@@ -177,16 +221,29 @@ public enum OrphanedV12StoreMigrator {
         migrationPlan: ASTRAFeedbackOnlyV12MigrationPlan.self,
         configurations: [configuration]
       )
+    case .externalOperationV15:
+      container = try ModelContainer(
+        for: ASTRASchema.current,
+        migrationPlan: ASTRAExternalOperationV15MigrationPlan.self,
+        configurations: [configuration]
+      )
+    case .externalOperationInitialV15:
+      container = try ModelContainer(
+        for: ASTRASchema.current,
+        migrationPlan: ASTRAExternalOperationInitialV15MigrationPlan.self,
+        configurations: [configuration]
+      )
     case .productionV12, .other:
       throw OrphanedV12StoreMigrationError.unexpectedSourceShape
     }
+    let sourceSchemaVersion = sourceShape.sourceSchemaVersion ?? 12
     let context = ModelContext(container)
     context.insert(
       PersistentStoreMigrationRecord(
-        sourceSchemaVersion: 12,
+        sourceSchemaVersion: sourceSchemaVersion,
         sourceShapeRaw: sourceShape.auditValue,
         destinationSchemaVersion: ASTRASchema.currentVersion,
-        reason: "reconcile_colliding_v12_shapes"
+        reason: "reconcile_colliding_v\(sourceSchemaVersion)_shapes"
       ))
     try context.save()
     withExtendedLifetime(container) {}
@@ -230,7 +287,8 @@ public enum OrphanedV12StoreMigrator {
     _ shape: PersistentStoreKnownShape
   ) -> PersistentStoreKnownShape? {
     switch shape {
-    case .runtimeSelectionOnlyV12, .feedbackOnlyV12:
+    case .runtimeSelectionOnlyV12, .feedbackOnlyV12,
+         .externalOperationV15, .externalOperationInitialV15:
       return shape
     case .productionV12, .other:
       return nil
@@ -241,10 +299,25 @@ public enum OrphanedV12StoreMigrator {
     for shape: PersistentStoreKnownShape
   ) -> [String] {
     switch shape {
-    case .feedbackOnlyV12:
+    case .feedbackOnlyV12, .externalOperationV15, .externalOperationInitialV15:
       return commonPreservedTables + ["ZFEEDBACKREPORT"]
     case .runtimeSelectionOnlyV12, .productionV12, .other:
       return commonPreservedTables
+    }
+  }
+
+  /// Tables recovery deliberately discards: the external-operation orphan
+  /// entity never shipped in a canonical schema, so its rows are dead
+  /// control-plane monitoring state (the execution backend stays
+  /// authoritative for the jobs themselves).
+  private static func droppedTables(
+    for shape: PersistentStoreKnownShape
+  ) -> [String] {
+    switch shape {
+    case .externalOperationV15, .externalOperationInitialV15:
+      return ["ZTASKEXTERNALOPERATION"]
+    case .runtimeSelectionOnlyV12, .feedbackOnlyV12, .productionV12, .other:
+      return []
     }
   }
 

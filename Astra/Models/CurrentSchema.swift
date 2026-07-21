@@ -56,6 +56,36 @@ public enum ASTRASchemaV15: VersionedSchema {
             GoogleOAuthAccountProfile.self,
             FeedbackReport.self,
             PersistentStoreMigrationRecord.self,
+            ASTRASchemaV15Models.TaskTurnRequest.self
+        ]
+    }
+}
+
+/// V16 generalizes durable turn admission into one execution-request contract
+/// shared by initial runs, follow-ups, retries, schedules, and plan steps.
+public enum ASTRASchemaV16: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(16, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self,
             TaskTurnRequest.self
         ]
     }
@@ -64,9 +94,9 @@ public enum ASTRASchemaV15: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 15
+    public static let currentVersion = 16
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV15.self)
+        Schema(versionedSchema: ASTRASchemaV16.self)
     }
 }

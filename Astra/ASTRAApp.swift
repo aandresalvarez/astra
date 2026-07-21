@@ -354,7 +354,7 @@ enum AstraStoreStartupCoordinator {
             storeURL = selectedStoreURL
         case .blocked:
             return blocked(
-                title: "ASTRA preserved an incompatible V12 store",
+                title: "ASTRA preserved an incompatible legacy store",
                 message: "ASTRA could not validate a migrated copy, so it left the original store selected and unchanged."
             )
         }
@@ -446,7 +446,7 @@ enum AstraStoreStartupCoordinator {
             return .continueOpening(storeURL)
         case .unavailable(let errorType):
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                "result": "orphaned_v12_probe_unavailable",
+                "result": "orphaned_store_probe_unavailable",
                 "error_type": errorType,
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ], level: .warning)
@@ -467,17 +467,18 @@ enum AstraStoreStartupCoordinator {
                 compatibility: metadata
             )
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                "result": "orphaned_v12_migrated",
-                "source_schema": "12",
+                "result": "orphaned_store_migrated",
+                "source_schema": String(report.sourceSchemaVersion),
                 "source_shape": report.sourceShapeRaw,
                 "destination_schema": String(ASTRASchema.currentVersion),
                 "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
+                "dropped_rows": String(report.droppedRowCounts.values.reduce(0, +)),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ])
             return .continueOpening(report.destinationStoreURL)
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                "result": "orphaned_v12_migration_blocked",
+                "result": "orphaned_store_migration_blocked",
                 "source_shape": migrationShape.auditValue,
                 "error_type": String(describing: type(of: error)),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
