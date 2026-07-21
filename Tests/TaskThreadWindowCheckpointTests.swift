@@ -371,7 +371,7 @@ struct TaskThreadViewModelTests {
 
         let readiness = await awaitReadiness(vm, taskID: second.id, timeout: 2)
         #expect(readiness.isReady(for: second.id))
-        if case .userMessage(let text, _)? = vm.snapshot?.conversationItems.first {
+        if case .userMessage(_, let text, _)? = vm.snapshot?.conversationItems.first {
             #expect(text == second.goal)
         } else {
             Issue.record("The second task snapshot should own the visible transcript")

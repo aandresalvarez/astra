@@ -12,6 +12,9 @@ final class TaskQueue {
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
     private var processingScheduleGeneration = 0
+    /// Recovery replays are scheduled once per process. Their durable request
+    /// state, rather than this set, remains the authority after a later restart.
+    private var replayingRecoveredTurnIDs: Set<UUID> = []
 
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
@@ -60,6 +63,59 @@ final class TaskQueue {
 
     var hasProcessingLoop: Bool {
         isProcessing || isProcessingScheduled
+    }
+
+    /// Restarts waiting turns after startup recovery has reconciled stale
+    /// process-local worker/lock ownership. Call only after runtime settings
+    /// have been applied; each replay still passes through normal FIFO and
+    /// resource-lock admission.
+    @MainActor
+    func replayRecoveredTurns(modelContext: ModelContext) {
+        let requests: [TaskTurnRequest]
+        do {
+            requests = try TaskTurnRequestRepository.allActiveRequests(
+                in: modelContext,
+                sortBy: [SortDescriptor(\.submittedAt), SortDescriptor(\.sequence)]
+            )
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", fields: [
+                "operation": "replay_recovered_turns_fetch",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return
+        }
+        guard !requests.isEmpty else { return }
+
+        // Resolve every owning task in one fetch rather than per request —
+        // the scalar `taskID` back-reference has no relationship to join on.
+        let taskIDs = Array(Set(requests.map(\.taskID)))
+        let tasksByID = Dictionary(
+            ((try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
+            )) ?? []).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for request in requests {
+            guard let task = tasksByID[request.taskID],
+                  task.events.contains(where: { $0.id == request.messageEventID }),
+                  replayingRecoveredTurnIDs.insert(request.id).inserted else {
+                continue
+            }
+            let requestID = request.id
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.replayingRecoveredTurnIDs.remove(requestID) }
+                _ = await self.continuePersistedTurn(
+                    task: task,
+                    requestID: requestID,
+                    modelContext: modelContext,
+                    executionPolicy: .default,
+                    resourceAccess: self.resourceAccess(for: task),
+                    onEvent: { _ in }
+                )
+            }
+        }
     }
 
     @discardableResult
@@ -273,6 +329,7 @@ final class TaskQueue {
                         for artifact in task.artifacts {
                             artifact.task = sourceTask
                         }
+                        cancelAndRemoveTurnRequests(for: task, modelContext: modelContext)
                         modelContext.delete(task)
                     }
                 } else {
@@ -374,6 +431,42 @@ final class TaskQueue {
     func continueSession(
         task: AgentTask,
         message: String,
+        existingMessageEventID: UUID? = nil,
+        turnRequestID: UUID? = nil,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        resourceAccess: TaskResourceAccessMode = .write,
+        onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async -> Bool {
+        if let turnRequestID {
+            return await continuePersistedTurn(
+                task: task,
+                requestID: turnRequestID,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy,
+                resourceAccess: resourceAccess,
+                onEvent: onEvent
+            )
+        }
+        return await continueLegacySession(
+            task: task,
+            message: message,
+            existingMessageEventID: existingMessageEventID,
+            modelContext: modelContext,
+            executionPolicy: executionPolicy,
+            resourceAccess: resourceAccess,
+            onEvent: onEvent
+        )
+    }
+
+    /// Legacy continuation entrypoint retained for approval/resume flows that
+    /// are not user-authored conversation turns. New chat submissions must use
+    /// `turnRequestID` so their accepted message is durable before admission.
+    @MainActor
+    private func continueLegacySession(
+        task: AgentTask,
+        message: String,
+        existingMessageEventID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         resourceAccess: TaskResourceAccessMode = .write,
@@ -426,12 +519,360 @@ final class TaskQueue {
         await worker.continueSession(
             task: task,
             message: message,
+            existingMessageEventID: existingMessageEventID,
+            turnRequestID: nil,
             modelContext: modelContext,
             executionPolicy: executionPolicy,
             onEvent: onEvent
         )
         taskWorkerMap.removeValue(forKey: task.id)
         return true
+    }
+
+    /// Admits one already-persisted user turn. The request is FIFO within its
+    /// task and records every wait state before yielding for a worker or shared
+    /// workspace resource. This is intentionally separate from the legacy
+    /// continuation path: a caller cannot accidentally recreate the old
+    /// in-memory message window by passing a raw string.
+    @MainActor
+    private func continuePersistedTurn(
+        task: AgentTask,
+        requestID: UUID,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        resourceAccess: TaskResourceAccessMode,
+        onEvent: @escaping (ParsedEvent) -> Void
+    ) async -> Bool {
+        guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
+              request.taskID == task.id,
+              request.state.isActive,
+              let message = task.events.first(where: { $0.id == request.messageEventID })?.payload else {
+            return false
+        }
+
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(task, reason: readOnlyReason, modelContext: modelContext)
+            failPersistedTurn(request, reason: "read_only_task", modelContext: modelContext)
+            return false
+        }
+
+        // `isDeleted` guards every wake-up: task deletion cancels active
+        // requests and then removes their rows, so a coroutine sleeping in a
+        // poll must not touch (or resurrect) a deleted model on resume.
+        // The generation check makes Stop Queue authoritative: cancelAll()
+        // bumps it, so a parked admission loop terminalizes instead of
+        // grabbing the just-freed worker and starting provider work the user
+        // asked to stop.
+        let entryAdmissionGeneration = turnAdmissionGeneration
+        while !Task.isCancelled && !request.isDeleted && request.state.isActive
+            && turnAdmissionGeneration == entryAdmissionGeneration {
+            guard isEarliestActiveTurn(request, for: task, modelContext: modelContext) else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for an earlier message in this task.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
+            }
+
+            // A task runs on at most one worker at a time. While this task's
+            // current run holds its mapped worker (e.g. a follow-up sent
+            // while the initial run is still executing with shared read-only
+            // resource access), another idle worker would make
+            // `hasAvailableWorker` true and the shared lock acquirable, but
+            // selecting the busy mapped worker below just makes
+            // `executeRuntimeSession` reject on `isRunning` and fail the
+            // saved turn as `runtime_not_started`. Wait for the run instead.
+            guard !activeTasks.contains(task.id) else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for the current run in this task to finish.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
+            }
+
+            guard hasAvailableWorker else {
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for an available worker.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
+            }
+
+            let pendingClaim = TaskResourceLockClaim(
+                taskID: task.id,
+                resourceKey: resourceKey(for: task),
+                accessMode: resourceAccess,
+                runMode: "continue"
+            )
+            let blockingTaskID = activeResourceLocks.first {
+                resourceKeysConflict($0.resourceKey, pendingClaim.resourceKey)
+            }?.taskID
+            _ = transitionPersistedTurn(
+                request,
+                to: .waitingForResource,
+                blockingTaskID: blockingTaskID,
+                blockerSummary: blockingTaskID == nil ? nil : resourceLockBlockerSummary(for: pendingClaim),
+                modelContext: modelContext
+            )
+            guard let resourceClaim = await waitForResourceLock(
+                task: task,
+                accessMode: resourceAccess,
+                runMode: "continue",
+                modelContext: modelContext,
+                shouldAbort: { request.isDeleted || !request.state.isActive }
+            ) else {
+                if !request.isDeleted, request.state.isActive {
+                    _ = transitionPersistedTurn(
+                        request,
+                        to: .cancelled,
+                        terminalReason: "admission_cancelled",
+                        modelContext: modelContext
+                    )
+                }
+                return false
+            }
+
+            guard !request.isDeleted, request.state.isActive,
+                  turnAdmissionGeneration == entryAdmissionGeneration else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                // The post-loop tail terminalizes a still-active request
+                // (queue stopped mid-lock-wait) and no-ops a terminal one.
+                break
+            }
+            // Re-check after the lock wait: the task could have started
+            // running (occupying its mapped worker) while this coroutine was
+            // suspended. A busy mapped worker must never be selected.
+            guard !activeTasks.contains(task.id) else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Waiting for the current run in this task to finish.",
+                    modelContext: modelContext
+                )
+                await waitForTurnAdmissionSignal(taskID: task.id)
+                continue
+            }
+            guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                _ = transitionPersistedTurn(
+                    request,
+                    to: .waitingForWorker,
+                    blockerSummary: "Worker became unavailable during workspace admission.",
+                    modelContext: modelContext
+                )
+                continue
+            }
+            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
+                return false
+            }
+
+            // The admitted state must be durable BEFORE the provider can
+            // mutate the workspace: if this save is lost, a restart still
+            // sees a waiting request and replays the same user turn,
+            // duplicating whatever the runtime already did. On save failure
+            // fail the turn in memory (best effort — the disk row stays
+            // waiting and replays after restart) and do not launch.
+            guard transitionPersistedTurn(request, to: .admitted, modelContext: modelContext).persisted else {
+                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                failPersistedTurn(request, reason: "admission_persist_failed", modelContext: modelContext)
+                return false
+            }
+            taskWorkerMap[task.id] = worker
+            activeTasks.insert(task.id)
+            // Promote the task to .running before handing off, exactly like the
+            // legacy continuation path (markContinuationLaunchAdmitted). The
+            // worker gates run creation on markRuntimeSessionStarted, whose
+            // allowedFrom is [.running]; a follow-up to a completed/failed/
+            // cancelled task — the primary durable-turn case — leaves the task
+            // terminal, so without this the worker rejects and the turn is
+            // admitted but never executed.
+            let launchLifecycle = ContinuationLaunchLifecycle(task: task)
+            markContinuationLaunchAdmitted(task, modelContext: modelContext)
+            await worker.continueSession(
+                task: task,
+                message: message,
+                existingMessageEventID: request.messageEventID,
+                turnRequestID: request.id,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy,
+                onEvent: onEvent
+            )
+            taskWorkerMap.removeValue(forKey: task.id)
+            activeTasks.remove(task.id)
+            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+
+            // The task (and its request rows) can be deleted while the worker
+            // ran; the deleted model must not be transitioned or reported on.
+            guard !request.isDeleted else { return false }
+            // A worker can reject before it constructs a TaskRun (for example,
+            // when a stale task was no longer admissible). Runtime-created runs
+            // finalize their request in AgentRuntimeWorker's defer.
+            if request.state == .admitted {
+                // The worker never created a run, so the optimistic .running
+                // promotion above must be reverted or the task strands as
+                // running forever.
+                recordContinuationAdmissionFailure(task, lifecycle: launchLifecycle, modelContext: modelContext)
+                failPersistedTurn(request, reason: "runtime_not_started", modelContext: modelContext)
+                return false
+            }
+            return request.state == .completed
+        }
+
+        if !request.isDeleted, request.state.isActive {
+            _ = transitionPersistedTurn(
+                request,
+                to: .cancelled,
+                terminalReason: "admission_cancelled",
+                modelContext: modelContext
+            )
+        }
+        return false
+    }
+
+    @MainActor
+    private func isEarliestActiveTurn(
+        _ request: TaskTurnRequest,
+        for task: AgentTask,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard let active = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext) else {
+            return false
+        }
+        return active.first?.id == request.id
+    }
+
+    @MainActor
+    private func failPersistedTurn(
+        _ request: TaskTurnRequest,
+        reason: String,
+        modelContext: ModelContext
+    ) {
+        _ = transitionPersistedTurn(
+            request,
+            to: .failed,
+            terminalReason: reason,
+            modelContext: modelContext
+        )
+    }
+
+    /// A turn transition plus whether it actually reached disk. `persisted`
+    /// is true for no-op transitions (nothing needed saving); admission is
+    /// the one boundary that must check it before crossing into the provider.
+    private struct PersistedTurnTransition {
+        let transition: TaskTurnRequestStateMachine.TransitionResult
+        let persisted: Bool
+    }
+
+    @MainActor
+    @discardableResult
+    private func transitionPersistedTurn(
+        _ request: TaskTurnRequest,
+        to state: TaskTurnRequestState,
+        runID: UUID? = nil,
+        blockingTaskID: UUID? = nil,
+        blockerSummary: String? = nil,
+        terminalReason: String? = nil,
+        modelContext: ModelContext
+    ) -> PersistedTurnTransition {
+        let result = TaskTurnRequestStateMachine.transition(
+            request,
+            to: state,
+            runID: runID,
+            blockingTaskID: blockingTaskID,
+            blockerSummary: blockerSummary,
+            terminalReason: terminalReason
+        )
+        guard result.changed else {
+            return PersistedTurnTransition(transition: result, persisted: true)
+        }
+        // A changed transition can make the next same-task turn the earliest
+        // active request — wake its parked admission loop immediately.
+        wakeTurnAdmissionWaiters(taskID: request.taskID)
+        let taskID = request.taskID
+        let persisted: Bool
+        if state.isTerminal {
+            let workspace = (try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+            ))?.first?.workspace
+            persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: workspace,
+                modelContext: modelContext,
+                taskID: taskID,
+                auditFields: ["operation": "turn_request_\(state.rawValue)"]
+            )
+        } else {
+            // Waiting and admission transitions must survive an app quit, but
+            // should not race the later terminal workspace-mirror export.
+            persisted = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: modelContext,
+                taskID: taskID,
+                auditFields: ["operation": "turn_request_\(state.rawValue)"]
+            )
+        }
+        return PersistedTurnTransition(transition: result, persisted: persisted)
+    }
+
+    /// Parked admission loops, keyed by task id. Everything here is
+    /// MainActor-serialized: registration, wake, and the fallback tick all
+    /// run on the actor, so a continuation is resumed exactly once (the dict
+    /// removal is the claim).
+    private var turnAdmissionWaiters: [UUID: [UUID: CheckedContinuation<Void, Never>]] = [:]
+
+    /// Bumped by `cancelAll()`. Admission loops capture the value at entry
+    /// and exit (terminalizing their request) once it changes, so Stop Queue
+    /// also stops durable-turn admissions that were parked waiting.
+    private var turnAdmissionGeneration = 0
+
+    /// Parks one admission-loop iteration until queue state plausibly changed.
+    /// Waking is signal-driven — a same-task turn transition, a turn
+    /// cancellation, or any worker/resource-lock release — instead of a
+    /// per-request 100 ms poll, so N waiting turns no longer generate N
+    /// repeating main-actor fetches. A 500 ms fallback tick bounds staleness
+    /// for changes with no signal (e.g. pool resize) and honors cancellation.
+    private func waitForTurnAdmissionSignal(taskID: UUID) async {
+        let waiterID = UUID()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            turnAdmissionWaiters[taskID, default: [:]][waiterID] = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.resumeTurnAdmissionWaiter(taskID: taskID, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func resumeTurnAdmissionWaiter(taskID: UUID, waiterID: UUID) {
+        guard let continuation = turnAdmissionWaiters[taskID]?.removeValue(forKey: waiterID) else { return }
+        if turnAdmissionWaiters[taskID]?.isEmpty == true {
+            turnAdmissionWaiters.removeValue(forKey: taskID)
+        }
+        continuation.resume()
+    }
+
+    private func wakeTurnAdmissionWaiters(taskID: UUID) {
+        guard let waiters = turnAdmissionWaiters.removeValue(forKey: taskID) else { return }
+        for continuation in waiters.values { continuation.resume() }
+    }
+
+    /// Worker and resource-lock availability are queue-global, so releases
+    /// wake every parked admission loop, not just the releasing task's.
+    private func wakeAllTurnAdmissionWaiters() {
+        let all = turnAdmissionWaiters
+        turnAdmissionWaiters.removeAll()
+        for waiters in all.values {
+            for continuation in waiters.values { continuation.resume() }
+        }
     }
 
     private struct ContinuationLaunchLifecycle {
@@ -736,12 +1177,150 @@ final class TaskQueue {
 
     /// Cancel a specific task's worker
     @MainActor
-    func cancel(task: AgentTask) {
+    /// Turn requests reference their task by scalar id, so `modelContext
+    /// .delete(task)` never cascades to them. Any queue-owned task deletion
+    /// (e.g. a merged same-thread scheduled task) must cancel active requests
+    /// first — a parked admission coroutine would otherwise wake after the
+    /// resource lock is released and start provider work for a deleted task —
+    /// and then remove the rows so they don't outlive the task as orphans.
+    /// Mirrors `TaskLifecycleCoordinator.cancelAndRemoveTurnRequests`.
+    func cancelAndRemoveTurnRequests(for task: AgentTask, modelContext: ModelContext) {
+        cancel(task: task, modelContext: modelContext)
+        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
+            for request in requests {
+                modelContext.delete(request)
+            }
+        }
+    }
+
+    /// Stop only the task's active run: cancel the worker and terminalize the
+    /// run/task, but leave queued turn requests saved. The complement of
+    /// `cancelTurnRequest` for the send-while-running dock — its "Stop run"
+    /// promises queued messages survive, while `cancel(task:modelContext:)`
+    /// terminalizes every active request.
+    @MainActor
+    func stopActiveRun(task: AgentTask, modelContext: ModelContext) {
+        cancel(task: task, modelContext: nil)
+        let summary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .userAction
+        )
+        AppLogger.audit(.taskCancelled, category: "Queue", taskID: task.id, fields: [
+            "scope": "active_run",
+            "running_runs_cancelled": String(summary.runsUpdated)
+        ])
+        TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
+    }
+
+    @MainActor
+    func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
         if let worker = taskWorkerMap[task.id] {
             worker.cancel()
             taskWorkerMap.removeValue(forKey: task.id)
             AppLogger.audit(.taskCancelled, category: "Queue", taskID: task.id)
         }
+        // The empty-array case must not fall through to the save below: a
+        // cancel with nothing to cancel would still auto-export, resurrecting
+        // workspace mirrors that a caller (e.g. deleteWorkspace) just removed.
+        if let modelContext,
+           let requests = try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext),
+           !requests.isEmpty {
+            for request in requests {
+                _ = TaskTurnRequestStateMachine.transition(
+                    request,
+                    to: .cancelled,
+                    terminalReason: "cancelled_by_user"
+                )
+            }
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "cancel_turn_requests"]
+            )
+        }
+        wakeTurnAdmissionWaiters(taskID: task.id)
+    }
+
+    /// Retract one saved-but-not-yet-admitted turn without touching the rest
+    /// of the task. `cancel(task:)` is deliberately wider (worker + every
+    /// active request); a waiting follow-up on a completed task must be
+    /// cancellable without flipping that task's terminal status.
+    ///
+    /// Waiting states ONLY: a stale click can land after the request reached
+    /// `.admitted`/`.running`, when a worker already owns it. Marking it
+    /// cancelled then would not stop the provider, and the runtime finalizer
+    /// cannot overwrite the terminal state — the turn would display as
+    /// cancelled while still mutating the workspace. Post-admission stops go
+    /// through the worker-cancelling paths instead.
+    @MainActor
+    func cancelTurnRequest(id: UUID, workspace: Workspace?, modelContext: ModelContext) {
+        guard let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
+              request.state == .waitingForWorker || request.state == .waitingForResource else { return }
+        let previousState = request.state
+        let previousBlockingTaskID = request.blockingTaskID
+        let previousBlockerSummary = request.blockerSummary
+        let result = transitionPersistedTurn(
+            request,
+            to: .cancelled,
+            terminalReason: "cancelled_by_user",
+            modelContext: modelContext
+        )
+        guard result.persisted else {
+            // Cancellation is not durable: a crash before a later successful
+            // save would let startup recovery replay the message the user
+            // just retracted. Revert in memory too, so the parked admission
+            // coroutine (already woken by the failed transition above)
+            // re-parks as still-waiting instead of treating this as
+            // terminal — memory and disk both keep the pre-cancel state.
+            Self.revertFailedCancellation(
+                request,
+                to: previousState,
+                blockingTaskID: previousBlockingTaskID,
+                blockerSummary: previousBlockerSummary
+            )
+            AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
+                "scope": "turn_request",
+                "request_id": request.id.uuidString,
+                "result": "persist_failed"
+            ], level: .error)
+            return
+        }
+        AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
+            "scope": "turn_request",
+            "request_id": request.id.uuidString
+        ])
+    }
+
+    /// Reverts a request to its pre-cancellation snapshot after
+    /// `cancelTurnRequest` fails to persist. `.cancelled -> .waitingForWorker`
+    /// is the only path the state machine allows back out of `.cancelled`; a
+    /// request that was `.waitingForResource` before the failed cancel can't
+    /// take it, so this falls back to restoring the captured fields directly
+    /// (still posting the same change notification the state machine would
+    /// have) instead of leaving the request stuck `.cancelled` in memory with
+    /// its blocker metadata wiped.
+    @MainActor
+    static func revertFailedCancellation(
+        _ request: TaskTurnRequest,
+        to previousState: TaskTurnRequestState,
+        blockingTaskID: UUID?,
+        blockerSummary: String?
+    ) {
+        let reverted = TaskTurnRequestStateMachine.transition(
+            request,
+            to: previousState,
+            blockingTaskID: blockingTaskID,
+            blockerSummary: blockerSummary
+        )
+        guard reverted.rejection != nil else { return }
+        request.state = previousState
+        request.blockingTaskID = blockingTaskID
+        request.blockerSummary = blockerSummary
+        request.terminalAt = nil
+        request.terminalReason = nil
+        TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(previousState.rawValue)")
     }
 
     /// Cancel all running workers
@@ -758,6 +1337,11 @@ final class TaskQueue {
         isProcessingScheduled = false
         processingScheduleGeneration += 1
         isProcessing = false
+        // Stop parked durable-turn admissions too: bump the generation so a
+        // woken loop terminalizes instead of admitting into the workers and
+        // locks this just cleared, then wake every waiter immediately.
+        turnAdmissionGeneration += 1
+        wakeAllTurnAdmissionWaiters()
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
         ])
@@ -901,6 +1485,9 @@ final class TaskQueue {
             status: "released",
             modelContext: modelContext
         )
+        // Every release path (worker hand-back, legacy continuation, initial
+        // runs) funnels through here, and availability is queue-global.
+        wakeAllTurnAdmissionWaiters()
     }
 
     @MainActor
@@ -908,7 +1495,15 @@ final class TaskQueue {
         task: AgentTask,
         accessMode: TaskResourceAccessMode,
         runMode: String,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        // Durable-turn admission passes this so the wait ends the moment its
+        // request is cancelled/deleted, instead of only checking Task
+        // cancellation. Without it, a request cancelled or deleted while
+        // another task holds the lock keeps polling and can go on to
+        // `acquireResourceLockIfAvailable`, which inserts and saves a
+        // resource-lock event referencing the now-deleted task before any
+        // caller-side guard runs.
+        shouldAbort: (() -> Bool)? = nil
     ) async -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
@@ -927,7 +1522,7 @@ final class TaskQueue {
         )
 
         var recordedWaiting = false
-        while !Task.isCancelled {
+        while !Task.isCancelled && !(shouldAbort?() ?? false) {
             if let acquired = acquireResourceLockIfAvailable(
                 task: task,
                 accessMode: accessMode,

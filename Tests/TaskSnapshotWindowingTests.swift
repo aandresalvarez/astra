@@ -145,7 +145,7 @@ extension TaskThreadSnapshotTests {
 
         let snapshot = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task, maxRuns: 20))
 
-        guard case .userMessage(let goalText, _) = snapshot.conversationItems.first else {
+        guard case .userMessage(_, let goalText, _) = snapshot.conversationItems.first else {
             Issue.record("First conversation item should be the goal user message")
             return
         }

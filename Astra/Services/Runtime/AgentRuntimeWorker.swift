@@ -406,12 +406,11 @@ final class AgentRuntimeWorker {
         TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
-
     /// Continue an existing session with a follow-up message (HITL flow).
     @MainActor
     func continueSession(
         task: AgentTask,
-        message: String,
+        message: String, existingMessageEventID: UUID? = nil, turnRequestID: UUID? = nil,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
@@ -437,13 +436,14 @@ final class AgentRuntimeWorker {
             promptOverride: prompt,
             startEventType: "user.message",
             startEventPayload: message,
+            existingStartEventID: existingMessageEventID,
+            turnRequestID: turnRequestID,
             sessionMessage: message,
             auditPhase: "resume",
             recordingMode: .followUp,
             executionPolicy: executionPolicy
         )
     }
-
     @MainActor
     private func executeRuntimeSession(
         task: AgentTask,
@@ -452,7 +452,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void,
         promptOverride: String? = nil,
         startEventType: String = "task.started",
-        startEventPayload: String? = nil,
+        startEventPayload: String? = nil, existingStartEventID: UUID? = nil, turnRequestID: UUID? = nil,
         sessionMessage: String? = nil,
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
@@ -555,10 +555,19 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
-
+        // Link the event to its run BEFORE the running-state save below, so
+        // the same save durably persists both facts together. No later save
+        // in this launch path is guaranteed to run before the provider
+        // starts (e.g. a clean-workspace git baseline capture skips its own
+        // save) — if the link were set only in memory here, a crash before
+        // any later save would leave the durable user message permanently
+        // detached from the run that answered it.
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
-        let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
-        TaskEventInsertionService.insert(startEvent, into: modelContext)
+        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
+        let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
+        // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
+        guard turnBegin.persisted else { isRunning = false; return }
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
@@ -598,20 +607,11 @@ final class AgentRuntimeWorker {
             return
         }
 
-        guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": runtimeAdapter.missingExecutableAuditReason(),
-                "runtime": selectedRuntime.rawValue
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            if let stopReason = runtimeAdapter.missingExecutableStopReason() {
-                run.typedStopReason = TaskRunStopReason.custom(stopReason)
-            }
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
-            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-                payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
-            modelContext.insert(event)
+        guard AgentRuntimeLaunchPreflight.preflightExecutableBeforeLaunch(
+            task: task, run: run, adapter: runtimeAdapter,
+            executablePath: launchSettings.executablePath,
+            runtime: selectedRuntime.rawValue, modelContext: modelContext
+        ) else {
             isRunning = false
             return
         }

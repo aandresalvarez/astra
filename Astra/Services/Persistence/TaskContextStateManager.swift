@@ -1785,8 +1785,10 @@ public enum TaskContextStateManager {
     /// acknowledgements; everything else is retained for the model to weigh.
     @MainActor
     private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
+        let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
         let userMessages = task.events
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+            .filter { !pendingTurnMessageIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
         guard userMessages.count > 1 else { return [] }
 
