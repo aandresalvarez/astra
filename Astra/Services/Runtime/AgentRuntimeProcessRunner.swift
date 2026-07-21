@@ -62,10 +62,12 @@ protocol AgentRuntimeProcessRunning: AnyObject {
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
+    typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
+    private let dockerRuntimeProvider: DockerRuntimeProvider
 
     init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
         ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
@@ -76,9 +78,12 @@ final class AgentRuntimeProcessRunner {
             contextText: context.contextText,
             repositoryPath: context.workspacePath,
         )
+    }, dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
+        DockerRuntimeResolver.resolve()
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider
+        self.dockerRuntimeProvider = dockerRuntimeProvider
     }
 
     func cancel() {
@@ -257,12 +262,53 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             ))
         }
+        let dockerRuntime = environment.isContainerized ? dockerRuntimeProvider() : .environmentLookup
+        guard let dockerRuntime else {
+            let message = "Docker CLI was not found. Install or reopen Docker Desktop, then retry."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "docker_cli_missing",
+                "execution_environment": environment.kind.rawValue
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "docker_cli_missing",
+                runtimeStopMessage: message
+            ))
+        }
+        if environment.workspaceCommandsRunInsideContainer,
+           !environment.providerRunsInsideContainer {
+            let dockerToolDirectory = URL(fileURLWithPath: dockerRuntime.executablePath)
+                .deletingLastPathComponent()
+                .path
+            var dockerReadablePaths = [dockerToolDirectory]
+            // Docker Desktop's system-wide CLI is often a symlink (e.g.
+            // /usr/local/bin/docker) into the protected app bundle. Granting
+            // only the symlink's own directory lets the sandbox read the link
+            // itself but denies exec traversal into its real target, so the
+            // resolved target's directory must be granted too.
+            let resolvedExecutablePath = (dockerRuntime.executablePath as NSString).resolvingSymlinksInPath
+            if resolvedExecutablePath != dockerRuntime.executablePath {
+                let resolvedToolDirectory = URL(fileURLWithPath: resolvedExecutablePath)
+                    .deletingLastPathComponent()
+                    .path
+                if resolvedToolDirectory != dockerToolDirectory {
+                    dockerReadablePaths.append(resolvedToolDirectory)
+                }
+            }
+            plan = plan.addingSandboxReadablePaths(
+                dockerReadablePaths,
+                plannedFields: ["docker_host_tool_readable_path": dockerToolDirectory]
+            )
+        }
         switch DockerExecutionPlanner.plan(
             base: plan,
             environment: environment,
             task: context.task,
             runID: context.runID,
-            additionalReadOnlyInputPaths: readOnlyInputBoundary.paths
+            additionalReadOnlyInputPaths: readOnlyInputBoundary.paths,
+            dockerRuntime: dockerRuntime
         ) {
         case .success(let resolvedPlan):
             plan = resolvedPlan
