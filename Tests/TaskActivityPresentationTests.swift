@@ -234,6 +234,41 @@ struct TaskActivityPresentationTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [runningTask.id, waitingTask.id])
     }
 
+    @Test("Activity index exposes live tasks across workspaces regardless of search or drawer context")
+    func activityIndexIsGlobalAndDurable() {
+        let workspaceA = makeWorkspace(name: "A")
+        let workspaceB = makeWorkspace(name: "B")
+        let workspaceC = makeWorkspace(name: "C")
+        let runningTask = makeTask(title: "Run A", status: .completed, workspace: workspaceA)
+        let waitingTask = makeTask(title: "Wait B", status: .completed, workspace: workspaceB)
+        let resourceTask = makeTask(title: "Blocked C", status: .completed, workspace: workspaceC)
+        waitingTask.isDone = true
+        let idleTask = makeTask(title: "Idle", status: .completed, workspace: workspaceA)
+        let running = request(for: runningTask, sequence: 1, state: .running)
+        let waiting = request(for: waitingTask, sequence: 1, state: .waitingForWorker)
+        let resourceWait = request(
+            for: resourceTask,
+            sequence: 1,
+            state: .waitingForResource,
+            blockerSummary: "Another task owns this workspace"
+        )
+        let tasks = [idleTask, waitingTask, resourceTask, runningTask]
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: tasks,
+            requests: [resourceWait, waiting, running]
+        )
+
+        let index = SidebarTaskIndex(
+            tasks: tasks,
+            searchText: "no task matches this",
+            taskActivities: activities
+        )
+
+        #expect(index.activeTasks.first?.id == runningTask.id)
+        #expect(Set(index.activeTasks.dropFirst().map(\.id)) == [waitingTask.id, resourceTask.id])
+        #expect(index.activityCounts == SidebarWorkspaceActivityCounts(running: 1, waiting: 2))
+    }
+
     @Test("Waiting counts include tasks the user already marked done")
     func waitingCountIncludesDoneTasks() {
         let workspace = makeWorkspace()
