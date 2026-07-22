@@ -8,11 +8,17 @@ enum TaskDeliverableExpectation {
     static let artifactScanDepthLimit = 4
 
     static func requiresStandaloneArtifact(_ task: AgentTask) -> Bool {
+        let combinedIntent = deliverableIntentText(for: task)
+        if outputFilenames(in: combinedIntent) == transientOutputFilenames(in: combinedIntent),
+           !transientOutputFilenames(in: combinedIntent).isEmpty {
+            return false
+        }
+
         let text = [
-            deliverableRelevantText(from: task.title),
-            deliverableRelevantText(from: task.goal),
-            deliverableRelevantText(from: task.inputs.joined(separator: " ")),
-            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: " "))
+            persistentDeliverableText(from: task.title),
+            persistentDeliverableText(from: task.goal),
+            persistentDeliverableText(from: task.inputs.joined(separator: " ")),
+            persistentDeliverableText(from: task.acceptanceCriteria.joined(separator: " "))
         ]
             .joined(separator: " ")
             .lowercased()
@@ -68,10 +74,10 @@ enum TaskDeliverableExpectation {
 
             if let listSegment = explicitDeliverableListSegment(from: line) {
                 if acceptsDeliverableListItems {
-                    filenames.formUnion(outputFilenames(in: listSegment))
+                    filenames.formUnion(persistentOutputFilenames(in: listSegment))
                 }
                 if lineStatesNamedOutput(line) {
-                    filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                    filenames.formUnion(persistentOutputFilenames(in: proseOutputSegment(from: line)))
                 }
                 continue
             }
@@ -83,10 +89,10 @@ enum TaskDeliverableExpectation {
             }
 
             if lineStatesNamedOutput(line) {
-                filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                filenames.formUnion(persistentOutputFilenames(in: proseOutputSegment(from: line)))
             }
         }
-        return filenames
+        return filenames.subtracting(transientOutputFilenames(in: text))
     }
 
     static func hasArtifact(
@@ -306,6 +312,52 @@ enum TaskDeliverableExpectation {
 
     private static func matches(_ text: String, pattern: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Removes an explicitly transient file lifecycle from final-deliverable
+    /// inference. A named file is transient only when one instruction names a
+    /// single file, marks it as temporary/scratch/probe state, and explicitly
+    /// requires removing it. Ambiguous or multi-file instructions remain
+    /// fail-closed so a cleanup aside cannot erase a real requested output.
+    private static func persistentDeliverableText(from rawText: String) -> String {
+        deliverableRelevantText(from: rawText)
+            .components(separatedBy: .newlines)
+            .filter { transientOutputFilenames(in: $0).isEmpty }
+            .joined(separator: "\n")
+    }
+
+    private static func deliverableIntentText(for task: AgentTask) -> String {
+        [
+            deliverableRelevantText(from: task.title),
+            deliverableRelevantText(from: task.goal),
+            deliverableRelevantText(from: task.inputs.joined(separator: "\n")),
+            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: "\n"))
+        ].joined(separator: "\n")
+    }
+
+    private static func persistentOutputFilenames(in text: String) -> Set<String> {
+        outputFilenames(in: text).subtracting(transientOutputFilenames(in: text))
+    }
+
+    private static func transientOutputFilenames(in text: String) -> Set<String> {
+        let filenames = outputFilenames(in: text)
+        guard filenames.count == 1 else { return [] }
+
+        let lower = text.lowercased()
+        let tokens = Set(lower
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init))
+        let transientWords: Set<String> = ["temporary", "temp", "scratch", "probe"]
+        guard !tokens.isDisjoint(with: transientWords) else { return [] }
+
+        let removalWords: Set<String> = ["delete", "discard", "remove"]
+        let explicitlyRemoved = TaskIntentLanguagePolicy.containsAffirmativeAction(
+            in: lower,
+            words: removalWords,
+            phrases: ["clean up"]
+        )
+        guard explicitlyRemoved else { return [] }
+        return filenames
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {

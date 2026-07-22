@@ -422,6 +422,46 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
+    @Test("Temporary named files removed by the task are not final deliverables")
+    func temporaryNamedFilesRemovedByTheTaskAreNotFinalDeliverables() {
+        let task = AgentTask(
+            title: "Workspace write-concurrency probe test",
+            goal: "Create a temporary file named astra-concurrency-probe.txt containing a timestamp, verify it, and then remove it."
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Temporary file lifecycle remains transient when creation and cleanup are split across task fields")
+    func temporaryFileLifecycleAcrossTaskFieldsIsNotADeliverable() {
+        let task = AgentTask(
+            title: "Workspace write-concurrency probe test",
+            goal: "Create a temporary file named astra-concurrency-probe.txt containing a timestamp."
+        )
+        task.acceptanceCriteria = [
+            "Verify astra-concurrency-probe.txt.",
+            "Then remove astra-concurrency-probe.txt."
+        ]
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Temporary named files kept by the task remain final deliverables")
+    func temporaryNamedFilesKeptByTheTaskRemainFinalDeliverables() {
+        let task = AgentTask(
+            title: "Keep preview",
+            goal: "Create a temporary preview named preview.html and keep it for review."
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["preview.html"])
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
     @Test("Input and example lists do not require output artifacts")
     func inputAndExampleListsDoNotRequireOutputArtifacts() {
         let task = AgentTask(

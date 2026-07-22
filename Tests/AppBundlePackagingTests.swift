@@ -29,11 +29,86 @@ struct AppBundlePackagingTests {
         """#
 
         #expect(script.contains(preReplacementSequence))
-        #expect(script.contains(#"pkill -x "$APP_NAME""#))
+        #expect(!script.contains(#"pkill -x "$APP_NAME""#))
+        #expect(script.contains("ASTRA_ALLOW_CROSS_BUNDLE_TAKEOVER"))
+        #expect(script.contains(#"command="$(ps -p "$pid" -o command= | sed -e 's/^[[:space:]]*//')""#))
+        #expect(script.contains(#"if [[ "$command" == "$APP_BINARY"* ]]"#))
         #expect(script.contains(launch))
         #expect(script.contains(launchSequence))
         #expect(!script.contains(#"/usr/bin/open -n "$APP_BUNDLE""#))
         #expect(try index(of: build, in: script) < index(of: preReplacementSequence, in: script))
+    }
+
+    @Test("build launcher refuses to kill a same-name app from another worktree")
+    func launcherRefusesCrossWorktreeReplacementWithoutExplicitTakeover() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let function = try extractFunction(named: "stop_existing_app", from: script)
+        let fixture = """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        APP_NAME='ASTRA Dev'
+        APP_BUNDLE='/current/dist/ASTRA Dev.app'
+        APP_BINARY='/current/dist/ASTRA Dev.app/Contents/MacOS/ASTRA Dev'
+        pgrep() { printf '4242\\n'; }
+        ps() { printf '/other/worktree/dist/ASTRA Dev.app/Contents/MacOS/ASTRA Dev\\n'; }
+        kill() { printf 'KILLED:%s\\n' "$1"; }
+        \(function)
+        stop_existing_app
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["--noprofile", "--norc", "-c", fixture]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        #expect(process.terminationStatus == 4)
+        #expect(output.contains("refusing to replace ASTRA Dev"))
+        #expect(output.contains("/other/worktree/dist/ASTRA Dev.app"))
+        #expect(!output.contains("KILLED:"))
+    }
+
+    @Test("build launcher restarts its own bundle and tolerates no remaining process")
+    func launcherRestartsOwnedBundleUnderMacOSBashNounset() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let function = try extractFunction(named: "stop_existing_app", from: script)
+        let fixture = """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        APP_NAME='ASTRA Dev'
+        APP_BUNDLE='/current/dist/ASTRA Dev.app'
+        APP_BINARY='/current/dist/ASTRA Dev.app/Contents/MacOS/ASTRA Dev'
+        guard_state="$(mktemp)"
+        kill_log="$(mktemp)"
+        pgrep() {
+          if [[ -s "$guard_state" ]]; then return 1; fi
+          printf '4242\\n'
+        }
+        ps() { printf '%s\\n' "$APP_BINARY"; }
+        kill() { printf 'KILLED:%s\\n' "$1" > "$kill_log"; printf stopped > "$guard_state"; }
+        sleep() { :; }
+        \(function)
+        stop_existing_app
+        cat "$kill_log"
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["--noprofile", "--norc", "-c", fixture]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        #expect(process.terminationStatus == 0)
+        #expect(output.contains("KILLED:4242"))
+        #expect(!output.contains("unbound variable"))
     }
 
     @Test("build script stages SwiftPM resources inside Contents/Resources before signing")
@@ -277,5 +352,21 @@ struct AppBundlePackagingTests {
 
     private func index(of needle: String, in haystack: String) throws -> String.Index {
         try #require(haystack.range(of: needle)?.lowerBound)
+    }
+
+    private func extractFunction(named name: String, from source: String) throws -> String {
+        let lines = source.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.hasPrefix("\(name)() {") }) else {
+            throw PackagingTestFailure("missing function \(name)")
+        }
+        guard let end = lines[start...].firstIndex(where: { $0 == "}" }) else {
+            throw PackagingTestFailure("missing closing brace for \(name)")
+        }
+        return lines[start...end].joined(separator: "\n")
+    }
+
+    private struct PackagingTestFailure: Error {
+        let message: String
+        init(_ message: String) { self.message = message }
     }
 }

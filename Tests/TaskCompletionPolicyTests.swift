@@ -449,6 +449,26 @@ struct TaskCompletionPolicyTests {
         #expect(decision.userVisibleMessage?.contains("standalone file artifact") == false)
     }
 
+    @Test("temporary file cleanup does not trigger a missing deliverable gate")
+    func temporaryFileCleanupDoesNotTriggerMissingDeliverableGate() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(
+            title: "Workspace write-concurrency probe test",
+            goal: "Create a temporary file named astra-concurrency-probe.txt containing a timestamp, verify it, and then remove it."
+        )
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
+
+        #expect(!decision.shouldBlockCompletion)
+        #expect(decision.gate == .manualArtifactRequirement)
+        #expect(decision.auditFields["requires_artifact"] == "false")
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
