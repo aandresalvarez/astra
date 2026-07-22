@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ASTRACore
 
 public protocol RunSupervisorSocketServing: AnyObject, Sendable {
     var socketName: String { get }
@@ -16,13 +17,53 @@ public protocol RunSupervisorSocketServerFactory: Sendable {
     ) throws -> any RunSupervisorSocketServing
 }
 
+public protocol RunSupervisorPeerCodeIdentityVerifying: Sendable {
+    func verify(processID: pid_t) -> Bool
+}
+
+public struct DarwinRunSupervisorPeerCodeIdentityVerifier: RunSupervisorPeerCodeIdentityVerifying {
+    private let expectedIdentity: DarwinProcessCodeIdentity?
+    private let identity: @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+
+    public init(expectedIdentity: DarwinProcessCodeIdentity?) {
+        self.expectedIdentity = expectedIdentity
+        identity = { DarwinProcessCodeIdentityResolver.resolve(processID: $0) }
+    }
+
+    package init(
+        expectedIdentity: DarwinProcessCodeIdentity?,
+        identity: @escaping @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+    ) {
+        self.expectedIdentity = expectedIdentity
+        self.identity = identity
+    }
+
+    public func verify(processID: pid_t) -> Bool {
+        guard let expectedIdentity,
+              let actual = identity(processID) else {
+            return false
+        }
+        return actual == expectedIdentity
+    }
+}
+
 public struct DarwinRunSupervisorSocketServerFactory: RunSupervisorSocketServerFactory {
-    public init() {}
+    private let peerVerifier: any RunSupervisorPeerCodeIdentityVerifying
+
+    public init(expectedPeerIdentity: DarwinProcessCodeIdentity? = DarwinProcessCodeIdentityResolver.resolve(processID: getpid())) {
+        peerVerifier = DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: expectedPeerIdentity
+        )
+    }
     public func makeServer(
         directory: RunSupervisorRunDirectory,
         authenticator: RunSupervisorControlAuthenticator
     ) throws -> any RunSupervisorSocketServing {
-        try DarwinRunSupervisorSocketServer(directory: directory, authenticator: authenticator)
+        try DarwinRunSupervisorSocketServer(
+            directory: directory,
+            authenticator: authenticator,
+            peerVerifier: peerVerifier
+        )
     }
 }
 
@@ -43,6 +84,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     public let socketName = "control.sock"
     private let directory: RunSupervisorRunDirectory
     private let authenticator: RunSupervisorControlAuthenticator
+    private let peerVerifier: any RunSupervisorPeerCodeIdentityVerifying
     private let acceptQueue: DispatchQueue
     private let clientQueue: DispatchQueue
     private let startReservationHook: @Sendable () -> Void
@@ -60,6 +102,9 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     public convenience init(
         directory: RunSupervisorRunDirectory,
         authenticator: RunSupervisorControlAuthenticator,
+        peerVerifier: any RunSupervisorPeerCodeIdentityVerifying = DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: DarwinProcessCodeIdentityResolver.resolve(processID: getpid())
+        ),
         acceptQueue: DispatchQueue = DispatchQueue(
             label: "com.coral.astra.run-supervisor.control.accept",
             qos: .userInitiated
@@ -73,6 +118,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         try self.init(
             directory: directory,
             authenticator: authenticator,
+            peerVerifier: peerVerifier,
             acceptQueue: acceptQueue,
             clientQueue: clientQueue,
             startReservationHook: {},
@@ -83,6 +129,9 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     package init(
         directory: RunSupervisorRunDirectory,
         authenticator: RunSupervisorControlAuthenticator,
+        peerVerifier: any RunSupervisorPeerCodeIdentityVerifying = DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: DarwinProcessCodeIdentityResolver.resolve(processID: getpid())
+        ),
         acceptQueue: DispatchQueue,
         clientQueue: DispatchQueue,
         startReservationHook: @escaping @Sendable () -> Void,
@@ -90,6 +139,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     ) throws {
         self.directory = directory
         self.authenticator = authenticator
+        self.peerVerifier = peerVerifier
         self.acceptQueue = acceptQueue
         self.clientQueue = clientQueue
         self.startReservationHook = startReservationHook
@@ -311,6 +361,18 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
             guard getpeereid(client, &uid, &gid) == 0 else {
                 throw RunSupervisorError.systemCall("getpeereid", errno)
             }
+            var processID: pid_t = 0
+            var processIDLength = socklen_t(MemoryLayout<pid_t>.size)
+            guard getsockopt(
+                client,
+                SOL_LOCAL,
+                LOCAL_PEERPID,
+                &processID,
+                &processIDLength
+            ) == 0,
+                  peerVerifier.verify(processID: processID) else {
+                throw RunSupervisorError.peerCodeIdentityMismatch
+            }
             try authenticator.authenticate(request, peerUID: uid)
             guard beginHandling(client) else {
                 throw RunSupervisorError.alreadyRunningOrInDoubt
@@ -373,7 +435,8 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
 
     private static func errorCode(_ error: Error) -> String {
         switch error as? RunSupervisorError {
-        case .authenticationFailed, .peerUIDMismatch, .replayedNonce, .staleAuthentication:
+        case .authenticationFailed, .peerUIDMismatch, .peerCodeIdentityMismatch,
+             .replayedNonce, .staleAuthentication:
             "unauthenticated"
         case .unsupportedProtocol:
             "unsupported_protocol"

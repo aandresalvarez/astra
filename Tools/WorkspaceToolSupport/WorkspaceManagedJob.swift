@@ -99,6 +99,8 @@ public final class WorkspaceManagedJobStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var afterTrustedRegularFileStatForTesting: ((URL) -> Void)?
+    var afterLaunchBeforeSaveForTesting: (() throws -> Void)?
+    var beforeProviderProjectionWriteForTesting: ((URL) throws -> Void)?
 
     public init(
         rootPath: String,
@@ -259,9 +261,9 @@ public final class WorkspaceManagedJobStore {
 
     /// Atomically adopts or creates one invocation receipt across provider/MCP
     /// processes. `flock` ownership is released by the kernel after crashes.
-    /// The lock covers lookup plus durable queued-record creation; it does not
-    /// cover executor launch, so a crash leaves an adoptable, explicitly
-    /// uncertain queued receipt instead of permitting a duplicate launch.
+    /// The lock covers lookup plus durable queued-record creation. The launch
+    /// path upgrades that receipt to a durable `.launching` fence before the
+    /// detached effect, so an ambiguous crash cannot permit a duplicate launch.
     public func admitInvocation(
         command: String,
         timeoutSeconds: TimeInterval?,
@@ -330,7 +332,14 @@ public final class WorkspaceManagedJobStore {
         try writeDurably(data, to: trustedMetadataURL(forCanonicalID: canonicalID))
         // This copy is a provider-visible projection only. It is useful to the
         // wrapper and operators, but never participates in admission or cleanup.
-        try data.write(to: WorkspaceManagedJobFileLayout(directory: directory).metadata, options: [.atomic])
+        // Its failure cannot roll back or contradict already-durable authority.
+        let projectionURL = WorkspaceManagedJobFileLayout(directory: directory).metadata
+        do {
+            try beforeProviderProjectionWriteForTesting?(projectionURL)
+            try data.write(to: projectionURL, options: [.atomic])
+        } catch {
+            FileHandle.standardError.write(Data("ASTRA managed-job metadata projection failed.\n".utf8))
+        }
     }
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
@@ -374,9 +383,8 @@ public final class WorkspaceManagedJobStore {
         try listTrustedRecordsUnlocked()
     }
 
-    /// Adopts a crash-left queued receipt exactly once. Admission, the Docker
-    /// launch request, and the authoritative post-launch transition share the
-    /// same process/kernel exclusion boundary.
+    /// Fences a queued receipt before its detached effect. A retry may observe
+    /// `.launching`, but must never repeat an ambiguously accepted launch.
     func launchQueuedInvocation(
         jobID: String,
         _ launch: (WorkspaceManagedJobRecord) throws -> WorkspaceManagedJobRecord
@@ -387,7 +395,13 @@ public final class WorkspaceManagedJobStore {
                 throw jobNotFoundError(jobID: canonicalID)
             }
             guard record.status == .queued else { return record }
-            let launched = try launch(record)
+            var fenced = record
+            fenced.status = .launching
+            fenced.updatedAt = Date()
+            fenced.message = "Detached launch outcome is awaiting durable reconciliation."
+            try save(fenced, trustedLockHeld: true)
+            let launched = try launch(fenced)
+            try afterLaunchBeforeSaveForTesting?()
             try save(launched, trustedLockHeld: true)
             return launched
         }
@@ -830,7 +844,7 @@ public final class WorkspaceManagedJobStore {
         var record = try load(jobID: jobID)
         record.status = status
         record.updatedAt = Date()
-        if status != .queued && status != .running {
+        if status != .queued && status != .launching && status != .running {
             record.completedAt = record.updatedAt
         }
         if let message {
@@ -848,7 +862,7 @@ public final class WorkspaceManagedJobStore {
         if let heartbeatData = trustedFileData(at: layout.heartbeat, inside: directory),
            let heartbeat = try? RuntimeHeartbeat.read(from: heartbeatData, decoder: decoder) {
             record.lastHeartbeatAt = heartbeat.timestamp
-            if record.status == .queued {
+            if record.status == .queued || record.status == .launching {
                 record.status = .running
             }
         }

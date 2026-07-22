@@ -803,29 +803,24 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
 
     private func journalState(executionID: RunBrokerExecutionID) throws -> JournalState {
         var result = JournalState()
-        var cursor: Int64 = 0
-        while true {
-            let events = try ledger.events(after: cursor, limit: 1_000)
-            guard !events.isEmpty else { break }
-            for stored in events {
-                cursor = stored.sequence
-                guard case .supervisorObservationRecorded(let observation) = stored.envelope.event,
-                      observation.executionID == executionID else { continue }
-                if result.observations[observation.supervisorSequence] != nil {
-                    throw RunBrokerServiceError.supervisorEventConflict(
-                        sequence: observation.supervisorSequence
-                    )
-                }
-                result.observations[observation.supervisorSequence] = observation
-                result.persistedOutputBytes += UInt64(observation.output?.count ?? 0)
-                result.sawReady = result.sawReady || observation.kind == .supervisorReady
-                result.sawProviderStarted = result.sawProviderStarted || observation.kind == .providerStarted
-                result.sawCancellationConfirmed = result.sawCancellationConfirmed
-                    || observation.kind == .cancellationConfirmed
-                result.terminal = result.terminal || [
-                    .providerExited, .providerLaunchFailed, .cancellationConfirmed,
-                ].contains(observation.kind)
+        // Reconciliation runs once per active execution on every worker tick.
+        // Use the durable execution/sequence index rather than multiplying a
+        // full journal replay by every active execution.
+        for observation in try ledger.supervisorObservations(for: executionID) {
+            if result.observations[observation.supervisorSequence] != nil {
+                throw RunBrokerServiceError.supervisorEventConflict(
+                    sequence: observation.supervisorSequence
+                )
             }
+            result.observations[observation.supervisorSequence] = observation
+            result.persistedOutputBytes += UInt64(observation.output?.count ?? 0)
+            result.sawReady = result.sawReady || observation.kind == .supervisorReady
+            result.sawProviderStarted = result.sawProviderStarted || observation.kind == .providerStarted
+            result.sawCancellationConfirmed = result.sawCancellationConfirmed
+                || observation.kind == .cancellationConfirmed
+            result.terminal = result.terminal || [
+                .providerExited, .providerLaunchFailed, .cancellationConfirmed,
+            ].contains(observation.kind)
         }
         if result.lastSequence > 0 {
             for expected in UInt64(1)...result.lastSequence {
@@ -897,8 +892,17 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         if execution?.control.observedExecution == .inDoubt {
             return .init(state: .inDoubt, lastSupervisorSequence: 0, replaySource: nil)
         }
+        // The same failure reason can recur after authenticated evidence has
+        // recovered the execution to running. Bind the identity to the
+        // current durable state boundary so each uncertainty episode is a
+        // distinct fact while retries within an unchanged episode remain
+        // deterministic.
+        let episodeSequence = execution?.updatedSequence ?? 0
         _ = try ledger.append(.init(
-            eventID: deterministicEventID(identity.executionID.rawValue, domain: "in-doubt-\(reason)"),
+            eventID: deterministicEventID(
+                identity.executionID.rawValue,
+                domain: "in-doubt-\(reason)-after-\(episodeSequence)"
+            ),
             occurredAt: max(Date(), execution?.updatedAt ?? Date()),
             event: .executionControlTransitioned(
                 executionID: identity.executionID,

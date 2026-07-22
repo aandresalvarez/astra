@@ -120,10 +120,11 @@ private func run() throws -> Never {
     applicationService.startExecutionReconciliation(logger: BrokerStderrLogger())
     applicationService.startRuntimeSwitchReconciliation(logger: BrokerStderrLogger())
     let authenticator = RunBrokerRequestAuthenticator(secret: secrets.capabilitySecret)
+    let codeIdentityVerifier = DarwinRunBrokerPeerCodeIdentityVerifier()
     let peerPolicy = RunBrokerPeerIdentityPolicy(
         expectedUserID: getuid(),
-        requiresCodeIdentity: true,
-        codeIdentityVerifier: DarwinRunBrokerPeerCodeIdentityVerifier()
+        requiresCodeIdentity: codeIdentityVerifier.requiresDeveloperIDIdentity,
+        codeIdentityVerifier: codeIdentityVerifier
     )
     let endpoint = RunBrokerRequestEndpoint(
         channel: arguments.channel,

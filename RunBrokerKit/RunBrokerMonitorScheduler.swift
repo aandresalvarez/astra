@@ -91,7 +91,7 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         // The durable event may be an exact replay while a later connection
         // has already advanced the schedule. Always fetch current truth rather
         // than applying the replayed command to this process's cache.
-        try refreshAfterMutation()
+        try refreshFromDurableTruth()
     }
 
     public func remove(
@@ -109,11 +109,12 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         } catch RunBrokerLedgerError.monitorScheduleConflict(let operationID) {
             try reconcileScheduleConflict(operationID)
         }
-        try refreshAfterMutation()
+        try refreshFromDurableTruth()
     }
 
     public func status() throws -> [RunBrokerMonitorDeadline] {
         try requireLedger()
+        try refreshFromDurableTruth(rearm: true)
         lock.lock()
         defer { lock.unlock() }
         return deadlines.values.sorted {
@@ -125,6 +126,11 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
     public func wake() throws {
         try requireLedger()
         try requireMonitor()
+        // Terminal application transitions remove deadlines in the same
+        // RunLedger transaction without routing through this scheduler. Treat
+        // the cache only as a timer projection and refresh before any monitor
+        // side effect so an externally tombstoned operation is never polled.
+        try refreshFromDurableTruth(rearm: false)
         lock.lock()
         guard !wakeInProgress else {
             lock.unlock()
@@ -242,9 +248,9 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func refreshAfterMutation() throws {
+    private func refreshFromDurableTruth(rearm: Bool = true) throws {
         do {
-            try refreshProjectionFromLedger(rearm: true)
+            try refreshProjectionFromLedger(rearm: rearm)
         } catch {
             diagnostics.record(.schedulerRecoveryFailed, error: error)
             markDegraded()
@@ -253,7 +259,7 @@ public final class RunBrokerMonitorScheduler: @unchecked Sendable {
     }
 
     private func reconcileScheduleConflict(_ operationID: RunBrokerOperationID) throws -> Never {
-        try refreshAfterMutation()
+        try refreshFromDurableTruth()
         throw RunBrokerSchedulerError.monitorScheduleConflict(operationID)
     }
 

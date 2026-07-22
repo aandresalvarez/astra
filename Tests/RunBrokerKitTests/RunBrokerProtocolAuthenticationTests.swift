@@ -392,9 +392,21 @@ struct RunBrokerProtocolAuthenticationTests {
     @Test("Production peer verifier requires the trusted team and exact ASTRA identifier")
     func productionPeerCodeIdentity() throws {
         let identities: [Int32: RunBrokerCodeSigningIdentity] = [
-            10: .init(identifier: "com.coral.ASTRA", teamIdentifier: "TEAM123"),
-            11: .init(identifier: "com.attacker.tool", teamIdentifier: "TEAM123"),
-            12: .init(identifier: "com.coral.ASTRA", teamIdentifier: "OTHER"),
+            10: .init(
+                identifier: "com.coral.ASTRA",
+                teamIdentifier: "TEAM123",
+                cdHash: Data(repeating: 0x10, count: 20)
+            ),
+            11: .init(
+                identifier: "com.attacker.tool",
+                teamIdentifier: "TEAM123",
+                cdHash: Data(repeating: 0x11, count: 20)
+            ),
+            12: .init(
+                identifier: "com.coral.ASTRA",
+                teamIdentifier: "OTHER",
+                cdHash: Data(repeating: 0x12, count: 20)
+            ),
         ]
         let verifier = DarwinRunBrokerPeerCodeIdentityVerifier(
             trustedTeamIdentifier: "TEAM123",
@@ -422,6 +434,14 @@ struct RunBrokerProtocolAuthenticationTests {
             identity: { _ in nil }
         )
         #expect(unavailable.verify(processID: 10) == .unavailable)
+        #expect(!unavailable.requiresDeveloperIDIdentity)
+
+        let developerID = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: "TEAM123",
+            allowedIdentifiers: ["com.coral.ASTRA"],
+            identity: { _ in nil }
+        )
+        #expect(developerID.requiresDeveloperIDIdentity)
     }
 
     @Test("Application launch fields are bounded, strict-coded, MAC-bound, and redacted")

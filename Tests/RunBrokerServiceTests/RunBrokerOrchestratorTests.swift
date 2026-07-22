@@ -302,6 +302,49 @@ struct RunBrokerOrchestratorTests {
         #expect(fixture.transport.acknowledgements.isEmpty)
     }
 
+    @Test("a repeated in-doubt reason after recovery records a new durable episode")
+    func repeatedInDoubtReasonAfterRecoveryHasUniqueIdentity() throws {
+        let fixture = try BrokerFixture()
+        try fixture.admitOnly()
+        try fixture.vault.persistAndSynchronize(.init(
+            identity: .init(manifest: fixture.manifest),
+            manifestSHA256: RunSupervisorDigests.manifest(fixture.manifest),
+            capability: try .init(bytes: Data(repeating: 8, count: 32))
+        ))
+        let mismatchedIdentity = RunSupervisorIdentity(
+            installationID: fixture.manifest.installationID,
+            storeID: fixture.manifest.storeID,
+            executionID: .init(rawValue: brokerUUID(99)),
+            authority: fixture.manifest.authority
+        )
+        fixture.transport.identityOverride = mismatchedIdentity
+        fixture.transport.events = [fixture.event(1, .supervisorReady)]
+
+        let service = fixture.orchestrator()
+        #expect(try service.reconcile(executionID: fixture.manifest.executionID).state == .inDoubt)
+
+        fixture.transport.identityOverride = nil
+        fixture.transport.events.append(fixture.event(2, .providerStarted))
+        #expect(try service.reconcile(executionID: fixture.manifest.executionID).state == .running)
+
+        fixture.transport.identityOverride = mismatchedIdentity
+        #expect(try service.reconcile(executionID: fixture.manifest.executionID).state == .inDoubt)
+
+        let episodes = try fixture.ledger.events(limit: 100).filter { stored in
+            guard case .executionControlTransitioned(
+                let executionID,
+                _,
+                .observationBecameIndeterminate,
+                _
+            ) = stored.envelope.event else { return false }
+            return executionID == fixture.manifest.executionID
+        }
+        #expect(episodes.count == 2)
+        #expect(episodes[0].envelope.eventID != episodes[1].envelope.eventID)
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .inDoubt)
+    }
+
     @Test("missing supervisor after ledger admission is an explicit in-doubt boundary")
     func crashBeforeSpawnRecoversInDoubt() throws {
         let fixture = try BrokerFixture()

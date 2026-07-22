@@ -1,10 +1,64 @@
 import Darwin
 import Foundation
+import ASTRACore
 import Testing
 @testable import RunSupervisorSupport
 
 @Suite("Run supervisor Unix control socket", .serialized)
 struct RunSupervisorUnixSocketTests {
+    @Test("exact broker code identity is required in addition to capability")
+    func exactBrokerIdentityRequired() throws {
+        let expected = DarwinProcessCodeIdentity(
+            identifier: "com.coral.astra-run-broker",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x31, count: 20)
+        )
+        let provider = DarwinProcessCodeIdentity(
+            identifier: "com.coral.provider",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x41, count: 20)
+        )
+        let verifier = DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: expected,
+            identity: { processID in processID == 10 ? expected : provider }
+        )
+        #expect(verifier.verify(processID: 10))
+        #expect(!verifier.verify(processID: 11))
+        #expect(!DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: nil,
+            identity: { _ in expected }
+        ).verify(processID: 10))
+
+        let fixture = try makeFixture()
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: .init(
+                executionID: fixture.payload.manifest.executionID,
+                capability: fixture.payload.capability
+            ),
+            peerVerifier: DarwinRunSupervisorPeerCodeIdentityVerifier(
+                expectedIdentity: expected,
+                identity: { _ in provider }
+            )
+        )
+        try server.start { _ in
+            Issue.record("identity-rejected peer reached the control handler")
+            return .init(accepted: true, lastSequence: 0)
+        }
+        defer { server.stop() }
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: fixture.payload.manifest.executionID,
+            action: .init(kind: .acknowledge, acknowledgeThrough: 1),
+            capability: fixture.payload.capability
+        )
+        let response = try DarwinRunSupervisorControlClient().send(
+            request,
+            directory: fixture.directory
+        )
+        #expect(!response.accepted)
+        #expect(response.errorCode == "unauthenticated")
+    }
+
     @Test("listener and accepted control sockets are closed across exec")
     func socketDescriptorsAreCloseOnExec() throws {
         let fixture = try makeFixture()

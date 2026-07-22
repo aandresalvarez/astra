@@ -9,6 +9,93 @@ import Testing
 
 @Suite("RunBroker durability and dormant app seams", .serialized)
 struct RunBrokerDurabilityAndStartupTests {
+    @Test("spawned supervisor must retain the exact pre-spawn code identity")
+    func spawnedSupervisorIdentityBinding() {
+        let expected = DarwinProcessCodeIdentity(
+            identifier: "com.coral.astra-run-supervisor",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x11, count: 20)
+        )
+        #expect(DarwinRunBrokerSupervisorSpawner.spawnedIdentityMatches(
+            expected: expected,
+            actual: expected
+        ))
+        #expect(!DarwinRunBrokerSupervisorSpawner.spawnedIdentityMatches(
+            expected: expected,
+            actual: .init(
+                identifier: expected.identifier,
+                teamIdentifier: nil,
+                cdHash: Data(repeating: 0x22, count: 20)
+            )
+        ))
+        #expect(!DarwinRunBrokerSupervisorSpawner.spawnedIdentityMatches(
+            expected: expected,
+            actual: nil
+        ))
+    }
+
+    @Test("bootstrap secrets are withheld when the spawned image differs from the cohort")
+    func spawnedSupervisorTamperingFailsBeforeBootstrap() throws {
+        let root = try temporaryDirectory("spawn-identity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cohort = root.appendingPathComponent("cohort", isDirectory: true)
+        let executions = root.appendingPathComponent("executions", isDirectory: true)
+        try FileManager.default.createDirectory(at: cohort, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: executions, withIntermediateDirectories: false)
+        for directory in [cohort, executions] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+        }
+        let broker = cohort.appendingPathComponent(RunBrokerCohort.brokerExecutableName)
+        let supervisor = cohort.appendingPathComponent(RunBrokerCohort.supervisorExecutableName)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: broker)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: supervisor)
+        for executable in [broker, supervisor] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: executable.path
+            )
+        }
+
+        let expected = DarwinProcessCodeIdentity(
+            identifier: "trusted-supervisor",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x51, count: 20)
+        )
+        let resolver = SpawnIdentityResolver(
+            expected: expected,
+            actual: .init(
+                identifier: expected.identifier,
+                teamIdentifier: nil,
+                cdHash: Data(repeating: 0x52, count: 20)
+            )
+        )
+        let fixture = try BrokerFixture()
+        let payload = RunSupervisorBootstrapPayload(
+            manifest: fixture.manifest,
+            manifestSHA256: try RunSupervisorDigests.manifest(fixture.manifest),
+            expectedIdentity: .init(manifest: fixture.manifest),
+            arguments: [],
+            environment: [:],
+            capability: try .init(bytes: Data(repeating: 0x61, count: 32))
+        )
+        let spawner = DarwinRunBrokerSupervisorSpawner(
+            runRootURL: executions,
+            expectedUserID: geteuid(),
+            codeIdentityResolver: resolver
+        )
+
+        #expect(throws: RunBrokerServiceError.supervisorIdentityMismatch) {
+            try spawner.spawn(payload: payload, installedBrokerExecutableURL: broker)
+        }
+        #expect(resolver.executableLookups == [
+            supervisor.resolvingSymlinksInPath().standardizedFileURL
+        ])
+        #expect(resolver.processLookupCount == 1)
+    }
+
     @Test("supervisor spawn sources are duplicated above reserved bootstrap targets")
     func supervisorSpawnSourcesAvoidReservedTargets() throws {
         let descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
@@ -195,6 +282,33 @@ private final class DirectorySynchronizationRecorder: @unchecked Sendable {
 
     func record(_ url: URL) {
         lock.withLock { recordedURLs.append(url) }
+    }
+}
+
+private final class SpawnIdentityResolver: RunBrokerProcessCodeIdentityResolving,
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private let expected: DarwinProcessCodeIdentity
+    private let actual: DarwinProcessCodeIdentity?
+    private var recordedExecutableLookups: [URL] = []
+    private var recordedProcessLookupCount = 0
+
+    init(expected: DarwinProcessCodeIdentity, actual: DarwinProcessCodeIdentity?) {
+        self.expected = expected
+        self.actual = actual
+    }
+
+    var executableLookups: [URL] { lock.withLock { recordedExecutableLookups } }
+    var processLookupCount: Int { lock.withLock { recordedProcessLookupCount } }
+
+    func resolve(executableURL: URL) -> DarwinProcessCodeIdentity? {
+        lock.withLock { recordedExecutableLookups.append(executableURL) }
+        return expected
+    }
+
+    func resolve(processID: pid_t) -> DarwinProcessCodeIdentity? {
+        lock.withLock { recordedProcessLookupCount += 1 }
+        return actual
     }
 }
 

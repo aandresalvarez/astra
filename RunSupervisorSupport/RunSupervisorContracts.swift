@@ -29,6 +29,7 @@ public enum RunSupervisorError: Error, Equatable, Sendable, CustomStringConverti
     case replayedNonce
     case staleAuthentication
     case peerUIDMismatch
+    case peerCodeIdentityMismatch
     case spoolBackpressured
     case spoolCriticalCapacityExhausted
     case corruptCommittedSpool
@@ -58,6 +59,7 @@ public enum RunSupervisorError: Error, Equatable, Sendable, CustomStringConverti
         case .replayedNonce: "control nonce was already used"
         case .staleAuthentication: "control authentication timestamp is stale"
         case .peerUIDMismatch: "control peer uid does not match the supervisor"
+        case .peerCodeIdentityMismatch: "control peer code identity does not match the broker"
         case .spoolBackpressured: "output spool is applying backpressure"
         case .spoolCriticalCapacityExhausted: "critical spool reserve is exhausted"
         case .corruptCommittedSpool: "committed spool evidence is corrupt"

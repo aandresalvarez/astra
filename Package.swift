@@ -44,7 +44,8 @@ let package = Package(
         .target(
             name: "ASTRACore",
             dependencies: ["ASTRALogging"],
-            path: "ASTRACore"
+            path: "ASTRACore",
+            linkerSettings: [.linkedFramework("Security")]
         ),
         // Broker-only policy and verified evidence. Application, UI, model,
         // persistence, and general tool targets must not depend on this target.

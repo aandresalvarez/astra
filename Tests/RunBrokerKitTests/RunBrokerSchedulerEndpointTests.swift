@@ -25,6 +25,45 @@ struct RunBrokerSchedulerEndpointTests {
         #expect(try scheduler.status() == [first, second])
     }
 
+    @Test("Status refreshes deadlines removed by an external terminal ledger transition")
+    func statusRefreshesExternalTerminalRemoval() throws {
+        let now = Date(timeIntervalSince1970: 15_000)
+        let due = deadline(60, dueAt: now.addingTimeInterval(10), attempt: 0)
+        let ledger = FakeMonitorLedger(deadlines: [due])
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: ledger,
+            monitor: FakeMonitor(),
+            timer: FakeOneShotTimer(),
+            clock: FixedClock(now: now)
+        )
+        try scheduler.recover()
+
+        ledger.deadlines[due.operationID] = nil
+
+        #expect(try scheduler.status().isEmpty)
+    }
+
+    @Test("Wake does not monitor a deadline removed by an external terminal transition")
+    func wakeRefreshesExternalTerminalRemoval() throws {
+        let now = Date(timeIntervalSince1970: 16_000)
+        let due = deadline(61, dueAt: now, attempt: 0)
+        let ledger = FakeMonitorLedger(deadlines: [due])
+        let monitor = FakeMonitor()
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: ledger,
+            monitor: monitor,
+            timer: FakeOneShotTimer(),
+            clock: FixedClock(now: now)
+        )
+        try scheduler.recover()
+
+        ledger.deadlines[due.operationID] = nil
+        try scheduler.wake()
+
+        #expect(monitor.monitored.isEmpty)
+        #expect(ledger.attemptKeys.isEmpty)
+    }
+
     @Test("Retry uses bounded deterministic exponential backoff and one-shot rearm")
     func deterministicBackoff() throws {
         let now = Date(timeIntervalSince1970: 20_000)

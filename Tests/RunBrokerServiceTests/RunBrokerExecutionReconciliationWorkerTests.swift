@@ -6,7 +6,7 @@ import Testing
 
 @Suite("RunBroker active execution reconciliation")
 struct RunBrokerExecutionReconciliationWorkerTests {
-    @Test("quiet active execution remains scheduled until terminal evidence arrives")
+    @Test("reconciliation stays armed across empty active sets and future admissions")
     func quietGapDoesNotEndBrokerOwnedReconciliation() throws {
         let executionID = RunBrokerExecutionID(
             rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000901")!
@@ -34,7 +34,39 @@ struct RunBrokerExecutionReconciliationWorkerTests {
         let terminalPass = try #require(timer.fireNext())
         terminalPass()
         #expect(state.reconciliations == [executionID, executionID])
-        #expect(timer.pendingCount == 0)
+        #expect(timer.pendingCount == 1)
+
+        state.terminal = false
+        let futureAdmissionPass = try #require(timer.fireNext())
+        futureAdmissionPass()
+        #expect(state.reconciliations == [executionID, executionID, executionID])
+        #expect(timer.pendingCount == 1)
+    }
+
+    @Test("startup with no executions still discovers a later admission")
+    func emptyStartupRemainsArmed() throws {
+        let executionID = RunBrokerExecutionID(
+            rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000902")!
+        )
+        let state = ExecutionWorkerState(executionID: executionID, terminal: true)
+        let timer = ExecutionWorkerTimer()
+        let worker = RunBrokerExecutionReconciliationWorker(
+            activeExecutions: { state.activeExecutions },
+            reconcile: { state.recordReconciliation($0) },
+            timer: timer,
+            clock: ExecutionWorkerClock(now: Date(timeIntervalSince1970: 100)),
+            interval: 1
+        )
+
+        worker.start()
+        #expect(state.reconciliations.isEmpty)
+        #expect(timer.pendingCount == 1)
+
+        state.terminal = false
+        let admissionPass = try #require(timer.fireNext())
+        admissionPass()
+        #expect(state.reconciliations == [executionID])
+        #expect(timer.pendingCount == 1)
     }
 }
 
@@ -44,7 +76,10 @@ private final class ExecutionWorkerState: @unchecked Sendable {
     private var isTerminal = false
     private var recorded: [RunBrokerExecutionID] = []
 
-    init(executionID: RunBrokerExecutionID) { self.executionID = executionID }
+    init(executionID: RunBrokerExecutionID, terminal: Bool = false) {
+        self.executionID = executionID
+        isTerminal = terminal
+    }
 
     var terminal: Bool {
         get { lock.withLock { isTerminal } }

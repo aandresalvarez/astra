@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ASTRACore
 
 public enum RunSupervisorExecutable {
     public static func run(arguments: [String]) throws {
@@ -8,6 +9,11 @@ public enum RunSupervisorExecutable {
         let rootFD = descriptors.root
         guard bootstrapFD >= 3, rootFD >= 3, bootstrapFD != rootFD else {
             throw RunSupervisorError.invalidSchema
+        }
+        // Establish the parent broker's exact live code identity before reading
+        // any manifest, environment, or capability bytes from bootstrap.
+        guard let brokerIdentity = DarwinProcessCodeIdentityResolver.resolve(processID: getppid()) else {
+            throw RunSupervisorError.peerCodeIdentityMismatch
         }
         let frame = try RunSupervisorFrameIO.readFrame(
             from: bootstrapFD,
@@ -19,7 +25,10 @@ public enum RunSupervisorExecutable {
         close(rootFD)
         close(bootstrapFD)
         try detachFromBroker()
-        _ = try RunSupervisorService(root: root).run(payload)
+        let socketFactory = DarwinRunSupervisorSocketServerFactory(
+            expectedPeerIdentity: brokerIdentity
+        )
+        _ = try RunSupervisorService(root: root, socketFactory: socketFactory).run(payload)
     }
 
     private static func descriptors(in arguments: [String]) throws -> (bootstrap: Int32, root: Int32) {

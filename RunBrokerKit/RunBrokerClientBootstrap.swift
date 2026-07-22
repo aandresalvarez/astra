@@ -28,18 +28,50 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
     private let expectedUserID: UInt32
     private let homeDirectoryURL: URL
     private let trustedRootURL: URL
+    private let productionApplicationSupportDirectoryURL: URL
+    private let developmentApplicationSupportDirectoryURL: URL
 
     public init(expectedUserID: UInt32 = getuid()) {
+        let environment = ProcessInfo.processInfo.environment
+        let fileManager = FileManager.default
         self.expectedUserID = expectedUserID
         self.homeDirectoryURL = Self.loginHomeDirectory(expectedUserID: expectedUserID)
         self.trustedRootURL = URL(fileURLWithPath: "/", isDirectory: true)
+        self.productionApplicationSupportDirectoryURL =
+            AppChannelStoragePaths.applicationSupportDirectory(
+                for: .production,
+                environment: environment,
+                fileManager: fileManager
+            )
+        self.developmentApplicationSupportDirectoryURL =
+            AppChannelStoragePaths.applicationSupportDirectory(
+                for: .development,
+                environment: environment,
+                fileManager: fileManager
+            )
     }
 
-    package init(expectedUserID: UInt32, testingHomeDirectoryURL: URL) {
+    package init(
+        expectedUserID: UInt32,
+        testingHomeDirectoryURL: URL,
+        testingDevelopmentApplicationSupportDirectoryURL: URL? = nil,
+        testingProductionApplicationSupportDirectoryURL: URL? = nil
+    ) {
         self.expectedUserID = expectedUserID
         self.homeDirectoryURL = testingHomeDirectoryURL.standardizedFileURL
         self.trustedRootURL = testingHomeDirectoryURL
             .deletingLastPathComponent()
+            .standardizedFileURL
+        let applicationSupportBase = testingHomeDirectoryURL
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+        self.productionApplicationSupportDirectoryURL =
+            (testingProductionApplicationSupportDirectoryURL
+                ?? applicationSupportBase.appendingPathComponent("Astra", isDirectory: true))
+            .standardizedFileURL
+        self.developmentApplicationSupportDirectoryURL =
+            (testingDevelopmentApplicationSupportDirectoryURL
+                ?? applicationSupportBase.appendingPathComponent("AstraDev", isDirectory: true))
             .standardizedFileURL
     }
 
@@ -50,10 +82,15 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
         let expectedUserID = self.expectedUserID
         let homeDirectoryURL = self.homeDirectoryURL
         let trustedRootURL = self.trustedRootURL
+        let applicationSupportDirectoryURL = switch channel {
+        case .production: productionApplicationSupportDirectoryURL
+        case .development: developmentApplicationSupportDirectoryURL
+        }
         return try await Task.detached(priority: .userInitiated) {
             try Self.loadSynchronously(
                 homeDirectoryURL: homeDirectoryURL,
                 trustedRootURL: trustedRootURL,
+                applicationSupportDirectoryURL: applicationSupportDirectoryURL,
                 channel: channel,
                 expectedUserID: expectedUserID
             )
@@ -63,19 +100,20 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
     private static func loadSynchronously(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
+        applicationSupportDirectoryURL: URL,
         channel: RunBrokerChannel,
         expectedUserID: UInt32
     ) throws -> RunBrokerClientBootstrap {
         let material = try RunBrokerReadOnlyBootstrapPath.validateAndRead(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         let connector = RunBrokerReadOnlyBootstrapConnector(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         return .init(
@@ -136,7 +174,7 @@ private struct RunBrokerReadOnlyBootstrapMaterial: Sendable {
 private struct RunBrokerReadOnlyBootstrapConnector: RunBrokerConnecting {
     let homeDirectoryURL: URL
     let trustedRootURL: URL
-    let channel: RunBrokerChannel
+    let applicationSupportDirectoryURL: URL
     let expectedUserID: UInt32
 
     func connect() throws -> any RunBrokerConnection {
@@ -146,12 +184,11 @@ private struct RunBrokerReadOnlyBootstrapConnector: RunBrokerConnecting {
         try RunBrokerReadOnlyBootstrapPath.validateSocket(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         let supportDirectoryURL = RunBrokerReadOnlyBootstrapPath.supportDirectoryURL(
-            homeDirectoryURL: homeDirectoryURL,
-            channel: channel
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL
         )
         return try RunBrokerUnixSocketConnector(
             socketURL: supportDirectoryURL
@@ -172,13 +209,13 @@ private enum RunBrokerReadOnlyBootstrapPath {
     static func validateAndRead(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
-        channel: RunBrokerChannel,
+        applicationSupportDirectoryURL: URL,
         expectedUserID: UInt32
     ) throws -> RunBrokerReadOnlyBootstrapMaterial {
         let support = try openSupportDirectory(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         defer { close(support) }
@@ -225,13 +262,13 @@ private enum RunBrokerReadOnlyBootstrapPath {
     static func validateSocket(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
-        channel: RunBrokerChannel,
+        applicationSupportDirectoryURL: URL,
         expectedUserID: UInt32
     ) throws {
         let support = try openSupportDirectory(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         defer { close(support) }
@@ -241,38 +278,43 @@ private enum RunBrokerReadOnlyBootstrapPath {
     }
 
     static func supportDirectoryURL(
-        homeDirectoryURL: URL,
-        channel: RunBrokerChannel
+        applicationSupportDirectoryURL: URL
     ) -> URL {
-        homeDirectoryURL
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent(channel.appChannel.appSupportDirectoryName, isDirectory: true)
+        applicationSupportDirectoryURL
             .appendingPathComponent("RunBroker", isDirectory: true)
     }
 
     private static func openSupportDirectory(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
-        channel: RunBrokerChannel,
+        applicationSupportDirectoryURL: URL,
         expectedUserID: UInt32
     ) throws -> Int32 {
         let rootPath = trustedRootURL.standardizedFileURL.path
         let homePath = homeDirectoryURL.standardizedFileURL.path
+        let applicationSupportPath = applicationSupportDirectoryURL.standardizedFileURL.path
         let prefix = rootPath == "/" ? "/" : rootPath + "/"
         guard homePath.hasPrefix(prefix), homePath != rootPath else {
             throw RunBrokerClientBootstrapError.unsafeDirectory(homePath)
         }
         let relativeHome = String(homePath.dropFirst(prefix.count))
         let homeComponents = relativeHome.split(separator: "/").map(String.init)
+        let homePrefix = homePath + "/"
         guard !homeComponents.isEmpty,
-              homeComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-            throw RunBrokerClientBootstrapError.unsafeDirectory(homePath)
+              homeComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              applicationSupportPath.hasPrefix(homePrefix) else {
+            throw RunBrokerClientBootstrapError.unsafeDirectory(applicationSupportPath)
         }
-        let controlled = [
-            "Library", "Application Support",
-            channel.appChannel.appSupportDirectoryName, "RunBroker",
-        ]
+        let relativeApplicationSupport = String(applicationSupportPath.dropFirst(homePrefix.count))
+        let applicationSupportComponents = relativeApplicationSupport
+            .split(separator: "/")
+            .map(String.init)
+        guard !applicationSupportComponents.isEmpty,
+              applicationSupportComponents.allSatisfy({
+                  !$0.isEmpty && $0 != "." && $0 != ".."
+              }) else {
+            throw RunBrokerClientBootstrapError.unsafeDirectory(applicationSupportPath)
+        }
         var descriptor = Darwin.open(
             rootPath,
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
@@ -287,7 +329,7 @@ private enum RunBrokerReadOnlyBootstrapPath {
                 expectedUserID: expectedUserID,
                 requiresUserOwner: rootPath != "/"
             )
-            let components = homeComponents + controlled
+            let components = homeComponents + applicationSupportComponents + ["RunBroker"]
             for (index, component) in components.enumerated() {
                 let next = openat(
                     descriptor,

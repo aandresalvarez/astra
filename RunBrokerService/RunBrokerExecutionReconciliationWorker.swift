@@ -107,15 +107,11 @@ final class RunBrokerExecutionReconciliationWorker: @unchecked Sendable {
             return
         }
 
-        // Re-read durable state after ingestion. Stop polling only when no
-        // execution remains active; a quiet supervisor replay is not terminal.
-        do {
-            if try !activeExecutions().isEmpty {
-                schedule(generation: expectedGeneration)
-            }
-        } catch {
-            schedule(generation: expectedGeneration)
-        }
+        // This worker has no admission signal. An empty durable active set is
+        // therefore only a snapshot, not a quiescence boundary: keep the
+        // broker-owned loop armed so a later admission is discovered without
+        // requiring a client to explicitly reconcile it.
+        schedule(generation: expectedGeneration)
     }
 
     private func schedule(generation expectedGeneration: UInt64) {

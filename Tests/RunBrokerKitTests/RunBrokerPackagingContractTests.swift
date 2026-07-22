@@ -88,6 +88,28 @@ struct RunBrokerPackagingContractTests {
         #expect(ownership < reconciliation)
     }
 
+    @Test("code identity gates supervisor secrets and capability authentication")
+    func supervisorIdentityOrdering() throws {
+        let root = repositoryRoot()
+        let spawner = try String(contentsOf: root.appendingPathComponent(
+            "RunBrokerService/DarwinRunBrokerSupervisorSpawner.swift"
+        ))
+        #expect(try spawner.indexOf("codeIdentityResolver.resolve(processID: pid)")
+            < spawner.indexOf("RunSupervisorFrameIO.writeFrame("))
+
+        let executable = try String(contentsOf: root.appendingPathComponent(
+            "RunSupervisorSupport/RunSupervisorExecutable.swift"
+        ))
+        #expect(try executable.indexOf("resolve(processID: getppid())")
+            < executable.indexOf("RunSupervisorFrameIO.readFrame("))
+
+        let socket = try String(contentsOf: root.appendingPathComponent(
+            "RunSupervisorSupport/RunSupervisorUnixSocket.swift"
+        ))
+        #expect(try socket.indexOf("peerVerifier.verify(processID: processID)")
+            < socket.indexOf("authenticator.authenticate(request, peerUID: uid)"))
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

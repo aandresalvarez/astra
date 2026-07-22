@@ -330,6 +330,83 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
     }
 
+    @Test("An ambiguous detached launch is fenced and never repeated")
+    func ambiguousDetachedLaunchIsNotRepeated() throws {
+        let fixture = try makeDockerFixture("ambiguous-launch")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let store = WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        )
+        let queued = try store.admitInvocation(
+            command: "printf once",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: foundationTaskID,
+            runID: foundationRunID,
+            invocationID: "number:708",
+            containerName: fixture.configuration.containerName
+        ).record
+        var launchCount = 0
+        store.afterLaunchBeforeSaveForTesting = {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        #expect(throws: (any Error).self) {
+            _ = try store.launchQueuedInvocation(jobID: queued.jobID) { fenced in
+                launchCount += 1
+                #expect(fenced.status == .launching)
+                var launched = fenced
+                launched.status = .running
+                return launched
+            }
+        }
+        #expect(try store.load(jobID: queued.jobID).status == .launching)
+
+        store.afterLaunchBeforeSaveForTesting = nil
+        let retry = try store.launchQueuedInvocation(jobID: queued.jobID) { record in
+            launchCount += 1
+            return record
+        }
+        #expect(retry.status == .launching)
+        #expect(launchCount == 1)
+    }
+
+    @Test("Provider metadata projection failure does not override trusted admission")
+    func providerProjectionFailurePreservesTrustedRecord() throws {
+        let fixture = try makeDockerFixture("projection-failure")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let store = WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        )
+        store.beforeProviderProjectionWriteForTesting = { _ in
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        let admitted = try store.admitInvocation(
+            command: "printf durable",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: foundationTaskID,
+            runID: foundationRunID,
+            invocationID: "number:709",
+            containerName: fixture.configuration.containerName
+        ).record
+
+        #expect(admitted.status == .queued)
+        #expect(try store.listTrustedRecords().map(\.jobID) == [admitted.jobID])
+        let providerMetadata = try store.jobDirectory(jobID: admitted.jobID)
+            .appendingPathComponent("job.json")
+        #expect(!FileManager.default.fileExists(atPath: providerMetadata.path))
+    }
+
     @Test("Durable trusted receipt is synchronized before detached launch")
     func trustedReceiptPrecedesDetachedLaunch() throws {
         let fixture = try makeDockerFixture("receipt-before-launch")
@@ -460,7 +537,7 @@ struct WorkspaceManagedJobFoundationTests {
           exec)
             record="$(find '\(quotedJobRoot)' -name job.json -type f | head -1)"
             trusted_record="$(find '\(quotedTrustedRoot)' -name '*.json' -type f | head -1)"
-            grep -q '"status" : "queued"' "$record" || exit 41
+            grep -q '"status" : "launching"' "$record" || exit 41
             grep -q '"startReceipt"' "$record" || exit 42
             grep -q '"startReceipt"' "$trusted_record" || exit 43
             exit 0

@@ -3,6 +3,7 @@ import CryptoKit
 
 public enum WorkspaceManagedJobStatus: String, Codable, Equatable, Sendable {
     case queued
+    case launching
     case running
     case succeeded
     case failed
@@ -11,7 +12,7 @@ public enum WorkspaceManagedJobStatus: String, Codable, Equatable, Sendable {
 
     public var isTerminal: Bool {
         switch self {
-        case .queued, .running:
+        case .queued, .launching, .running:
             false
         case .succeeded, .failed, .cancelled, .timedOut:
             true
@@ -303,7 +304,7 @@ public struct WorkspaceManagedJobStructuredResult: Codable, Equatable, Sendable 
               }) else {
             throw WorkspaceManagedJobContractError.invalidJobID
         }
-        if status == .queued || status == .running || status == .succeeded {
+        if status == .queued || status == .launching || status == .running || status == .succeeded {
             guard let startReceipt else {
                 throw WorkspaceManagedJobContractError.missingStartReceipt
             }

@@ -1,7 +1,6 @@
 import Foundation
 import CryptoKit
 import Darwin
-import Security
 import ASTRACore
 
 public enum RunBrokerAuthenticationPolicy {
@@ -282,14 +281,11 @@ public struct UnavailableRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIde
     public func verify(processID: Int32) -> RunBrokerPeerCodeIdentityResult { .unavailable }
 }
 
-struct RunBrokerCodeSigningIdentity: Equatable, Sendable {
-    let identifier: String
-    let teamIdentifier: String
-}
+typealias RunBrokerCodeSigningIdentity = DarwinProcessCodeIdentity
 
 /// Validates a live peer against ASTRA's Developer-ID team and exact app
-/// identifiers. Ad-hoc builds have no TeamIdentifier and therefore fail closed
-/// instead of treating same-UID possession of a readable secret as identity.
+/// identifiers. Callers can detect the absence of a TeamIdentifier and retain
+/// the protocol's UID + request-MAC boundary for supported ad-hoc builds.
 public struct DarwinRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIdentityVerifying {
     private let trustedTeamIdentifier: String?
     private let allowedIdentifiers: Set<String>
@@ -298,9 +294,9 @@ public struct DarwinRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIdentity
     public init(
         allowedIdentifiers: Set<String> = ["com.coral.ASTRA", "com.coral.ASTRA.dev"]
     ) {
-        trustedTeamIdentifier = Self.signingIdentity(processID: getpid())?.teamIdentifier
+        trustedTeamIdentifier = DarwinProcessCodeIdentityResolver.resolve(processID: getpid())?.teamIdentifier
         self.allowedIdentifiers = allowedIdentifiers
-        identity = { processID in Self.signingIdentity(processID: processID) }
+        identity = { processID in DarwinProcessCodeIdentityResolver.resolve(processID: processID) }
     }
 
     init(
@@ -325,28 +321,11 @@ public struct DarwinRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIdentity
         return .verified
     }
 
-    private static func signingIdentity(processID: Int32) -> RunBrokerCodeSigningIdentity? {
-        var code: SecCode?
-        let attributes = [kSecGuestAttributePid as String: processID] as CFDictionary
-        let strictValidation = SecCSFlags(rawValue: UInt32(kSecCSStrictValidate))
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
-              let code,
-              SecCodeCheckValidity(code, strictValidation, nil) == errSecSuccess else {
-            return nil
-        }
-        var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
-              let staticCode else { return nil }
-        var information: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
-              let fields = information as? [String: Any],
-              let identifier = fields[kSecCodeInfoIdentifier as String] as? String,
-              let teamIdentifier = fields[kSecCodeInfoTeamIdentifier as String] as? String,
-              !identifier.isEmpty,
-              !teamIdentifier.isEmpty else {
-            return nil
-        }
-        return .init(identifier: identifier, teamIdentifier: teamIdentifier)
+    /// Developer ID builds have a stable team boundary. Ad-hoc builds do not;
+    /// they retain UID + request-MAC authentication instead of becoming
+    /// unusable by requiring an identity attribute the platform cannot supply.
+    public var requiresDeveloperIDIdentity: Bool {
+        trustedTeamIdentifier?.isEmpty == false
     }
 }
 
