@@ -217,7 +217,7 @@ struct AgentExecutionScopedProcessTests {
         defer {
             if owner.isRunning {
                 kill(owner.processIdentifier, SIGKILL)
-                owner.waitUntilExit()
+                reapBounded(owner)
             }
             for pid in [providerPID, childPID] where isProcessAlive(pid) {
                 let group = getpgid(pid)
@@ -236,7 +236,7 @@ struct AgentExecutionScopedProcessTests {
         if !becameReady {
             if owner.isRunning {
                 kill(owner.processIdentifier, SIGKILL)
-                owner.waitUntilExit()
+                reapBounded(owner)
             }
             let diagnostics = String(
                 decoding: ownerError.fileHandleForReading.readDataToEndOfFile(),
@@ -254,7 +254,7 @@ struct AgentExecutionScopedProcessTests {
         // in the owner. Only kernel EOF on the private lifetime pipe can wake
         // the watchdog and clean the process group.
         #expect(kill(owner.processIdentifier, SIGKILL) == 0)
-        owner.waitUntilExit()
+        reapBounded(owner)
 
         #expect(waitUntilBlocking(timeout: 4) {
             !isProcessAlive(providerPID) && !isProcessAlive(childPID)
@@ -305,7 +305,7 @@ struct AgentExecutionScopedProcessTests {
         defer {
             if unrelated.isRunning {
                 unrelated.terminate()
-                unrelated.waitUntilExit()
+                reapBounded(unrelated)
             }
         }
         try String(unrelated.processIdentifier).write(
@@ -365,6 +365,22 @@ struct AgentExecutionScopedProcessTests {
             Thread.sleep(forTimeInterval: 0.02)
         }
         return condition()
+    }
+
+    /// `Process.waitUntilExit` waits on a termination notification that can
+    /// be lost, wedging the serial suite until the CI job cap (observed: a
+    /// teardown blocked in mach_msg on an already-reaped child). Reap with a
+    /// bounded poll instead; a straggler that still reports running after
+    /// the bound gets SIGKILL insurance and is abandoned to host orphan
+    /// cleanup rather than allowed to hang the run.
+    private func reapBounded(_ process: Process, timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     private func isProcessAlive(_ pid: pid_t) -> Bool {
