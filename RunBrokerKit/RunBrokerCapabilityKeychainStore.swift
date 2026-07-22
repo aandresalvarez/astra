@@ -5,6 +5,7 @@ import ASTRACore
 public enum RunBrokerCapabilityKeychainError: Error, Equatable, Sendable {
     case unavailable
     case provisioningFailed
+    case invalidPinnedUpdateKey
 }
 
 public protocol RunBrokerCapabilitySecretStoring: Sendable {
@@ -71,10 +72,48 @@ public struct RunBrokerCapabilityKeychainStore: RunBrokerCapabilitySecretStoring
         }
     }
 
+    public func loadPinnedUpdatePublicKey(
+        channel: RunBrokerChannel,
+        installationID: RunBrokerInstallationID
+    ) throws -> Data {
+        guard let data = AstraSecureKeychain.runBrokerSecretData(
+            forAccount: installationID.rawValue.uuidString,
+            service: updateKeyService(for: channel)
+        ), data.count == 32 else {
+            throw RunBrokerCapabilityKeychainError.unavailable
+        }
+        return data
+    }
+
+    public func provisionPinnedUpdatePublicKey(
+        _ publicKey: Data,
+        channel: RunBrokerChannel,
+        installationID: RunBrokerInstallationID,
+        trustedApplicationURLs: [URL]
+    ) throws {
+        guard publicKey.count == 32 else {
+            throw RunBrokerCapabilityKeychainError.invalidPinnedUpdateKey
+        }
+        let paths = trustedApplicationURLs.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        guard Set(paths).count == paths.count,
+              AstraSecureKeychain.provisionRunBrokerSecretData(
+                publicKey,
+                forAccount: installationID.rawValue.uuidString,
+                service: updateKeyService(for: channel),
+                trustedApplicationPaths: paths
+              ) else {
+            throw RunBrokerCapabilityKeychainError.provisioningFailed
+        }
+    }
+
     private func service(for channel: RunBrokerChannel) -> String {
         switch channel {
         case .production: "com.coral.ASTRA.run-broker.capability"
         case .development: "com.coral.ASTRA.dev.run-broker.capability"
         }
+    }
+
+    private func updateKeyService(for channel: RunBrokerChannel) -> String {
+        service(for: channel) + ".update-public-key"
     }
 }

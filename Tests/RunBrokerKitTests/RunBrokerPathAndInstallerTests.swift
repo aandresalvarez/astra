@@ -80,7 +80,11 @@ struct RunBrokerPathAndInstallerTests {
             secureStore: fixture.secureStore,
             capabilityStore: fixture.capabilityStore,
             userID: getuid(),
-            diagnostics: NoOpRunBrokerDiagnostics()
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
         let newerSource = try fixture.sourceExecutable(name: "sources/v2", bytes: "newer")
         let olderSource = try fixture.sourceExecutable(name: "sources/v1", bytes: "older")
@@ -350,7 +354,11 @@ struct RunBrokerPathAndInstallerTests {
                 _ = unlink(supervisor.path)
                 return "partial-cohort"
             },
-            diagnostics: NoOpRunBrokerDiagnostics()
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
 
         #expect(throws: RunBrokerInstallationError.sourceIsNotRegularExecutable) {
@@ -431,6 +439,64 @@ struct RunBrokerPathAndInstallerTests {
         #expect(trustedNames.contains("2/astra-run-supervisor"))
         #expect(trustedNames.contains("1/astra-run-broker"))
         #expect(trustedNames.contains("1/astra-run-supervisor"))
+    }
+
+    @Test("Existing installation never rotates authority when exact-code Keychain access is unavailable")
+    func existingInstallationRequiresTrustedCapabilityHandoff() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/v1", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/v2", bytes: "two")
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: "1"),
+            identity: fixture.identity
+        )
+        fixture.capabilityStore.makeUnavailable()
+
+        #expect(throws: RunBrokerInstallationError.capabilityHandoffRequired) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source2, version: "2"),
+                identity: fixture.identity
+            )
+        }
+        #expect(fixture.capabilityStore.provisionCount == 1)
+        #expect(fixture.launchController.reloadCount == 1)
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.identity.currentPayloadURL.path
+            ) == "Versions/1"
+        )
+    }
+
+    @Test("Verified predecessor handoff reloads the original authority and completes upgrade")
+    func verifiedHandoffCompletesUpgrade() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/handoff-v1", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/handoff-v2", bytes: "two")
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: "1"),
+            identity: fixture.identity)
+        fixture.capabilityStore.makeUnavailable()
+        let installer = RunBrokerInstaller(
+            launchController: fixture.launchController,
+            healthChecker: fixture.healthChecker,
+            secureStore: fixture.secureStore,
+            capabilityStore: fixture.capabilityStore,
+            userID: getuid(),
+            durabilitySynchronizer: fixture.durabilitySynchronizer,
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in fixture.capabilityStore.makeAvailable() },
+            pinnedUpdatePublicKey: nil)
+
+        _ = try installer.install(
+            payload: try fixture.payload(source: source2, version: "2"),
+            identity: fixture.identity)
+
+        #expect(fixture.capabilityStore.provisionCount == 2)
+        #expect(fixture.launchController.reloadCount == 2)
+        #expect(try FileManager.default.destinationOfSymbolicLink(
+            atPath: fixture.identity.currentPayloadURL.path) == "Versions/2")
     }
 
     @Test("Installer synchronizes cohort, selector, and plist metadata before reporting success")
@@ -668,7 +734,11 @@ private final class InstallerFixture {
             userID: getuid(),
             stagingIdentifier: { UUID().uuidString },
             durabilitySynchronizer: durabilitySynchronizer,
-            diagnostics: NoOpRunBrokerDiagnostics()
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
     }
 
@@ -724,6 +794,26 @@ private final class InMemoryRunBrokerCapabilityStore:
     private let lock = NSLock()
     private var secrets: [RunBrokerInstallationID: RunBrokerCapabilitySecret] = [:]
     private var trustedApplicationURLs: [URL] = []
+    private var unavailable = false
+    private var provisions = 0
+
+    var provisionCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return provisions
+    }
+
+    func makeUnavailable() {
+        lock.lock()
+        unavailable = true
+        lock.unlock()
+    }
+
+    func makeAvailable() {
+        lock.lock()
+        unavailable = false
+        lock.unlock()
+    }
 
     var lastTrustedApplicationURLs: [URL] {
         lock.lock()
@@ -737,7 +827,7 @@ private final class InMemoryRunBrokerCapabilityStore:
     ) throws -> RunBrokerCapabilitySecret {
         lock.lock()
         defer { lock.unlock() }
-        guard let secret = secrets[installationID] else {
+        guard !unavailable, let secret = secrets[installationID] else {
             throw RunBrokerCapabilityKeychainError.unavailable
         }
         return secret
@@ -755,6 +845,7 @@ private final class InMemoryRunBrokerCapabilityStore:
         lock.lock()
         secrets[installationID] = secret
         self.trustedApplicationURLs = trustedApplicationURLs
+        provisions += 1
         lock.unlock()
     }
 }

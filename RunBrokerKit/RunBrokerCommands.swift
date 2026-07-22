@@ -144,6 +144,9 @@ public enum RunBrokerSchedulerCommand: Codable, Equatable, Sendable {
 public enum RunBrokerCommand:
     Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible
 {
+    /// The only pre-MAC command. It carries no caller-controlled authority;
+    /// the broker resolves and verifies the live peer and its signed bundle.
+    case authorizeSignedSuccessor
     case negotiate(RunBrokerNegotiationRequest)
     case health
     case capabilities
@@ -154,6 +157,8 @@ public enum RunBrokerCommand:
         switch self {
         case .negotiate, .health, .capabilities:
             true
+        case .authorizeSignedSuccessor:
+            false
         case .scheduler, .application:
             false
         }
@@ -161,6 +166,7 @@ public enum RunBrokerCommand:
 
     public var description: String {
         switch self {
+        case .authorizeSignedSuccessor: "authorizeSignedSuccessor"
         case .negotiate: "negotiate"
         case .health: "health"
         case .capabilities: "capabilities"

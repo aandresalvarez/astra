@@ -33,12 +33,16 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
     private let securityFloor: RunBrokerProtocolVersion
     private let authenticator: RunBrokerRequestAuthenticator
     private let replayProtector: RunBrokerReplayProtector
+    private let projectionReplayProtector: RunBrokerReplayProtector
     private let peerPolicy: RunBrokerPeerIdentityPolicy
     private let scheduler: RunBrokerMonitorScheduler
     private let applicationHandler: (any RunBrokerApplicationCommandHandling)?
+    private let successorHandoffHandler: (any RunBrokerSuccessorHandoffHandling)?
     private let safeResponseCacheCapacity: Int
     private var cachedResponses: [UUID: CachedResponse] = [:]
     private var cacheOrder: [UUID] = []
+    private var successorHandoffInProgress = false
+    private var successorHandoffConsumed = false
 
     public init(
         channel: RunBrokerChannel,
@@ -46,9 +50,13 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         brokerVersion: String,
         authenticator: RunBrokerRequestAuthenticator,
         replayProtector: RunBrokerReplayProtector = .init(),
+        projectionReplayProtector: RunBrokerReplayProtector = .init(
+            capacity: RunBrokerAuthenticationPolicy.defaultProjectionReplayCapacity
+        ),
         peerPolicy: RunBrokerPeerIdentityPolicy,
         scheduler: RunBrokerMonitorScheduler,
         applicationHandler: (any RunBrokerApplicationCommandHandling)? = nil,
+        successorHandoffHandler: (any RunBrokerSuccessorHandoffHandling)? = nil,
         supportedVersions: RunBrokerProtocolRange = .current,
         securityFloor: RunBrokerProtocolVersion = .minimumSecure,
         safeResponseCacheCapacity: Int = 256
@@ -59,9 +67,11 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         self.brokerVersion = brokerVersion
         self.authenticator = authenticator
         self.replayProtector = replayProtector
+        self.projectionReplayProtector = projectionReplayProtector
         self.peerPolicy = peerPolicy
         self.scheduler = scheduler
         self.applicationHandler = applicationHandler
+        self.successorHandoffHandler = successorHandoffHandler
         self.supportedVersions = supportedVersions
         self.securityFloor = securityFloor
         self.safeResponseCacheCapacity = safeResponseCacheCapacity
@@ -76,6 +86,10 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
             try peerPolicy.verify(peer)
         } catch {
             return failure(request, code: .peerIdentityRejected, message: "Peer identity rejected.")
+        }
+
+        if case .authorizeSignedSuccessor = request.command {
+            return authorizeSignedSuccessor(request, peer: peer)
         }
 
         do {
@@ -98,7 +112,14 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         }
 
         do {
-            try replayProtector.consume(nonce: request.authentication.nonce, now: now)
+            let protector = Self.usesProjectionReplayPartition(request.command)
+                ? projectionReplayProtector
+                : replayProtector
+            try protector.consume(
+                nonce: request.authentication.nonce,
+                now: now,
+                expiresAt: authenticator.replayProtectionExpiration(for: request)
+            )
         } catch RunBrokerAuthenticationError.replayCapacityExceeded {
             return failure(
                 request,
@@ -129,11 +150,58 @@ public final class RunBrokerRequestEndpoint: @unchecked Sendable {
         return response
     }
 
+    private func authorizeSignedSuccessor(
+        _ request: RunBrokerRequestEnvelope,
+        peer: RunBrokerPeerIdentity
+    ) -> RunBrokerResponseEnvelope {
+        guard request.protocolVersion == .current,
+              request.channel == channel,
+              request.installationID == installationID,
+              request.authentication.issuedAtMilliseconds == 0,
+              request.authentication.nonce == Data(repeating: 0, count: RunBrokerAuthenticationPolicy.nonceByteCount),
+              request.authentication.mac == Data(repeating: 0, count: RunBrokerAuthenticationPolicy.macByteCount),
+              let successorHandoffHandler else {
+            return failure(request, code: .authenticationFailed, message: "Successor handoff rejected.")
+        }
+        lock.lock()
+        guard !successorHandoffInProgress, !successorHandoffConsumed else {
+            lock.unlock()
+            return failure(request, code: .authenticationFailed, message: "Successor handoff rejected.")
+        }
+        successorHandoffInProgress = true
+        lock.unlock()
+        do {
+            try successorHandoffHandler.authorize(peer: peer)
+            lock.lock()
+            successorHandoffInProgress = false
+            successorHandoffConsumed = true
+            lock.unlock()
+            return .init(protocolVersion: .current, requestID: request.requestID, result: .accepted)
+        } catch {
+            lock.lock()
+            successorHandoffInProgress = false
+            lock.unlock()
+            return failure(request, code: .authenticationFailed, message: "Successor handoff rejected.")
+        }
+    }
+
+    private static func usesProjectionReplayPartition(_ command: RunBrokerCommand) -> Bool {
+        guard case .application(let application) = command else { return false }
+        return switch application {
+        case .nextProjectionMessage, .projectionHandshake, .acknowledgeProjection:
+            true
+        default:
+            false
+        }
+    }
+
     private func route(
         _ request: RunBrokerRequestEnvelope,
         now: Date
     ) -> RunBrokerResponseEnvelope {
         switch request.command {
+        case .authorizeSignedSuccessor:
+            return failure(request, code: .invalidRequest, message: "Invalid handoff routing.")
         case .negotiate(let negotiation):
             do {
                 let selected = try RunBrokerProtocolNegotiator.negotiate(

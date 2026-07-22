@@ -175,6 +175,72 @@ struct RunBrokerApplicationServiceTests {
             .forceChallenge?.issuedAt == brokerTestDate)
     }
 
+    @Test("archived force confirmation accepts only the exact destructive identity")
+    func archivedForceConfirmationRequiresExactIdentity() throws {
+        let requestID = RuntimeSwitchRequestID(rawValue: brokerUUID(200))
+        let digest = RuntimeSwitchRequestDigest(value: try ExecutionLaunchArgumentsSHA256(
+            hexValue: String(repeating: "ab", count: 32)
+        ))
+        let actor = try RuntimeSwitchActorID(rawValue: "operator-archive")
+        let session = brokerUUID(201)
+        let challenge = try RuntimeForceSwitchChallenge(
+            challengeID: .init(rawValue: brokerUUID(202)),
+            requestID: requestID,
+            requestDigest: digest,
+            actorID: actor,
+            sessionID: session,
+            issuedAt: brokerTestDate,
+            expiresAt: brokerTestDate.addingTimeInterval(300)
+        )
+        let effectID = RuntimeSwitchEffectID(rawValue: brokerUUID(203))
+        let confirmationID = RunBrokerRuntimeSwitchService.confirmationID(for: effectID)
+        func response(
+            requestID candidateRequestID: RuntimeSwitchRequestID = requestID,
+            requestDigest candidateDigest: RuntimeSwitchRequestDigest = digest,
+            challengeID: RuntimeForceChallengeID = challenge.challengeID,
+            actorID: RuntimeSwitchActorID = actor,
+            sessionID: UUID = session,
+            effectID candidateEffectID: RuntimeSwitchEffectID = effectID
+        ) -> RunBrokerApplicationForceConfirmation {
+            .init(
+                requestID: candidateRequestID,
+                requestDigest: candidateDigest,
+                challengeID: challengeID,
+                actorID: actorID,
+                sessionID: sessionID,
+                confirmedAt: brokerTestDate,
+                effectID: candidateEffectID
+            )
+        }
+        func matches(_ candidate: RunBrokerApplicationForceConfirmation) -> Bool {
+            RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+                candidate,
+                challenge: challenge,
+                recordedEffectID: effectID,
+                recordedConfirmationID: confirmationID
+            )
+        }
+
+        #expect(matches(response()))
+        #expect(!matches(response(requestID: .init(rawValue: brokerUUID(204)))))
+        #expect(!matches(response(
+            requestDigest: .init(value: try ExecutionLaunchArgumentsSHA256(
+                hexValue: String(repeating: "cd", count: 32)
+            ))
+        )))
+        #expect(!matches(response(challengeID: .init(rawValue: brokerUUID(205)))))
+        #expect(!matches(response(actorID: try .init(rawValue: "other-operator"))))
+        #expect(!matches(response(sessionID: brokerUUID(206))))
+        #expect(!matches(response(effectID: .init(rawValue: brokerUUID(207)))))
+        let mismatchedConfirmationIdentity = RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+            response(),
+            challenge: challenge,
+            recordedEffectID: effectID,
+            recordedConfirmationID: .init(rawValue: brokerUUID(208))
+        )
+        #expect(!mismatchedConfirmationIdentity)
+    }
+
     @Test("production broker context advertises only end-to-end runtime features")
     func brokerContextDoesNotOverclaimRuntimeControl() throws {
         let fixture = try BrokerFixture()

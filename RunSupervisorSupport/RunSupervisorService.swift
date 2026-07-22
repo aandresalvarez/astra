@@ -31,6 +31,7 @@ public final class RunSupervisorService: @unchecked Sendable {
     private var spool: RunSupervisorEventSpool?
     private var controlState = ExecutionControlState()
     private var immediateTerminationIssued = false
+    private var lifecycleEventObserver: (@Sendable (RunSupervisorEventKind) -> Void)?
 
     public init(
         root: RunSupervisorTrustedRoot,
@@ -50,6 +51,14 @@ public final class RunSupervisorService: @unchecked Sendable {
         self.clock = clock
         self.spoolMaximumBytes = spoolMaximumBytes
         self.spoolCriticalReserveBytes = spoolCriticalReserveBytes
+    }
+
+    /// Deterministic synchronization seam for lifecycle race regressions.
+    /// Install before `run`; production leaves it nil.
+    func observePersistedLifecycleEvents(
+        _ observer: @escaping @Sendable (RunSupervisorEventKind) -> Void
+    ) {
+        stateLock.withLock { lifecycleEventObserver = observer }
     }
 
     public func run(_ payload: RunSupervisorBootstrapPayload) throws -> RunSupervisorServiceOutcome {
@@ -242,6 +251,12 @@ public final class RunSupervisorService: @unchecked Sendable {
         case .handshake, .status:
             break
         case .replay:
+            // A replay head is lifecycle truth, not merely a spool snapshot.
+            // Serialize it with recordTermination so callers can never observe
+            // cancellationConfirmed as the advertised end of the spool while
+            // providerExited is being appended by the same terminal record.
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
             // One maximum-sized output event plus the authenticated envelope
             // remains below the bounded 64 KiB control frame. Returning four
             // would double-base64-expand the envelope beyond that limit.
@@ -331,6 +346,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                     .cancellationConfirmed,
                     payload: .init(cancellationIntent: .immediate)
                 )
+                notifyLifecycleEventPersisted(.cancellationConfirmed)
             } else if termination.exitCode == 0 {
                 reduce(.executionCompleted, capabilities: [.cancel])
             } else {
@@ -344,9 +360,15 @@ public final class RunSupervisorService: @unchecked Sendable {
                     terminationReason: termination.reason
                 )
             )
+            notifyLifecycleEventPersisted(.providerExited)
         } catch {
             throw RunSupervisorError.terminalPersistenceFailed
         }
+    }
+
+    private func notifyLifecycleEventPersisted(_ kind: RunSupervisorEventKind) {
+        let observer = stateLock.withLock { lifecycleEventObserver }
+        observer?(kind)
     }
 
     private func enforceTimeout(

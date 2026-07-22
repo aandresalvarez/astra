@@ -484,6 +484,12 @@ public struct RuntimeSwitchArchivedCompletion: Codable, Equatable, Hashable, Sen
     public let targetReservationID: RuntimeSwitchEvidenceID
     public let completionEvidenceID: RuntimeSwitchEvidenceID
     public let completionLedgerSequence: UInt64
+    /// Effect identities remain part of terminal runtime-switch truth after
+    /// the active slot is freed. Older persisted archives may not contain
+    /// them, so decoding keeps these fields optional while every new archive
+    /// records both values from its completed record.
+    public let controlEffectID: RuntimeSwitchEffectID?
+    public let replacementEffectID: RuntimeSwitchEffectID?
     public let ledgerSequence: UInt64
 
     public var requestID: RuntimeSwitchRequestID { request.intent.requestID }
@@ -498,6 +504,8 @@ public struct RuntimeSwitchArchivedCompletion: Codable, Equatable, Hashable, Sen
         targetReservationID: RuntimeSwitchEvidenceID,
         completionEvidenceID: RuntimeSwitchEvidenceID,
         completionLedgerSequence: UInt64,
+        controlEffectID: RuntimeSwitchEffectID?,
+        replacementEffectID: RuntimeSwitchEffectID?,
         ledgerSequence: UInt64
     ) {
         self.archiveEvidenceID = archiveEvidenceID
@@ -509,13 +517,15 @@ public struct RuntimeSwitchArchivedCompletion: Codable, Equatable, Hashable, Sen
         self.targetReservationID = targetReservationID
         self.completionEvidenceID = completionEvidenceID
         self.completionLedgerSequence = completionLedgerSequence
+        self.controlEffectID = controlEffectID
+        self.replacementEffectID = replacementEffectID
         self.ledgerSequence = ledgerSequence
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion, archiveEvidenceID, request, requestDigest, sourceExecutionID, targetExecutionID
         case targetManifestSHA256, targetReservationID, completionEvidenceID
-        case completionLedgerSequence, ledgerSequence
+        case completionLedgerSequence, controlEffectID, replacementEffectID, ledgerSequence
     }
 
     public init(from decoder: Decoder) throws {
@@ -541,6 +551,8 @@ public struct RuntimeSwitchArchivedCompletion: Codable, Equatable, Hashable, Sen
             targetReservationID: try container.decode(RuntimeSwitchEvidenceID.self, forKey: .targetReservationID),
             completionEvidenceID: try container.decode(RuntimeSwitchEvidenceID.self, forKey: .completionEvidenceID),
             completionLedgerSequence: try container.decode(UInt64.self, forKey: .completionLedgerSequence),
+            controlEffectID: try container.decodeIfPresent(RuntimeSwitchEffectID.self, forKey: .controlEffectID),
+            replacementEffectID: try container.decodeIfPresent(RuntimeSwitchEffectID.self, forKey: .replacementEffectID),
             ledgerSequence: try container.decode(UInt64.self, forKey: .ledgerSequence)
         )
         guard value.ledgerSequence > value.completionLedgerSequence,
@@ -568,6 +580,8 @@ public struct RuntimeSwitchArchivedCompletion: Codable, Equatable, Hashable, Sen
         try container.encode(targetReservationID, forKey: .targetReservationID)
         try container.encode(completionEvidenceID, forKey: .completionEvidenceID)
         try container.encode(completionLedgerSequence, forKey: .completionLedgerSequence)
+        try container.encodeIfPresent(controlEffectID, forKey: .controlEffectID)
+        try container.encodeIfPresent(replacementEffectID, forKey: .replacementEffectID)
         try container.encode(ledgerSequence, forKey: .ledgerSequence)
     }
 }
@@ -1148,6 +1162,7 @@ public enum RuntimeSwitchPolicy {
         }
         guard let record = state.record,
               record.progress == .completed,
+              let control = record.controlEffect,
               let replacement = record.replacementEffect,
               let completionEvidenceID = record.completionEvidenceID,
               let completionLedgerSequence = record.completionLedgerSequence,
@@ -1169,6 +1184,8 @@ public enum RuntimeSwitchPolicy {
             targetReservationID: rollover.targetReservationID,
             completionEvidenceID: rollover.completionEvidenceID,
             completionLedgerSequence: completionLedgerSequence,
+            controlEffectID: control.effectID,
+            replacementEffectID: replacement.effectID,
             ledgerSequence: rollover.ledgerSequence
         )
         return .result(

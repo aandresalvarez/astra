@@ -21,6 +21,7 @@ public enum RunBrokerInstallationError: Error, Equatable, Sendable {
     case payloadBuildCollision(current: String, requested: String)
     case launchAgentSerializationFailed
     case healthCheckFailed
+    case capabilityHandoffRequired
     case launchctlFailed(arguments: [String], status: Int32)
     case systemCall(operation: String, code: Int32)
 }
@@ -54,6 +55,10 @@ public struct RunBrokerInstaller: @unchecked Sendable {
     let stagingIdentifier: @Sendable () -> String
     let durabilitySynchronizer: any RunBrokerInstallationDurabilitySynchronizing
     private let diagnostics: any RunBrokerDiagnosing
+    private let successorAuthorizer: @Sendable (
+        RunBrokerChannelIdentity, RunBrokerInstallationID
+    ) throws -> Void
+    private let pinnedUpdatePublicKey: Data?
 
     public init(
         launchController: any RunBrokerLaunchControlling,
@@ -65,7 +70,14 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         stagingIdentifier: @escaping @Sendable () -> String = { UUID().uuidString },
         durabilitySynchronizer: any RunBrokerInstallationDurabilitySynchronizing =
             SystemRunBrokerInstallationDurabilitySynchronizer(),
-        diagnostics: any RunBrokerDiagnosing = StandardErrorRunBrokerDiagnostics()
+        diagnostics: any RunBrokerDiagnosing = StandardErrorRunBrokerDiagnostics(),
+        successorAuthorizer: @escaping @Sendable (
+            RunBrokerChannelIdentity, RunBrokerInstallationID
+        ) throws -> Void = { identity, installationID in
+            try RunBrokerSignedSuccessorClient().authorize(
+                identity: identity, installationID: installationID)
+        },
+        pinnedUpdatePublicKey: Data? = RunBrokerInstaller.bundlePinnedUpdatePublicKey()
     ) {
         self.launchController = launchController
         self.healthChecker = healthChecker
@@ -76,6 +88,8 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         self.stagingIdentifier = stagingIdentifier
         self.durabilitySynchronizer = durabilitySynchronizer
         self.diagnostics = diagnostics
+        self.successorAuthorizer = successorAuthorizer
+        self.pinnedUpdatePublicKey = pinnedUpdatePublicKey
     }
 
     public func install(
@@ -130,7 +144,23 @@ public struct RunBrokerInstaller: @unchecked Sendable {
                 installationID: installationID
             )
         } catch RunBrokerCapabilityKeychainError.unavailable {
-            capabilitySecret = try .init(bytes: randomCapabilityBytes())
+            // A missing item is expected only for the first installation. Once
+            // a payload selector exists, `unavailable` can instead mean that
+            // an ad-hoc successor no longer satisfies the exact-code ACL. Do
+            // not rotate authority from that untrusted process; the still-
+            // trusted predecessor/broker must authorize the signed successor.
+            if previousSelector != nil {
+                do {
+                    try successorAuthorizer(identity, installationID)
+                    capabilitySecret = try capabilityStore.load(
+                        channel: identity.channel,
+                        installationID: installationID)
+                } catch {
+                    throw RunBrokerInstallationError.capabilityHandoffRequired
+                }
+            } else {
+                capabilitySecret = try .init(bytes: randomCapabilityBytes())
+            }
         }
         guard let appExecutableURL = Bundle.main.executableURL else {
             throw RunBrokerCapabilityKeychainError.provisioningFailed
@@ -160,6 +190,14 @@ public struct RunBrokerInstaller: @unchecked Sendable {
             installationID: installationID,
             trustedApplicationURLs: trustedCapabilityReaders
         )
+        if let pinnedUpdatePublicKey {
+            try RunBrokerCapabilityKeychainStore().provisionPinnedUpdatePublicKey(
+                pinnedUpdatePublicKey,
+                channel: identity.channel,
+                installationID: installationID,
+                trustedApplicationURLs: trustedCapabilityReaders
+            )
+        }
 
         let previousPlist = try readExistingPlist(identity.launchAgentPlistURL)
         let hadPriorService = previousSelector != nil && previousPlist != nil
@@ -228,6 +266,13 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         try SystemRunBrokerRandomGenerator().randomBytes(
             count: RunBrokerAuthenticationPolicy.secretByteCount
         )
+    }
+
+    public static func bundlePinnedUpdatePublicKey(bundle: Bundle = .main) -> Data? {
+        guard let encoded = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+              let data = Data(base64Encoded: encoded.trimmingCharacters(in: .whitespacesAndNewlines)),
+              data.count == 32 else { return nil }
+        return data
     }
 
     private func rejectDowngrade(

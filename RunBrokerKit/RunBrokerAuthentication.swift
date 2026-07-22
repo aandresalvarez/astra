@@ -9,6 +9,11 @@ public enum RunBrokerAuthenticationPolicy {
     public static let macByteCount = 32
     public static let defaultMaximumClockSkew: TimeInterval = 5 * 60
     public static let defaultReplayCapacity = 4_096
+    /// Projection delivery performs a fetch and acknowledgement per persisted
+    /// observation. Keep that high-volume traffic in a separately bounded pool
+    /// sized for the largest admitted output policy (1 GiB / 32 KiB) plus
+    /// acknowledgements and lifecycle/control observations.
+    public static let defaultProjectionReplayCapacity = 131_072
 }
 
 public struct RunBrokerCapabilitySecret: Equatable, Sendable, CustomStringConvertible,
@@ -170,6 +175,16 @@ public struct RunBrokerRequestAuthenticator: Sendable {
         }
     }
 
+    /// The exact instant after which this authenticated request can no longer
+    /// pass timestamp verification. Replay state need not outlive that bound.
+    public func replayProtectionExpiration(for request: RunBrokerRequestEnvelope) -> Date {
+        Date(
+            timeIntervalSince1970:
+                TimeInterval(request.authentication.issuedAtMilliseconds) / 1_000
+                + maximumClockSkew
+        )
+    }
+
     public func authenticatedResponse(
         _ response: RunBrokerResponseEnvelope,
         for request: RunBrokerRequestEnvelope
@@ -222,16 +237,10 @@ public struct RunBrokerRequestAuthenticator: Sendable {
 }
 
 public final class RunBrokerReplayProtector: @unchecked Sendable {
-    private struct Entry {
-        let nonce: Data
-        let expiresAt: Date
-    }
-
     private let lock = NSLock()
     private let capacity: Int
     private let retention: TimeInterval
-    private var entries: [Entry] = []
-    private var nonceSet: Set<Data> = []
+    private var nonceExpirations: [Data: Date] = [:]
 
     public init(
         capacity: Int = RunBrokerAuthenticationPolicy.defaultReplayCapacity,
@@ -243,27 +252,27 @@ public final class RunBrokerReplayProtector: @unchecked Sendable {
         self.retention = retention
     }
 
-    public func consume(nonce: Data, now: Date) throws {
+    public func consume(nonce: Data, now: Date, expiresAt: Date? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
-        removeExpired(at: now)
-        guard !nonceSet.contains(nonce) else {
+        if let existingExpiration = nonceExpirations[nonce], existingExpiration > now {
             throw RunBrokerAuthenticationError.replay
         }
-        // Every remaining entry is live after removeExpired. Evicting one
-        // would let its nonce be replayed inside the authentication window.
-        guard entries.count < capacity else {
+        nonceExpirations.removeValue(forKey: nonce)
+        // Only sweep the bounded map under capacity pressure. Evicting a live
+        // entry would reopen its replay window, so saturation still fails
+        // closed after every request-expired nonce has been removed.
+        if nonceExpirations.count >= capacity {
+            removeExpired(at: now)
+        }
+        guard nonceExpirations.count < capacity else {
             throw RunBrokerAuthenticationError.replayCapacityExceeded
         }
-        entries.append(Entry(nonce: nonce, expiresAt: now.addingTimeInterval(retention)))
-        nonceSet.insert(nonce)
+        nonceExpirations[nonce] = expiresAt ?? now.addingTimeInterval(retention)
     }
 
     private func removeExpired(at now: Date) {
-        while let first = entries.first, first.expiresAt <= now {
-            entries.removeFirst()
-            nonceSet.remove(first.nonce)
-        }
+        nonceExpirations = nonceExpirations.filter { $0.value > now }
     }
 }
 

@@ -445,6 +445,15 @@ struct RunLedgerRuntimeSwitchTests {
         #expect(archived.record == nil)
         #expect(archived.lastArchivedCompletion?.ledgerSequence == UInt64(storedArchive.sequence))
         #expect(archived.lastArchivedCompletion?.archiveEvidenceID == archiveEvidenceID)
+        #expect(archived.lastArchivedCompletion?.controlEffectID == completed.record?.controlEffect?.effectID)
+        #expect(archived.lastArchivedCompletion?.replacementEffectID == completed.record?.replacementEffect?.effectID)
+        guard case .runtimeSwitch(let archiveMessage) = try #require(restarted.outbox().last).projection else {
+            Issue.record("Expected archived runtime-switch outbox projection")
+            return
+        }
+        #expect(archiveMessage.progress == .archived)
+        #expect(archiveMessage.recordedControlEffectID == completed.record?.controlEffect?.effectID)
+        #expect(archiveMessage.recordedReplacementEffectID == completed.record?.replacementEffect?.effectID)
         #expect(first.disposition == .appended)
         #expect(try restarted.archiveRuntimeSwitchCompletion(
             expected: completed,

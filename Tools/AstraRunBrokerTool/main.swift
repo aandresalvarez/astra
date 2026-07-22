@@ -140,7 +140,12 @@ private func run() throws -> Never {
         authenticator: authenticator,
         peerPolicy: peerPolicy,
         scheduler: scheduler,
-        applicationHandler: applicationService
+        applicationHandler: applicationService,
+        successorHandoffHandler: DarwinRunBrokerSuccessorHandoffHandler(
+            channel: arguments.channel,
+            installationID: installationID,
+            currentBrokerExecutableURL: cohort.brokerExecutableURL
+        )
     )
     return try RunBrokerServer(
         listener: listener,

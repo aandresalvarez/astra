@@ -278,8 +278,7 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             // archived. The effect was durably accepted, so the exact retry
             // is answered with the archived status instead of a rejection.
             if let archived = projection.runtimeSwitchArchivedRecords[response.requestID],
-               archived.requestDigest == response.requestDigest,
-               archived.forceChallenge?.challengeID == response.challengeID {
+               Self.isExactArchivedConfirmation(response, archived: archived) {
                 return RunBrokerRuntimeSwitchProjection.archivedStatus(archived)
             }
             throw RunBrokerApplicationEndpointError.requestRejected
@@ -318,6 +317,46 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             )
         }
         return try reconcile(now: now)
+    }
+
+    /// Lost-response recovery is safe only for the exact destructive command
+    /// already recorded in the archived switch. Request/challenge correlation
+    /// alone is insufficient because actor, session, and effect identity are
+    /// independent authorization fences.
+    static func isExactArchivedConfirmation(
+        _ response: RunBrokerApplicationForceConfirmation,
+        archived: RuntimeSwitchRecord
+    ) -> Bool {
+        guard archived.requestDigest == response.requestDigest,
+              let challenge = archived.forceChallenge,
+              let controlEffect = archived.controlEffect else {
+            return false
+        }
+        return isExactArchivedConfirmation(
+            response,
+            challenge: challenge,
+            recordedEffectID: controlEffect.effectID,
+            recordedConfirmationID: controlEffect.confirmationID
+        )
+    }
+
+    static func isExactArchivedConfirmation(
+        _ response: RunBrokerApplicationForceConfirmation,
+        challenge: RuntimeForceSwitchChallenge,
+        recordedEffectID: RuntimeSwitchEffectID,
+        recordedConfirmationID: RuntimeSwitchEvidenceID?
+    ) -> Bool {
+        challenge.challengeID == response.challengeID
+            && challenge.requestID == response.requestID
+            && challenge.requestDigest == response.requestDigest
+            && challenge.actorID == response.actorID
+            && challenge.sessionID == response.sessionID
+            && recordedEffectID == response.effectID
+            && recordedConfirmationID == confirmationID(for: response.effectID)
+    }
+
+    static func confirmationID(for effectID: RuntimeSwitchEffectID) -> RuntimeSwitchEvidenceID {
+        .init(rawValue: runtimeSwitchDeterministicID(effectID.rawValue, domain: "confirmation"))
     }
 
     func status(
@@ -717,13 +756,7 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
     }
 
     private func deterministicID(_ seed: UUID, domain: String) -> UUID {
-        var data = Data("astra.runtime-switch.v2\u{0}\(domain)\u{0}".utf8)
-        withUnsafeBytes(of: seed.uuid) { data.append(contentsOf: $0) }
-        let bytes = Array(SHA256.hash(data: data).prefix(16))
-        return UUID(uuid: (
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-        ))
+        runtimeSwitchDeterministicID(seed, domain: domain)
     }
 
     private func require<Value>(_ value: Value?) throws -> Value {
@@ -735,4 +768,14 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
         let signal = lock.withLock { reconciliationSignal }
         signal?()
     }
+}
+
+private func runtimeSwitchDeterministicID(_ seed: UUID, domain: String) -> UUID {
+    var data = Data("astra.runtime-switch.v2\u{0}\(domain)\u{0}".utf8)
+    withUnsafeBytes(of: seed.uuid) { data.append(contentsOf: $0) }
+    let bytes = Array(SHA256.hash(data: data).prefix(16))
+    return UUID(uuid: (
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    ))
 }

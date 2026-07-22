@@ -64,6 +64,22 @@ struct RunBrokerPackagingContractTests {
         #expect(!app.contains("RunBrokerInstaller"))
     }
 
+    @Test("Release builds generate a Sparkle-signed successor manifest before outer signing")
+    func releasePackagesSignedSuccessorManifest() throws {
+        let root = repositoryRoot()
+        let build = try String(contentsOf: root.appendingPathComponent("script/build_and_run.sh"))
+        let release = try String(contentsOf: root.appendingPathComponent("script/release_update.sh"))
+        let generation = try build.indexOf("generate_run_broker_successor_manifest")
+        let outerSigning = try build.indexOf("# Sign only the outer app")
+        #expect(generation < outerSigning)
+        #expect(build.contains("RunBrokerSuccessorManifest.json"))
+        #expect(build.contains("RunBrokerSuccessorManifest.sig"))
+        #expect(build.contains("$signer -p \"$manifest\""))
+        #expect(build.contains("codesign --remove-signature \"$unsigned_copy\""))
+        #expect(release.contains("SPARKLE_SIGN_UPDATE"))
+        #expect(release.contains("ASTRA_SPARKLE_SIGN_UPDATE=\"$SIGN_UPDATE\""))
+    }
+
     @Test("Broker acquires singleton ownership before credentials, ledger, and recovery")
     func brokerOwnershipPrecedesRecovery() throws {
         let main = try String(

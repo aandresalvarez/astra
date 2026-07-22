@@ -94,6 +94,7 @@ let package = Package(
                 "RunBrokerRunLedgerAdapter.swift",
                 "RunBrokerSchedulerContracts.swift",
                 "RunBrokerSecureStore.swift",
+                "RunBrokerSuccessorHandoff.swift",
                 "RunBrokerUnixSocketListener.swift",
             ],
             sources: [
@@ -106,6 +107,7 @@ let package = Package(
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
                 "RunBrokerTransport.swift",
                 "RunBrokerUnixSocketConnection.swift",
                 "RunBrokerWireCodec.swift",
@@ -126,6 +128,7 @@ let package = Package(
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
                 "RunBrokerTransport.swift",
                 "RunBrokerUnixSocketConnection.swift",
                 "RunBrokerWireCodec.swift",

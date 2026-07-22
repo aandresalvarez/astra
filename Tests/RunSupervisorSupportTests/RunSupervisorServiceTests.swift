@@ -220,6 +220,55 @@ struct RunSupervisorServiceTests {
         ])
     }
 
+    @Test("replay cannot advertise cancellation confirmation as the terminal spool head")
+    func replayIsLinearizedWithTerminalTailPersistence() async throws {
+        let fixture = try makeFixture("terminal-replay-head")
+        let process = SynchronousCancellationProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 138)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: SynchronousCancellationLauncher(process: process)
+        )
+        let confirmationPersisted = DispatchSemaphore(value: 0)
+        let allowProviderExit = DispatchSemaphore(value: 0)
+        service.observePersistedLifecycleEvents { kind in
+            guard kind == .cancellationConfirmed else { return }
+            confirmationPersisted.signal()
+            _ = allowProviderExit.wait(timeout: .now() + 5)
+        }
+        let runTask = Task.detached { try service.run(payload) }
+        let connected = try waitForConnection(payload: payload, root: fixture.root)
+
+        let cancellation = try send(
+            .init(kind: .cancel, cancellationIntent: .immediate),
+            payload: payload,
+            directory: connected.directory
+        )
+        #expect(cancellation.accepted)
+        let reachedConfirmation = await waitForSemaphore(confirmationPersisted, timeout: 5)
+        #expect(reachedConfirmation == .success)
+
+        let replayFinished = ReplayFinishedFlag()
+        let replayTask = Task.detached {
+            let response = try send(
+                .init(kind: .replay, afterSequence: cancellation.lastSequence),
+                payload: payload,
+                directory: connected.directory
+            )
+            replayFinished.markFinished()
+            return response
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!replayFinished.isFinished)
+
+        allowProviderExit.signal()
+        let response = try await replayTask.value
+        let confirmation = try #require(response.events.first)
+        #expect(confirmation.kind == .cancellationConfirmed)
+        #expect(response.lastSequence > confirmation.sequence)
+        #expect(try await runTask.value == .launched(exitCode: 143))
+    }
+
     @Test("an immediate exit persists provider start before output and terminal last")
     func immediateExitPreservesLifecycleOrdering() throws {
         let fixture = try makeFixture("immediate-order")
@@ -507,6 +556,24 @@ struct RunSupervisorServiceTests {
                 return events
             }
             cursor = nextCursor
+        }
+    }
+}
+
+private final class ReplayFinishedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    var isFinished: Bool { lock.withLock { finished } }
+    func markFinished() { lock.withLock { finished = true } }
+}
+
+private func waitForSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: TimeInterval
+) async -> DispatchTimeoutResult {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + timeout))
         }
     }
 }
