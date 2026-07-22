@@ -41,12 +41,12 @@ struct RunSupervisorExecutableIntegrationTests {
         let status = try send(
             .init(kind: .status),
             payload: payload,
-            directory: connected.directory
+            root: fixture.root
         )
         #expect(status.accepted)
         var liveEvents: [RunSupervisorEvent] = []
         let outputObserved = RunSupervisorTestSupport.waitUntil(timeout: 5) {
-            liveEvents = (try? replayAll(payload: payload, directory: connected.directory)) ?? []
+            liveEvents = (try? replayAll(payload: payload, root: fixture.root)) ?? []
             return liveEvents.filter { $0.kind == .standardOutput }
                 .compactMap(\.payload.data)
                 .contains { String(decoding: $0, as: UTF8.self).contains("provider-online") }
@@ -58,7 +58,7 @@ struct RunSupervisorExecutableIntegrationTests {
         let cancellation = try send(
             .init(kind: .cancel, cancellationIntent: .immediate),
             payload: payload,
-            directory: connected.directory
+            root: fixture.root
         )
         #expect(cancellation.accepted)
         #expect(RunSupervisorTestSupport.waitUntil(timeout: 8) {
@@ -311,6 +311,7 @@ struct RunSupervisorExecutableIntegrationTests {
     ) throws -> (directory: RunSupervisorRunDirectory, discovery: RunSupervisorDiscoveryRecord) {
         var directory: RunSupervisorRunDirectory?
         var discovery: RunSupervisorDiscoveryRecord?
+        var authenticationError: Error?
         let fileSystem = DarwinRunSupervisorFileSystem()
         let ready = RunSupervisorTestSupport.waitUntil(timeout: 5) {
             if directory == nil {
@@ -318,15 +319,16 @@ struct RunSupervisorExecutableIntegrationTests {
             }
             guard let directory else { return false }
             discovery = try? fileSystem.readDiscovery(in: directory)
-            guard let discovery else { return false }
-            return DarwinRunSupervisorControlClient().authenticate(
-                discovery: discovery,
-                directory: directory,
-                capability: payload.capability
-            )
+            guard discovery != nil else { return false }
+            do {
+                return try send(.init(kind: .status), payload: payload, root: root).accepted
+            } catch {
+                authenticationError = error
+                return false
+            }
         }
         guard ready, let directory, let discovery else {
-            throw RunSupervisorError.alreadyRunningOrInDoubt
+            throw authenticationError ?? RunSupervisorError.alreadyRunningOrInDoubt
         }
         return (directory, discovery)
     }
@@ -334,21 +336,59 @@ struct RunSupervisorExecutableIntegrationTests {
     private func send(
         _ action: RunSupervisorControlAction,
         payload: RunSupervisorBootstrapPayload,
-        directory: RunSupervisorRunDirectory
+        root: RunSupervisorTrustedRoot
     ) throws -> RunSupervisorControlResponse {
-        try DarwinRunSupervisorControlClient().send(
-            RunSupervisorControlAuthentication.makeRequest(
-                executionID: payload.manifest.executionID,
-                action: action,
-                capability: payload.capability
-            ),
-            directory: directory
-        )
+        let brokerURL = try executable(named: "astra-run-supervisor-broker-harness")
+        let process = Process()
+        let standardInput = Pipe()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = brokerURL
+        process.arguments = [root.path, "--control"]
+        process.standardInput = standardInput
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        try process.run()
+        do {
+            try RunSupervisorFrameIO.writeFrame(
+                RunSupervisorWireCoding.encode(payload),
+                to: standardInput.fileHandleForWriting.fileDescriptor,
+                maximumBytes: RunSupervisorProtocol.maximumBootstrapBytes
+            )
+            try RunSupervisorFrameIO.writeFrame(
+                RunSupervisorWireCoding.encode(action),
+                to: standardInput.fileHandleForWriting.fileDescriptor,
+                maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
+            )
+            standardInput.fileHandleForWriting.closeFile()
+            let response = try RunSupervisorFrameIO.readFrame(
+                from: standardOutput.fileHandleForReading.fileDescriptor,
+                maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
+            )
+            process.waitUntilExit()
+            guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+                throw RunSupervisorError.alreadyRunningOrInDoubt
+            }
+            return try RunSupervisorWireCoding.decode(
+                RunSupervisorControlResponse.self,
+                from: response
+            )
+        } catch {
+            if process.isRunning { process.waitUntilExit() }
+            let diagnostic = String(
+                decoding: standardError.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw RunSupervisorError.systemCall(
+                diagnostic.isEmpty ? "broker control harness" : diagnostic,
+                Int32(process.terminationStatus)
+            )
+        }
     }
 
     private func replayAll(
         payload: RunSupervisorBootstrapPayload,
-        directory: RunSupervisorRunDirectory
+        root: RunSupervisorTrustedRoot
     ) throws -> [RunSupervisorEvent] {
         var cursor: UInt64 = 0
         var all: [RunSupervisorEvent] = []
@@ -356,7 +396,7 @@ struct RunSupervisorExecutableIntegrationTests {
             let response = try send(
                 .init(kind: .replay, afterSequence: cursor),
                 payload: payload,
-                directory: directory
+                root: root
             )
             all.append(contentsOf: response.events)
             guard let next = response.events.last?.sequence,

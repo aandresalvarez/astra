@@ -2,6 +2,46 @@ import Darwin
 import Foundation
 import RunSupervisorSupport
 
+if CommandLine.arguments.count == 3, CommandLine.arguments[2] == "--control" {
+    do {
+        let payloadFrame = try RunSupervisorFrameIO.readFrame(
+            from: STDIN_FILENO,
+            maximumBytes: RunSupervisorProtocol.maximumBootstrapBytes
+        )
+        let actionFrame = try RunSupervisorFrameIO.readFrame(
+            from: STDIN_FILENO,
+            maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
+        )
+        let payload = try RunSupervisorWireCoding.decode(
+            RunSupervisorBootstrapPayload.self,
+            from: payloadFrame
+        )
+        let action = try RunSupervisorWireCoding.decode(
+            RunSupervisorControlAction.self,
+            from: actionFrame
+        )
+        let root = try RunSupervisorTrustedRoot(path: CommandLine.arguments[1])
+        let directory = try root.openExecutionDirectory(payload.manifest.executionID)
+        let response = try DarwinRunSupervisorControlClient().send(
+            RunSupervisorControlAuthentication.makeRequest(
+                executionID: payload.manifest.executionID,
+                action: action,
+                capability: payload.capability
+            ),
+            directory: directory
+        )
+        try RunSupervisorFrameIO.writeFrame(
+            RunSupervisorWireCoding.encode(response),
+            to: STDOUT_FILENO,
+            maximumBytes: RunSupervisorProtocol.maximumControlFrameBytes
+        )
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("control failed: \(error)\n".utf8))
+        exit(72)
+    }
+}
+
 guard CommandLine.arguments.count == 3 ||
       (CommandLine.arguments.count == 4 && CommandLine.arguments[3] == "--hold-after-launch") else {
     exit(64)
@@ -24,11 +64,13 @@ defer {
 }
 
 let frame: Data
+let payload: RunSupervisorBootstrapPayload
 do {
     frame = try RunSupervisorFrameIO.readFrame(
         from: STDIN_FILENO,
         maximumBytes: RunSupervisorProtocol.maximumBootstrapBytes
     )
+    payload = try RunSupervisorWireCoding.decode(RunSupervisorBootstrapPayload.self, from: frame)
 } catch {
     exit(67)
 }
@@ -73,6 +115,29 @@ do {
     exit(71)
 }
 close(bootstrapPipe[1]); bootstrapPipe[1] = -1
+let readinessDeadline = Date().addingTimeInterval(5)
+var accepted = false
+while Date() < readinessDeadline, !accepted {
+    do {
+        let root = try RunSupervisorTrustedRoot(path: rootPath)
+        let directory = try root.openExecutionDirectory(payload.manifest.executionID)
+        let discovery = try DarwinRunSupervisorFileSystem().readDiscovery(in: directory)
+        if let discovery {
+            accepted = DarwinRunSupervisorControlClient().authenticate(
+                discovery: discovery,
+                directory: directory,
+                capability: payload.capability
+            )
+        }
+    } catch {
+        // The supervisor may not have created its durable directory yet.
+    }
+    if !accepted { usleep(20_000) }
+}
+guard accepted else {
+    kill(pid, SIGKILL)
+    exit(73)
+}
 FileHandle.standardOutput.write(Data("\(pid)\n".utf8))
 if holdAfterLaunch {
     while true { pause() }
