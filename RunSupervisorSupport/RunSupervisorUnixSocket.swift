@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import ASTRACore
+import RunBrokerClient
 
 public protocol RunSupervisorSocketServing: AnyObject, Sendable {
     var socketName: String { get }
@@ -19,6 +20,46 @@ public protocol RunSupervisorSocketServerFactory: Sendable {
 
 public protocol RunSupervisorPeerCodeIdentityVerifying: Sendable {
     func verify(processID: pid_t) -> Bool
+}
+
+public protocol RunSupervisorSuccessorBrokerAuthenticating: Sendable {
+    func authenticate(request: RunSupervisorControlRequest, processID: pid_t) -> Bool
+}
+
+public struct UnavailableRunSupervisorSuccessorBrokerAuthenticator:
+    RunSupervisorSuccessorBrokerAuthenticating
+{
+    public init() {}
+    public func authenticate(request: RunSupervisorControlRequest, processID: pid_t) -> Bool { false }
+}
+
+public struct DarwinRunSupervisorSuccessorBrokerAuthenticator:
+    RunSupervisorSuccessorBrokerAuthenticating
+{
+    private let capability: RunBrokerCapabilitySecret
+    private let identity: @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+
+    public init(capability: RunBrokerCapabilitySecret) {
+        self.capability = capability
+        self.identity = { DarwinProcessCodeIdentityResolver.resolve(processID: $0) }
+    }
+
+    package init(
+        capability: RunBrokerCapabilitySecret,
+        identity: @escaping @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+    ) {
+        self.capability = capability
+        self.identity = identity
+    }
+
+    public func authenticate(request: RunSupervisorControlRequest, processID: pid_t) -> Bool {
+        guard let peerIdentity = identity(processID) else { return false }
+        return RunSupervisorBrokerCohortAuthentication.verify(
+            request: request,
+            peerIdentity: peerIdentity,
+            capability: capability
+        )
+    }
 }
 
 public struct DarwinRunSupervisorPeerCodeIdentityVerifier: RunSupervisorPeerCodeIdentityVerifying {
@@ -49,11 +90,18 @@ public struct DarwinRunSupervisorPeerCodeIdentityVerifier: RunSupervisorPeerCode
 
 public struct DarwinRunSupervisorSocketServerFactory: RunSupervisorSocketServerFactory {
     private let peerVerifier: any RunSupervisorPeerCodeIdentityVerifying
+    private let successorAuthenticator: any RunSupervisorSuccessorBrokerAuthenticating
 
-    public init(expectedPeerIdentity: DarwinProcessCodeIdentity? = DarwinProcessCodeIdentityResolver.resolve(processID: getpid())) {
+    public init(
+        expectedPeerIdentity: DarwinProcessCodeIdentity? = DarwinProcessCodeIdentityResolver.resolve(processID: getpid()),
+        successorCapability: RunBrokerCapabilitySecret? = nil
+    ) {
         peerVerifier = DarwinRunSupervisorPeerCodeIdentityVerifier(
             expectedIdentity: expectedPeerIdentity
         )
+        successorAuthenticator = successorCapability.map {
+            DarwinRunSupervisorSuccessorBrokerAuthenticator(capability: $0)
+        } ?? UnavailableRunSupervisorSuccessorBrokerAuthenticator()
     }
     public func makeServer(
         directory: RunSupervisorRunDirectory,
@@ -62,7 +110,8 @@ public struct DarwinRunSupervisorSocketServerFactory: RunSupervisorSocketServerF
         try DarwinRunSupervisorSocketServer(
             directory: directory,
             authenticator: authenticator,
-            peerVerifier: peerVerifier
+            peerVerifier: peerVerifier,
+            successorAuthenticator: successorAuthenticator
         )
     }
 }
@@ -85,6 +134,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
     private let directory: RunSupervisorRunDirectory
     private let authenticator: RunSupervisorControlAuthenticator
     private let peerVerifier: any RunSupervisorPeerCodeIdentityVerifying
+    private let successorAuthenticator: any RunSupervisorSuccessorBrokerAuthenticating
     private let acceptQueue: DispatchQueue
     private let clientQueue: DispatchQueue
     private let startReservationHook: @Sendable () -> Void
@@ -105,6 +155,8 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         peerVerifier: any RunSupervisorPeerCodeIdentityVerifying = DarwinRunSupervisorPeerCodeIdentityVerifier(
             expectedIdentity: DarwinProcessCodeIdentityResolver.resolve(processID: getpid())
         ),
+        successorAuthenticator: any RunSupervisorSuccessorBrokerAuthenticating =
+            UnavailableRunSupervisorSuccessorBrokerAuthenticator(),
         acceptQueue: DispatchQueue = DispatchQueue(
             label: "com.coral.astra.run-supervisor.control.accept",
             qos: .userInitiated
@@ -119,6 +171,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
             directory: directory,
             authenticator: authenticator,
             peerVerifier: peerVerifier,
+            successorAuthenticator: successorAuthenticator,
             acceptQueue: acceptQueue,
             clientQueue: clientQueue,
             startReservationHook: {},
@@ -132,6 +185,8 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         peerVerifier: any RunSupervisorPeerCodeIdentityVerifying = DarwinRunSupervisorPeerCodeIdentityVerifier(
             expectedIdentity: DarwinProcessCodeIdentityResolver.resolve(processID: getpid())
         ),
+        successorAuthenticator: any RunSupervisorSuccessorBrokerAuthenticating =
+            UnavailableRunSupervisorSuccessorBrokerAuthenticator(),
         acceptQueue: DispatchQueue,
         clientQueue: DispatchQueue,
         startReservationHook: @escaping @Sendable () -> Void,
@@ -140,6 +195,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         self.directory = directory
         self.authenticator = authenticator
         self.peerVerifier = peerVerifier
+        self.successorAuthenticator = successorAuthenticator
         self.acceptQueue = acceptQueue
         self.clientQueue = clientQueue
         self.startReservationHook = startReservationHook
@@ -369,8 +425,11 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 LOCAL_PEERPID,
                 &processID,
                 &processIDLength
-            ) == 0,
-                  peerVerifier.verify(processID: processID) else {
+            ) == 0 else {
+                throw RunSupervisorError.peerCodeIdentityMismatch
+            }
+            guard peerVerifier.verify(processID: processID)
+                    || successorAuthenticator.authenticate(request: request, processID: processID) else {
                 throw RunSupervisorError.peerCodeIdentityMismatch
             }
             try authenticator.authenticate(request, peerUID: uid)
@@ -493,7 +552,21 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
 }
 
 public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Sendable {
-    public init() {}
+    private let brokerCapabilitySecret: RunBrokerCapabilitySecret?
+    private let processIdentity: @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+
+    public init(brokerCapabilitySecret: RunBrokerCapabilitySecret? = nil) {
+        self.brokerCapabilitySecret = brokerCapabilitySecret
+        self.processIdentity = { DarwinProcessCodeIdentityResolver.resolve(processID: $0) }
+    }
+
+    package init(
+        brokerCapabilitySecret: RunBrokerCapabilitySecret?,
+        processIdentity: @escaping @Sendable (pid_t) -> DarwinProcessCodeIdentity?
+    ) {
+        self.brokerCapabilitySecret = brokerCapabilitySecret
+        self.processIdentity = processIdentity
+    }
 
     public func authenticate(
         discovery: RunSupervisorDiscoveryRecord,
@@ -519,6 +592,19 @@ public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Se
     ) throws -> RunSupervisorControlResponse {
         guard let capability = request.responseVerificationCapability else {
             throw RunSupervisorError.responseAuthenticationFailed
+        }
+        let authorizedRequest: RunSupervisorControlRequest
+        if let brokerCapabilitySecret {
+            guard let identity = processIdentity(getpid()) else {
+                throw RunSupervisorError.peerCodeIdentityMismatch
+            }
+            authorizedRequest = try RunSupervisorBrokerCohortAuthentication.binding(
+                request: request,
+                peerIdentity: identity,
+                capability: brokerCapabilitySecret
+            )
+        } else {
+            authorizedRequest = request
         }
         let path = directory.path + "/control.sock"
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
@@ -565,7 +651,7 @@ public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Se
         guard getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == geteuid() else {
             throw RunSupervisorError.peerUIDMismatch
         }
-        let encoded = try RunSupervisorDigests.canonicalData(request)
+        let encoded = try RunSupervisorDigests.canonicalData(authorizedRequest)
         try RunSupervisorFrameIO.writeFrame(
             encoded,
             to: fd,
@@ -581,7 +667,7 @@ public struct DarwinRunSupervisorControlClient: RunSupervisorLivenessProbing, Se
         )
         return try RunSupervisorControlAuthentication.verifyResponse(
             envelope,
-            for: request,
+            for: authorizedRequest,
             capability: capability
         )
     }

@@ -135,13 +135,23 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         guard let appExecutableURL = Bundle.main.executableURL else {
             throw RunBrokerCapabilityKeychainError.provisioningFailed
         }
-        var trustedCapabilityReaders = [appExecutableURL, destinationExecutable]
+        var trustedCapabilityReaders = [
+            appExecutableURL,
+            destinationExecutable,
+            destinationSupervisorExecutable,
+        ]
         if let previousSelector {
-            let previousBroker = identity.supportDirectory
+            let previousDirectory = identity.supportDirectory
                 .appendingPathComponent(previousSelector, isDirectory: true)
+            let previousBroker = previousDirectory
                 .appendingPathComponent(RunBrokerCohort.brokerExecutableName, isDirectory: false)
             if previousBroker.standardizedFileURL != destinationExecutable.standardizedFileURL {
                 trustedCapabilityReaders.append(previousBroker)
+            }
+            let previousSupervisor = previousDirectory
+                .appendingPathComponent(RunBrokerCohort.supervisorExecutableName, isDirectory: false)
+            if previousSupervisor.standardizedFileURL != destinationSupervisorExecutable.standardizedFileURL {
+                trustedCapabilityReaders.append(previousSupervisor)
             }
         }
         try capabilityStore.provision(

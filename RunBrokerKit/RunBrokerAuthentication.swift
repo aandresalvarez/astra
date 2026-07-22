@@ -17,6 +17,18 @@ public struct RunBrokerCapabilitySecret: Equatable, Sendable, CustomStringConver
 
     package var keychainBytes: Data { bytes }
 
+    public func authenticationCode(for data: Data) -> Data {
+        let key = SymmetricKey(data: bytes)
+        return Data(HMAC<SHA256>.authenticationCode(for: data, using: key))
+    }
+
+    public func verifies(authenticationCode claimedCode: Data, for data: Data) -> Bool {
+        RunBrokerRequestAuthenticator.constantTimeEqual(
+            authenticationCode(for: data),
+            claimedCode
+        )
+    }
+
     public init(bytes: Data) throws {
         guard bytes.count == RunBrokerAuthenticationPolicy.secretByteCount else {
             throw RunBrokerContractError.invalidCapabilitySecret

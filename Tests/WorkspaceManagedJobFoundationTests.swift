@@ -97,6 +97,33 @@ struct WorkspaceManagedJobFoundationTests {
         }
     }
 
+    @Test("Workspace MCP restart reuses the client-durable invocation identity")
+    func workspaceMCPRestartAdoptsOriginalInvocation() throws {
+        let fixture = try makeDockerFixture("mcp-restart")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+
+        func makeServer() -> WorkspaceMCPServer {
+            let executor = DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+            return WorkspaceMCPServer(
+                executor: executor,
+                jobManager: DockerWorkspaceJobManager(
+                    configuration: fixture.configuration,
+                    executor: executor
+                ),
+                invocationSessionID: fixture.configuration.runID
+            )
+        }
+        let request = #"{"jsonrpc":"2.0","id":"durable-call-1","method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"printf once"}}}"#
+        let first = try structuredJobResult(parseJSON(try #require(makeServer().handleLine(request))))
+        let retried = try structuredJobResult(parseJSON(try #require(makeServer().handleLine(request))))
+
+        #expect(first.jobID == retried.jobID)
+        #expect(first.startReceipt?.invocationID == retried.startReceipt?.invocationID)
+        let logLines = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
+        #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
+    }
+
     @Test("Concurrent identical invocation admits exactly one detached launch")
     func concurrentIdenticalInvocationLaunchesExactlyOnce() throws {
         let fixture = try makeDockerFixture("concurrent")
@@ -461,6 +488,41 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(manager.hasTrustedNonterminalOwnedJob())
     }
 
+    @Test("Host-verified natural completion is persisted before cleanup")
+    func naturalCompletionIsTrustedBeforeCleanup() throws {
+        let fixture = try makeDockerFixture("natural-completion")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+        let job = manager.start(
+            command: "printf complete",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "number:819"
+        )
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-07-21T22:00:00Z"}"#
+            .write(to: URL(fileURLWithPath: job.resultPath), atomically: true, encoding: .utf8)
+        FileManager.default.createFile(
+            atPath: fixture.root.appendingPathComponent("host-verified-terminal").path,
+            contents: Data()
+        )
+        var cleaned = false
+
+        #expect(manager.cleanupExecutorIfIdle { cleaned = true })
+        #expect(cleaned)
+        let trusted = try WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        ).listTrustedRecords()
+        #expect(trusted.count == 1)
+        #expect(trusted.first?.status == .succeeded)
+        #expect(trusted.first?.exitCode == 0)
+    }
+
     @Test("Cleanup exclusion remains held through stop while admission waits")
     func cleanupExclusionCoversStopAndAdmission() throws {
         let root = temporaryDirectory("cleanup-admission-race")
@@ -527,6 +589,8 @@ struct WorkspaceManagedJobFoundationTests {
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         let quotedJobRoot = jobRoot.path.replacingOccurrences(of: "'", with: "'\\''")
         let quotedTrustedRoot = trustedRoot.path.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedTerminalMarker = root.appendingPathComponent("host-verified-terminal").path
+            .replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
         printf '%s\\n' "$*" >> '\(quotedLogPath)'
@@ -535,12 +599,16 @@ struct WorkspaceManagedJobFoundationTests {
           rm) exit 0 ;;
           run) echo container-id; exit 0 ;;
           exec)
-            record="$(find '\(quotedJobRoot)' -name job.json -type f | head -1)"
-            trusted_record="$(find '\(quotedTrustedRoot)' -name '*.json' -type f | head -1)"
-            grep -q '"status" : "launching"' "$record" || exit 41
-            grep -q '"startReceipt"' "$record" || exit 42
-            grep -q '"startReceipt"' "$trusted_record" || exit 43
-            exit 0
+            if [ "$2" = "-d" ]; then
+              record="$(find '\(quotedJobRoot)' -name job.json -type f | head -1)"
+              trusted_record="$(find '\(quotedTrustedRoot)' -name '*.json' -type f | head -1)"
+              grep -q '"status" : "launching"' "$record" || exit 41
+              grep -q '"startReceipt"' "$record" || exit 42
+              grep -q '"startReceipt"' "$trusted_record" || exit 43
+              exit 0
+            fi
+            [ -f '\(quotedTerminalMarker)' ] && exit 0
+            exit 73
             ;;
           stop) exit 0 ;;
           *) exit 99 ;;

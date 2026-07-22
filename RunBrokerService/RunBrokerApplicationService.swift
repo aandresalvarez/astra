@@ -432,6 +432,14 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
             // supervisor fence. An exact durable replay may observe a later
             // acceptance sequence and is instead fenced by its immutable
             // challenge-consumption record above.
+            guard now <= challenge.expiresAt else {
+                // confirmedAt is client-supplied evidence and can be backdated
+                // within the challenge window. For a first consumption, the
+                // broker's receipt time is the authoritative expiry boundary.
+                // Exact consumed replays remain valid after expiry because the
+                // destructive authorization was already durably decided.
+                throw RunBrokerApplicationEndpointError.requestRejected
+            }
             _ = try exactExecution(confirmation.fence)
         }
         _ = try ledger.consumeExecutionForceChallenge(

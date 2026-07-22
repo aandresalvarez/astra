@@ -383,6 +383,13 @@ public final class WorkspaceManagedJobStore {
         try listTrustedRecordsUnlocked()
     }
 
+    /// Persists a record while the caller holds the admission/cleanup lock.
+    /// Terminal reconciliation uses this to promote host-verified runtime
+    /// evidence without recursively acquiring the non-recursive process lock.
+    func saveAssumingExclusiveAdmission(_ record: WorkspaceManagedJobRecord) throws {
+        try save(record, trustedLockHeld: true)
+    }
+
     /// Fences a queued receipt before its detached effect. A retry may observe
     /// `.launching`, but must never repeat an ambiguously accepted launch.
     func launchQueuedInvocation(
@@ -1408,16 +1415,9 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     public func hasTrustedNonterminalOwnedJob() -> Bool {
         guard !providerCanWriteTrustedState else { return true }
         do {
-            return try store.listTrustedRecords().contains { record in
-                guard !record.isTerminal else { return false }
-                guard record.startReceipt != nil else {
-                    // A legacy nonterminal record cannot prove that cleanup is
-                    // safe, so preserve the executor.
-                    return true
-                }
-                // Any conflicting ownership inside this executor-scoped trusted
-                // store is corruption, not evidence that stopping is safe.
-                return true
+            return try store.withExclusiveAdmissionAndCleanup {
+                try reconcileHostVerifiedTerminalRecords()
+                return hasTrustedNonterminalOwnedJobUnlocked()
             }
         } catch {
             // Cleanup is destructive. Preserve the container when trusted
@@ -1431,6 +1431,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         guard !providerCanWriteTrustedState else { return false }
         do {
             return try store.withExclusiveAdmissionAndCleanup {
+                try reconcileHostVerifiedTerminalRecords()
                 guard !hasTrustedNonterminalOwnedJobUnlocked() else { return false }
                 cleanup()
                 return true
@@ -1438,6 +1439,45 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         } catch {
             return false
         }
+    }
+
+    /// Provider-visible result.json is only a completion claim. Promote it to
+    /// the trusted host record after the host independently proves that no
+    /// managed command guardian for this job remains in the container.
+    private func reconcileHostVerifiedTerminalRecords() throws {
+        let trustedRecords = try store.listTrustedRecordsAssumingExclusiveAdmission()
+        for trusted in trustedRecords where !trusted.isTerminal {
+            let runtimeProjection = try store.load(jobID: trusted.jobID)
+            guard runtimeProjection.isTerminal,
+                  hostVerifiesManagedCommandExited(jobID: trusted.jobID) else {
+                continue
+            }
+            try store.saveAssumingExclusiveAdmission(runtimeProjection)
+        }
+    }
+
+    private func hostVerifiesManagedCommandExited(jobID: String) -> Bool {
+        let commandScript = containerJobDirectory(jobID: jobID) + "/command.sh"
+        let result = executor.runDockerCommand(
+            arguments: [
+                "exec", configuration.containerName,
+                "sh", "-c",
+                """
+                command_script=\(shellQuote(commandScript))
+                for cmdline in /proc/[0-9]*/cmdline; do
+                  [ -r "$cmdline" ] || continue
+                  value="$(tr '\\0' ' ' < "$cmdline" 2>/dev/null || true)"
+                  case "$value" in
+                    *"$command_script"*) exit 73 ;;
+                  esac
+                done
+                exit 0
+                """
+            ],
+            commandLabel: "workspace_job_reconcile \(jobID)",
+            timeoutSeconds: 10
+        )
+        return result.exitCode == 0
     }
 
     private func hasTrustedNonterminalOwnedJobUnlocked() -> Bool {
@@ -1530,7 +1570,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           shift 19
           printf '%s\\n' "$1"
         }
-        "$setsid_bin" sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
+        # Keep a stable guardian whose kernel command line names command.sh.
+        # Even when the user command calls exec, host reconciliation can prove
+        # whether this managed process group has actually completed.
+        "$setsid_bin" sh -c 'sh "$1"' astra-managed-job-guardian "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
         command_pid=$!
         printf '%s\\n' "$command_pid" > "$pidfile"
         command_start_time="$(proc_start_time "$command_pid" || true)"

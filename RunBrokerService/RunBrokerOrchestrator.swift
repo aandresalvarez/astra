@@ -219,8 +219,43 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         executionID: RunBrokerExecutionID
     ) throws -> RunBrokerReconciliationOutcome {
         try lock.withLock {
-            try reconcileLocked(executionID: executionID, startFaultsEnabled: false)
+            try resumeConsumedImmediateTermination(executionID: executionID)
+            return try reconcileLocked(executionID: executionID, startFaultsEnabled: false)
         }
+    }
+
+    /// Challenge consumption is the durable authorization boundary. If the
+    /// broker crashes after consuming the one-time confirmation but before
+    /// appending its cancellation audit, the periodic execution reconciler
+    /// must resume that exact effect without requiring the app to replay the
+    /// confirmation. Authority transfer fences historical consumptions.
+    private func resumeConsumedImmediateTermination(
+        executionID: RunBrokerExecutionID
+    ) throws {
+        guard supportsAuthenticatedImmediateTermination else { return }
+        let projection = try ledger.projection()
+        guard let execution = projection.executions[executionID],
+              !execution.control.observedExecution.isAuthoritativelyTerminal else {
+            return
+        }
+        let consumption = projection.executionForceConsumptions.values
+            .filter {
+                $0.challenge.executionID == executionID
+                    && $0.challenge.authority == execution.authority
+            }
+            .sorted {
+                if $0.confirmedAt != $1.confirmedAt {
+                    return $0.confirmedAt < $1.confirmedAt
+                }
+                return $0.effectID.rawValue.uuidString < $1.effectID.rawValue.uuidString
+            }
+            .first
+        guard let consumption else { return }
+        try requestImmediateTermination(
+            .init(executionID: executionID, intent: .immediate),
+            requestedAt: consumption.confirmedAt,
+            auditID: RunBrokerExecutionForceEventIDs.audit(effectID: consumption.effectID)
+        )
     }
 
     /// Proves that the exact execution-scoped supervisor handle is currently
@@ -301,7 +336,11 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             if !replay {
                 _ = try ledger.append(.init(
                     eventID: .init(rawValue: auditID),
-                    occurredAt: requestedAt,
+                    // Recovery may resume long after confirmation while later
+                    // supervisor observations have advanced durable execution
+                    // time. Preserve the original authorization identity but
+                    // never append a control transition behind ledger truth.
+                    occurredAt: max(requestedAt, execution.updatedAt),
                     event: .executionControlTransitioned(
                         executionID: request.executionID,
                         authority: identity.authority,

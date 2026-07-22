@@ -2877,8 +2877,10 @@ public final class WorkspaceMCPServer {
     private let executor: WorkspaceCommandExecutor
     private let jobManager: WorkspaceJobManaging?
     private let diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder?
+    private let invocationSessionID: String
     private lazy var server = MCPServer(
         name: "astra-workspace",
+        sessionID: invocationSessionID,
         tools: { [weak self] in
             self?.toolSchemas() ?? []
         },
@@ -2890,11 +2892,13 @@ public final class WorkspaceMCPServer {
     public init(
         executor: WorkspaceCommandExecutor,
         jobManager: WorkspaceJobManaging? = nil,
-        diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder? = nil
+        diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder? = nil,
+        invocationSessionID: String = UUID().uuidString.lowercased()
     ) {
         self.executor = executor
         self.jobManager = jobManager
         self.diagnosticsRecorder = diagnosticsRecorder
+        self.invocationSessionID = invocationSessionID
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -3242,7 +3246,12 @@ public enum AstraWorkspaceToolMain {
             let server = WorkspaceMCPServer(
                 executor: executor,
                 jobManager: jobManager,
-                diagnosticsRecorder: recorder
+                diagnosticsRecorder: recorder,
+                // The run identity is supplied by the durable ASTRA client and
+                // remains stable when this MCP subprocess restarts. Combining
+                // it with the type-tagged JSON-RPC id makes retries adopt the
+                // original managed-job receipt instead of launching twice.
+                invocationSessionID: configuration.runID
             )
             defer { server.cleanup() }
             while let line = readLine() {

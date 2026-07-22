@@ -424,6 +424,13 @@ struct RunBrokerPathAndInstallerTests {
                 .appendingPathComponent("1/astra-run-supervisor").path
         ))
         #expect(fixture.launchController.reloadCount == 2)
+        let trustedNames = Set(fixture.capabilityStore.lastTrustedApplicationURLs.map {
+            $0.deletingLastPathComponent().lastPathComponent + "/" + $0.lastPathComponent
+        })
+        #expect(trustedNames.contains("2/astra-run-broker"))
+        #expect(trustedNames.contains("2/astra-run-supervisor"))
+        #expect(trustedNames.contains("1/astra-run-broker"))
+        #expect(trustedNames.contains("1/astra-run-supervisor"))
     }
 
     @Test("Installer synchronizes cohort, selector, and plist metadata before reporting success")
@@ -716,6 +723,13 @@ private final class InMemoryRunBrokerCapabilityStore:
 {
     private let lock = NSLock()
     private var secrets: [RunBrokerInstallationID: RunBrokerCapabilitySecret] = [:]
+    private var trustedApplicationURLs: [URL] = []
+
+    var lastTrustedApplicationURLs: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return trustedApplicationURLs
+    }
 
     func load(
         channel: RunBrokerChannel,
@@ -740,6 +754,7 @@ private final class InMemoryRunBrokerCapabilityStore:
         }
         lock.lock()
         secrets[installationID] = secret
+        self.trustedApplicationURLs = trustedApplicationURLs
         lock.unlock()
     }
 }

@@ -71,7 +71,7 @@ let package = Package(
         ),
         .target(
             name: "RunSupervisorSupport",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "RunBrokerClient"],
             path: "RunSupervisorSupport"
         ),
         .target(
@@ -344,7 +344,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RunSupervisorSupportTests",
-            dependencies: ["RunSupervisorSupport", "ASTRACore"],
+            dependencies: ["RunSupervisorSupport", "RunBrokerClient", "ASTRACore"],
             path: "Tests/RunSupervisorSupportTests"
         ),
         .testTarget(

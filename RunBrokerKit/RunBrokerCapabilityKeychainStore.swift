@@ -41,6 +41,18 @@ public struct RunBrokerCapabilityKeychainStore: RunBrokerCapabilitySecretStoring
         return try RunBrokerCapabilitySecret(bytes: data)
     }
 
+    public func load(
+        installationID: RunBrokerInstallationID
+    ) throws -> RunBrokerCapabilitySecret {
+        let matches = [RunBrokerChannel.production, .development].compactMap { channel in
+            try? load(channel: channel, installationID: installationID)
+        }
+        guard matches.count == 1, let secret = matches.first else {
+            throw RunBrokerCapabilityKeychainError.unavailable
+        }
+        return secret
+    }
+
     public func provision(
         _ secret: RunBrokerCapabilitySecret,
         channel: RunBrokerChannel,

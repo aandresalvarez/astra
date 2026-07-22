@@ -965,6 +965,89 @@ struct RunBrokerApplicationServiceTests {
         )) != nil)
     }
 
+    @Test("server receipt rejects a first confirmation after expiry but preserves consumed replay")
+    func immediateConfirmationUsesServerExpiryForFirstConsumption() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let (request, challenge) = try issueImmediateChallenge(
+            fixture: fixture,
+            service: service,
+            idempotencyKey: brokerUUID(143)
+        )
+        let confirmation = immediateConfirmation(
+            request: request,
+            challenge: challenge,
+            effectID: .init(rawValue: brokerUUID(144))
+        )
+        let afterExpiry = challenge.expiresAt.addingTimeInterval(1)
+
+        #expect(throws: RunBrokerApplicationEndpointError.requestRejected) {
+            _ = try service.handle(
+                .confirmImmediateCancellation(confirmation),
+                idempotencyKey: brokerUUID(145),
+                now: afterExpiry
+            )
+        }
+        #expect(try fixture.ledger.projection().executionForceConsumptions.isEmpty)
+        #expect(fixture.transport.immediateTerminationCount == 0)
+
+        // Model a response-lost confirmation that was durably consumed while
+        // the challenge was live. Its exact replay remains resumable later.
+        try recordConsumption(fixture, confirmation: confirmation)
+        fixture.transport.onImmediateTermination = {
+            fixture.transport.events.append(
+                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
+            )
+        }
+        _ = try applicationService(fixture).handle(
+            .confirmImmediateCancellation(confirmation),
+            idempotencyKey: brokerUUID(146),
+            now: afterExpiry.addingTimeInterval(60)
+        )
+        #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
+    @Test("broker reconciliation resumes consumed confirmation without an app replay")
+    func brokerRecoveryResumesConsumedUnauditedCancellation() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let (request, challenge) = try issueImmediateChallenge(
+            fixture: fixture,
+            service: service,
+            idempotencyKey: brokerUUID(147)
+        )
+        let effectID = RuntimeSwitchEffectID(rawValue: brokerUUID(148))
+        let confirmation = immediateConfirmation(
+            request: request,
+            challenge: challenge,
+            effectID: effectID
+        )
+        try recordConsumption(fixture, confirmation: confirmation)
+        fixture.transport.onImmediateTermination = {
+            fixture.transport.events.append(
+                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
+            )
+        }
+        let broker = fixture.orchestrator(
+            authorizer: AllowExactRunBrokerImmediateTerminationAuthorizer()
+        )
+
+        _ = try broker.reconcile(executionID: fixture.manifest.executionID)
+
+        let auditID = RunBrokerExecutionForceEventIDs.audit(effectID: effectID)
+        #expect(try fixture.ledger.event(eventID: .init(rawValue: auditID)) != nil)
+        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(try fixture.ledger.supervisorObservations(
+            for: fixture.manifest.executionID
+        ).contains {
+            $0.kind == .cancellationRequested
+                && $0.cancellationIntent == .immediate
+        })
+
+        _ = try broker.reconcile(executionID: fixture.manifest.executionID)
+        #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
     @Test("consumed confirmation cannot terminate a later execution authority")
     func consumedConfirmationRejectsAuthorityTransfer() throws {
         let fixture = try BrokerFixture()

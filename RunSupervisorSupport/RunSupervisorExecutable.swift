@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import ASTRACore
+import RunBrokerClient
 
 public enum RunSupervisorExecutable {
     public static func run(arguments: [String]) throws {
@@ -21,12 +22,27 @@ public enum RunSupervisorExecutable {
         )
         let payload = try RunSupervisorWireCoding.decode(RunSupervisorBootstrapPayload.self, from: frame)
         try RunSupervisorBootstrapValidator.validate(payload)
+        let successorCapability: RunBrokerCapabilitySecret?
+        do {
+            successorCapability = try RunBrokerCapabilityKeychainStore().load(
+                installationID: payload.manifest.installationID
+            )
+        } catch {
+            // Authorization remains fail-closed: without the OS-owned cohort
+            // key this supervisor accepts only the exact broker identity it
+            // captured above. This also preserves isolated harness operation.
+            FileHandle.standardError.write(Data(
+                "run supervisor: successor broker authentication unavailable: \(error)\n".utf8
+            ))
+            successorCapability = nil
+        }
         let root = try RunSupervisorTrustedRoot(fileDescriptor: rootFD)
         close(rootFD)
         close(bootstrapFD)
         try detachFromBroker()
         let socketFactory = DarwinRunSupervisorSocketServerFactory(
-            expectedPeerIdentity: brokerIdentity
+            expectedPeerIdentity: brokerIdentity,
+            successorCapability: successorCapability
         )
         _ = try RunSupervisorService(root: root, socketFactory: socketFactory).run(payload)
     }

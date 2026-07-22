@@ -102,7 +102,10 @@ private func run() throws -> Never {
     try ensurePrivateDirectory(runRoot)
     let trustedRoot = try RunSupervisorTrustedRoot(path: runRoot.path)
     let vault = DarwinRunBrokerCapabilityVault(directoryURL: capabilityDirectory)
-    let supervisorTransport = DarwinRunBrokerSupervisorTransport(trustedRoot: trustedRoot)
+    let supervisorTransport = DarwinRunBrokerSupervisorTransport(
+        trustedRoot: trustedRoot,
+        client: DarwinRunSupervisorControlClient(brokerCapabilitySecret: capabilitySecret)
+    )
     let orchestrator = RunBrokerOrchestrator(
         ledger: canonicalLedger,
         vault: vault,

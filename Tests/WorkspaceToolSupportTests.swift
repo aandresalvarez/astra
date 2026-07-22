@@ -1018,7 +1018,9 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("kill_bin=\"$candidate\""))
         #expect(logLines.contains(#""exitCode":127"#))
         #expect(logLines.contains("process group isolation unavailable"))
-        #expect(logLines.contains("\"$setsid_bin\" sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains(
+            "\"$setsid_bin\" sh -c 'sh \"$1\"' astra-managed-job-guardian \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"
+        ))
         #expect(logLines.contains("pid_metadata=\"$job_dir/pid.meta\""))
         #expect(logLines.contains("rm -f \"$timeout_marker\" \"$pidfile\" \"$pid_metadata\""))
         #expect(logLines.contains("command_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))

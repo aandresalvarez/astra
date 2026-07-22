@@ -1,11 +1,60 @@
 import Darwin
 import Foundation
 import ASTRACore
+import RunBrokerClient
 import Testing
 @testable import RunSupervisorSupport
 
 @Suite("Run supervisor Unix control socket", .serialized)
 struct RunSupervisorUnixSocketTests {
+    @Test("successor broker proof is bound to its exact live code identity")
+    func successorBrokerProofIsIdentityBound() throws {
+        let successor = DarwinProcessCodeIdentity(
+            identifier: "com.coral.astra-run-broker",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x51, count: 20)
+        )
+        let provider = DarwinProcessCodeIdentity(
+            identifier: successor.identifier,
+            teamIdentifier: successor.teamIdentifier,
+            cdHash: Data(repeating: 0x61, count: 20)
+        )
+        let cohortCapability = try RunBrokerCapabilitySecret(
+            bytes: Data(repeating: 0x71, count: RunBrokerAuthenticationPolicy.secretByteCount)
+        )
+        let executionCapability = try RunSupervisorCapability(bytes: Data(repeating: 0x81, count: 32))
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: RunBrokerExecutionID(rawValue: UUID()),
+            action: .init(kind: .status),
+            capability: executionCapability
+        )
+        let authorized = try RunSupervisorBrokerCohortAuthentication.binding(
+            request: request,
+            peerIdentity: successor,
+            capability: cohortCapability
+        )
+
+        #expect(DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in successor }
+        ).authenticate(request: authorized, processID: 42))
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in provider }
+        ).authenticate(request: authorized, processID: 42))
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in successor }
+        ).authenticate(request: request, processID: 42))
+        let wrongCapability = try RunBrokerCapabilitySecret(
+            bytes: Data(repeating: 0x91, count: RunBrokerAuthenticationPolicy.secretByteCount)
+        )
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: wrongCapability,
+            identity: { _ in successor }
+        ).authenticate(request: authorized, processID: 42))
+    }
+
     @Test("exact broker code identity is required in addition to capability")
     func exactBrokerIdentityRequired() throws {
         let expected = DarwinProcessCodeIdentity(
