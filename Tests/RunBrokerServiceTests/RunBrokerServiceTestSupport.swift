@@ -182,6 +182,7 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
     var source: RunBrokerSupervisorReplaySource = .liveAuthenticated
     var identityOverride: RunSupervisorIdentity?
     var replayError: Error?
+    var replayBatchLimit = 4
     var immediateTerminationError: Error?
     var onImmediateTermination: (() -> Void)?
     private(set) var acknowledgements: [UInt64] = []
@@ -207,7 +208,7 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
         defer { lock.unlock() }
         if let replayError { throw replayError }
         replayCursors.append(sequence)
-        let batch = Array(events.filter { $0.sequence > sequence }.prefix(4))
+        let batch = Array(events.filter { $0.sequence > sequence }.prefix(replayBatchLimit))
         return .init(
             identity: identityOverride ?? identity,
             source: source,

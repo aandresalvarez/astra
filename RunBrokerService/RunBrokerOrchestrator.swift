@@ -12,6 +12,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         var sawProviderStarted = false
         var sawCancellationConfirmed = false
         var terminal = false
+        var terminalTailComplete = false
 
         var lastSequence: UInt64 { observations.keys.max() ?? 0 }
     }
@@ -380,17 +381,16 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         guard let execution = try ledger.projection().executions[executionID] else {
             throw RunBrokerServiceError.supervisorIdentityMismatch
         }
-        if execution.control.observedExecution.isAuthoritativelyTerminal {
-            // Terminal ledger state is authoritative. Recovery dependencies
-            // may legitimately disappear after completion; their absence can
-            // never demote settled truth to in-doubt or append an illegal
-            // transition against an absorbing terminal state.
-            let journal = try journalState(executionID: executionID)
-            return .init(
-                state: .terminal,
-                lastSupervisorSequence: journal.lastSequence,
-                replaySource: nil
-            )
+        let wasAuthoritativelyTerminal = execution.control.observedExecution
+            .isAuthoritativelyTerminal
+        if wasAuthoritativelyTerminal,
+           try journalState(executionID: executionID).terminalTailComplete {
+            // providerExited/providerLaunchFailed is the supervisor's final
+            // lifecycle record. Once that tail is durable, retired recovery
+            // dependencies are no longer needed. cancellationConfirmed is
+            // terminal control truth but is not the end of the spool: the
+            // subsequent providerExited audit evidence still must be drained.
+            return try terminalOutcome(executionID: executionID)
         }
         // Two distinct identities meet here. The supervisor process and its
         // vaulted capability are bound forever to the immutable LAUNCH
@@ -407,13 +407,22 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             authority: execution.authority
         )
         guard let capability = try vault.load(executionID: executionID) else {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             return try markInDoubt(identity: identity, reason: "missing_capability")
         }
         guard capability.identity == launchIdentity,
               capability.manifestSHA256 == (try RunSupervisorDigests.manifest(execution.manifest)) else {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             return try markInDoubt(identity: identity, reason: "capability_identity_mismatch")
         }
         guard let policy = execution.manifest.supervisionPolicy else {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             return try markInDoubt(identity: identity, reason: "missing_policy")
         }
 
@@ -506,9 +515,12 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                     )
                     quotaTerminationNeedsRetry = false
                 }
-                if state.terminal { break }
+                if state.lastSequence >= batch.lastSequence { break }
             }
         } catch let error as RunBrokerServiceError {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             switch error {
             case .supervisorIdentityMismatch, .supervisorUnavailable,
                  .capabilityIdentityMismatch, .nonContiguousSupervisorSequence,
@@ -521,8 +533,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 RunSupervisorError.responseAuthenticationFailed,
                 RunSupervisorError.invalidIdentity,
                 RunSupervisorError.launchPayloadConflict {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             return try markInDoubt(identity: identity, reason: "authentication_failed")
         } catch RunLedgerError.eventIDReuse {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
             // Deterministic observation/derived-control event IDs are bound
             // to exact recorded facts. A same-ID different-content collision
             // means supervisor evidence and journal truth diverge. That is
@@ -530,6 +548,23 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             // execution in-doubt instead of letting reconcile throw the raw
             // ledger error forever without ever reaching a durable verdict.
             return try markInDoubt(identity: identity, reason: "durable_evidence_conflict")
+        } catch {
+            if wasAuthoritativelyTerminal {
+                return try terminalOutcome(executionID: executionID)
+            }
+            throw error
+        }
+
+        if lastSource == .offlineAuthenticatedSpool, !state.terminal {
+            // An offline spool can only be opened after the supervisor has
+            // released ownership. Once that durable source is exhausted,
+            // absence of terminal evidence is an incomplete lifecycle, not a
+            // running execution. Persist the uncertainty instead of silently
+            // projecting stale running/admitted state forever.
+            return try markInDoubt(
+                identity: identity,
+                reason: "offline_spool_missing_terminal"
+            )
         }
 
         let projected = try ledger.projection().executions[executionID]
@@ -539,6 +574,17 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             state: terminal ? .terminal : (running ? .running : .admitted),
             lastSupervisorSequence: state.lastSequence,
             replaySource: lastSource
+        )
+    }
+
+    private func terminalOutcome(
+        executionID: RunBrokerExecutionID
+    ) throws -> RunBrokerReconciliationOutcome {
+        let journal = try journalState(executionID: executionID)
+        return .init(
+            state: .terminal,
+            lastSupervisorSequence: journal.lastSequence,
+            replaySource: nil
         )
     }
 
@@ -684,6 +730,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 domain: "execution-launch-failed"
             )
             state.terminal = true
+            state.terminalTailComplete = true
         case .providerExited:
             // Immediate cancellation records cancellationConfirmed before the
             // wrapper is reaped and providerExited is emitted. The exit is
@@ -698,6 +745,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 )
             }
             state.terminal = true
+            state.terminalTailComplete = true
         case .cancellationConfirmed:
             try appendControl(
                 .cancellationConfirmed,
@@ -820,6 +868,9 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 || observation.kind == .cancellationConfirmed
             result.terminal = result.terminal || [
                 .providerExited, .providerLaunchFailed, .cancellationConfirmed,
+            ].contains(observation.kind)
+            result.terminalTailComplete = result.terminalTailComplete || [
+                .providerExited, .providerLaunchFailed,
             ].contains(observation.kind)
         }
         if result.lastSequence > 0 {

@@ -355,12 +355,26 @@ public final class RunSupervisorService: @unchecked Sendable {
     ) {
         lifecycleEventLock.lock()
         defer { lifecycleEventLock.unlock() }
-        stateLock.lock(); let currentProcess = process; stateLock.unlock()
+        stateLock.lock()
+        let currentProcess = process
+        let spool = self.spool
+        stateLock.unlock()
         guard let currentProcess,
-              (currentProcess as AnyObject) === (timedProcess as AnyObject) else { return }
+              (currentProcess as AnyObject) === (timedProcess as AnyObject),
+              let spool else { return }
         runSupervisorServiceLogger.warning(
             "Provider supervision timeout exceeded: \(reason.rawValue, privacy: .public)"
         )
+        do {
+            _ = try spool.appendCritical(reason.eventKind)
+        } catch {
+            // The watchdog must still enforce the immutable safety limit when
+            // storage is degraded. Surface the lost audit evidence explicitly;
+            // normal operation always journals the typed cause before effect.
+            runSupervisorServiceLogger.error(
+                "Unable to persist supervision timeout before termination: \(String(describing: error), privacy: .public)"
+            )
+        }
         _ = timedProcess.terminateImmediately()
     }
 
@@ -449,6 +463,13 @@ private final class RunSupervisorTimeoutWatchdog: @unchecked Sendable {
     enum Reason: String, Sendable {
         case hard = "hard_timeout"
         case idle = "idle_progress_timeout"
+
+        var eventKind: RunSupervisorEventKind {
+            switch self {
+            case .hard: .hardTimeoutExceeded
+            case .idle: .idleProgressTimeoutExceeded
+            }
+        }
     }
 
     private let policy: ExecutionSupervisionPolicySnapshot

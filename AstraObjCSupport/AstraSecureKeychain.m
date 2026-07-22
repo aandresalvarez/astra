@@ -22,6 +22,127 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
 
 @implementation AstraSecureKeychain
 
+#pragma mark - RunBroker exact-code ACL capability
+
++ (SecAccessRef)runBrokerAccessWithTrustedApplicationPaths:(NSArray<NSString *> *)paths {
+    if (paths.count < 2) { return NULL; }
+    NSMutableArray *applications = [NSMutableArray arrayWithCapacity:paths.count];
+    for (NSString *path in paths) {
+        SecTrustedApplicationRef application = NULL;
+        OSStatus status = SecTrustedApplicationCreateFromPath(
+            path.fileSystemRepresentation,
+            &application
+        );
+        if (status != errSecSuccess || application == NULL) {
+            if (application != NULL) { CFRelease(application); }
+            return NULL;
+        }
+        [applications addObject:(__bridge id)application];
+        CFRelease(application);
+    }
+    SecAccessRef access = NULL;
+    OSStatus status = SecAccessCreate(
+        CFSTR("ASTRA RunBroker request capability"),
+        (__bridge CFArrayRef)applications,
+        &access
+    );
+    return status == errSecSuccess ? access : NULL;
+}
+
++ (BOOL)provisionRunBrokerSecretData:(NSData *)data
+                          forAccount:(NSString *)account
+                             service:(NSString *)service
+             trustedApplicationPaths:(NSArray<NSString *> *)trustedApplicationPaths {
+    if (data.length == 0 || account.length == 0 || service.length == 0) { return NO; }
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
+        SecKeychainRef login = NULL;
+        if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) { return NO; }
+        SecAccessRef access = [self runBrokerAccessWithTrustedApplicationPaths:trustedApplicationPaths];
+        if (access == NULL) {
+            CFRelease(login);
+            return NO;
+        }
+
+        const char *serviceName = service.UTF8String;
+        const char *accountName = account.UTF8String;
+        SecKeychainItemRef existing = NULL;
+        OSStatus findStatus = SecKeychainFindGenericPassword(
+            login,
+            (UInt32)strlen(serviceName), serviceName,
+            (UInt32)strlen(accountName), accountName,
+            NULL, NULL,
+            &existing
+        );
+        OSStatus status = findStatus;
+        if (findStatus == errSecSuccess && existing != NULL) {
+            status = SecKeychainItemModifyContent(
+                existing,
+                NULL,
+                (UInt32)data.length,
+                data.bytes
+            );
+            if (status == errSecSuccess) {
+                status = SecKeychainItemSetAccess(existing, access);
+            }
+        } else if (findStatus == errSecItemNotFound) {
+            NSData *label = [@"ASTRA RunBroker request capability" dataUsingEncoding:NSUTF8StringEncoding];
+            SecKeychainAttribute attributes[] = {
+                { kSecServiceItemAttr, (UInt32)strlen(serviceName), (void *)serviceName },
+                { kSecAccountItemAttr, (UInt32)strlen(accountName), (void *)accountName },
+                { kSecLabelItemAttr, (UInt32)label.length, (void *)label.bytes },
+            };
+            SecKeychainAttributeList attributeList = { 3, attributes };
+            status = SecKeychainItemCreateFromContent(
+                kSecGenericPasswordItemClass,
+                &attributeList,
+                (UInt32)data.length,
+                data.bytes,
+                login,
+                access,
+                &existing
+            );
+        }
+        if (existing != NULL) { CFRelease(existing); }
+        CFRelease(access);
+        CFRelease(login);
+        return status == errSecSuccess;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
+}
+
++ (NSData *)runBrokerSecretDataForAccount:(NSString *)account service:(NSString *)service {
+    if (account.length == 0 || service.length == 0) { return nil; }
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
+        SecKeychainRef login = NULL;
+        if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) { return nil; }
+        UInt32 length = 0;
+        void *bytes = NULL;
+        OSStatus status = SecKeychainFindGenericPassword(
+            login,
+            (UInt32)strlen(service.UTF8String), service.UTF8String,
+            (UInt32)strlen(account.UTF8String), account.UTF8String,
+            &length,
+            &bytes,
+            NULL
+        );
+        CFRelease(login);
+        if (status != errSecSuccess || bytes == NULL) {
+            if (bytes != NULL) { SecKeychainItemFreeContent(NULL, bytes); }
+            return nil;
+        }
+        NSData *data = [NSData dataWithBytes:bytes length:length];
+        SecKeychainItemFreeContent(NULL, bytes);
+        return data;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
+}
+
 #pragma mark - User interaction guard
 
 + (void)disableKeychainUserInteractionSavingPrevious:(Boolean *)previous {

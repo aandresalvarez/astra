@@ -341,6 +341,7 @@ struct RunSupervisorServiceTests {
         try assertTimeout(
             policy: .init(hardTimeoutSeconds: 1, idleProgressTimeoutSeconds: 1),
             script: "while :; do printf x; /bin/sleep 0.1; done",
+            expectedWatchdogEvent: .hardTimeoutExceeded,
             identitySeed: 141
         )
     }
@@ -350,6 +351,7 @@ struct RunSupervisorServiceTests {
         try assertTimeout(
             policy: .init(hardTimeoutSeconds: 3, idleProgressTimeoutSeconds: 1),
             script: "/bin/sleep 10",
+            expectedWatchdogEvent: .idleProgressTimeoutExceeded,
             identitySeed: 142
         )
     }
@@ -357,6 +359,7 @@ struct RunSupervisorServiceTests {
     private func assertTimeout(
         policy: ExecutionSupervisionPolicySnapshot,
         script: String,
+        expectedWatchdogEvent: RunSupervisorEventKind,
         identitySeed: UInt8
     ) throws {
         let fixture = try makeFixture("timeout")
@@ -387,6 +390,11 @@ struct RunSupervisorServiceTests {
         let terminal = try #require(events.last { $0.kind == .providerExited })
         #expect(terminal.payload.terminationReason == .signaled)
         #expect(terminal.payload.terminationSignal != nil)
+        let watchdog = try #require(events.last { $0.kind == expectedWatchdogEvent })
+        #expect(watchdog.sequence < terminal.sequence)
+        #expect(events.filter {
+            $0.kind == .hardTimeoutExceeded || $0.kind == .idleProgressTimeoutExceeded
+        }.count == 1)
     }
 
     @Test("a failed diagnostic PID discovery update cannot suppress terminal evidence")

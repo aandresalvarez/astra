@@ -78,7 +78,7 @@ struct RunBrokerPackagingContractTests {
             "RunBrokerRunLedgerAdapter("
         ))
         let ownership = try main.indexOf("RunBrokerUnixSocketListener(")
-        let credentials = try main.indexOf("secureStore.loadOrCreate(")
+        let credentials = try main.indexOf("secureStore.loadOrCreateInstallationID(")
         let ledger = try main.indexOf("RunLedger(configuration:")
         let recovery = try main.indexOf("try scheduler.recover()")
         let reconciliation = try main.indexOf("startRuntimeSwitchReconciliation(")
@@ -86,6 +86,30 @@ struct RunBrokerPackagingContractTests {
         #expect(ownership < ledger)
         #expect(ownership < recovery)
         #expect(ownership < reconciliation)
+    }
+
+    @Test("same-UID providers cannot obtain the broker request capability from disk")
+    func brokerCapabilityUsesExactCodeKeychainACL() throws {
+        let root = repositoryRoot()
+        let bootstrap = try String(contentsOf: root.appendingPathComponent(
+            "RunBrokerKit/RunBrokerClientBootstrap.swift"
+        ))
+        let broker = try String(contentsOf: root.appendingPathComponent(
+            "Tools/AstraRunBrokerTool/main.swift"
+        ))
+        let keychain = try String(contentsOf: root.appendingPathComponent(
+            "AstraObjCSupport/AstraSecureKeychain.m"
+        ))
+
+        #expect(!bootstrap.contains("name: capability"))
+        #expect(bootstrap.contains("RunBrokerCapabilityKeychainStore().load("))
+        #expect(broker.contains("RunBrokerCapabilityKeychainStore().load("))
+        #expect(!broker.contains("secrets.capabilitySecret"))
+        #expect(keychain.contains("SecTrustedApplicationCreateFromPath("))
+        #expect(keychain.contains("SecAccessCreate("))
+        #expect(keychain.contains("if (paths.count < 2) { return NULL; }"))
+        #expect(keychain.contains("[self disableKeychainUserInteractionSavingPrevious:"))
+        #expect(keychain.contains("SecKeychainItemSetAccess(existing, access)"))
     }
 
     @Test("code identity gates supervisor secrets and capability authentication")

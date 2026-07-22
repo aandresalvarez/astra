@@ -78,17 +78,21 @@ private func run() throws -> Never {
         secureStore: secureStore,
         expectedUserID: getuid()
     )
-    let secrets = try secureStore.loadOrCreate(identity: identity)
-    guard secrets.installationID == arguments.installationID else {
+    let installationID = try secureStore.loadOrCreateInstallationID(identity: identity)
+    guard installationID == arguments.installationID else {
         throw BrokerMainError.installationIdentityMismatch
     }
+    let capabilitySecret = try RunBrokerCapabilityKeychainStore().load(
+        channel: arguments.channel,
+        installationID: installationID
+    )
 
     // One canonical ledger instance is shared by the scheduler, durable run
     // orchestrator, status reader, and projection outbox. No adapter owns a
     // second mutable database connection or projection cursor.
     let canonicalLedger = try RunLedger(configuration: .init(
         ledgerDirectoryURL: identity.ledgerDirectoryURL,
-        installationID: secrets.installationID,
+        installationID: installationID,
         exclusiveWriter: true
     ))
     let monitorLedger = RunBrokerRunLedgerAdapter(ledger: canonicalLedger)
@@ -119,7 +123,7 @@ private func run() throws -> Never {
     )
     applicationService.startExecutionReconciliation(logger: BrokerStderrLogger())
     applicationService.startRuntimeSwitchReconciliation(logger: BrokerStderrLogger())
-    let authenticator = RunBrokerRequestAuthenticator(secret: secrets.capabilitySecret)
+    let authenticator = RunBrokerRequestAuthenticator(secret: capabilitySecret)
     let codeIdentityVerifier = DarwinRunBrokerPeerCodeIdentityVerifier()
     let peerPolicy = RunBrokerPeerIdentityPolicy(
         expectedUserID: getuid(),

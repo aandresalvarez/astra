@@ -255,6 +255,59 @@ struct RunBrokerOrchestratorTests {
         #expect(try fixture.ledger.events(limit: 100).count == count)
     }
 
+    @Test("an exhausted offline spool without terminal evidence becomes durably in-doubt")
+    func incompleteOfflineSpoolIsInDoubt() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.source = .offlineAuthenticatedSpool
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+
+        let outcome = try fixture.orchestrator().start(fixture.request())
+
+        #expect(outcome.state == .inDoubt)
+        #expect(outcome.lastSupervisorSequence == 0)
+        #expect(fixture.transport.acknowledgements == [2])
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .inDoubt)
+    }
+
+    @Test("reconciliation drains the advertised durable head after terminal confirmation")
+    func terminalConfirmationDoesNotTruncateReplay() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+        let service = fixture.orchestrator(
+            authorizer: AllowExactRunBrokerImmediateTerminationAuthorizer()
+        )
+        #expect(try service.start(fixture.request()).state == .running)
+        try service.requestImmediateTermination(
+            .init(executionID: fixture.manifest.executionID, intent: .immediate),
+            requestedAt: brokerTestDate.addingTimeInterval(3),
+            auditID: brokerUUID(93)
+        )
+        fixture.transport.replayBatchLimit = 2
+        fixture.transport.events += [
+            fixture.event(3, .terminationStarted, cancellationIntent: .immediate),
+            fixture.event(4, .cancellationConfirmed, cancellationIntent: .immediate),
+            fixture.event(5, .providerExited, exitCode: 143),
+        ]
+
+        let outcome = try service.reconcile(executionID: fixture.manifest.executionID)
+
+        #expect(outcome.state == .terminal)
+        #expect(outcome.lastSupervisorSequence == 5)
+        #expect(fixture.transport.replayCursors.suffix(2) == [2, 4])
+        #expect(fixture.transport.acknowledgements.suffix(2) == [4, 5])
+        let observations = try fixture.ledger.supervisorObservations(
+            for: fixture.manifest.executionID
+        )
+        #expect(observations.map(\.supervisorSequence) == [1, 2, 3, 4, 5])
+    }
+
     @Test("terminal ledger truth survives missing recovery capability")
     func terminalStateDoesNotBecomeInDoubtDuringRecovery() throws {
         let fixture = try BrokerFixture()

@@ -28,7 +28,7 @@ struct RunBrokerUnixTransportTests {
     func endToEndHealth() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -91,7 +91,7 @@ struct RunBrokerUnixTransportTests {
     func sameUIDReplacementCannotForgeResponses() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -163,7 +163,7 @@ struct RunBrokerUnixTransportTests {
     func authenticatedApplicationResponseIsCommandCorrelated() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -434,6 +434,10 @@ struct RunBrokerUnixTransportTests {
 }
 
 private final class SocketFixture {
+    struct Secrets {
+        let installationID: RunBrokerInstallationID
+        let capabilitySecret: RunBrokerCapabilitySecret
+    }
     let root: URL
     let identity: RunBrokerChannelIdentity
     let secureStore: RunBrokerSecureStore
@@ -456,11 +460,11 @@ private final class SocketFixture {
     func cleanup() { try? FileManager.default.removeItem(at: root) }
 
     func runtime() throws -> (
-        secrets: RunBrokerInstallationSecrets,
+        secrets: Secrets,
         authenticator: RunBrokerRequestAuthenticator,
         endpoint: RunBrokerRequestEndpoint
     ) {
-        let secrets = try secureStore.loadOrCreate(identity: identity)
+        let secrets = try secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -485,7 +489,7 @@ private final class SocketFixture {
     }
 
     func client(
-        secrets: RunBrokerInstallationSecrets,
+        secrets: Secrets,
         authenticator: RunBrokerRequestAuthenticator
     ) -> RunBrokerClient {
         RunBrokerClient(
@@ -496,6 +500,13 @@ private final class SocketFixture {
             authenticator: authenticator,
             channel: .development,
             installationID: secrets.installationID
+        )
+    }
+
+    func secrets() throws -> Secrets {
+        .init(
+            installationID: try secureStore.loadOrCreateInstallationID(identity: identity),
+            capabilitySecret: try .init(bytes: Data(repeating: 0x77, count: 32))
         )
     }
 }

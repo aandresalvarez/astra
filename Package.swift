@@ -76,7 +76,7 @@ let package = Package(
         ),
         .target(
             name: "RunBrokerClient",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "AstraObjCSupport"],
             path: "RunBrokerKit",
             exclude: [
                 "RunBrokerApplicationCommandHandling.swift",
@@ -102,6 +102,7 @@ let package = Package(
                 "RunBrokerAuthentication.swift",
                 "RunBrokerClient.swift",
                 "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",
@@ -121,6 +122,7 @@ let package = Package(
                 "RunBrokerAuthentication.swift",
                 "RunBrokerClient.swift",
                 "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",

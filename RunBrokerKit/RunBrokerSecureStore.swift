@@ -12,19 +12,6 @@ public enum RunBrokerSecureFileError: Error, Equatable, Sendable {
     case systemCall(operation: String, code: Int32)
 }
 
-public struct RunBrokerInstallationSecrets: Equatable, Sendable {
-    public let installationID: RunBrokerInstallationID
-    public let capabilitySecret: RunBrokerCapabilitySecret
-
-    public init(
-        installationID: RunBrokerInstallationID,
-        capabilitySecret: RunBrokerCapabilitySecret
-    ) {
-        self.installationID = installationID
-        self.capabilitySecret = capabilitySecret
-    }
-}
-
 public struct RunBrokerSecureStore: Sendable {
     private static let installationIDMaximumByteCount = 64
 
@@ -39,11 +26,14 @@ public struct RunBrokerSecureStore: Sendable {
         self.random = random
     }
 
-    public func loadOrCreate(identity: RunBrokerChannelIdentity) throws -> RunBrokerInstallationSecrets {
+    /// Creates only the public installation identity. Production composition
+    /// uses this path so the request-MAC capability is never written to a
+    /// same-UID-readable file.
+    public func loadOrCreateInstallationID(
+        identity: RunBrokerChannelIdentity
+    ) throws -> RunBrokerInstallationID {
         try ensurePrivateDirectory(identity.supportDirectory)
         try ensurePrivateDirectory(identity.authenticationDirectory)
-
-        let installationID: RunBrokerInstallationID
         if fileExistsWithoutFollowingSymlink(identity.installationIDURL) {
             let data = try readPrivateFile(
                 identity.installationIDURL,
@@ -55,29 +45,15 @@ public struct RunBrokerSecureStore: Sendable {
                   text == uuid.uuidString + "\n" else {
                 throw RunBrokerSecureFileError.invalidInstallationID
             }
-            installationID = RunBrokerInstallationID(rawValue: uuid)
+            return RunBrokerInstallationID(rawValue: uuid)
         } else {
-            installationID = RunBrokerInstallationID()
+            let installationID = RunBrokerInstallationID()
             try createPrivateFile(
                 Data((installationID.rawValue.uuidString + "\n").utf8),
                 at: identity.installationIDURL
             )
+            return installationID
         }
-
-        let capabilitySecret: RunBrokerCapabilitySecret
-        if fileExistsWithoutFollowingSymlink(identity.capabilitySecretURL) {
-            capabilitySecret = try RunBrokerCapabilitySecret(
-                bytes: readPrivateFile(identity.capabilitySecretURL)
-            )
-        } else {
-            let bytes = try random.randomBytes(
-                count: RunBrokerAuthenticationPolicy.secretByteCount
-            )
-            capabilitySecret = try RunBrokerCapabilitySecret(bytes: bytes)
-            try createPrivateFile(bytes, at: identity.capabilitySecretURL)
-        }
-
-        return .init(installationID: installationID, capabilitySecret: capabilitySecret)
     }
 
     public func readPrivateFile(_ url: URL) throws -> Data {

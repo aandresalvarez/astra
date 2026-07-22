@@ -30,6 +30,10 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
     private let trustedRootURL: URL
     private let productionApplicationSupportDirectoryURL: URL
     private let developmentApplicationSupportDirectoryURL: URL
+    private let capabilitySecretLoader: @Sendable (
+        RunBrokerChannel,
+        RunBrokerInstallationID
+    ) throws -> RunBrokerCapabilitySecret
 
     public init(expectedUserID: UInt32 = getuid()) {
         let environment = ProcessInfo.processInfo.environment
@@ -49,13 +53,20 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
                 environment: environment,
                 fileManager: fileManager
             )
+        self.capabilitySecretLoader = { channel, installationID in
+            try RunBrokerCapabilityKeychainStore().load(
+                channel: channel,
+                installationID: installationID
+            )
+        }
     }
 
     package init(
         expectedUserID: UInt32,
         testingHomeDirectoryURL: URL,
         testingDevelopmentApplicationSupportDirectoryURL: URL? = nil,
-        testingProductionApplicationSupportDirectoryURL: URL? = nil
+        testingProductionApplicationSupportDirectoryURL: URL? = nil,
+        testingCapabilitySecret: RunBrokerCapabilitySecret? = nil
     ) {
         self.expectedUserID = expectedUserID
         self.homeDirectoryURL = testingHomeDirectoryURL.standardizedFileURL
@@ -73,6 +84,13 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
             (testingDevelopmentApplicationSupportDirectoryURL
                 ?? applicationSupportBase.appendingPathComponent("AstraDev", isDirectory: true))
             .standardizedFileURL
+        self.capabilitySecretLoader = { channel, installationID in
+            if let testingCapabilitySecret { return testingCapabilitySecret }
+            return try RunBrokerCapabilityKeychainStore().load(
+                channel: channel,
+                installationID: installationID
+            )
+        }
     }
 
     /// Filesystem and credential IO always runs away from the caller's actor.
@@ -86,13 +104,15 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
         case .production: productionApplicationSupportDirectoryURL
         case .development: developmentApplicationSupportDirectoryURL
         }
+        let capabilitySecretLoader = self.capabilitySecretLoader
         return try await Task.detached(priority: .userInitiated) {
             try Self.loadSynchronously(
                 homeDirectoryURL: homeDirectoryURL,
                 trustedRootURL: trustedRootURL,
                 applicationSupportDirectoryURL: applicationSupportDirectoryURL,
                 channel: channel,
-                expectedUserID: expectedUserID
+                expectedUserID: expectedUserID,
+                capabilitySecretLoader: capabilitySecretLoader
             )
         }.value
     }
@@ -102,13 +122,19 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
         trustedRootURL: URL,
         applicationSupportDirectoryURL: URL,
         channel: RunBrokerChannel,
-        expectedUserID: UInt32
+        expectedUserID: UInt32,
+        capabilitySecretLoader: @Sendable (
+            RunBrokerChannel,
+            RunBrokerInstallationID
+        ) throws -> RunBrokerCapabilitySecret
     ) throws -> RunBrokerClientBootstrap {
         let material = try RunBrokerReadOnlyBootstrapPath.validateAndRead(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
             applicationSupportDirectoryURL: applicationSupportDirectoryURL,
-            expectedUserID: expectedUserID
+            expectedUserID: expectedUserID,
+            channel: channel,
+            capabilitySecretLoader: capabilitySecretLoader
         )
         let connector = RunBrokerReadOnlyBootstrapConnector(
             homeDirectoryURL: homeDirectoryURL,
@@ -203,14 +229,18 @@ private enum RunBrokerReadOnlyBootstrapPath {
     private static let authentication = "Authentication"
     private static let ipc = "IPC"
     private static let installationID = "installation-id"
-    private static let capability = "capability.key"
     private static let socket = "broker.sock"
 
     static func validateAndRead(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
         applicationSupportDirectoryURL: URL,
-        expectedUserID: UInt32
+        expectedUserID: UInt32,
+        channel: RunBrokerChannel,
+        capabilitySecretLoader: @Sendable (
+            RunBrokerChannel,
+            RunBrokerInstallationID
+        ) throws -> RunBrokerCapabilitySecret
     ) throws -> RunBrokerReadOnlyBootstrapMaterial {
         let support = try openSupportDirectory(
             homeDirectoryURL: homeDirectoryURL,
@@ -246,16 +276,10 @@ private enum RunBrokerReadOnlyBootstrapPath {
               installationText == uuid.uuidString + "\n" else {
             throw RunBrokerClientBootstrapError.invalidInstallationID
         }
-        let capabilityData = try readFile(
-            at: authentication,
-            name: capability,
-            expectedByteCount: RunBrokerAuthenticationPolicy.secretByteCount,
-            maximumByteCount: RunBrokerAuthenticationPolicy.secretByteCount,
-            expectedUserID: expectedUserID
-        )
+        let parsedInstallationID = RunBrokerInstallationID(rawValue: uuid)
         return try .init(
-            installationID: .init(rawValue: uuid),
-            capabilitySecret: .init(bytes: capabilityData)
+            installationID: parsedInstallationID,
+            capabilitySecret: capabilitySecretLoader(channel, parsedInstallationID)
         )
     }
 

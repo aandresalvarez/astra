@@ -15,6 +15,8 @@ public struct RunBrokerCapabilitySecret: Equatable, Sendable, CustomStringConver
     CustomDebugStringConvertible, CustomReflectable {
     fileprivate let bytes: Data
 
+    package var keychainBytes: Data { bytes }
+
     public init(bytes: Data) throws {
         guard bytes.count == RunBrokerAuthenticationPolicy.secretByteCount else {
             throw RunBrokerContractError.invalidCapabilitySecret

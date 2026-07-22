@@ -117,7 +117,7 @@ struct RunBrokerClientBootstrapTests {
         #expect(try fixture.snapshot() == symlinkBefore)
     }
 
-    @Test("wrong credential mode and non-socket endpoint fail closed")
+    @Test("filesystem capability is ignored and non-socket endpoint fails closed")
     func modeAndEndpointTypeFailClosed() async throws {
         let credentialFixture = try ClientBootstrapFixture()
         defer { credentialFixture.cleanup() }
@@ -127,12 +127,8 @@ struct RunBrokerClientBootstrapTests {
         guard chmod(key.path, 0o644) == 0 else {
             throw ClientBootstrapFixtureError.systemCall("chmod-key", errno)
         }
-        await #expect(throws: RunBrokerClientBootstrapError.wrongPermissions(
-            expected: 0o600,
-            actual: 0o644
-        )) {
-            _ = try await credentialFixture.loader.load(channel: .development)
-        }
+        #expect(try await credentialFixture.loader.load(channel: .development).installationID
+            == credentialFixture.installationID)
 
         let endpointFixture = try ClientBootstrapFixture()
         defer { endpointFixture.cleanup() }
@@ -150,7 +146,7 @@ struct RunBrokerClientBootstrapTests {
         }
     }
 
-    @Test("hardlinked and oversized credentials fail before allocation")
+    @Test("hardlinked and oversized filesystem capabilities are never authority")
     func hardlinkAndOversizeFailClosed() async throws {
         let hardlinkFixture = try ClientBootstrapFixture()
         defer { hardlinkFixture.cleanup() }
@@ -159,9 +155,8 @@ struct RunBrokerClientBootstrapTests {
         guard link(key.path, alias.path) == 0 else {
             throw ClientBootstrapFixtureError.systemCall("hardlink", errno)
         }
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await hardlinkFixture.loader.load(channel: .development)
-        }
+        #expect(try await hardlinkFixture.loader.load(channel: .development).installationID
+            == hardlinkFixture.installationID)
 
         let oversizedFixture = try ClientBootstrapFixture()
         defer { oversizedFixture.cleanup() }
@@ -171,12 +166,11 @@ struct RunBrokerClientBootstrapTests {
             Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount + 1),
             at: oversized
         )
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await oversizedFixture.loader.load(channel: .development)
-        }
+        #expect(try await oversizedFixture.loader.load(channel: .development).installationID
+            == oversizedFixture.installationID)
     }
 
-    @Test("installation ID canonical form and secret size are exact")
+    @Test("installation ID canonical form is exact and filesystem secret is ignored")
     func exactCredentialFormatsAreRequired() async throws {
         let identifierFixture = try ClientBootstrapFixture()
         defer { identifierFixture.cleanup() }
@@ -196,9 +190,8 @@ struct RunBrokerClientBootstrapTests {
             Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount - 1),
             at: secret
         )
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await secretFixture.loader.load(channel: .development)
-        }
+        #expect(try await secretFixture.loader.load(channel: .development).installationID
+            == secretFixture.installationID)
     }
 }
 
@@ -223,7 +216,10 @@ private final class ClientBootstrapFixture {
             testingDevelopmentApplicationSupportDirectoryURL:
                 channel == .development ? applicationSupport : nil,
             testingProductionApplicationSupportDirectoryURL:
-                channel == .production ? applicationSupport : nil
+                channel == .production ? applicationSupport : nil,
+            testingCapabilitySecret: try? RunBrokerCapabilitySecret(
+                bytes: Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount)
+            )
         )
     }
 
