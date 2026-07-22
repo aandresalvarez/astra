@@ -224,11 +224,16 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
-        InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: harness.context,
+            taskQueue: TaskQueue(poolSize: 0)
+        )
+        await coordinator.approveTask(task)?.value
         _ = await runHandle.value
 
         #expect(task.status == .completed)
         #expect(task.runs.count == 1)
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: harness.context).isEmpty)
         #expect(task.runs.first?.output == "Pushed after live approval")
         #expect(task.sessionId == "live-approval-sess")
         #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Live permission approved") })

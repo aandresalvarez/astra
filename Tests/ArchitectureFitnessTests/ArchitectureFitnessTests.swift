@@ -1560,16 +1560,35 @@ struct ArchitectureFitnessTests {
         // missing this before it was fixed. This ratchet doesn't verify a
         // new site calls the cleanup correctly, but it forces a deliberate,
         // reviewed bump instead of a silent regression the next time a
-        // deletion call site is added. Baseline 5: TaskLifecycleCoordinator
-        // .deleteTask/.deleteWorkspace, TaskQueue.routeScheduleResult
-        // (same-thread schedule merge), TaskStoreMaintenance
-        // .deduplicateImportedSessions — plus pruneAbandonedDrafts, which is
-        // exempt: it only ever deletes tasks with task.runs.isEmpty, and a
-        // TaskTurnRequest can only be created for a task that has already
-        // been submitted into conversation at least once.
+        // deletion call site is added. Baseline 7: TaskLifecycleCoordinator
+        // .deleteTask/.deleteWorkspace, TaskStoreMaintenance
+        // .deduplicateImportedSessions, and three pre-persistence submission
+        // rollback paths in TaskScheduler/ChatPanelView — plus
+        // pruneAbandonedDrafts. The submission rollback paths run only after
+        // the atomic submission service has removed its failed request row;
+        // abandoned drafts have never crossed the submission boundary.
         #expect(
-            count <= 5,
+            count <= 7,
             "New AgentTask/Workspace deletion site — route it through cancelAndRemoveTurnRequests (or the equivalent turn-request cleanup) before bumping this ratchet. Current count: \(count)"
+        )
+    }
+
+    @Test("Provider-bound launches stay behind the durable request queue")
+    func providerLaunchesStayBehindDurableRequestQueue() throws {
+        let root = try repositoryRoot()
+        let allowed = "Astra/Services/Tasks/TaskQueue.swift"
+        let callPatterns = [".continueSession(", ".executeTask(", ".executeApprovedPlan("]
+        let violations = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .compactMap { file -> String? in
+                let relative = relativePath(for: file, root: root)
+                guard relative != allowed else { return nil }
+                let source = try String(contentsOf: file, encoding: .utf8)
+                return callPatterns.contains(where: source.contains) ? relative : nil
+            }
+
+        #expect(
+            violations.isEmpty,
+            "Submit a durable execution request and signal TaskQueue instead of launching a provider directly: \(violations)"
         )
     }
 

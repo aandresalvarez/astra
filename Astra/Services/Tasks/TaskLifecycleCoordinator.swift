@@ -56,8 +56,38 @@ final class TaskLifecycleCoordinator {
         AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
             "source": "manual_run"
         ])
+        let activeRequests: [TaskTurnRequest]
+        do {
+            activeRequests = try TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)
+        } catch {
+            return Task {}
+        }
+        let request: TaskTurnRequest
+        if let existing = activeRequests.first {
+            guard existing.kind == .initial || existing.kind == .scheduled || existing.kind == .retry else {
+                AppLogger.audit(.taskStats, category: "UI", taskID: task.id, fields: [
+                    "event": "manual_run_rejected",
+                    "active_request_kind": existing.kind.rawValue
+                ], level: .warning)
+                return Task {}
+            }
+            request = existing
+        } else {
+            guard case .success(let submission) = ExecutionRequestSubmissionService.submitInitial(
+                for: task,
+                into: modelContext
+            ), let saved = try? TaskTurnRequestRepository.request(id: submission.requestID, in: modelContext) else {
+                return Task {}
+            }
+            request = saved
+        }
+        let launch = taskQueue.signalExecutionRequest(
+            id: request.id,
+            task: task,
+            modelContext: modelContext
+        )
         return Task {
-            await taskQueue.executeTask(task, modelContext: modelContext)
+            await launch.value
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
@@ -100,103 +130,42 @@ final class TaskLifecycleCoordinator {
             return nil
         }
         let retryTurn = latestRetryableTurnRequest(for: task)
-        // Any durable message still eligible for retry was already picked up
-        // above via `retryTurn`. Exclude every durably-tracked message (not
-        // just the rejected candidate) from the legacy fallback below, or a
-        // stale/superseded durable follow-up can be resurrected and executed
-        // through the non-durable continuation path.
         let durableMessageEventIDs = Set(
             (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?.map(\.messageEventID) ?? []
         )
         let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
             ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
-        let retryMode = retryTurn != nil
-            ? "durable_follow_up"
-            : (retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up")
+        let retryMode = retryFollowUpMessage == nil ? "initial_task" : "continuation"
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
             "retry_mode": retryMode
         ])
-        let interruptionSummary = TaskRunLifecycleService.cancelTask(
-            task,
-            modelContext: modelContext,
-            source: .supersededByNewRun
+        let snapshot = ExecutionMutationSnapshot(task)
+        let continuation = retryFollowUpMessage != nil
+        let result = ExecutionRequestSubmissionService.submitRetry(
+            message: retryFollowUpMessage,
+            continuation: continuation,
+            for: task,
+            into: modelContext,
+            prepare: {
+                TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
+                if !continuation {
+                    task.tokensUsed = 0
+                    task.costUSD = 0
+                }
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Task.retried,
+                    payload: continuation ? "Latest follow-up re-queued for retry." : "Task re-queued for retry."
+                ))
+            },
+            rollback: { snapshot.restore(task, in: modelContext) }
         )
-        let isDurableFollowUpRetry = retryTurn != nil && retryFollowUpMessage != nil
-        // A base-task retry re-runs the whole goal through the queue. A durable
-        // follow-up retry must NOT re-enqueue the task: `.queued` invites
-        // processQueue/executeTask to re-run the base goal, racing
-        // continuePersistedTurn (double execution). continuePersistedTurn
-        // promotes the task to `.running` itself, and the follow-up's cumulative
-        // token/cost totals must not be reset.
-        if !isDurableFollowUpRetry {
-            TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
-            task.tokensUsed = 0
-            task.costUSD = 0
-        }
-        let event = TaskEvent(
+        guard case .success(let submission) = result else { return nil }
+        return taskQueue.signalExecutionRequest(
+            id: submission.requestID,
             task: task,
-            eventType: TaskEventTypes.Task.retried,
-            payload: retryFollowUpMessage == nil
-                ? "Task re-queued for retry."
-                : "Latest follow-up re-queued for retry."
+            modelContext: modelContext
         )
-        modelContext.insert(event)
-        if interruptionSummary.runsUpdated > 0 {
-            AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                "next_status": task.status.rawValue
-            ], level: .warning)
-        }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        if let retryTurn, let retryFollowUpMessage {
-            _ = TaskTurnRequestStateMachine.transition(retryTurn, to: .waitingForWorker)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: [
-                    "operation": "retry_turn_request",
-                    "request_id": retryTurn.id.uuidString
-                ]
-            )
-            AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
-                "source": "retry_durable_follow_up",
-                "request_id": retryTurn.id.uuidString
-            ])
-            return Task {
-                let didStart = await taskQueue.continueSession(
-                    task: task,
-                    message: retryFollowUpMessage,
-                    existingMessageEventID: retryTurn.messageEventID,
-                    turnRequestID: retryTurn.id,
-                    modelContext: modelContext
-                )
-                guard didStart else { return }
-                AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                    "status": task.status.rawValue,
-                    "source": "retry_durable_follow_up"
-                ])
-            }
-        } else if let retryFollowUpMessage {
-            AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
-                "source": "retry_latest_follow_up"
-            ])
-            return Task {
-                let didStart = await taskQueue.continueSession(
-                    task: task,
-                    message: retryFollowUpMessage,
-                    modelContext: modelContext
-                )
-                guard didStart else { return }
-                AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                    "status": task.status.rawValue,
-                    "source": "retry_latest_follow_up"
-                ])
-            }
-        } else {
-            return runSingleTask(task)
-        }
     }
 
     /// The durable turn Retry may resurrect: the task's newest request, only
@@ -217,7 +186,8 @@ final class TaskLifecycleCoordinator {
     }
 
     private func message(for request: TaskTurnRequest, task: AgentTask) -> String? {
-        task.events.first(where: { $0.id == request.messageEventID })?.payload
+        guard let event = task.events.first(where: { $0.id == request.messageEventID }) else { return nil }
+        return (ExecutionRequestSubmissionService.decodeSourcePayload(event)?.message ?? event.payload)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -229,24 +199,28 @@ final class TaskLifecycleCoordinator {
             ], level: .warning)
             return nil
         }
-        AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
-        task.updatedAt = Date()
-        task.markRead()
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
-        modelContext.insert(event)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        return Task {
-            let didStart = await taskQueue.continueSession(
-                task: task,
-                message: Self.resumeContinuationMessage(for: task),
-                modelContext: modelContext
-            )
-            guard didStart else { return }
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "resume"
-            ])
+        guard (try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext).isEmpty) == true else {
+            return nil
         }
+        AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
+        let snapshot = ExecutionMutationSnapshot(task)
+        let result = ExecutionRequestSubmissionService.submitResume(
+            message: Self.resumeContinuationMessage(for: task),
+            for: task,
+            into: modelContext,
+            prepare: {
+                task.updatedAt = Date()
+                task.markRead()
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Task.resumed,
+                    payload: "Resuming previous session — continuing where the agent left off."
+                ))
+            },
+            rollback: { snapshot.restore(task, in: modelContext) }
+        )
+        guard case .success(let submission) = result else { return nil }
+        return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
     }
 
     @discardableResult
@@ -405,13 +379,15 @@ final class TaskLifecycleCoordinator {
             payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
         )
         modelContext.insert(event)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
         // A live in-flight ask means the provider process is still alive and
         // blocked on this decision: answer it over the control channel instead
         // of relaunching a new run. The recorded grants cover later turns.
-        if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
-            return Task {}
+        if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
+            guard persistLivePermissionApproval(task) else { return Task {} }
+            if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
+                return Task {}
+            }
         }
 
         let resumeMessage = PermissionBroker.resumeMessage(
@@ -421,19 +397,13 @@ final class TaskLifecycleCoordinator {
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
-        return Task {
-            let didStart = await taskQueue.continueSession(
-                task: task,
-                message: resumeMessage,
-                modelContext: modelContext,
-                executionPolicy: .default
-            )
-            guard didStart else { return }
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_task_approval"
-            ])
-        }
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: resumeMessage,
+            executionPolicy: .default,
+            for: task,
+            into: modelContext
+        ) else { return nil }
+        return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
     }
 
     private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
@@ -453,31 +423,45 @@ final class TaskLifecycleCoordinator {
             payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
         )
         modelContext.insert(event)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
         // Live in-flight ask: answer the waiting provider process instead of
         // relaunching a new run.
-        if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
-            AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
-                "approval_type": "runtime_permission_live",
-                "approval_scope": "once"
-            ])
-            return Task {}
+        if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
+            guard persistLivePermissionApproval(task) else { return Task {} }
+            if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
+                AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+                    "approval_type": "runtime_permission_live",
+                    "approval_scope": "once"
+                ])
+                return Task {}
+            }
         }
 
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
-        return Task {
-            let didStart = await taskQueue.continueSession(
-                task: task,
-                message: resumeMessage,
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: resumeMessage,
+            executionPolicy: executionPolicy,
+            for: task,
+            into: modelContext
+        ) else { return Task {} }
+        return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
+    }
+
+    private func persistLivePermissionApproval(_ task: AgentTask) -> Bool {
+        do {
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
                 modelContext: modelContext,
-                executionPolicy: executionPolicy
+                taskID: task.id,
+                auditFields: ["operation": "live_permission_approval"]
             )
-            guard didStart else { return }
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_approval"
-            ])
+            return true
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: task.id, fields: [
+                "operation": "live_permission_approval",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
         }
     }
 
@@ -1026,5 +1010,40 @@ final class TaskLifecycleCoordinator {
 
     enum DuplicateAction {
         case skip, replace, duplicate
+    }
+}
+
+@MainActor
+private struct ExecutionMutationSnapshot {
+    let state: TaskStateMachine.Snapshot
+    let updatedAt: Date
+    let unreadAt: Date?
+    let tokensUsed: Int
+    let costUSD: Double
+    let eventIDs: Set<UUID>
+
+    init(_ task: AgentTask) {
+        state = TaskStateMachine.snapshot(task)
+        updatedAt = task.updatedAt
+        unreadAt = task.unreadAt
+        tokensUsed = task.tokensUsed
+        costUSD = task.costUSD
+        eventIDs = Set(task.events.map(\.id))
+    }
+
+    func restore(_ task: AgentTask, in modelContext: ModelContext) {
+        TaskStateMachine.restoreExecutionSubmissionFailure(
+            task,
+            snapshot: state,
+            modelContext: modelContext,
+            at: updatedAt
+        )
+        task.updatedAt = updatedAt
+        task.unreadAt = unreadAt
+        task.tokensUsed = tokensUsed
+        task.costUSD = costUSD
+        for event in task.events where !eventIDs.contains(event.id) {
+            modelContext.delete(event)
+        }
     }
 }

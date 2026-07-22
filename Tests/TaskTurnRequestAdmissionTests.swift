@@ -5,7 +5,7 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-@Suite("Durable task-turn admission")
+@Suite("Durable task-turn admission", .serialized)
 @MainActor
 struct TaskTurnRequestAdmissionTests {
     private func makeContainer() throws -> ModelContainer {
@@ -357,15 +357,32 @@ struct TaskTurnRequestAdmissionTests {
         let staleHandle = coordinator.retryTask(task)
         #expect(request.state == .failed)
         _ = await staleHandle?.value
+        let staleReplacement = try #require(
+            try TaskTurnRequestRepository.activeRequests(for: task, in: context).first
+        )
+        #expect(staleReplacement.id != request.id)
+        #expect(staleReplacement.kind == .retry)
+        queue.cancelTurnRequest(id: staleReplacement.id, workspace: workspace, modelContext: context)
 
-        // When every run predates the request's failure, the request IS the
-        // latest failure and the durable path re-queues it.
+        // When every run predates the request's failure, its message becomes
+        // the retry source, but the immutable failed row is never resurrected:
+        // a new retry request owns the new attempt.
         newerRun.startedAt = Date(timeIntervalSince1970: 10)
         task.status = .failed
         let freshHandle = coordinator.retryTask(task)
-        #expect(request.state == .waitingForWorker)
-        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+        let freshRequest = try #require(
+            try TaskTurnRequestRepository.activeRequests(for: task, in: context).first
+        )
+        #expect(request.state == .failed)
+        #expect(freshRequest.id != request.id)
+        #expect(freshRequest.kind == .retry)
+        #expect(freshRequest.state == .waitingForWorker)
+        queue.cancelTurnRequest(id: freshRequest.id, workspace: workspace, modelContext: context)
         _ = await freshHandle?.value
+        // Invalidate the zero-worker queue's scheduled processing coroutine,
+        // then yield so its generation guard can release captured test models.
+        queue.cancelAll()
+        await Task.yield()
     }
 
     @Test("Startup dedup never deletes an imported task with an active turn request")

@@ -146,20 +146,42 @@ final class TaskScheduler {
             }
         }
 
-        schedule.lastFiredAt = Date()
-        schedule.fireCount += 1
-        schedule.advanceNextFireDate()
-
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: schedule.workspace, modelContext: modelContext
-        )
+        let previousLastFiredAt = schedule.lastFiredAt
+        let previousFireCount = schedule.fireCount
+        let previousNextFireDate = schedule.nextFireDate
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitScheduled(
+            scheduleID: schedule.id,
+            for: task,
+            into: modelContext,
+            prepare: {
+                schedule.lastFiredAt = Date()
+                schedule.fireCount += 1
+                schedule.advanceNextFireDate()
+            },
+            rollback: {
+                schedule.lastFiredAt = previousLastFiredAt
+                schedule.fireCount = previousFireCount
+                schedule.nextFireDate = previousNextFireDate
+            }
+        ) else {
+            modelContext.delete(task)
+            AppLogger.audit(.taskFailed, category: "Scheduler", taskID: task.id, fields: [
+                "operation": "scheduled_execution_submission",
+                "schedule_id": schedule.id.uuidString
+            ], level: .error)
+            return
+        }
 
         AppLogger.audit(.scheduleFired, category: "Scheduler", taskID: task.id, fields: [
             "schedule_id": schedule.id.uuidString,
             "workspace_id": schedule.workspace?.id.uuidString ?? "none"
         ])
 
-        taskQueue.processQueueIfIdle(modelContext: modelContext)
+        taskQueue.signalExecutionRequest(
+            id: submission.requestID,
+            task: task,
+            modelContext: modelContext
+        )
     }
 
     static func resolvedSkills(for schedule: TaskSchedule, globalSkills: [Skill]) -> [Skill] {

@@ -185,7 +185,16 @@ enum WorkspaceCommandService {
         }
 
         modelContext.insert(mainTask)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        let runnableTask = beforeTask ?? mainTask
+        guard case .success = ExecutionRequestSubmissionService.submitInitial(
+            for: runnableTask,
+            into: modelContext
+        ) else {
+            AppLogger.audit(.taskFailed, category: "UI", taskID: runnableTask.id, fields: [
+                "operation": "template_execution_submission"
+            ], level: .error)
+            return TemplateTaskCreation(mainTask: mainTask, beforeTask: beforeTask)
+        }
         AppLogger.audit(.taskCreated, category: "UI", taskID: mainTask.id, fields: [
             "source": source,
             "workspace_id": workspace.id.uuidString,

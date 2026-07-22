@@ -81,6 +81,8 @@ final class AgentRuntimeWorker {
         modelContext: ModelContext,
         promptOverride: String? = nil,
         startEventPayload: String? = nil,
+        existingStartEventID: UUID? = nil,
+        executionRequestID: UUID? = nil,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
@@ -99,6 +101,8 @@ final class AgentRuntimeWorker {
             onEvent: onEvent,
             promptOverride: promptOverride,
             startEventPayload: startEventPayload,
+            existingStartEventID: existingStartEventID,
+            turnRequestID: executionRequestID,
             auditPhase: "run",
             recordingMode: .initial,
             executionPolicy: executionPolicy
@@ -110,6 +114,8 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         plan: TaskPlanPayload,
         mode: TaskPlanExecutionMode = .fullPlan,
+        existingStartEventID: UUID? = nil,
+        executionRequestID: UUID? = nil,
         modelContext: ModelContext,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
@@ -177,6 +183,8 @@ final class AgentRuntimeWorker {
             promptOverride: prompt,
             startEventPayload: approvedStep.map { "Agent started approved plan step: \($0.title)" }
                 ?? "Agent started executing approved plan: \(currentPlan.title)",
+            existingStartEventID: existingStartEventID,
+            executionRequestID: executionRequestID,
             executionPolicy: executionPolicy,
             onEvent: onEvent
         )
@@ -1289,7 +1297,7 @@ final class AgentRuntimeWorker {
            task.status == .completed,
            runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
            !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            createChainedTask(from: task, run: run, modelContext: modelContext)
+            ChainedTaskSubmissionService.create(from: task, run: run, modelContext: modelContext)
         }
 
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
@@ -1553,46 +1561,6 @@ final class AgentRuntimeWorker {
         )
         TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
         return roleRuntime.configuration
-    }
-
-    @MainActor
-    private func createChainedTask(
-        from task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) {
-        let output = run.output
-        let nextTask = AgentTask(
-            title: String(task.chainedGoal.prefix(60)),
-            goal: task.chainedGoal,
-            workspace: task.workspace,
-            tokenBudget: task.tokenBudget,
-            model: task.model,
-            runtime: task.resolvedRuntimeID,
-            isolationStrategy: task.isolationStrategy,
-            validationStrategy: task.validationStrategy
-        )
-        TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
-        nextTask.chainedFromID = task.id
-        nextTask.runtimeID = task.runtimeID
-        nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
-        // A chained follow-up continues in the same checkout and execution
-        // environment as its parent.
-        nextTask.executionRootPath = task.executionRootPath
-        nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
-        if !output.isEmpty {
-            nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
-        }
-        nextTask.skills = task.skills
-        TaskCapabilitySnapshotter.capture(for: nextTask)
-        modelContext.insert(nextTask)
-
-        let chainEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.chained,
-            payload: "Chained to next task: \(nextTask.title)")
-        modelContext.insert(chainEvent)
-        AppLogger.audit(.taskChained, category: "Worker", taskID: task.id, fields: [
-            "next_task_id": nextTask.id.uuidString
-        ])
     }
 
     @MainActor
