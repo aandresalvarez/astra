@@ -9,6 +9,30 @@ import Testing
 
 @Suite("RunBroker durability and dormant app seams", .serialized)
 struct RunBrokerDurabilityAndStartupTests {
+    @Test("supervisor spawn sources are duplicated above reserved bootstrap targets")
+    func supervisorSpawnSourcesAvoidReservedTargets() throws {
+        let descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        #expect(descriptor >= 0)
+        defer { close(descriptor) }
+        let reserved = try DarwinRunBrokerSupervisorSpawner.reserveSourceDescriptor(descriptor)
+        defer { close(reserved) }
+        #expect(reserved >= 5)
+        #expect(fcntl(reserved, F_GETFD) & FD_CLOEXEC != 0)
+    }
+
+    @Test("supervisor children are reaped after normal exit and forced termination")
+    func supervisorChildrenAreAlwaysReaped() throws {
+        for signal in [Int32(0), SIGKILL] {
+            let pid = try spawnReaperFixture(shouldWait: signal != 0)
+            DarwinRunBrokerSupervisorSpawner.startReaping(pid)
+            if signal != 0 { #expect(kill(pid, signal) == 0) }
+            #expect(waitUntilProcessGone(pid, timeout: 5))
+            var status: Int32 = 0
+            #expect(waitpid(pid, &status, WNOHANG) == -1)
+            #expect(errno == ECHILD)
+        }
+    }
+
     @Test("capability vault writes a private fsynced identity record and refuses replacement")
     func capabilityVaultDurability() throws {
         let root = try temporaryDirectory("vault")
@@ -40,6 +64,29 @@ struct RunBrokerDurabilityAndStartupTests {
         #expect(throws: RunBrokerServiceError.capabilityIdentityMismatch) {
             try vault.persistAndSynchronize(conflict)
         }
+    }
+
+    @Test("capability vault synchronizes an identical existing publication before succeeding")
+    func capabilityVaultSynchronizesExistingPublication() throws {
+        let root = try temporaryDirectory("vault-existing")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vaultURL = root.appendingPathComponent("capabilities", isDirectory: true)
+        let synchronizations = DirectorySynchronizationRecorder()
+        let vault = DarwinRunBrokerCapabilityVault(
+            directoryURL: vaultURL,
+            directorySynchronizer: { url in synchronizations.record(url) }
+        )
+        let fixture = try BrokerFixture()
+        let record = RunBrokerCapabilityRecord(
+            identity: .init(manifest: fixture.manifest),
+            manifestSHA256: try RunSupervisorDigests.manifest(fixture.manifest),
+            capability: try .init(bytes: Data(repeating: 7, count: 32))
+        )
+
+        try vault.persistAndSynchronize(record)
+        try vault.persistAndSynchronize(record)
+
+        #expect(synchronizations.urls == [vaultURL, vaultURL])
     }
 
     @Test("projection remains pending across broker instances until exact app acknowledgement")
@@ -140,6 +187,17 @@ struct RunBrokerDurabilityAndStartupTests {
     }
 }
 
+private final class DirectorySynchronizationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedURLs: [URL] = []
+
+    var urls: [URL] { lock.withLock { recordedURLs } }
+
+    func record(_ url: URL) {
+        lock.withLock { recordedURLs.append(url) }
+    }
+}
+
 actor AsyncStageRecorder {
     private(set) var values: [String] = []
     func append(_ value: String) { values.append(value) }
@@ -155,4 +213,29 @@ private func temporaryDirectory(_ suffix: String) throws -> URL {
 private func permissions(_ url: URL) -> Int {
     let attributes = try! FileManager.default.attributesOfItem(atPath: url.path)
     return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+}
+
+private func spawnReaperFixture(shouldWait: Bool) throws -> pid_t {
+    let arguments = shouldWait ? ["/bin/sleep", "10"] : ["/usr/bin/true"]
+    var argv = arguments.map { strdup($0) } + [nil]
+    defer { argv.forEach { if let value = $0 { free(value) } } }
+    var pid: pid_t = 0
+    let result = arguments[0].withCString { executable in
+        argv.withUnsafeMutableBufferPointer {
+            posix_spawn(&pid, executable, nil, nil, $0.baseAddress, environ)
+        }
+    }
+    guard result == 0 else {
+        throw NSError(domain: "ReaperFixture", code: Int(result))
+    }
+    return pid
+}
+
+private func waitUntilProcessGone(_ pid: pid_t, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if kill(pid, 0) == -1, errno == ESRCH { return true }
+        usleep(20_000)
+    }
+    return kill(pid, 0) == -1 && errno == ESRCH
 }

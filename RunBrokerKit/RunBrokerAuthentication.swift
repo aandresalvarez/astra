@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 import Security
 import ASTRACore
 
@@ -279,6 +280,74 @@ public protocol RunBrokerPeerCodeIdentityVerifying: Sendable {
 public struct UnavailableRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIdentityVerifying {
     public init() {}
     public func verify(processID: Int32) -> RunBrokerPeerCodeIdentityResult { .unavailable }
+}
+
+struct RunBrokerCodeSigningIdentity: Equatable, Sendable {
+    let identifier: String
+    let teamIdentifier: String
+}
+
+/// Validates a live peer against ASTRA's Developer-ID team and exact app
+/// identifiers. Ad-hoc builds have no TeamIdentifier and therefore fail closed
+/// instead of treating same-UID possession of a readable secret as identity.
+public struct DarwinRunBrokerPeerCodeIdentityVerifier: RunBrokerPeerCodeIdentityVerifying {
+    private let trustedTeamIdentifier: String?
+    private let allowedIdentifiers: Set<String>
+    private let identity: @Sendable (Int32) -> RunBrokerCodeSigningIdentity?
+
+    public init(
+        allowedIdentifiers: Set<String> = ["com.coral.ASTRA", "com.coral.ASTRA.dev"]
+    ) {
+        trustedTeamIdentifier = Self.signingIdentity(processID: getpid())?.teamIdentifier
+        self.allowedIdentifiers = allowedIdentifiers
+        identity = { processID in Self.signingIdentity(processID: processID) }
+    }
+
+    init(
+        trustedTeamIdentifier: String?,
+        allowedIdentifiers: Set<String>,
+        identity: @escaping @Sendable (Int32) -> RunBrokerCodeSigningIdentity?
+    ) {
+        self.trustedTeamIdentifier = trustedTeamIdentifier
+        self.allowedIdentifiers = allowedIdentifiers
+        self.identity = identity
+    }
+
+    public func verify(processID: Int32) -> RunBrokerPeerCodeIdentityResult {
+        guard let trustedTeamIdentifier, !trustedTeamIdentifier.isEmpty else {
+            return .unavailable
+        }
+        guard let candidate = identity(processID),
+              candidate.teamIdentifier == trustedTeamIdentifier,
+              allowedIdentifiers.contains(candidate.identifier) else {
+            return .rejected
+        }
+        return .verified
+    }
+
+    private static func signingIdentity(processID: Int32) -> RunBrokerCodeSigningIdentity? {
+        var code: SecCode?
+        let attributes = [kSecGuestAttributePid as String: processID] as CFDictionary
+        let strictValidation = SecCSFlags(rawValue: UInt32(kSecCSStrictValidate))
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
+              let code,
+              SecCodeCheckValidity(code, strictValidation, nil) == errSecSuccess else {
+            return nil
+        }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
+              let fields = information as? [String: Any],
+              let identifier = fields[kSecCodeInfoIdentifier as String] as? String,
+              let teamIdentifier = fields[kSecCodeInfoTeamIdentifier as String] as? String,
+              !identifier.isEmpty,
+              !teamIdentifier.isEmpty else {
+            return nil
+        }
+        return .init(identifier: identifier, teamIdentifier: teamIdentifier)
+    }
 }
 
 public struct RunBrokerPeerIdentityPolicy: Sendable {

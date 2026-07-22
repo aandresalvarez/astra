@@ -25,6 +25,7 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
         }
         var createdSocketIdentity: (device: dev_t, inode: ino_t)?
         do {
+            try Self.setCloseOnExec(descriptor, operation: "fcntl-listener-close-on-exec")
             var address = try runBrokerUnixAddress(path: identity.socketURL.path)
             let bindStatus = withUnsafePointer(to: &address) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -75,6 +76,7 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
                 throw RunBrokerTransportError.systemCall(operation: "accept", code: errno)
             }
             do {
+                try Self.setCloseOnExec(accepted, operation: "fcntl-client-close-on-exec")
                 return try RunBrokerUnixSocketConnection(descriptor: accepted)
             } catch {
                 Darwin.close(accepted)
@@ -98,6 +100,11 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
                 )
             }
         }
+    }
+
+    package var hasCloseOnExec: Bool {
+        let flags = fcntl(descriptor, F_GETFD)
+        return flags >= 0 && (flags & FD_CLOEXEC) != 0
     }
 
     private static func removeStaleSocketIfSafe(
@@ -174,5 +181,12 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
             return
         }
         unlink(url.path)
+    }
+
+    private static func setCloseOnExec(_ descriptor: Int32, operation: String) throws {
+        let flags = fcntl(descriptor, F_GETFD)
+        guard flags >= 0, fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+            throw RunBrokerTransportError.systemCall(operation: operation, code: errno)
+        }
     }
 }

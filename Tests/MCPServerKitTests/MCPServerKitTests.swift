@@ -11,6 +11,7 @@ struct MCPServerKitTests {
         let server = MCPServer(
             name: "astra-test",
             version: "9.9.9",
+            sessionID: "test-session",
             tools: {
                 [[
                     "name": "example.echo",
@@ -49,7 +50,7 @@ struct MCPServerKitTests {
         #expect(callResult["isError"] as? Bool == false)
         #expect(calls.map(\.name) == ["example.echo"])
         #expect(calls.first?.arguments["message"] as? String == "hello")
-        #expect(calls.first?.invocationID == "number:2")
+        #expect(calls.first?.invocationID == "session-base64:dGVzdC1zZXNzaW9u|number:2")
 
         #expect(server.handleLine(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#) == nil)
         #expect(server.handleLine("   ") == nil)
@@ -62,6 +63,7 @@ struct MCPServerKitTests {
         var calls: [MCPToolCall] = []
         let server = MCPServer(
             name: "astra-test",
+            sessionID: "domain-session",
             tools: { [] },
             handleToolCall: { call in
                 calls.append(call)
@@ -89,6 +91,7 @@ struct MCPServerKitTests {
         var invocationIDs: [String] = []
         let server = MCPServer(
             name: "astra-test",
+            sessionID: "domain-session",
             tools: { [] },
             handleToolCall: { call in
                 invocationIDs.append(call.invocationID)
@@ -99,8 +102,36 @@ struct MCPServerKitTests {
         _ = server.handleLine(#"{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"side.effect"}}"#)
         _ = server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
 
-        #expect(invocationIDs == ["string-base64:MQ==", "number:1"])
+        #expect(invocationIDs == [
+            "session-base64:ZG9tYWluLXNlc3Npb24=|string-base64:MQ==",
+            "session-base64:ZG9tYWluLXNlc3Npb24=|number:1"
+        ])
         #expect(Set(invocationIDs).count == 2)
+    }
+
+    @Test("reused JSON-RPC ids are distinct across MCP sessions")
+    func reusedRequestIDsAreSessionScoped() {
+        var invocationIDs: [String] = []
+        func makeServer(sessionID: String) -> MCPServer {
+            MCPServer(
+                name: "astra-test",
+                sessionID: sessionID,
+                tools: { [] },
+                handleToolCall: { call in
+                    invocationIDs.append(call.invocationID)
+                    return .result(["content": []])
+                }
+            )
+        }
+        let first = makeServer(sessionID: "connection-one")
+        let second = makeServer(sessionID: "connection-two")
+
+        _ = first.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
+        _ = second.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
+
+        #expect(invocationIDs.count == 2)
+        #expect(Set(invocationIDs).count == 2)
+        #expect(invocationIDs.allSatisfy { $0.hasSuffix("|number:1") })
     }
 
     @Test("server encodes shared protocol errors and JSON-RPC ids consistently")

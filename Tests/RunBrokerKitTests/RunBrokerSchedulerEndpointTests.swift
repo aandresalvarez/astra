@@ -105,6 +105,40 @@ struct RunBrokerSchedulerEndpointTests {
         #expect(abs(value.recordedAt.timeIntervalSince1970 - 0.987) < 0.000_001)
     }
 
+    @Test("Untrusted monitor timestamps outside Int64 milliseconds fail decoding without trapping")
+    func monitorTimestampBoundsFailClosed() throws {
+        let valid = deadline(53, dueAt: Date(timeIntervalSince1970: 10), attempt: 0)
+        let encoded = try JSONEncoder().encode(valid)
+
+        let roundedPastInt64 = Date(
+            timeIntervalSince1970: Double(Int64.max) / 1_000
+        ).timeIntervalSinceReferenceDate
+        for (key, value) in [
+            ("dueAt", 1e300),
+            ("recordedAt", -1e300),
+            ("dueAt", roundedPastInt64),
+        ] {
+            var object = try #require(
+                JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+            )
+            object[key] = value
+            let malformed = try JSONSerialization.data(withJSONObject: object)
+            #expect(throws: DecodingError.self) {
+                _ = try JSONDecoder().decode(RunBrokerMonitorDeadline.self, from: malformed)
+            }
+        }
+
+        let removal = RunBrokerMonitorRemoval(expected: valid, occurredAt: valid.recordedAt)
+        var removalObject = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(removal)) as? [String: Any]
+        )
+        removalObject["occurredAt"] = 1e300
+        let malformedRemoval = try JSONSerialization.data(withJSONObject: removalObject)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(RunBrokerMonitorRemoval.self, from: malformedRemoval)
+        }
+    }
+
     @Test("Concurrent upsert fences stale in-flight monitor completion")
     func inFlightUpsertWins() throws {
         let now = Date(timeIntervalSince1970: 36_000)

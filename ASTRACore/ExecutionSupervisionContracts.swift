@@ -96,6 +96,7 @@ public struct RunBrokerSupervisorObservation: Codable, Equatable, Sendable {
         case providerLaunchFailed = "provider_launch_failed"
         case outputBackpressureStarted = "output_backpressure_started"
         case outputBackpressureReleased = "output_backpressure_released"
+        case outputQuotaExceeded = "output_quota_exceeded"
         case recoveryTailQuarantined = "recovery_tail_quarantined"
     }
 

@@ -425,6 +425,27 @@ struct RunBrokerPathAndInstallerTests {
         #expect(fixture.launchController.reloadCount == 2)
     }
 
+    @Test("Installer synchronizes cohort, selector, and plist metadata before reporting success")
+    func durablePublicationOrdering() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.sourceExecutable(name: "sources/durable", bytes: "durable")
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source, version: "1"),
+            identity: fixture.identity
+        )
+
+        let events = fixture.durabilitySynchronizer.events
+        #expect(events.count == 5)
+        #expect(events[0].hasPrefix("directory:.installing-"))
+        #expect(events[1] == "directory:Versions")
+        #expect(events[2] == "directory:RunBroker")
+        #expect(events[3] == "file:\(fixture.identity.launchAgentPlistURL.lastPathComponent)")
+        #expect(events[4] == "directory:LaunchAgents")
+        #expect(fixture.launchController.reloadCount == 1)
+    }
+
     @Test("Failed post-reload health check rolls selector back and reloads prior payload")
     func healthRollback() throws {
         let fixture = try InstallerFixture()
@@ -631,6 +652,7 @@ private final class InstallerFixture {
     let identity: RunBrokerChannelIdentity
     let launchController = FakeLaunchController()
     let healthChecker = FakeHealthChecker()
+    let durabilitySynchronizer = RecordingInstallationDurabilitySynchronizer()
     let secureStore: RunBrokerSecureStore
     let installer: RunBrokerInstaller
 
@@ -658,6 +680,7 @@ private final class InstallerFixture {
             secureStore: secureStore,
             userID: getuid(),
             stagingIdentifier: { UUID().uuidString },
+            durabilitySynchronizer: durabilitySynchronizer,
             diagnostics: NoOpRunBrokerDiagnostics()
         )
     }
@@ -705,6 +728,33 @@ private final class InstallerFixture {
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+}
+
+private final class RecordingInstallationDurabilitySynchronizer:
+    RunBrokerInstallationDurabilitySynchronizing,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func synchronizeFile(at url: URL) throws {
+        record("file:\(url.lastPathComponent)")
+    }
+
+    func synchronizeDirectory(at url: URL) throws {
+        record("directory:\(url.lastPathComponent)")
+    }
+
+    private func record(_ event: String) {
+        lock.lock()
+        recorded.append(event)
+        lock.unlock()
+    }
 }
 
 private final class FakeLaunchController: RunBrokerLaunchControlling, @unchecked Sendable {

@@ -33,14 +33,39 @@ public struct RunBrokerMonitorDeadline: Codable, Equatable, Hashable, Sendable, 
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let dueAt = try container.decode(Date.self, forKey: .dueAt)
+        let recordedAt = try container.decode(Date.self, forKey: .recordedAt)
+        guard Self.isRepresentableAsCanonicalMilliseconds(dueAt) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .dueAt,
+                in: container,
+                debugDescription: "Monitor dueAt is outside the canonical millisecond range"
+            )
+        }
+        guard Self.isRepresentableAsCanonicalMilliseconds(recordedAt) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .recordedAt,
+                in: container,
+                debugDescription: "Monitor recordedAt is outside the canonical millisecond range"
+            )
+        }
         self.init(
             operationID: try container.decode(RunBrokerOperationID.self, forKey: .operationID),
             authority: try container.decode(RunBrokerAuthority.self, forKey: .authority),
-            dueAt: try container.decode(Date.self, forKey: .dueAt),
-            recordedAt: try container.decode(Date.self, forKey: .recordedAt),
+            dueAt: dueAt,
+            recordedAt: recordedAt,
             attempt: try container.decode(UInt64.self, forKey: .attempt),
             generation: try container.decode(UUID.self, forKey: .generation)
         )
+    }
+
+    private static func isRepresentableAsCanonicalMilliseconds(_ date: Date) -> Bool {
+        let milliseconds = date.timeIntervalSince1970 * 1_000
+        return milliseconds.isFinite
+            && milliseconds >= Double(Int64.min)
+            // Double(Int64.max) rounds up to 2^63; that exact value traps when
+            // converted to Int64, so the upper bound must remain exclusive.
+            && milliseconds < Double(Int64.max)
     }
 
     private static func canonicalMilliseconds(_ date: Date) -> Date {
@@ -75,6 +100,29 @@ public struct RunBrokerMonitorRemoval: Codable, Equatable, Sendable {
     public init(expected: RunBrokerMonitorDeadline, occurredAt: Date) {
         self.expected = expected
         self.occurredAt = Self.canonicalMilliseconds(occurredAt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case expected, occurredAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let occurredAt = try container.decode(Date.self, forKey: .occurredAt)
+        let milliseconds = occurredAt.timeIntervalSince1970 * 1_000
+        guard milliseconds.isFinite,
+              milliseconds >= Double(Int64.min),
+              milliseconds < Double(Int64.max) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .occurredAt,
+                in: container,
+                debugDescription: "Monitor removal occurredAt is outside the canonical millisecond range"
+            )
+        }
+        self.init(
+            expected: try container.decode(RunBrokerMonitorDeadline.self, forKey: .expected),
+            occurredAt: occurredAt
+        )
     }
 
     private static func canonicalMilliseconds(_ date: Date) -> Date {

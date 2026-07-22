@@ -1,6 +1,12 @@
 import ASTRACore
 import Darwin
 import Foundation
+import OSLog
+
+private let runSupervisorServiceLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.coral.ASTRA",
+    category: "RunSupervisorService"
+)
 
 public enum RunSupervisorServiceOutcome: Equatable, Sendable {
     case launched(exitCode: Int32)
@@ -164,33 +170,51 @@ public final class RunSupervisorService: @unchecked Sendable {
             throw error
         }
         let outputPersistenceError = RunSupervisorErrorBox()
-        try fileSystem.writeDiscovery(
-            .init(
-                identity: discovery.identity,
-                manifestSHA256: discovery.manifestSHA256,
-                launchAuthenticator: discovery.launchAuthenticator,
-                capabilitySHA256: discovery.capabilitySHA256,
-                socketName: discovery.socketName,
-                supervisorPIDDiagnostic: getpid(),
-                providerPIDDiagnostic: ownedProcess.processIdentifierDiagnostic,
-                createdAt: discovery.createdAt
-            ),
-            in: directory
-        )
+        let timeoutWatchdog = payload.manifest.supervisionPolicy.map {
+            RunSupervisorTimeoutWatchdog(policy: $0)
+        }
+        timeoutWatchdog?.start { [weak self, weak ownedProcess] reason in
+            guard let self, let ownedProcess else { return }
+            self.enforceTimeout(reason, process: ownedProcess)
+        }
+        defer { timeoutWatchdog?.cancel() }
+        do {
+            try fileSystem.writeDiscovery(
+                .init(
+                    identity: discovery.identity,
+                    manifestSHA256: discovery.manifestSHA256,
+                    launchAuthenticator: discovery.launchAuthenticator,
+                    capabilitySHA256: discovery.capabilitySHA256,
+                    socketName: discovery.socketName,
+                    supervisorPIDDiagnostic: getpid(),
+                    providerPIDDiagnostic: ownedProcess.processIdentifierDiagnostic,
+                    createdAt: discovery.createdAt
+                ),
+                in: directory
+            )
+        } catch {
+            // The PID is diagnostic only. Provider ownership and recovery are
+            // already durable through discovery identity plus spool evidence.
+            runSupervisorServiceLogger.warning(
+                "Skipping non-authoritative provider PID discovery update: \(String(describing: error), privacy: .public)"
+            )
+        }
         let outputGroup = DispatchGroup()
         startOutputReader(
             ownedProcess.stdoutFileHandle,
             kind: .standardOutput,
             spool: spool,
             group: outputGroup,
-            persistenceError: outputPersistenceError
+            persistenceError: outputPersistenceError,
+            progress: { timeoutWatchdog?.recordProgress() }
         )
         startOutputReader(
             ownedProcess.stderrFileHandle,
             kind: .standardError,
             spool: spool,
             group: outputGroup,
-            persistenceError: outputPersistenceError
+            persistenceError: outputPersistenceError,
+            progress: { timeoutWatchdog?.recordProgress() }
         )
         terminated.wait()
         providerCompleted = true
@@ -226,11 +250,16 @@ public final class RunSupervisorService: @unchecked Sendable {
         case .acknowledge:
             try spool.acknowledge(through: action.acknowledgeThrough!)
         case .writeStandardInput:
-            lifecycleEventLock.lock()
-            defer { lifecycleEventLock.unlock() }
             stateLock.lock(); let process = self.process; stateLock.unlock()
             guard let process else { throw RunSupervisorError.alreadyRunningOrInDoubt }
             try process.writeStandardInputLine(action.standardInputLine!)
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
+            stateLock.lock(); let currentProcess = self.process; stateLock.unlock()
+            guard let currentProcess,
+                  (currentProcess as AnyObject) === (process as AnyObject) else {
+                throw RunSupervisorError.alreadyRunningOrInDoubt
+            }
             _ = try spool.appendCritical(.standardInputAccepted)
         case .closeStandardInput:
             lifecycleEventLock.lock()
@@ -320,6 +349,21 @@ public final class RunSupervisorService: @unchecked Sendable {
         }
     }
 
+    private func enforceTimeout(
+        _ reason: RunSupervisorTimeoutWatchdog.Reason,
+        process timedProcess: any RunSupervisorOwnedProcess
+    ) {
+        lifecycleEventLock.lock()
+        defer { lifecycleEventLock.unlock() }
+        stateLock.lock(); let currentProcess = process; stateLock.unlock()
+        guard let currentProcess,
+              (currentProcess as AnyObject) === (timedProcess as AnyObject) else { return }
+        runSupervisorServiceLogger.warning(
+            "Provider supervision timeout exceeded: \(reason.rawValue, privacy: .public)"
+        )
+        _ = timedProcess.terminateImmediately()
+    }
+
     private func reduce(
         _ event: ExecutionControlEvent,
         capabilities: ExternalOperationBackendCapabilities
@@ -338,7 +382,8 @@ public final class RunSupervisorService: @unchecked Sendable {
         kind: RunSupervisorEventKind,
         spool: RunSupervisorEventSpool,
         group: DispatchGroup,
-        persistenceError: RunSupervisorErrorBox
+        persistenceError: RunSupervisorErrorBox,
+        progress: @escaping @Sendable () -> Void
     ) {
         group.enter()
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -365,6 +410,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                 while true {
                     do {
                         _ = try spool.appendOutput(kind, data: data)
+                        progress()
                         break
                     } catch RunSupervisorError.spoolBackpressured {
                         _ = spool.waitForOutputCapacity(deadline: self.clock.now().addingTimeInterval(1))
@@ -396,6 +442,66 @@ private final class RunSupervisorTerminationBox: @unchecked Sendable {
         guard termination == nil else { return false }
         termination = value
         return true
+    }
+}
+
+private final class RunSupervisorTimeoutWatchdog: @unchecked Sendable {
+    enum Reason: String, Sendable {
+        case hard = "hard_timeout"
+        case idle = "idle_progress_timeout"
+    }
+
+    private let policy: ExecutionSupervisionPolicySnapshot
+    private let queue = DispatchQueue(label: "com.coral.ASTRA.run-supervisor-timeout")
+    private var hardTimer: DispatchSourceTimer?
+    private var idleTimer: DispatchSourceTimer?
+    private var fired = false
+
+    init(policy: ExecutionSupervisionPolicySnapshot) {
+        self.policy = policy
+    }
+
+    func start(_ handler: @escaping @Sendable (Reason) -> Void) {
+        queue.sync {
+            guard hardTimer == nil, idleTimer == nil else { return }
+            let hard = DispatchSource.makeTimerSource(queue: queue)
+            hard.schedule(deadline: .now() + TimeInterval(policy.hardTimeoutSeconds))
+            hard.setEventHandler { [weak self] in self?.fire(.hard, handler: handler) }
+            hardTimer = hard
+
+            let idle = DispatchSource.makeTimerSource(queue: queue)
+            idle.schedule(deadline: .now() + TimeInterval(policy.idleProgressTimeoutSeconds))
+            idle.setEventHandler { [weak self] in self?.fire(.idle, handler: handler) }
+            idleTimer = idle
+            hard.resume()
+            idle.resume()
+        }
+    }
+
+    func recordProgress() {
+        queue.async { [weak self] in
+            guard let self, !fired else { return }
+            idleTimer?.schedule(
+                deadline: .now() + TimeInterval(policy.idleProgressTimeoutSeconds)
+            )
+        }
+    }
+
+    func cancel() {
+        queue.sync {
+            hardTimer?.cancel()
+            idleTimer?.cancel()
+            hardTimer = nil
+            idleTimer = nil
+        }
+    }
+
+    private func fire(_ reason: Reason, handler: @escaping @Sendable (Reason) -> Void) {
+        guard !fired else { return }
+        fired = true
+        hardTimer?.cancel()
+        idleTimer?.cancel()
+        handler(reason)
     }
 }
 

@@ -107,7 +107,8 @@ let package = Package(
                 "RunBrokerTransport.swift",
                 "RunBrokerUnixSocketConnection.swift",
                 "RunBrokerWireCodec.swift",
-            ]
+            ],
+            linkerSettings: [.linkedFramework("Security")]
         ),
         .target(
             name: "RunBrokerKit",

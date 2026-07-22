@@ -1,6 +1,18 @@
 import Darwin
 import Foundation
 
+package enum RunSupervisorSpoolAppendCheckpoint: Equatable, Sendable {
+    case frameWrittenBeforeSync
+}
+
+package protocol RunSupervisorSpoolAppendFaultInjecting: Sendable {
+    func checkpoint(_ checkpoint: RunSupervisorSpoolAppendCheckpoint) throws
+}
+
+package struct NoOpRunSupervisorSpoolAppendFaultInjector: RunSupervisorSpoolAppendFaultInjecting {
+    package func checkpoint(_ checkpoint: RunSupervisorSpoolAppendCheckpoint) throws {}
+}
+
 public final class RunSupervisorEventSpool: @unchecked Sendable {
     public static let defaultMaximumBytes = 8 * 1_024 * 1_024
     public static let defaultCriticalReserveBytes = 256 * 1_024
@@ -13,6 +25,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     private let terminalReserveBytes: Int
     private let clock: any RunSupervisorClock
     private let faultInjector: any RunSupervisorSpoolFaultInjecting
+    private let appendFaultInjector: any RunSupervisorSpoolAppendFaultInjecting
     private let lock = NSCondition()
     private var fileDescriptor: Int32
     private var events: [RunSupervisorEvent] = []
@@ -35,7 +48,8 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
             maximumBytes: maximumBytes,
             criticalReserveBytes: criticalReserveBytes,
             clock: clock,
-            faultInjector: NoOpRunSupervisorSpoolFaultInjector()
+            faultInjector: NoOpRunSupervisorSpoolFaultInjector(),
+            appendFaultInjector: NoOpRunSupervisorSpoolAppendFaultInjector()
         )
     }
 
@@ -46,6 +60,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         criticalReserveBytes: Int = defaultCriticalReserveBytes,
         clock: any RunSupervisorClock = SystemRunSupervisorClock(),
         faultInjector: any RunSupervisorSpoolFaultInjecting,
+        appendFaultInjector: any RunSupervisorSpoolAppendFaultInjecting = NoOpRunSupervisorSpoolAppendFaultInjector(),
         createIfMissing: Bool = true
     ) throws {
         guard maximumBytes > 0,
@@ -60,6 +75,7 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
         self.terminalReserveBytes = max(1, criticalReserveBytes / 2)
         self.clock = clock
         self.faultInjector = faultInjector
+        self.appendFaultInjector = appendFaultInjector
         let opened = try RunSupervisorSpoolFileIO.openSpool(
             in: directory,
             createIfMissing: createIfMissing
@@ -240,9 +256,20 @@ public final class RunSupervisorEventSpool: @unchecked Sendable {
     }
 
     private func appendEncoded(_ event: RunSupervisorEvent, frame: Data) throws {
-        try RunSupervisorSpoolFileIO.writeAll(frame, to: fileDescriptor)
-        guard fsync(fileDescriptor) == 0 else {
-            throw RunSupervisorError.systemCall("fsync event spool", errno)
+        do {
+            try RunSupervisorSpoolFileIO.writeAll(frame, to: fileDescriptor)
+            try appendFaultInjector.checkpoint(.frameWrittenBeforeSync)
+            guard fsync(fileDescriptor) == 0 else {
+                throw RunSupervisorError.systemCall("fsync event spool", errno)
+            }
+        } catch {
+            // A failed write may have persisted a prefix, and a failed fsync
+            // cannot prove whether the frame reached stable storage. Refuse
+            // every later append/replay so no duplicate sequence can follow
+            // an ambiguous durable tail.
+            persistencePoisoned = true
+            lock.broadcast()
+            throw error
         }
         events.append(event)
         highestSequence = event.sequence

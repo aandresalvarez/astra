@@ -25,15 +25,17 @@ struct RunBrokerOrchestratorTests {
 
         let events = try fixture.ledger.events(limit: 100)
         let expectedEventCount: Int = switch point {
-        case .afterValidation, .afterCapabilitySync: 0
-        case .afterLedgerAdmission, .afterSupervisorSpawn: 1
+        case .afterValidation: 0
+        case .afterLedgerAdmission, .afterCapabilitySync, .afterSupervisorSpawn: 1
         case .afterReadyEvidence: 2
         case .afterProviderStartedObservation: 3
         case .afterProviderStartedEvidence: 4
         case .afterTerminalObservation: 5
         }
         #expect(events.count == expectedEventCount)
-        #expect(fixture.vault.persistCount == (point == .afterValidation ? 0 : 1))
+        #expect(fixture.vault.persistCount == ([
+            .afterValidation, .afterLedgerAdmission,
+        ].contains(point) ? 0 : 1))
         #expect(fixture.spawner.payloads.count == ([
             .afterSupervisorSpawn, .afterReadyEvidence, .afterProviderStartedObservation,
             .afterProviderStartedEvidence, .afterTerminalObservation,
@@ -104,6 +106,9 @@ struct RunBrokerOrchestratorTests {
             fixture.event(2, .providerStarted),
             fixture.event(3, .terminationStarted, cancellationIntent: .immediate),
             fixture.event(4, .cancellationConfirmed, cancellationIntent: .immediate),
+            // The supervisor reaps the cancelled wrapper after confirmation.
+            // This exit is audit evidence, not a second terminal transition.
+            fixture.event(5, .providerExited, exitCode: 143),
         ]
         #expect(throws: InjectedStartCrash.self) {
             _ = try service.reconcile(executionID: fixture.manifest.executionID)
@@ -114,7 +119,9 @@ struct RunBrokerOrchestratorTests {
         #expect(outcome.state == .terminal)
         #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
             .control.observedExecution == .cancelled)
-        #expect(fixture.transport.acknowledgements.last == 4)
+        #expect(fixture.transport.acknowledgements.last == 5)
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .cancelled)
     }
 
     @Test("ready and provider-start evidence become durable before started and acknowledgement")
@@ -241,9 +248,33 @@ struct RunBrokerOrchestratorTests {
 
         let second = try fixture.orchestrator().reconcile(executionID: fixture.manifest.executionID)
         #expect(second.state == .terminal)
-        #expect(fixture.transport.replayCursors.last == 4)
-        #expect(fixture.transport.acknowledgements == [4, 4])
+        // Terminal ledger truth is sufficient on restart; retired supervisor
+        // transport and capability state are no longer recovery dependencies.
+        #expect(fixture.transport.replayCursors.last == 0)
+        #expect(fixture.transport.acknowledgements == [4])
         #expect(try fixture.ledger.events(limit: 100).count == count)
+    }
+
+    @Test("terminal ledger truth survives missing recovery capability")
+    func terminalStateDoesNotBecomeInDoubtDuringRecovery() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+            fixture.event(3, .providerExited, exitCode: 0),
+        ]
+        #expect(try fixture.orchestrator().start(fixture.request()).state == .terminal)
+        fixture.vault.remove(executionID: fixture.manifest.executionID)
+
+        let eventCount = try fixture.ledger.events(limit: 100).count
+        let recovered = try fixture.orchestrator().reconcile(
+            executionID: fixture.manifest.executionID
+        )
+        #expect(recovered.state == .terminal)
+        #expect(recovered.lastSupervisorSequence == 3)
+        #expect(try fixture.ledger.events(limit: 100).count == eventCount)
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .completed)
     }
 
     @Test("identity mismatch is in-doubt and never falls back to PID or local execution")
@@ -300,7 +331,7 @@ struct RunBrokerOrchestratorTests {
         #expect(semantic.transport.acknowledgements.isEmpty)
     }
 
-    @Test("output policy applies backpressure before journal or acknowledgement and logs stay redacted")
+    @Test("output quota records a redacted marker, advances replay, and terminates durably")
     func outputBoundsAndRedaction() throws {
         let fixture = try BrokerFixture(
             maximumOutputEventBytes: 4,
@@ -311,18 +342,64 @@ struct RunBrokerOrchestratorTests {
             fixture.event(2, .providerStarted),
             fixture.event(3, .standardOutput, output: Data("secret".utf8)),
         ]
-        #expect(throws: RunBrokerServiceError.outputLimitExceeded(limit: 4)) {
-            _ = try fixture.orchestrator().start(fixture.request())
-        }
+        let service = fixture.orchestrator()
+        let running = try service.start(fixture.request())
+        #expect(running.state == .running)
         let observations = try fixture.ledger.events(limit: 100).filter {
             if case .supervisorObservationRecorded = $0.envelope.event { true } else { false }
         }
-        #expect(observations.count == 2)
-        #expect(fixture.transport.acknowledgements.isEmpty)
+        #expect(observations.count == 3)
+        guard case .supervisorObservationRecorded(let marker) = observations.last?.envelope.event else {
+            Issue.record("Expected durable output quota marker")
+            return
+        }
+        #expect(marker.kind == .outputQuotaExceeded)
+        #expect(marker.output == nil)
+        #expect(marker.quarantinedByteCount == 6)
+        #expect(fixture.transport.acknowledgements == [3])
+        #expect(fixture.transport.immediateTerminationCount == 1)
         #expect(!fixture.logger.rendered.contains("secret"))
         #expect(!fixture.logger.rendered.contains(
             try fixture.vault.load(executionID: fixture.manifest.executionID)!.capability.base64
         ))
+
+        fixture.transport.events.append(
+            fixture.event(4, .terminationStarted, cancellationIntent: .immediate)
+        )
+        fixture.transport.events.append(
+            fixture.event(5, .cancellationConfirmed, cancellationIntent: .immediate)
+        )
+        let terminal = try service.reconcile(executionID: fixture.manifest.executionID)
+        #expect(terminal.state == .terminal)
+        #expect(fixture.transport.acknowledgements.last == 5)
+    }
+
+    @Test("durable output quota cancellation retries after termination transport failure")
+    func outputQuotaTerminationRetries() throws {
+        let fixture = try BrokerFixture(
+            maximumOutputEventBytes: 4,
+            maximumPersistedOutputBytes: 4
+        )
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+            fixture.event(3, .standardOutput, output: Data("secret".utf8)),
+        ]
+        fixture.transport.immediateTerminationError = RunSupervisorError.systemCall("send", EIO)
+
+        #expect(throws: RunSupervisorError.systemCall("send", EIO)) {
+            _ = try fixture.orchestrator().start(fixture.request())
+        }
+        #expect(fixture.transport.acknowledgements == [3])
+        #expect(fixture.transport.immediateTerminationCount == 1)
+
+        fixture.transport.immediateTerminationError = nil
+        let recovered = try fixture.orchestrator().reconcile(
+            executionID: fixture.manifest.executionID
+        )
+        #expect(recovered.state == .running)
+        #expect(fixture.transport.immediateTerminationCount == 2)
+        #expect(fixture.transport.replayCursors.last == 3)
     }
 
     @Test("local authority is rejected before capability, ledger, spawn, or transport effects")

@@ -10,6 +10,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         var persistedOutputBytes: UInt64 = 0
         var sawReady = false
         var sawProviderStarted = false
+        var sawCancellationConfirmed = false
         var terminal = false
 
         var lastSequence: UInt64 { observations.keys.max() ?? 0 }
@@ -133,6 +134,20 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             }
             try faultInjector.checkpoint(.afterValidation)
 
+            let admission = try ledger.admitExecution(
+                manifest: request.manifest,
+                primaryOperationID: request.primaryOperationID,
+                admittedAt: request.manifest.createdAt,
+                idempotencyKey: request.admissionID
+            )
+            try faultInjector.checkpoint(.afterLedgerAdmission)
+
+            // Admission is the durable authority boundary. Publishing a
+            // capability first can strand irrevocable authority-shaped state
+            // when a concurrent admission denial wins after preflight. A
+            // crash after admission but before capability publication is safe:
+            // no supervisor can exist yet, and the exact retry reconstructs
+            // and synchronizes launch material before spawning once.
             if existing == nil {
                 try vault.persistAndSynchronize(.init(
                     identity: identity,
@@ -142,14 +157,6 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 ))
             }
             try faultInjector.checkpoint(.afterCapabilitySync)
-
-            let admission = try ledger.admitExecution(
-                manifest: request.manifest,
-                primaryOperationID: request.primaryOperationID,
-                admittedAt: request.manifest.createdAt,
-                idempotencyKey: request.admissionID
-            )
-            try faultInjector.checkpoint(.afterLedgerAdmission)
 
             if admission.disposition == .exactReplay {
                 do {
@@ -373,6 +380,18 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         guard let execution = try ledger.projection().executions[executionID] else {
             throw RunBrokerServiceError.supervisorIdentityMismatch
         }
+        if execution.control.observedExecution.isAuthoritativelyTerminal {
+            // Terminal ledger state is authoritative. Recovery dependencies
+            // may legitimately disappear after completion; their absence can
+            // never demote settled truth to in-doubt or append an illegal
+            // transition against an absorbing terminal state.
+            let journal = try journalState(executionID: executionID)
+            return .init(
+                state: .terminal,
+                lastSupervisorSequence: journal.lastSequence,
+                replaySource: nil
+            )
+        }
         // Two distinct identities meet here. The supervisor process and its
         // vaulted capability are bound forever to the immutable LAUNCH
         // identity from the manifest; a journaled authority transfer never
@@ -401,6 +420,12 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         var state = try journalState(executionID: executionID)
         var lastSource: RunBrokerSupervisorReplaySource?
         var acknowledgedThisPass: UInt64 = 0
+        var quotaTerminationNeedsRetry = state.observations.values.contains {
+            $0.kind == .outputQuotaExceeded
+        } && !state.observations.values.contains {
+            [.cancellationRequested, .terminationStarted, .cancellationConfirmed, .providerExited]
+                .contains($0.kind)
+        }
         do {
             // A crash may commit an authenticated observation but not its
             // derived execution-control transition. Repair from canonical
@@ -446,17 +471,25 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                         )
                         acknowledgedThisPass = state.lastSequence
                     }
+                    if quotaTerminationNeedsRetry, !state.terminal {
+                        try issueOutputQuotaTermination(
+                            identity: identity,
+                            launchIdentity: launchIdentity,
+                            capability: capability.capability
+                        )
+                        quotaTerminationNeedsRetry = false
+                    }
                     break
                 }
                 for event in batch.events {
-                    try persist(
+                    quotaTerminationNeedsRetry = try persist(
                         event,
                         identity: identity,
                         manifestCreatedAt: execution.manifest.createdAt,
                         policy: policy,
                         state: &state,
                         startFaultsEnabled: startFaultsEnabled
-                    )
+                    ) || quotaTerminationNeedsRetry
                 }
                 try transport.acknowledge(
                     identity: launchIdentity,
@@ -465,6 +498,14 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                     through: state.lastSequence
                 )
                 acknowledgedThisPass = state.lastSequence
+                if quotaTerminationNeedsRetry, !state.terminal {
+                    try issueOutputQuotaTermination(
+                        identity: identity,
+                        launchIdentity: launchIdentity,
+                        capability: capability.capability
+                    )
+                    quotaTerminationNeedsRetry = false
+                }
                 if state.terminal { break }
             }
         } catch let error as RunBrokerServiceError {
@@ -501,6 +542,21 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         )
     }
 
+    private func issueOutputQuotaTermination(
+        identity: RunSupervisorIdentity,
+        launchIdentity: RunSupervisorIdentity,
+        capability: RunSupervisorCapability
+    ) throws {
+        try transport.requestImmediateTermination(
+            identity: launchIdentity,
+            capability: capability
+        )
+        logger.record(
+            event: "run_broker.output_quota_termination_issued",
+            fields: safeFields(identity)
+        )
+    }
+
     private func persist(
         _ event: RunSupervisorEvent,
         identity: RunSupervisorIdentity,
@@ -508,7 +564,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         policy: ExecutionSupervisionPolicySnapshot,
         state: inout JournalState,
         startFaultsEnabled: Bool
-    ) throws {
+    ) throws -> Bool {
         if let existing = state.observations[event.sequence] {
             let requested = observation(
                 event,
@@ -527,7 +583,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 throw RunBrokerServiceError.supervisorEventConflict(sequence: event.sequence)
             }
             try ensureDerivedControl(for: event, identity: identity, state: &state)
-            return
+            return false
         }
         let expected = state.lastSequence + 1
         guard event.sequence == expected else {
@@ -539,19 +595,26 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
         if event.kind == .providerStarted, !state.sawReady {
             throw RunBrokerServiceError.providerStartedBeforeReady
         }
+        var durableEvent = event
+        var requiresQuotaTermination = false
         if let output = event.payload.data {
             let outputBytes = UInt64(output.count)
-            guard outputBytes <= policy.maximumOutputEventBytes,
-                  outputBytes <= policy.maximumPersistedOutputBytes,
-                  state.persistedOutputBytes <= policy.maximumPersistedOutputBytes - outputBytes else {
-                throw RunBrokerServiceError.outputLimitExceeded(
-                    limit: policy.maximumPersistedOutputBytes
+            if outputBytes > policy.maximumOutputEventBytes
+                || outputBytes > policy.maximumPersistedOutputBytes
+                || state.persistedOutputBytes > policy.maximumPersistedOutputBytes - outputBytes {
+                durableEvent = .init(
+                    sequence: event.sequence,
+                    id: event.id,
+                    timestamp: event.timestamp,
+                    kind: .outputQuotaExceeded,
+                    payload: .init(quarantinedByteCount: outputBytes)
                 )
+                requiresQuotaTermination = true
             }
         }
 
         let durable = observation(
-            event,
+            durableEvent,
             identity: identity,
             manifestCreatedAt: manifestCreatedAt
         )
@@ -561,33 +624,42 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             event: .supervisorObservationRecorded(durable)
         ))
         state.observations[event.sequence] = durable
-        state.persistedOutputBytes += UInt64(event.payload.data?.count ?? 0)
-        if event.kind == .supervisorReady {
+        state.persistedOutputBytes += UInt64(durableEvent.payload.data?.count ?? 0)
+        if durableEvent.kind == .supervisorReady {
             state.sawReady = true
             if startFaultsEnabled { try faultInjector.checkpoint(.afterReadyEvidence) }
         }
-        if event.kind == .providerStarted {
+        if durableEvent.kind == .providerStarted {
             state.sawProviderStarted = true
             try faultInjector.checkpoint(.afterProviderStartedObservation)
             try appendControl(
                 .executionStarted,
                 identity: identity,
-                event: event,
+                event: durableEvent,
                 domain: "execution-started"
             )
             if startFaultsEnabled { try faultInjector.checkpoint(.afterProviderStartedEvidence) }
         }
-        if event.kind.isTerminalTruth {
+        if durableEvent.kind.isTerminalTruth {
             try faultInjector.checkpoint(.afterTerminalObservation)
         }
-        try ensureDerivedControl(for: event, identity: identity, state: &state)
+        if requiresQuotaTermination {
+            try appendControl(
+                .requestCancellation(.immediate),
+                identity: identity,
+                event: durableEvent,
+                domain: "output-quota-cancellation"
+            )
+        }
+        try ensureDerivedControl(for: durableEvent, identity: identity, state: &state)
         logger.record(
             event: "run_broker.supervisor_event_durable",
             fields: safeFields(identity).merging([
                 "sequence": String(event.sequence),
-                "kind": event.kind.rawValue,
+                "kind": durableEvent.kind.rawValue,
             ]) { _, new in new }
         )
+        return requiresQuotaTermination
     }
 
     private func ensureDerivedControl(
@@ -613,12 +685,18 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             )
             state.terminal = true
         case .providerExited:
-            try appendControl(
-                event.payload.exitCode == 0 ? .executionCompleted : .executionFailed,
-                identity: identity,
-                event: event,
-                domain: "execution-exited"
-            )
+            // Immediate cancellation records cancellationConfirmed before the
+            // wrapper is reaped and providerExited is emitted. The exit is
+            // still durable audit evidence, but cancellation is already the
+            // authoritative terminal outcome and cannot be transitioned again.
+            if !state.sawCancellationConfirmed {
+                try appendControl(
+                    event.payload.exitCode == 0 ? .executionCompleted : .executionFailed,
+                    identity: identity,
+                    event: event,
+                    domain: "execution-exited"
+                )
+            }
             state.terminal = true
         case .cancellationConfirmed:
             try appendControl(
@@ -627,6 +705,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 event: event,
                 domain: "cancellation-confirmed"
             )
+            state.sawCancellationConfirmed = true
             state.terminal = true
         case .terminationStarted:
             try appendControl(
@@ -741,6 +820,8 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 result.persistedOutputBytes += UInt64(observation.output?.count ?? 0)
                 result.sawReady = result.sawReady || observation.kind == .supervisorReady
                 result.sawProviderStarted = result.sawProviderStarted || observation.kind == .providerStarted
+                result.sawCancellationConfirmed = result.sawCancellationConfirmed
+                    || observation.kind == .cancellationConfirmed
                 result.terminal = result.terminal || [
                     .providerExited, .providerLaunchFailed, .cancellationConfirmed,
                 ].contains(observation.kind)

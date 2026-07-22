@@ -389,6 +389,41 @@ struct RunBrokerProtocolAuthenticationTests {
         }
     }
 
+    @Test("Production peer verifier requires the trusted team and exact ASTRA identifier")
+    func productionPeerCodeIdentity() throws {
+        let identities: [Int32: RunBrokerCodeSigningIdentity] = [
+            10: .init(identifier: "com.coral.ASTRA", teamIdentifier: "TEAM123"),
+            11: .init(identifier: "com.attacker.tool", teamIdentifier: "TEAM123"),
+            12: .init(identifier: "com.coral.ASTRA", teamIdentifier: "OTHER"),
+        ]
+        let verifier = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: "TEAM123",
+            allowedIdentifiers: ["com.coral.ASTRA", "com.coral.ASTRA.dev"],
+            identity: { identities[$0] }
+        )
+        #expect(verifier.verify(processID: 10) == .verified)
+        #expect(verifier.verify(processID: 11) == .rejected)
+        #expect(verifier.verify(processID: 12) == .rejected)
+        #expect(verifier.verify(processID: 13) == .rejected)
+
+        let policy = RunBrokerPeerIdentityPolicy(
+            expectedUserID: 501,
+            requiresCodeIdentity: true,
+            codeIdentityVerifier: verifier
+        )
+        try policy.verify(.init(effectiveUserID: 501, processID: 10))
+        #expect(throws: RunBrokerAuthenticationError.peerCodeIdentityRejected) {
+            try policy.verify(.init(effectiveUserID: 501, processID: 11))
+        }
+
+        let unavailable = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: nil,
+            allowedIdentifiers: ["com.coral.ASTRA"],
+            identity: { _ in nil }
+        )
+        #expect(unavailable.verify(processID: 10) == .unavailable)
+    }
+
     @Test("Application launch fields are bounded, strict-coded, MAC-bound, and redacted")
     func applicationLaunchBoundary() throws {
         let fixture = try authFixture()

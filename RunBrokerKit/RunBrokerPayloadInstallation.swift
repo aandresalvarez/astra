@@ -131,7 +131,14 @@ extension RunBrokerInstaller {
               ) == payload.expectedCohortSHA256 else {
             throw RunBrokerInstallationError.installedDigestMismatch
         }
+        // The executable bytes are already fsync'd individually. Persist the
+        // staging directory entries before publishing the immutable cohort,
+        // then persist the Versions rename before Current may reference it.
+        try durabilitySynchronizer.synchronizeDirectory(at: staging)
         try fileManager.moveItem(at: staging, to: destinationDirectory)
+        try durabilitySynchronizer.synchronizeDirectory(
+            at: destinationDirectory.deletingLastPathComponent()
+        )
     }
 
     private func validateInstalledExecutable(

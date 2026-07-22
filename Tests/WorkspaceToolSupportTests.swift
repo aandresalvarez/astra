@@ -31,6 +31,7 @@ struct WorkspaceToolSupportTests {
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON,
             "ASTRA_WORKSPACE_TASK_ID": "task-1",
             "ASTRA_WORKSPACE_RUN_ID": "run-1",
+            "ASTRA_WORKSPACE_JOB_TRUSTED_STATE_HOST": "/tmp/astra-trusted/task-1/run-1",
             "DOCKER_CONFIG": "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1",
             "ASTRA_WORKSPACE_DIAGNOSTICS_HOST": "/tmp/workspace/.astra/tasks/task-1/diagnostics",
             "ASTRA_WORKSPACE_SUBAGENT_PARENT_ID": "parent-task"
@@ -46,6 +47,7 @@ struct WorkspaceToolSupportTests {
         #expect(configuration.containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
         #expect(configuration.jobRootHostPath == "/tmp/workspace/.astra/tasks/task-1/jobs")
         #expect(configuration.jobRootContainerPath == "/workspace/.astra/tasks/task-1/jobs")
+        #expect(configuration.managedJobTrustedStateHostPath == "/tmp/astra-trusted/task-1/run-1")
         #expect(configuration.dockerClientConfigPath == "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1")
         #expect(configuration.diagnosticsHostPath == "/tmp/workspace/.astra/tasks/task-1/diagnostics")
         #expect(configuration.subagentParentID == "parent-task")
@@ -910,8 +912,9 @@ struct WorkspaceToolSupportTests {
         let startResult = try structuredJobResult(start)
         #expect(startResult.jobID == "job-1")
         #expect(startResult.status == .running)
-        #expect(startResult.startReceipt?.invocationID == "number:4")
-        #expect(jobManager.startedInvocationIDs == ["number:4"])
+        #expect(startResult.startReceipt?.invocationID.hasSuffix("|number:4") == true)
+        #expect(jobManager.startedInvocationIDs.count == 1)
+        #expect(jobManager.startedInvocationIDs.first?.hasSuffix("|number:4") == true)
         #expect(jobManager.startedCommands == ["dbt build --select +death"])
         #expect(jobManager.startedLabels == ["dbt death"])
         #expect(jobManager.startedProgressProbes == ["dbt"])
@@ -1841,7 +1844,7 @@ struct WorkspaceToolSupportTests {
         let start = try parseJSON(try #require(server.handleLine(startLine)))
         let startResult = try structuredJobResult(start)
         #expect(startResult.status == .running)
-        #expect(startResult.startReceipt?.invocationID == "number:2")
+        #expect(startResult.startReceipt?.invocationID.hasSuffix("|number:2") == true)
         let startText = try resultText(start)
         #expect(!startText.contains("dbt build"))
         #expect(!startText.contains(root.path))

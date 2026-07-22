@@ -62,10 +62,22 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
 
     private let directoryURL: URL
     private let expectedUserID: uid_t
+    private let directorySynchronizer: @Sendable (URL) throws -> Void
 
     public init(directoryURL: URL, expectedUserID: uid_t = geteuid()) {
         self.directoryURL = directoryURL.standardizedFileURL
         self.expectedUserID = expectedUserID
+        self.directorySynchronizer = { try Self.synchronizeDirectory($0) }
+    }
+
+    init(
+        directoryURL: URL,
+        expectedUserID: uid_t = geteuid(),
+        directorySynchronizer: @escaping @Sendable (URL) throws -> Void
+    ) {
+        self.directoryURL = directoryURL.standardizedFileURL
+        self.expectedUserID = expectedUserID
+        self.directorySynchronizer = directorySynchronizer
     }
 
     public func persistAndSynchronize(_ record: RunBrokerCapabilityRecord) throws {
@@ -111,12 +123,13 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
                       existing?.launchMaterialAuthenticator == record.launchMaterialAuthenticator else {
                     throw RunBrokerServiceError.capabilityIdentityMismatch
                 }
+                try directorySynchronizer(directoryURL)
                 return
             }
             throw posixError("publish capability")
         }
         removeTemporary = false
-        try synchronizeDirectory()
+        try directorySynchronizer(directoryURL)
     }
 
     public func load(executionID: RunBrokerExecutionID) throws -> RunBrokerCapabilityRecord? {
@@ -192,11 +205,19 @@ public struct DarwinRunBrokerCapabilityVault: RunBrokerCapabilityVaulting, Senda
         }
     }
 
-    private func synchronizeDirectory() throws {
+    private static func synchronizeDirectory(_ directoryURL: URL) throws {
         let fd = open(directoryURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw posixError("open capability directory") }
+        guard fd >= 0 else { throw synchronizationError("open capability directory") }
         defer { close(fd) }
-        guard fsync(fd) == 0 else { throw posixError("fsync capability directory") }
+        guard fsync(fd) == 0 else { throw synchronizationError("fsync capability directory") }
+    }
+
+    private static func synchronizationError(_ operation: String) -> NSError {
+        NSError(
+            domain: "RunBrokerCapabilityVault",
+            code: Int(errno),
+            userInfo: [NSLocalizedDescriptionKey: "\(operation) failed"]
+        )
     }
 
     private func posixError(_ operation: String) -> NSError {

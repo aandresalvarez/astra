@@ -123,6 +123,7 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
             }
             fd = socket(AF_UNIX, SOCK_STREAM, 0)
             guard fd >= 0 else { throw RunSupervisorError.systemCall("socket", errno) }
+            try Self.setCloseOnExec(fd, operation: "set listener close-on-exec")
             var noSignal: Int32 = 1
             _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
             var address = try makeRunSupervisorUnixAddress(socketPath)
@@ -249,6 +250,12 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 }
                 return
             }
+            do {
+                try Self.setCloseOnExec(client, operation: "set client close-on-exec")
+            } catch {
+                close(client)
+                return
+            }
             let clientFlags = fcntl(client, F_GETFL)
             if clientFlags >= 0 { _ = fcntl(client, F_SETFL, clientFlags & ~O_NONBLOCK) }
             guard clientSlots.wait(timeout: .now()) == .success else {
@@ -349,6 +356,21 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
         return activeClients.count
     }
 
+    package var listenerHasCloseOnExec: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard listener >= 0 else { return false }
+        let flags = fcntl(listener, F_GETFD)
+        return flags >= 0 && (flags & FD_CLOEXEC) != 0
+    }
+
+    package var activeClientCloseOnExecStates: [Bool] {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return activeClients.keys.map { descriptor in
+            let flags = fcntl(descriptor, F_GETFD)
+            return flags >= 0 && (flags & FD_CLOEXEC) != 0
+        }
+    }
+
     private static func errorCode(_ error: Error) -> String {
         switch error as? RunSupervisorError {
         case .authenticationFailed, .peerUIDMismatch, .replayedNonce, .staleAuthentication:
@@ -381,6 +403,13 @@ public final class DarwinRunSupervisorSocketServer: RunSupervisorSocketServing, 
                 $0,
                 socklen_t(MemoryLayout<timeval>.size)
             )
+        }
+    }
+
+    private static func setCloseOnExec(_ descriptor: Int32, operation: String) throws {
+        let flags = fcntl(descriptor, F_GETFD)
+        guard flags >= 0, fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+            throw RunSupervisorError.systemCall(operation, errno)
         }
     }
 

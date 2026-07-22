@@ -31,6 +31,7 @@ public final class MCPServer {
     private let name: String
     private let version: String
     private let protocolVersion: String
+    private let sessionInvocationPrefix: String
     private let tools: () throws -> [[String: Any]]
     private let diagnostics: (MCPServerDiagnostic) -> Void
     private let handleToolCall: (MCPToolCall) -> MCPServerReply
@@ -39,6 +40,7 @@ public final class MCPServer {
         name: String,
         version: String = "1.0.0",
         protocolVersion: String = "2025-03-26",
+        sessionID: String = UUID().uuidString.lowercased(),
         tools: @escaping () throws -> [[String: Any]],
         diagnostics: @escaping (MCPServerDiagnostic) -> Void = { _ in },
         handleToolCall: @escaping (MCPToolCall) -> MCPServerReply
@@ -46,6 +48,7 @@ public final class MCPServer {
         self.name = name
         self.version = version
         self.protocolVersion = protocolVersion
+        self.sessionInvocationPrefix = "session-base64:" + Data(sessionID.utf8).base64EncodedString() + "|"
         self.tools = tools
         self.diagnostics = diagnostics
         self.handleToolCall = handleToolCall
@@ -133,15 +136,16 @@ public final class MCPServer {
     }
 
     private func stableInvocationID(_ id: Any?) -> String? {
-        let stable: String
+        let requestIdentity: String
         switch id {
         case let value as String:
-            stable = "string-base64:" + Data(value.utf8).base64EncodedString()
+            requestIdentity = "string-base64:" + Data(value.utf8).base64EncodedString()
         case let value as NSNumber where CFGetTypeID(value) != CFBooleanGetTypeID():
-            stable = "number:" + value.stringValue
+            requestIdentity = "number:" + value.stringValue
         default:
             return nil
         }
+        let stable = sessionInvocationPrefix + requestIdentity
         guard stable.count <= 256,
               stable.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
             return nil

@@ -689,6 +689,33 @@ struct RunBrokerApplicationServiceTests {
         ) == .projectionAcknowledged)
     }
 
+    @Test("projection acknowledgement preserves ledger health failures")
+    func projectionAcknowledgementDoesNotCollapseHealthErrors() throws {
+        let fixture = try BrokerFixture()
+        try fixture.admitOnly()
+        let service = applicationService(fixture)
+        guard case .projectionMessage(let message?) = try service.handle(
+            .nextProjectionMessage,
+            idempotencyKey: brokerUUID(116),
+            now: brokerTestDate
+        ) else {
+            Issue.record("Expected projection message")
+            return
+        }
+        try fixture.ledger.close()
+
+        #expect(throws: RunLedgerError.closed) {
+            _ = try service.handle(
+                .acknowledgeProjection(.init(
+                    sequence: message.sequence,
+                    messageID: message.messageID
+                )),
+                idempotencyKey: brokerUUID(117),
+                now: brokerTestDate
+            )
+        }
+    }
+
     @Test("only exact local supervisor immediate control performs an audited effect")
     func externalOperationControlMatrix() throws {
         let fixture = try BrokerFixture()
@@ -733,28 +760,14 @@ struct RunBrokerApplicationServiceTests {
             binding: localBinding,
             cancellationIntent: .immediate
         )
-        fixture.transport.onImmediateTermination = {
-            let control = try! fixture.ledger.projection().executions[fixture.manifest.executionID]!.control
-            #expect(control.desiredCancellation == .immediate)
-            fixture.transport.events.append(
-                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
-            )
-            fixture.transport.events.append(
-                fixture.event(4, .terminationStarted, cancellationIntent: .immediate)
+        #expect(throws: RunBrokerApplicationEndpointError.externalOperationBlocked) {
+            _ = try service.handle(
+                .externalOperation(.control(immediate)),
+                idempotencyKey: brokerUUID(88),
+                now: brokerTestDate.addingTimeInterval(3)
             )
         }
-        let firstControlResponse = try service.handle(
-            .externalOperation(.control(immediate)),
-            idempotencyKey: brokerUUID(88),
-            now: brokerTestDate.addingTimeInterval(3)
-        )
-        guard case .externalOperation(let allowed) = firstControlResponse else {
-            Issue.record("Expected external-operation response")
-            return
-        }
-        #expect(allowed.cancellation.kind == .allowed)
-        #expect(allowed.cancellation.auditRequirement == .immediateTermination)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         guard case .externalOperation(let observed) = try service.handle(
             .externalOperation(.observe(immediate)),
@@ -797,17 +810,18 @@ struct RunBrokerApplicationServiceTests {
                 now: brokerTestDate
             )
         }
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
-        // A response-lost retry has a later wall clock but the same durable
-        // mutation identity. Reconcile the supervisor's pre-effect spool and
-        // return the same result without issuing termination twice.
-        #expect(try service.handle(
-            .externalOperation(.control(immediate)),
-            idempotencyKey: brokerUUID(88),
-            now: brokerTestDate.addingTimeInterval(30)
-        ) == firstControlResponse)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        // A later retry remains non-authoritative: this legacy command has no
+        // durable actor/session challenge confirmation.
+        #expect(throws: RunBrokerApplicationEndpointError.externalOperationBlocked) {
+            _ = try service.handle(
+                .externalOperation(.control(immediate)),
+                idempotencyKey: brokerUUID(88),
+                now: brokerTestDate.addingTimeInterval(30)
+            )
+        }
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         let graceful = RunBrokerApplicationExternalOperationRequest(
             target: localTarget,
@@ -824,7 +838,7 @@ struct RunBrokerApplicationServiceTests {
         }
         #expect(gracefulAssessment.cancellation.kind == .blocked)
         #expect(gracefulAssessment.cancellation.reason == .gracefulCancellationCapabilityMissing)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         for (index, kind) in [
             ExternalOperationBackendKindID.managedDockerJob,
@@ -862,7 +876,7 @@ struct RunBrokerApplicationServiceTests {
             #expect(assessment.observation.reason == .unverifiedProvenance)
             #expect(assessment.cancellation.kind == .monitoringOnly)
         }
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
     }
 
     @Test("direct immediate confirmation uses distinct durable IDs and replays after challenge issuance")
@@ -1079,7 +1093,7 @@ struct RunBrokerApplicationServiceTests {
         let fixture = try BrokerFixture()
         #expect(throws: InjectedStartCrash.self) {
             _ = try fixture.orchestrator(
-                fault: PointFaultInjector(point: .afterLedgerAdmission)
+                fault: PointFaultInjector(point: .afterCapabilitySync)
             ).start(fixture.request())
         }
         let service = applicationService(fixture)

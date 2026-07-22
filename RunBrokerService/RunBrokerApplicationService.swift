@@ -16,6 +16,7 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
     private let vault: any RunBrokerCapabilityVaulting
     private let runtimeSwitch: RunBrokerRuntimeSwitchService
     private let lock = NSRecursiveLock()
+    private var executionReconciliationWorker: RunBrokerExecutionReconciliationWorker?
     private var runtimeSwitchWorker: RunBrokerRuntimeSwitchReconciliationWorker?
 
     public var supportsGracefulCancellation: Bool { runtimeSwitch.supportsGracefulHandoff }
@@ -52,6 +53,24 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
                 logger: logger
             )
             runtimeSwitchWorker = worker
+            return worker
+        }
+        worker.start()
+    }
+
+    /// Activates broker-owned ingestion for every nonterminal execution. A
+    /// client connection is never required for supervisor spool progress.
+    public func startExecutionReconciliation(
+        logger: any RunBrokerServiceLogging = NoOpRunBrokerServiceLogger()
+    ) {
+        let worker = lock.withLock { () -> RunBrokerExecutionReconciliationWorker in
+            if let executionReconciliationWorker { return executionReconciliationWorker }
+            let worker = RunBrokerExecutionReconciliationWorker(
+                ledger: ledger,
+                orchestrator: orchestrator,
+                logger: logger
+            )
+            executionReconciliationWorker = worker
             return worker
         }
         worker.start()
@@ -161,16 +180,14 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
                 do {
                     _ = try outbox.acknowledge(acknowledgement)
                     return .projectionAcknowledged
-                } catch {
+                } catch RunLedgerError.outboxAcknowledgementWouldRegress(_, _),
+                        RunLedgerError.outboxAcknowledgementWouldSkip(_, _, _),
+                        RunLedgerError.outboxMessageIdentityMismatch(_, _, _) {
                     throw RunBrokerApplicationEndpointError.projectionAcknowledgementConflict
                 }
 
             case .externalOperation(let external):
-                return .externalOperation(try handleExternalOperation(
-                    external,
-                    idempotencyKey: idempotencyKey,
-                    now: now
-                ))
+                return .externalOperation(try handleExternalOperation(external))
 
             case .requestGracefulRuntimeSwitch(let submission):
                 guard submission.mode == .graceful else {
@@ -478,9 +495,7 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
     }
 
     private func handleExternalOperation(
-        _ command: RunBrokerApplicationExternalOperationCommand,
-        idempotencyKey: UUID,
-        now: Date
+        _ command: RunBrokerApplicationExternalOperationCommand
     ) throws -> ExternalOperationControlAssessment {
         let request: RunBrokerApplicationExternalOperationRequest
         let isControl: Bool
@@ -541,12 +556,13 @@ public final class RunBrokerApplicationService: RunBrokerApplicationCommandHandl
             // Graceful control is not wired or advertised in this release.
             throw RunBrokerApplicationEndpointError.externalOperationBlocked
         }
-        try orchestrator.requestImmediateTermination(
-            .init(executionID: request.target.executionID, intent: .immediate),
-            requestedAt: now,
-            auditID: idempotencyKey
-        )
-        return assessment
+        // This legacy assessment contract carries no actor/session identity,
+        // challenge, or one-time effect ID. It may explain that immediate
+        // control is technically available, but cannot authorize the effect.
+        // Callers must use requestImmediateCancellation followed by
+        // confirmImmediateCancellation, whose durable challenge consumption
+        // is the sole destructive execution-control boundary.
+        throw RunBrokerApplicationEndpointError.externalOperationBlocked
     }
 }
 

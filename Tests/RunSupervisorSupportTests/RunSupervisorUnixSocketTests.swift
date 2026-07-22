@@ -5,6 +5,28 @@ import Testing
 
 @Suite("Run supervisor Unix control socket", .serialized)
 struct RunSupervisorUnixSocketTests {
+    @Test("listener and accepted control sockets are closed across exec")
+    func socketDescriptorsAreCloseOnExec() throws {
+        let fixture = try makeFixture()
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: .init(
+                executionID: fixture.payload.manifest.executionID,
+                capability: fixture.payload.capability
+            )
+        )
+        try server.start { _ in .init(accepted: true, lastSequence: 0) }
+        defer { server.stop() }
+
+        #expect(server.listenerHasCloseOnExec)
+        let client = try connectRawClient(directory: fixture.directory)
+        defer { close(client) }
+        #expect(RunSupervisorTestSupport.waitUntil(timeout: 2) {
+            server.activeClientCount == 1
+        })
+        #expect(server.activeClientCloseOnExecStates == [true])
+    }
+
     @Test("socket authenticates a request and rejects nonce replay")
     func authenticatedRequest() throws {
         let fixture = try makeFixture()

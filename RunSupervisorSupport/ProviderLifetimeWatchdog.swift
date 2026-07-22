@@ -22,7 +22,9 @@ enum ProviderLifetimeWatchdog {
 
         // The watchdog ignores graceful signals so it remains available to
         // perform the bounded escalation. It is part of the supervised process
-        // group and is force-reaped by the wrapper after normal completion.
+        // group and is force-reaped by the supervisor after provider completion.
+        // The shell must exec the provider so waitpid observes the provider's
+        // original exit or signal status instead of a shell-normalized 128+signal.
         let script = """
         supervised_group="$$"
         (
@@ -32,13 +34,8 @@ enum ProviderLifetimeWatchdog {
           /bin/sleep 0.2
           /bin/kill -KILL -- "-$supervised_group" 2>/dev/null || true
         ) &
-        watchdog_pid=$!
         exec \(lifetimeDescriptor)<&-
-        "$@"
-        command_status=$?
-        /bin/kill -KILL "$watchdog_pid" 2>/dev/null || true
-        wait "$watchdog_pid" 2>/dev/null || true
-        exit "$command_status"
+        exec "$@"
         """
 
         return LaunchPlan(

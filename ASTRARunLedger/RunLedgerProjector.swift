@@ -277,10 +277,46 @@ enum RunLedgerProjector {
                 createdSequence: execution.createdSequence,
                 updatedSequence: storedEvent.sequence
             )
+            var operations = projection.operations
+            var monitorDeadlines = projection.monitorDeadlines
+            if let tombstoneReason = terminalClaimTombstoneReason(
+                for: reduction.state.observedExecution
+            ) {
+                // Terminal execution truth and release of every effect claim
+                // are one projection transaction. Requiring a later caller to
+                // append operationTombstoned leaves claims permanently active
+                // after a broker crash between those separate actions.
+                for (operationID, operation) in projection.operations
+                    where operation.record.executionID == executionID
+                        && operation.record.holdsEffects {
+                    guard occurredAt >= operation.record.updatedAt else {
+                        throw RunLedgerError.invalidEvent(
+                            "Terminal execution evidence predates its operation claim"
+                        )
+                    }
+                    let claim = DurableExecutionClaimReducer.reduce(
+                        operation.record,
+                        event: .tombstone(
+                            authority: authority,
+                            reason: tombstoneReason,
+                            at: occurredAt
+                        )
+                    )
+                    guard claim.disposition == .applied else {
+                        throw RunLedgerError.claimTransitionRejected(claim.disposition)
+                    }
+                    operations[operationID] = .init(
+                        record: claim.record,
+                        createdSequence: operation.createdSequence,
+                        updatedSequence: storedEvent.sequence
+                    )
+                    monitorDeadlines.removeValue(forKey: operationID)
+                }
+            }
             return .init(
                 executions: executions,
-                operations: projection.operations,
-                monitorDeadlines: projection.monitorDeadlines
+                operations: operations,
+                monitorDeadlines: monitorDeadlines
             )
 
         case .supervisorObservationRecorded(let observation):
@@ -318,6 +354,17 @@ enum RunLedgerProjector {
              .executionForceChallengeRecorded,
              .executionForceChallengeConsumed:
             return try reduceRuntimeSwitch(projection, storedEvent: storedEvent, storeID: storeID)
+        }
+    }
+
+    private static func terminalClaimTombstoneReason(
+        for state: ExecutionObservedState
+    ) -> DurableExecutionClaimTombstoneReason? {
+        switch state {
+        case .completed: .completed
+        case .cancelled: .cancelled
+        case .failed: .failed
+        default: nil
         }
     }
 

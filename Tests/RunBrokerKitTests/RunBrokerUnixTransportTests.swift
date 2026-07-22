@@ -6,6 +6,24 @@ import ASTRACore
 
 @Suite("RunBroker Unix socket transport")
 struct RunBrokerUnixTransportTests {
+    @Test("Listener and accepted broker sockets are closed across exec")
+    func socketDescriptorsAreCloseOnExec() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+
+        #expect(listener.hasCloseOnExec)
+        let client = try connectRawSocket(to: fixture.identity.socketURL)
+        defer { Darwin.close(client) }
+        let connection = try #require(listener.accept() as? RunBrokerUnixSocketConnection)
+        defer { connection.close() }
+        #expect(connection.hasCloseOnExec)
+    }
+
     @Test("Authenticated client and server exchange a framed health request")
     func endToEndHealth() throws {
         let fixture = try SocketFixture()

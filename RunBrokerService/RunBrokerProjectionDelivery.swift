@@ -213,21 +213,10 @@ public final class RunBrokerProjectionOutbox: @unchecked Sendable {
         for executionID: RunBrokerExecutionID,
         through maximumSequence: Int64?
     ) throws -> [RunBrokerSupervisorObservation] {
-        var result: [RunBrokerSupervisorObservation] = []
-        var cursor: Int64 = 0
-        while true {
-            let page = try ledger.events(after: cursor, limit: 1_000)
-            guard !page.isEmpty else { return result.sorted { $0.supervisorSequence < $1.supervisorSequence } }
-            for stored in page {
-                if let maximumSequence, stored.sequence > maximumSequence {
-                    return result.sorted { $0.supervisorSequence < $1.supervisorSequence }
-                }
-                cursor = stored.sequence
-                guard case .supervisorObservationRecorded(let value) = stored.envelope.event,
-                      value.executionID == executionID else { continue }
-                result.append(value)
-            }
-        }
+        try ledger.supervisorObservations(
+            for: executionID,
+            through: maximumSequence
+        )
     }
 
     private static func terminalEvidence(

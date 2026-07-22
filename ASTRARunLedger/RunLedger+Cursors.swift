@@ -1,3 +1,4 @@
+import ASTRACore
 import Foundation
 
 extension RunLedger {
@@ -86,6 +87,86 @@ extension RunLedger {
                 throw RunLedgerError.projectionDrift("Outbox head row is missing")
             }
             return head
+        }
+    }
+
+    /// Uses the durable `(execution_id, supervisor_sequence)` outbox index to
+    /// read one execution's observation history without replaying unrelated
+    /// journal rows under the broker's service lock.
+    package func supervisorObservations(
+        for executionID: RunBrokerExecutionID,
+        through maximumLedgerSequence: Int64? = nil
+    ) throws -> [RunBrokerSupervisorObservation] {
+        let maximum = maximumLedgerSequence ?? Int64.max
+        guard maximum >= 0 else {
+            throw RunLedgerError.invalidEvent("Observation cursor cannot be negative")
+        }
+        return try connection.withLock { database in
+            let statement = try connection.statement(
+                """
+                SELECT event_kind, projection_schema_version, projection_payload,
+                       projection_sha256, execution_id, supervisor_sequence,
+                       stream_channel, stream_ends_logical_line,
+                       stream_fragment_byte_count, stream_fragment_truncated,
+                       has_terminal
+                FROM outbox
+                WHERE execution_id = ?
+                  AND event_kind = 'execution.supervisor_observation_recorded'
+                  AND sequence <= ?
+                ORDER BY supervisor_sequence
+                """,
+                bindings: [
+                    .text(RunLedgerSchema.uuid(executionID.rawValue)),
+                    .integer(maximum),
+                ],
+                database: database
+            )
+            defer { statement.finalize() }
+            var observations: [RunBrokerSupervisorObservation] = []
+            while try statement.step() == .row {
+                guard statement.int64(at: 1)
+                        == Int64(RunLedgerPersistedOutboxProjection.currentSchemaVersion) else {
+                    throw RunLedgerError.projectionDrift(
+                        "Unsupported stored outbox projection schema"
+                    )
+                }
+                let projection = try RunLedgerOutboxProjectionCodec.decode(
+                    payload: try statement.blob(at: 2),
+                    sha256: try statement.blob(at: 3)
+                )
+                try Self.validateOutboxMetadata(
+                    projection: projection,
+                    eventKind: try statement.text(at: 0),
+                    executionID: try statement.optionalText(at: 4),
+                    supervisorSequence: statement.isNull(at: 5) ? nil : statement.int64(at: 5),
+                    streamChannel: try statement.optionalText(at: 6),
+                    streamEndsLogicalLine: statement.isNull(at: 7) ? nil : statement.int64(at: 7),
+                    streamFragmentByteCount: statement.isNull(at: 8) ? nil : statement.int64(at: 8),
+                    streamFragmentTruncated: statement.isNull(at: 9) ? nil : statement.int64(at: 9),
+                    hasTerminal: statement.int64(at: 10)
+                )
+                guard case .supervisor(let value) = projection else {
+                    throw RunLedgerError.projectionDrift(
+                        "Supervisor observation index references another projection kind"
+                    )
+                }
+                let observation = value.observation
+                observations.append(.init(
+                    executionID: observation.executionID,
+                    authority: observation.authority,
+                    supervisorSequence: observation.supervisorSequence,
+                    supervisorEventID: observation.supervisorEventID,
+                    occurredAt: observation.occurredAt,
+                    kind: observation.kind,
+                    output: value.stream?.bytes,
+                    exitCode: observation.exitCode,
+                    terminationSignal: observation.terminationSignal,
+                    terminationReason: observation.terminationReason,
+                    cancellationIntent: observation.cancellationIntent,
+                    quarantinedByteCount: observation.quarantinedByteCount
+                ))
+            }
+            return observations
         }
     }
 

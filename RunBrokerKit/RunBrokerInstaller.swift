@@ -51,6 +51,7 @@ public struct RunBrokerInstaller: @unchecked Sendable {
     let fileManager: FileManager
     let userID: UInt32
     let stagingIdentifier: @Sendable () -> String
+    let durabilitySynchronizer: any RunBrokerInstallationDurabilitySynchronizing
     private let diagnostics: any RunBrokerDiagnosing
 
     public init(
@@ -60,6 +61,8 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         fileManager: FileManager = .default,
         userID: UInt32 = getuid(),
         stagingIdentifier: @escaping @Sendable () -> String = { UUID().uuidString },
+        durabilitySynchronizer: any RunBrokerInstallationDurabilitySynchronizing =
+            SystemRunBrokerInstallationDurabilitySynchronizer(),
         diagnostics: any RunBrokerDiagnosing = StandardErrorRunBrokerDiagnostics()
     ) {
         self.launchController = launchController
@@ -68,6 +71,7 @@ public struct RunBrokerInstaller: @unchecked Sendable {
         self.fileManager = fileManager
         self.userID = userID
         self.stagingIdentifier = stagingIdentifier
+        self.durabilitySynchronizer = durabilitySynchronizer
         self.diagnostics = diagnostics
     }
 
@@ -136,6 +140,7 @@ public struct RunBrokerInstaller: @unchecked Sendable {
                 [.posixPermissions: 0o600],
                 ofItemAtPath: identity.launchAgentPlistURL.path
             )
+            try synchronizePublishedFile(identity.launchAgentPlistURL)
             try launchController.reload(agent)
             do {
                 try healthChecker.waitUntilHealthy(
