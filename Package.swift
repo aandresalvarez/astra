@@ -5,10 +5,22 @@ let package = Package(
     name: "ASTRA",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "RunBrokerClient", targets: ["RunBrokerClient"]),
+        .library(name: "ASTRARunLedger", targets: ["ASTRARunLedger"]),
+        .library(name: "RunBrokerService", targets: ["RunBrokerService"]),
+        // Standalone process-boundary fixture; never embedded in ASTRA.app.
+        .executable(name: "run-ledger-open-harness", targets: ["RunLedgerOpenHarness"]),
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
+        .executable(name: "astra-run-supervisor", targets: ["AstraRunSupervisor"]),
+        .executable(name: "astra-run-broker", targets: ["AstraRunBrokerTool"]),
+        // Test-only: gives `swift test` an independently killable owner
+        // process for parent-death regressions. The app bundle uses the
+        // explicit TOOL_PRODUCTS allowlist and never stages this executable.
+        .executable(name: "astra-agent-process-crash-harness", targets: ["AgentProcessCrashHarness"]),
+        .executable(name: "astra-run-supervisor-broker-harness", targets: ["RunSupervisorBrokerHarness"]),
         // Regression harness for abrupt HostControl-parent termination. It is
         // built by SwiftPM tests but is not copied into either ASTRA app.
         .executable(name: "astra-host-control-crash-harness", targets: ["HostControlCrashHarness"]),
@@ -32,11 +44,106 @@ let package = Package(
         .target(
             name: "ASTRACore",
             dependencies: ["ASTRALogging"],
-            path: "ASTRACore"
+            path: "ASTRACore",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        // Broker-only policy and verified evidence. Application, UI, model,
+        // persistence, and general tool targets must not depend on this target.
+        .target(
+            name: "RunBrokerPolicy",
+            dependencies: ["ASTRACore"],
+            path: "RunBrokerPolicy"
         ),
         .target(
             name: "ASTRALogging",
             path: "ASTRALogging"
+        ),
+        .target(
+            name: "ASTRARunLedger",
+            dependencies: ["ASTRACore", "RunBrokerPolicy"],
+            path: "ASTRARunLedger",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
+        .executableTarget(
+            name: "RunLedgerOpenHarness",
+            dependencies: ["ASTRARunLedger", "ASTRACore"],
+            path: "Tests/RunLedgerOpenHarness"
+        ),
+        .target(
+            name: "RunSupervisorSupport",
+            dependencies: ["ASTRACore", "RunBrokerClient"],
+            path: "RunSupervisorSupport"
+        ),
+        .target(
+            name: "RunBrokerClient",
+            dependencies: ["ASTRACore", "AstraObjCSupport"],
+            path: "RunBrokerKit",
+            exclude: [
+                "RunBrokerApplicationCommandHandling.swift",
+                "RunBrokerClientServer.swift",
+                "RunBrokerCohort.swift",
+                "RunBrokerDiagnostics.swift",
+                "RunBrokerEndpoint.swift",
+                "RunBrokerInstallationTransactionLock.swift",
+                "RunBrokerInstaller.swift",
+                "RunBrokerLaunchAgentInstallation.swift",
+                "RunBrokerMonitorScheduler.swift",
+                "RunBrokerPackageMetadata.swift",
+                "RunBrokerPaths.swift",
+                "RunBrokerPayloadInstallation.swift",
+                "RunBrokerRunLedgerAdapter.swift",
+                "RunBrokerSchedulerContracts.swift",
+                "RunBrokerSecureStore.swift",
+                "RunBrokerSuccessorHandoff.swift",
+                "RunBrokerUnixSocketListener.swift",
+            ],
+            sources: [
+                "RunBrokerApplicationContracts.swift",
+                "RunBrokerApplicationV2Contracts.swift",
+                "RunBrokerAuthentication.swift",
+                "RunBrokerClient.swift",
+                "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
+                "RunBrokerCommands.swift",
+                "RunBrokerProtocol.swift",
+                "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
+                "RunBrokerTransport.swift",
+                "RunBrokerUnixSocketConnection.swift",
+                "RunBrokerWireCodec.swift",
+            ],
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .target(
+            name: "RunBrokerKit",
+            dependencies: ["ASTRACore", "ASTRARunLedger", "RunBrokerClient"],
+            path: "RunBrokerKit",
+            exclude: [
+                "RunBrokerApplicationContracts.swift",
+                "RunBrokerApplicationV2Contracts.swift",
+                "RunBrokerAuthentication.swift",
+                "RunBrokerClient.swift",
+                "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
+                "RunBrokerCommands.swift",
+                "RunBrokerProtocol.swift",
+                "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
+                "RunBrokerTransport.swift",
+                "RunBrokerUnixSocketConnection.swift",
+                "RunBrokerWireCodec.swift",
+            ]
+        ),
+        .target(
+            name: "RunBrokerService",
+            dependencies: [
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunBrokerPolicy",
+                "RunSupervisorSupport",
+                "RunBrokerKit",
+            ],
+            path: "RunBrokerService"
         ),
         .target(
             name: "MailToolSupport",
@@ -49,7 +156,7 @@ let package = Package(
         ),
         .target(
             name: "WorkspaceToolSupport",
-            dependencies: ["MCPServerKit"],
+            dependencies: ["ASTRACore", "MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
@@ -78,6 +185,17 @@ let package = Package(
             path: "Tools/AstraHostControlTool"
         ),
         .executableTarget(
+            name: "AstraRunBrokerTool",
+            dependencies: [
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunBrokerKit",
+                "RunBrokerService",
+                "RunSupervisorSupport",
+            ],
+            path: "Tools/AstraRunBrokerTool"
+        ),
+        .executableTarget(
             name: "HostControlCrashHarness",
             dependencies: ["HostControlToolSupport"],
             path: "Tests/HostControlCrashHarness"
@@ -86,6 +204,22 @@ let package = Package(
             name: "AstraWorkspaceTool",
             dependencies: ["WorkspaceToolSupport"],
             path: "Tools/AstraWorkspaceTool"
+        ),
+        .executableTarget(
+            name: "AstraRunSupervisor",
+            dependencies: ["RunSupervisorSupport"],
+            path: "Tools/AstraRunSupervisor"
+        ),
+        // Kept under Tests and excluded from ASTRATests source discovery.
+        .executableTarget(
+            name: "AgentProcessCrashHarness",
+            dependencies: ["ASTRA"],
+            path: "Tests/AgentProcessCrashHarness"
+        ),
+        .executableTarget(
+            name: "RunSupervisorBrokerHarness",
+            dependencies: ["RunSupervisorSupport"],
+            path: "Tests/RunSupervisorBrokerHarness"
         ),
         .executableTarget(
             name: "StanfordMailTool",
@@ -120,6 +254,8 @@ let package = Package(
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                "RunBrokerClient",
+                "RunSupervisorSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
@@ -185,8 +321,19 @@ let package = Package(
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")
             ],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "HostControlCrashHarness", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
+            exclude: ["ArchitectureFitnessTests", "AgentProcessCrashHarness", "ASTRARunLedgerTests", "RunBrokerPolicyTests", "RunSupervisorBrokerHarness", "AstraTestSeamBootstrap", "HostControlCrashHarness", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests", "RunLedgerOpenHarness", "RunSupervisorSupportTests", "RunBrokerKitTests", "RunBrokerServiceTests"],
             resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
+        ),
+        .testTarget(
+            name: "RunBrokerPolicyTests",
+            dependencies: ["ASTRACore", "RunBrokerPolicy"],
+            path: "Tests/RunBrokerPolicyTests"
+        ),
+        .testTarget(
+            name: "ASTRARunLedgerTests",
+            dependencies: ["ASTRARunLedger", "ASTRACore", "RunBrokerPolicy"],
+            path: "Tests/ASTRARunLedgerTests",
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .testTarget(
             name: "MailToolSupportTests",
@@ -197,6 +344,27 @@ let package = Package(
             name: "MCPServerKitTests",
             dependencies: ["MCPServerKit"],
             path: "Tests/MCPServerKitTests"
+        ),
+        .testTarget(
+            name: "RunSupervisorSupportTests",
+            dependencies: ["RunSupervisorSupport", "RunBrokerClient", "ASTRACore"],
+            path: "Tests/RunSupervisorSupportTests"
+        ),
+        .testTarget(
+            name: "RunBrokerKitTests",
+            dependencies: ["RunBrokerKit", "RunBrokerClient", "ASTRARunLedger"],
+            path: "Tests/RunBrokerKitTests"
+        ),
+        .testTarget(
+            name: "RunBrokerServiceTests",
+            dependencies: [
+                "RunBrokerService",
+                "ASTRACore",
+                "ASTRARunLedger",
+                "RunSupervisorSupport",
+                "RunBrokerKit",
+            ],
+            path: "Tests/RunBrokerServiceTests"
         )
     ]
 )

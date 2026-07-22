@@ -42,13 +42,23 @@ struct AppBundlePackagingTests {
         let resourceCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/""#
         let toolCopy = #"cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product""#
         let invalidRootCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_BUNDLE/""#
-        let signingCommand = #"/usr/bin/codesign --force --deep"#
+        let metadataFinalization = #"finalize_run_broker_payload_metadata"#
 
         #expect(script.contains(resourceCopy))
         #expect(script.contains(toolCopy))
         #expect(!script.contains(invalidRootCopy))
-        #expect(try index(of: resourceCopy, in: script) < index(of: signingCommand, in: script))
-        #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
+        #expect(try index(of: resourceCopy, in: script) < index(of: metadataFinalization, in: script))
+        #expect(try index(of: toolCopy, in: script) < index(of: metadataFinalization, in: script))
+    }
+
+    @Test("provider crash harness is built for regression tests but never staged in the app")
+    func providerCrashHarnessRemainsTestOnly() throws {
+        let package = try String(contentsOf: repoRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+
+        #expect(package.contains(#".executable(name: "astra-agent-process-crash-harness""#))
+        #expect(package.contains(#"path: "Tests/AgentProcessCrashHarness""#))
+        #expect(!script.contains("astra-agent-process-crash-harness"))
     }
 
     @Test("build script derives and embeds the authoritative store schema version")
@@ -174,8 +184,8 @@ struct AppBundlePackagingTests {
     func developerIdBuildsSignInsideOutWithoutDeepEntitlementSmear() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
 
-        let signTools = #"sign_bundled_tools_for_notarization"#
-        let signSparkle = #"sign_sparkle_framework_for_notarization"#
+        let signTools = #"sign_bundled_tools_with sign_developer_id"#
+        let signSparkle = #"sign_sparkle_framework_with sign_developer_id"#
         let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
 
         #expect(script.contains(signTools))
@@ -189,6 +199,50 @@ struct AppBundlePackagingTests {
         // services and helper app, invalidating their own signatures.
         let deepDistributedSign = #"/usr/bin/codesign --force --deep --timestamp --options runtime"#
         #expect(!script.contains(deepDistributedSign))
+    }
+
+    @Test("RunBroker metadata seals the final signed broker-supervisor cohort before outer app signing")
+    func runBrokerMetadataSealsFinalSignedCohortBytes() throws {
+        let script = try String(
+            contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"),
+            encoding: .utf8
+        )
+        let nestedSign = #"sign_bundled_tools_with sign_developer_id"#
+        let finalizeCall = "\nfinalize_run_broker_payload_metadata\n"
+        let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
+        let brokerVerification = #"/usr/bin/codesign --verify --strict "$RUN_BROKER_EXECUTABLE""#
+        let supervisorVerification = #"/usr/bin/codesign --verify --strict "$RUN_SUPERVISOR_EXECUTABLE""#
+        let brokerDigest = #"/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE""#
+        let supervisorDigest = #"/usr/bin/shasum -a 256 "$RUN_SUPERVISOR_EXECUTABLE""#
+        let cohortTranscript = #"astra.run-broker.cohort.v1\0%s\0%s\0%s\0%s"#
+        let immutableVersion = #"payload_version="${APP_VERSION}-${APP_BUILD}-${cohort_digest:0:32}""#
+        let liveBrokerDigestAssertion = #""$metadata_sha" != "$actual_broker_sha""#
+        let liveSupervisorDigestAssertion = #""$metadata_supervisor_sha" != "$actual_supervisor_sha""#
+        let liveCohortAssertion = #""$metadata_cohort_sha" != "$actual_cohort_sha""#
+
+        for key in [
+            "ASTRARunBrokerPayloadSchemaVersion",
+            "ASTRARunBrokerPayloadVersion",
+            "ASTRARunBrokerPayloadSHA256",
+            "ASTRARunBrokerPayloadExecutable",
+            "ASTRARunSupervisorPayloadSHA256",
+            "ASTRARunSupervisorPayloadExecutable",
+            "ASTRARunBrokerCohortSHA256"
+        ] {
+            #expect(script.contains(key))
+        }
+        #expect(script.contains(brokerVerification))
+        #expect(script.contains(supervisorVerification))
+        #expect(script.contains(brokerDigest))
+        #expect(script.contains(supervisorDigest))
+        #expect(script.contains(cohortTranscript))
+        #expect(script.contains(immutableVersion))
+        #expect(script.contains(liveBrokerDigestAssertion))
+        #expect(script.contains(liveSupervisorDigestAssertion))
+        #expect(script.contains(liveCohortAssertion))
+        #expect(try index(of: nestedSign, in: script) < index(of: finalizeCall, in: script))
+        #expect(try index(of: finalizeCall, in: script) < index(of: outerSign, in: script))
+        #expect(!script.contains(#"--deep --entitlements "$ENTITLEMENTS" --sign"#))
     }
 
     @Test("release script validates the quarantined Sparkle zip before building the human DMG")

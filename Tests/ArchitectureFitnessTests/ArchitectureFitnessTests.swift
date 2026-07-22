@@ -1509,6 +1509,71 @@ struct ArchitectureFitnessTests {
         }
     }
 
+    @Test("RunBroker owns verified control evidence and dormant startup has no installer side effects")
+    func runBrokerOwnsVerifiedControlEvidence() throws {
+        let root = try repositoryRoot()
+        let forbidden = [
+            "ExternalOperationControlProvenanceVerifier",
+            "ExternalOperationVerifiedEvidence",
+            "ExternalOperationControlAuthenticating",
+            "ExternalOperationControlProvenanceAuthenticating",
+            "RunBrokerImmediateTerminationAuthorizing",
+            "RunBrokerImmediateTerminationAuthorization",
+            "AllowExactRunBrokerImmediateTerminationAuthorizer",
+            "RunBrokerOrchestrator(",
+        ]
+        var offenders: [String] = []
+        for file in try swiftFiles(under: root.appendingPathComponent("Astra")) {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            if forbidden.contains(where: text.contains) {
+                offenders.append(relativePath(for: file, root: root))
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "App/UI code may submit untrusted target and intent only; verified control evidence belongs to RunBrokerService: \(offenders.sorted())"
+        )
+
+        let serviceFiles = try swiftFiles(under: root.appendingPathComponent("RunBrokerService"))
+        let serviceText = try serviceFiles
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
+        #expect(!serviceText.contains("RunBrokerLaunchAgentInstallation"))
+        #expect(!serviceText.contains("RunBrokerInstaller("))
+        #expect(!serviceText.contains("launchctl"))
+        let transport = try fileText(
+            "RunBrokerService/DarwinRunBrokerSupervisorTransport.swift",
+            root: root
+        )
+        #expect(!transport.contains("try? client.send"))
+        #expect(transport.contains("operation == \"connect unix socket\""))
+        #expect(transport.contains("ECONNREFUSED"))
+        let spawner = try fileText(
+            "RunBrokerService/DarwinRunBrokerSupervisorSpawner.swift",
+            root: root
+        )
+        #expect(!spawner.contains("ProcessInfo.processInfo.environment"))
+        #expect(spawner.contains("PATH=/usr/bin:/bin"))
+        let vault = try fileText("RunBrokerService/RunBrokerCapabilityVault.swift", root: root)
+        #expect(vault.contains("renameatx_np"))
+        #expect(vault.contains("RENAME_EXCL"))
+        let delivery = try fileText(
+            "RunBrokerService/RunBrokerProjectionDelivery.swift",
+            root: root
+        )
+        #expect(delivery.contains("outbox(after: acknowledged, limit: 1)"))
+        #expect(!delivery.contains("outbox(after: 0, limit: 10_000)"))
+
+        let package = try fileText("Package.swift", root: root)
+        let target = try extractedTarget(named: "RunBrokerService", from: package)
+        for dependency in ["ASTRACore", "ASTRARunLedger", "RunSupervisorSupport", "RunBrokerKit"] {
+            #expect(target.contains("\"\(dependency)\""))
+        }
+        for forbiddenDependency in ["ASTRA", "ASTRAModels", "ASTRAPersistence", "SwiftData"] {
+            #expect(!target.contains("\"\(forbiddenDependency)\""))
+        }
+    }
+
     @Test("Model secret persistence owns Keychain IO for model classes")
     func modelSecretPersistenceOwnsKeychainIOForModelClasses() throws {
         let root = try repositoryRoot()
@@ -1911,7 +1976,10 @@ struct ArchitectureFitnessTests {
             // threshold from the file-access-broker tests added for issue
             // #323's WorkspacePackage subsystem. It's a flat suite, not a
             // companion of one production file, so it owns itself here.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_150, .owner("Architecture fitness test suite")),
+            // Budget raised 2,150 -> 2,180 for the integration<-main merge:
+            // the file carries the union of main's and the RunBroker
+            // branch's independently added guardrails.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_180, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1924,7 +1992,6 @@ struct ArchitectureFitnessTests {
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
             "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -1933,7 +2000,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
-            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            "Tests/ProcessMonitorTests.swift": .init(3_500, .owner("Runtime process stream tests")),
             "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
@@ -2063,6 +2130,28 @@ struct ArchitectureFitnessTests {
             index = source.index(after: index)
         }
 
+        throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+    }
+
+    private func extractedTarget(named name: String, from source: String) throws -> String {
+        let marker = ".target(\n            name: \"\(name)\""
+        guard let targetRange = source.range(of: marker) else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+        let opening = targetRange.lowerBound
+        var depth = 0
+        var sawOpen = false
+        var index = opening
+        while index < source.endIndex {
+            if source[index] == "(" {
+                depth += 1
+                sawOpen = true
+            } else if source[index] == ")" {
+                depth -= 1
+                if sawOpen && depth == 0 { return String(source[opening...index]) }
+            }
+            index = source.index(after: index)
+        }
         throw ArchitectureFitnessError.sourceSnippetNotFound(name)
     }
 
