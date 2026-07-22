@@ -209,10 +209,17 @@ public final class RunSupervisorService: @unchecked Sendable {
             )
         }
         let outputGroup = DispatchGroup()
+        // Each read becomes one durable spool event. A buffer larger than the
+        // admitted per-event byte limit would manufacture an oversized event
+        // that the broker must classify as an output-quota violation, so
+        // reads never exceed the policy's maximumOutputEventBytes.
+        let outputReadLimit = payload.manifest.supervisionPolicy
+            .map { Int(min($0.maximumOutputEventBytes, 8_192)) } ?? 8_192
         startOutputReader(
             ownedProcess.stdoutFileHandle,
             kind: .standardOutput,
             spool: spool,
+            readLimit: outputReadLimit,
             group: outputGroup,
             persistenceError: outputPersistenceError,
             progress: { timeoutWatchdog?.recordProgress() }
@@ -221,6 +228,7 @@ public final class RunSupervisorService: @unchecked Sendable {
             ownedProcess.stderrFileHandle,
             kind: .standardError,
             spool: spool,
+            readLimit: outputReadLimit,
             group: outputGroup,
             persistenceError: outputPersistenceError,
             progress: { timeoutWatchdog?.recordProgress() }
@@ -417,6 +425,7 @@ public final class RunSupervisorService: @unchecked Sendable {
         _ handle: FileHandle,
         kind: RunSupervisorEventKind,
         spool: RunSupervisorEventSpool,
+        readLimit: Int,
         group: DispatchGroup,
         persistenceError: RunSupervisorErrorBox,
         progress: @escaping @Sendable () -> Void
@@ -429,7 +438,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                 return
             }
             let descriptor = handle.fileDescriptor
-            var buffer = [UInt8](repeating: 0, count: 8_192)
+            var buffer = [UInt8](repeating: 0, count: readLimit)
             while true {
                 let count = buffer.withUnsafeMutableBytes { bytes in
                     Darwin.read(descriptor, bytes.baseAddress, bytes.count)

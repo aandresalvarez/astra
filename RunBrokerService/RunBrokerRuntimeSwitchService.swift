@@ -321,8 +321,10 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
 
     /// Lost-response recovery is safe only for the exact destructive command
     /// already recorded in the archived switch. Request/challenge correlation
-    /// alone is insufficient because actor, session, and effect identity are
-    /// independent authorization fences.
+    /// alone is insufficient because actor, session, effect identity, and the
+    /// confirmed-at instant are independent authorization fences: the
+    /// recorded timestamp is authenticated confirmation evidence, so a retry
+    /// carrying any other instant is a different command, not a replay.
     static func isExactArchivedConfirmation(
         _ response: RunBrokerApplicationForceConfirmation,
         archived: RuntimeSwitchRecord
@@ -336,7 +338,8 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             response,
             challenge: challenge,
             recordedEffectID: controlEffect.effectID,
-            recordedConfirmationID: controlEffect.confirmationID
+            recordedConfirmationID: controlEffect.confirmationID,
+            recordedConfirmedAt: controlEffect.confirmedAt
         )
     }
 
@@ -344,7 +347,8 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
         _ response: RunBrokerApplicationForceConfirmation,
         challenge: RuntimeForceSwitchChallenge,
         recordedEffectID: RuntimeSwitchEffectID,
-        recordedConfirmationID: RuntimeSwitchEvidenceID?
+        recordedConfirmationID: RuntimeSwitchEvidenceID?,
+        recordedConfirmedAt: Date?
     ) -> Bool {
         challenge.challengeID == response.challengeID
             && challenge.requestID == response.requestID
@@ -353,6 +357,7 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             && challenge.sessionID == response.sessionID
             && recordedEffectID == response.effectID
             && recordedConfirmationID == confirmationID(for: response.effectID)
+            && recordedConfirmedAt == response.confirmedAt
     }
 
     static func confirmationID(for effectID: RuntimeSwitchEffectID) -> RuntimeSwitchEvidenceID {

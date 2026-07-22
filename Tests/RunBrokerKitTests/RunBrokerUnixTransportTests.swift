@@ -421,6 +421,66 @@ struct RunBrokerUnixTransportTests {
         withExtendedLifetime(listener) {}
     }
 
+    @Test("Stale-socket removal and bind are serialized under the bind lease")
+    func staleRemovalIsLeaseSerialized() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        try fixture.secureStore.ensurePrivateDirectory(fixture.identity.supportDirectory)
+        try fixture.secureStore.ensurePrivateDirectory(fixture.identity.socketDirectory)
+
+        // A crashed broker's endpoint: a bound socket whose listener is gone.
+        let staleDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        #expect(staleDescriptor >= 0)
+        var address = try runBrokerUnixAddress(path: fixture.identity.socketURL.path)
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(staleDescriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        #expect(bound == 0)
+        #expect(chmod(fixture.identity.socketURL.path, 0o600) == 0)
+        Darwin.close(staleDescriptor)
+        var stale = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &stale) == 0)
+
+        // A concurrent broker is mid-claim: it observed the same refused
+        // stale socket and holds the bind lease while it unlinks and binds.
+        let leasePath = fixture.identity.socketURL.path + ".lock"
+        let concurrentClaim = open(leasePath, O_WRONLY | O_CREAT | O_CLOEXEC, 0o600)
+        #expect(concurrentClaim >= 0)
+        #expect(flock(concurrentClaim, LOCK_EX | LOCK_NB) == 0)
+
+        #expect(throws: RunBrokerTransportError.socketAlreadyActive) {
+            try RunBrokerUnixSocketListener(
+                identity: fixture.identity,
+                secureStore: fixture.secureStore,
+                expectedUserID: getuid()
+            )
+        }
+        // The contended claim never unlinked the pathname out from under the
+        // lease holder.
+        var afterContended = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &afterContended) == 0)
+        #expect(afterContended.st_dev == stale.st_dev)
+        #expect(afterContended.st_ino == stale.st_ino)
+
+        #expect(flock(concurrentClaim, LOCK_UN) == 0)
+        Darwin.close(concurrentClaim)
+
+        // With the lease free the same claim replaces the stale endpoint.
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        var live = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &live) == 0)
+        #expect(live.st_ino != stale.st_ino)
+        let client = try connectRawSocket(to: fixture.identity.socketURL)
+        Darwin.close(client)
+        withExtendedLifetime(listener) {}
+    }
+
     @Test("Connector rejects paths exceeding sockaddr_un capacity")
     func socketPathBound() {
         let connector = RunBrokerUnixSocketConnector(

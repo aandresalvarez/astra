@@ -1239,10 +1239,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                     "exec", configuration.containerName,
                     "sh", "-c",
                     """
-                    pidfile=\(shellQuote(directory + "/pid"))
-                    pid_metadata=\(shellQuote(directory + "/pid.meta"))
+                    pidfile=\(Self.shellQuote(directory + "/pid"))
+                    pid_metadata=\(Self.shellQuote(directory + "/pid.meta"))
                     pid_metadata_tmp="$pid_metadata.tmp"
-                    command_script=\(shellQuote(directory + "/command.sh"))
+                    command_script=\(Self.shellQuote(directory + "/command.sh"))
                     kill_bin=""
                     for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
                       if [ -x "$candidate" ]; then
@@ -1462,22 +1462,32 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             arguments: [
                 "exec", configuration.containerName,
                 "sh", "-c",
-                """
-                command_script=\(shellQuote(commandScript))
-                for cmdline in /proc/[0-9]*/cmdline; do
-                  [ -r "$cmdline" ] || continue
-                  value="$(tr '\\0' ' ' < "$cmdline" 2>/dev/null || true)"
-                  case "$value" in
-                    *"$command_script"*) exit 73 ;;
-                  esac
-                done
-                exit 0
-                """
+                Self.hostVerificationScript(commandScript: commandScript)
             ],
             commandLabel: "workspace_job_reconcile \(jobID)",
             timeoutSeconds: 10
         )
         return result.exitCode == 0
+    }
+
+    /// The verifier itself runs as `sh -c <this script>`, so its own
+    /// /proc cmdline contains the `command_script=` assignment and would
+    /// match the scan forever, permanently blocking trusted-record
+    /// promotion. The scan therefore skips the verifier's own entry.
+    static func hostVerificationScript(commandScript: String) -> String {
+        """
+        command_script=\(shellQuote(commandScript))
+        verifier_cmdline="/proc/$$/cmdline"
+        for cmdline in /proc/[0-9]*/cmdline; do
+          [ "$cmdline" != "$verifier_cmdline" ] || continue
+          [ -r "$cmdline" ] || continue
+          value="$(tr '\\0' ' ' < "$cmdline" 2>/dev/null || true)"
+          case "$value" in
+            *"$command_script"*) exit 73 ;;
+          esac
+        done
+        exit 0
+        """
     }
 
     private func hasTrustedNonterminalOwnedJobUnlocked() -> Bool {
@@ -1510,7 +1520,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     }
 
     private func wrapperScript(containerJobDirectory: String, timeoutSeconds: TimeInterval?) -> String {
-        let dir = shellQuote(containerJobDirectory)
+        let dir = Self.shellQuote(containerJobDirectory)
         let timeout = max(0, Int((timeoutSeconds ?? 0).rounded(.up)))
         return """
         job_dir=\(dir)
@@ -1672,7 +1682,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         )
     }
 
-    private func shellQuote(_ value: String) -> String {
+    private static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

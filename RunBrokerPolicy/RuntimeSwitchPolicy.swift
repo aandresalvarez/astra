@@ -51,6 +51,11 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
     public let checkpointFence: RuntimeSwitchCheckpointFence?
     public let confirmationID: RuntimeSwitchEvidenceID?
     public let capabilityID: RuntimeSwitchEvidenceID?
+    /// The actor-supplied confirmation instant is authorization evidence for
+    /// the destructive command, so lost-response replay must reproduce it
+    /// exactly. Optional only because records journaled before this field
+    /// existed carry no value; such records fail exact replay closed.
+    public let confirmedAt: Date?
 
     fileprivate init(
         effectID: RuntimeSwitchEffectID,
@@ -61,7 +66,8 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
         cancellationIntent: ExecutionCancellationIntent,
         checkpointFence: RuntimeSwitchCheckpointFence?,
         confirmationID: RuntimeSwitchEvidenceID?,
-        capabilityID: RuntimeSwitchEvidenceID?
+        capabilityID: RuntimeSwitchEvidenceID?,
+        confirmedAt: Date?
     ) {
         self.effectID = effectID
         self.requestID = requestID
@@ -72,11 +78,12 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
         self.checkpointFence = checkpointFence
         self.confirmationID = confirmationID
         self.capabilityID = capabilityID
+        self.confirmedAt = confirmedAt
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion, effectID, requestID, requestDigest, source, target
-        case cancellationIntent, checkpointFence, confirmationID, capabilityID
+        case cancellationIntent, checkpointFence, confirmationID, capabilityID, confirmedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -96,7 +103,9 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
         let checkpoint = try container.decodeIfPresent(RuntimeSwitchCheckpointFence.self, forKey: .checkpointFence)
         let confirmation = try container.decodeIfPresent(RuntimeSwitchEvidenceID.self, forKey: .confirmationID)
         let capability = try container.decodeIfPresent(RuntimeSwitchEvidenceID.self, forKey: .capabilityID)
-        guard (intent == .graceful && checkpoint != nil && confirmation == nil && capability == nil)
+        let confirmedAt = try container.decodeIfPresent(Date.self, forKey: .confirmedAt)
+        guard (intent == .graceful && checkpoint != nil && confirmation == nil && capability == nil
+                && confirmedAt == nil)
                 || (intent == .immediate && checkpoint == nil && confirmation != nil && capability != nil) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .cancellationIntent,
@@ -113,7 +122,8 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
             cancellationIntent: intent,
             checkpointFence: checkpoint,
             confirmationID: confirmation,
-            capabilityID: capability
+            capabilityID: capability,
+            confirmedAt: confirmedAt
         )
     }
 
@@ -129,6 +139,7 @@ public struct RuntimeSwitchControlEffect: Codable, Equatable, Hashable, Sendable
         try container.encodeIfPresent(checkpointFence, forKey: .checkpointFence)
         try container.encodeIfPresent(confirmationID, forKey: .confirmationID)
         try container.encodeIfPresent(capabilityID, forKey: .capabilityID)
+        try container.encodeIfPresent(confirmedAt, forKey: .confirmedAt)
     }
 }
 
@@ -800,7 +811,8 @@ public enum RuntimeSwitchPolicy {
             cancellationIntent: .graceful,
             checkpointFence: attestation.fence,
             confirmationID: nil,
-            capabilityID: nil
+            capabilityID: nil,
+            confirmedAt: nil
         )
         let next = RuntimeSwitchRecord(
             request: record.request,
@@ -829,6 +841,7 @@ public enum RuntimeSwitchPolicy {
         }
         if let effect = record.controlEffect, effect.effectID == confirmation.effectID {
             guard effect.confirmationID == confirmation.confirmationID,
+                  effect.confirmedAt == confirmation.confirmedAt,
                   confirmation.challengeID == challenge.challengeID,
                   confirmation.requestID == force.intent.requestID,
                   confirmation.requestDigest == record.requestDigest,
@@ -870,7 +883,8 @@ public enum RuntimeSwitchPolicy {
             cancellationIntent: .immediate,
             checkpointFence: nil,
             confirmationID: confirmation.confirmationID,
-            capabilityID: capability.capabilityID
+            capabilityID: capability.capabilityID,
+            confirmedAt: confirmation.confirmedAt
         )
         let next = RuntimeSwitchRecord(
             request: record.request,

@@ -446,6 +446,38 @@ struct RunSupervisorServiceTests {
         }.count == 1)
     }
 
+    @Test("output reads honor an admitted per-event byte limit below the default buffer")
+    func outputReadsHonorSmallPerEventLimit() throws {
+        let fixture = try makeFixture("chunk")
+        let policy = try ExecutionSupervisionPolicySnapshot(
+            hardTimeoutSeconds: 3_600,
+            idleProgressTimeoutSeconds: 300,
+            maximumOutputEventBytes: 1_024,
+            maximumPersistedOutputBytes: 1_048_576
+        )
+        let payload = try RunSupervisorTestSupport.payload(
+            executablePath: "/bin/sh",
+            arguments: ["-c", "head -c 5000 /dev/zero | tr '\\0' x"],
+            workingDirectory: fixture.rootURL.path,
+            supervisionPolicy: policy,
+            identitySeed: 143
+        )
+        let service = RunSupervisorService(root: fixture.root)
+        #expect(try service.run(payload) == .launched(exitCode: 0))
+
+        let runDirectory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: runDirectory,
+            capability: payload.capability
+        ).replay(after: 0)
+        let output = events.filter { $0.kind == .standardOutput }.compactMap(\.payload.data)
+        // A single burst above the admitted limit must be spooled as several
+        // policy-sized events, never one oversized event the broker would
+        // classify as an output-quota violation.
+        #expect(output.allSatisfy { UInt64($0.count) <= policy.maximumOutputEventBytes })
+        #expect(output.reduce(Data(), +) == Data(repeating: UInt8(ascii: "x"), count: 5_000))
+    }
+
     @Test("a failed diagnostic PID discovery update cannot suppress terminal evidence")
     func diagnosticDiscoveryFailureStillPersistsTerminalEvidence() throws {
         let fixture = try makeFixture("pid-write")

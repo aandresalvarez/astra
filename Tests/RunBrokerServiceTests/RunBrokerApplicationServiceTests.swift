@@ -200,6 +200,7 @@ struct RunBrokerApplicationServiceTests {
             challengeID: RuntimeForceChallengeID = challenge.challengeID,
             actorID: RuntimeSwitchActorID = actor,
             sessionID: UUID = session,
+            confirmedAt: Date = brokerTestDate,
             effectID candidateEffectID: RuntimeSwitchEffectID = effectID
         ) -> RunBrokerApplicationForceConfirmation {
             .init(
@@ -208,7 +209,7 @@ struct RunBrokerApplicationServiceTests {
                 challengeID: challengeID,
                 actorID: actorID,
                 sessionID: sessionID,
-                confirmedAt: brokerTestDate,
+                confirmedAt: confirmedAt,
                 effectID: candidateEffectID
             )
         }
@@ -217,7 +218,8 @@ struct RunBrokerApplicationServiceTests {
                 candidate,
                 challenge: challenge,
                 recordedEffectID: effectID,
-                recordedConfirmationID: confirmationID
+                recordedConfirmationID: confirmationID,
+                recordedConfirmedAt: brokerTestDate
             )
         }
 
@@ -232,13 +234,27 @@ struct RunBrokerApplicationServiceTests {
         #expect(!matches(response(actorID: try .init(rawValue: "other-operator"))))
         #expect(!matches(response(sessionID: brokerUUID(206))))
         #expect(!matches(response(effectID: .init(rawValue: brokerUUID(207)))))
+        // The confirmed-at instant is authenticated confirmation evidence: a
+        // retry with any other timestamp is a different destructive command.
+        #expect(!matches(response(confirmedAt: brokerTestDate.addingTimeInterval(1))))
         let mismatchedConfirmationIdentity = RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
             response(),
             challenge: challenge,
             recordedEffectID: effectID,
-            recordedConfirmationID: .init(rawValue: brokerUUID(208))
+            recordedConfirmationID: .init(rawValue: brokerUUID(208)),
+            recordedConfirmedAt: brokerTestDate
         )
         #expect(!mismatchedConfirmationIdentity)
+        // An archived record journaled before the timestamp was persisted has
+        // no value to compare and must fail exact replay closed.
+        let missingRecordedConfirmedAt = RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+            response(),
+            challenge: challenge,
+            recordedEffectID: effectID,
+            recordedConfirmationID: confirmationID,
+            recordedConfirmedAt: nil
+        )
+        #expect(!missingRecordedConfirmedAt)
     }
 
     @Test("production broker context advertises only end-to-end runtime features")

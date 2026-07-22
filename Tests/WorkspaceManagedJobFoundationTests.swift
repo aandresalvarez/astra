@@ -523,6 +523,59 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(trusted.first?.exitCode == 0)
     }
 
+    @Test("Host verification skips the verifier's own process entry")
+    func hostVerificationExcludesVerifierProcess() throws {
+        let root = temporaryDirectory("verifier-scan")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fakeProc = root.appendingPathComponent("proc", isDirectory: true)
+        let commandScript = "/workspace/jobs/job-verify/command.sh"
+        // The only test-time edit to the real script is re-rooting /proc
+        // into the fixture so it can execute outside a Linux container.
+        let verifier = DockerWorkspaceJobManager
+            .hostVerificationScript(commandScript: commandScript)
+            .replacingOccurrences(of: "/proc/", with: fakeProc.path + "/")
+        let verifierURL = root.appendingPathComponent("verifier.sh")
+        try verifier.write(to: verifierURL, atomically: true, encoding: .utf8)
+        // Reproduce the container's process table as the verifier sees it:
+        // the shell executing the verifier publishes the whole `sh -c`
+        // script - including the command_script assignment - as its own
+        // cmdline entry.
+        let harnessURL = root.appendingPathComponent("harness.sh")
+        try """
+        #!/bin/sh
+        mkdir -p '\(fakeProc.path)'/$$
+        printf 'sh -c command_script=%s scan' '\(commandScript)' > '\(fakeProc.path)'/$$/cmdline
+        . '\(verifierURL.path)'
+        """.write(to: harnessURL, atomically: true, encoding: .utf8)
+
+        func verifierExitCode(guardianAlive: Bool) throws -> Int32 {
+            try? FileManager.default.removeItem(at: fakeProc)
+            try FileManager.default.createDirectory(at: fakeProc, withIntermediateDirectories: true)
+            if guardianAlive {
+                let guardian = fakeProc.appendingPathComponent("424242", isDirectory: true)
+                try FileManager.default.createDirectory(at: guardian, withIntermediateDirectories: true)
+                try "sh \(commandScript) run".write(
+                    to: guardian.appendingPathComponent("cmdline"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [harnessURL.path]
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+
+        // Only the verifier's own entry mentions the command script: the
+        // guardian has exited and host verification must succeed.
+        #expect(try verifierExitCode(guardianAlive: false) == 0)
+        // A live guardian is still detected.
+        #expect(try verifierExitCode(guardianAlive: true) == 73)
+    }
+
     @Test("Cleanup exclusion remains held through stop while admission waits")
     func cleanupExclusionCoversStopAndAdmission() throws {
         let root = temporaryDirectory("cleanup-admission-race")
