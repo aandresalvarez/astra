@@ -66,6 +66,118 @@ protocol DockerImageAvailabilityChecking {
     func checkImageAvailability(_ image: String) async -> Result<DockerImageAvailability, DockerImageAvailabilityError>
 }
 
+enum DockerImageReadinessState: String, Equatable, Sendable {
+    case ready
+    case listedButUnresolvable
+    case missing
+    case cliMissing
+    case daemonUnavailable
+    case unsafeRemoteContext
+    case invalidReference
+}
+
+struct DockerImageReadiness: Equatable, Sendable {
+    var image: String
+    var state: DockerImageReadinessState
+    var imageID: String?
+    var detail: String
+
+    var isRunnable: Bool { state == .ready }
+}
+
+protocol DockerImageReadinessChecking {
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness
+}
+
+/// Defines one launch-equivalent readiness contract for both the Container
+/// panel and provider preflight. `docker image ls` is discovery only: an image
+/// is runnable only when Docker can resolve the exact reference via inspect.
+struct DockerImageReadinessService: DockerImageReadinessChecking {
+    private let inventory: any DockerImageInventoryListing
+    private let availability: any DockerImageAvailabilityChecking
+
+    init(
+        inventory: any DockerImageInventoryListing = DockerImageInventoryService(),
+        availability: any DockerImageAvailabilityChecking = DockerImageInventoryService()
+    ) {
+        self.inventory = inventory
+        self.availability = availability
+    }
+
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness {
+        switch await availability.checkImageAvailability(image) {
+        case .success(let summary):
+            return DockerImageReadiness(
+                image: image,
+                state: .ready,
+                imageID: summary.imageID,
+                detail: "Docker can resolve this image reference."
+            )
+        case .failure(.missingImage):
+            return await diagnoseMissingReference(image)
+        case .failure(.cliMissing):
+            return DockerImageReadiness(
+                image: image,
+                state: .cliMissing,
+                imageID: nil,
+                detail: "Docker CLI was not found on this Mac."
+            )
+        case .failure(.unsafeRemoteContext(let detail)):
+            return DockerImageReadiness(
+                image: image,
+                state: .unsafeRemoteContext,
+                imageID: nil,
+                detail: detail
+            )
+        case .failure(.invalidImageReference(let invalidImage)):
+            return DockerImageReadiness(
+                image: image,
+                state: .invalidReference,
+                imageID: nil,
+                detail: "Docker image reference \(invalidImage) is invalid."
+            )
+        case .failure(.unavailable(let detail)):
+            return DockerImageReadiness(
+                image: image,
+                state: .daemonUnavailable,
+                imageID: nil,
+                detail: detail.isEmpty ? "Docker is not available." : detail
+            )
+        }
+    }
+
+    private func diagnoseMissingReference(_ image: String) async -> DockerImageReadiness {
+        guard case .success(let images) = await inventory.listLoadedImages(),
+              let listed = images.first(where: { $0.name == image }) else {
+            return DockerImageReadiness(
+                image: image,
+                state: .missing,
+                imageID: nil,
+                detail: "Docker image \(image) is not loaded on this Mac."
+            )
+        }
+
+        // Prove that the immutable object still exists before offering a tag
+        // repair. A stale list entry with a missing ID must remain non-runnable
+        // and must never become a user-authorized `docker image tag` command.
+        guard case .success(let summary) = await availability.checkImageAvailability(listed.imageID) else {
+            return DockerImageReadiness(
+                image: image,
+                state: .missing,
+                imageID: nil,
+                detail: "Docker lists \(image), but neither its tag nor image ID can be resolved."
+            )
+        }
+
+        return DockerImageReadiness(
+            image: image,
+            state: .listedButUnresolvable,
+            imageID: summary.imageID ?? listed.imageID,
+            detail: "Docker lists \(image), but cannot resolve that tag."
+        )
+    }
+}
+
 struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvailabilityChecking {
     private let runner: any BinaryRunner
     private let environmentProvider: @Sendable () -> [String: String]

@@ -107,6 +107,7 @@ struct AppSemanticFitnessTests {
             "resource.lock.waiting": .lifecycle,
             "role.profile.changed": .lifecycle,
             "role.profile.selected": .lifecycle,
+            "runtime.docker_image_recovery": .system,
             "runtime.launch_blocked": .system,
             "schedule.result": .system,
             "skill.active": .system,

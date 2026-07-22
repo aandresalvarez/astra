@@ -740,7 +740,7 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        imageAvailabilityChecker: any DockerImageAvailabilityChecking = DockerImageInventoryService()
+        imageReadinessChecker: any DockerImageReadinessChecking = DockerImageReadinessService()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
         let runtime = registeredLaunchRuntime(task: task, run: run)
@@ -785,7 +785,13 @@ enum AgentRuntimeLaunchPreflight {
                 run: run,
                 modelContext: modelContext,
                 reason: reason,
-                payload: message
+                payload: message,
+                launchBlock: TaskRunLaunchBlockPayload(
+                    kind: .dockerImageUnavailable,
+                    title: "Docker image is not configured",
+                    message: "The selected Docker execution environment does not have an image configured.",
+                    remediation: "Build or select a loaded Docker image in the Container panel, then retry the task."
+                )
             )
             return AgentRuntimeLaunchPreflightResult(
                 status: .dockerImageAvailabilityFailed,
@@ -797,22 +803,27 @@ enum AgentRuntimeLaunchPreflight {
         }
 
         fields["container_image"] = image
-        let availability = await imageAvailabilityChecker.checkImageAvailability(image)
-        switch availability {
-        case .success(let summary):
+        let readiness = await imageReadinessChecker.checkImageReadiness(image)
+        switch readiness.state {
+        case .ready:
             fields["result"] = "image_available"
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityPassed.rawValue
-            fields["container_image_id"] = summary.imageID ?? "unknown"
+            fields["container_image_id"] = readiness.imageID ?? "unknown"
             AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
             return AgentRuntimeLaunchPreflightResult(
                 status: .dockerImageAvailabilityPassed,
                 phase: phase,
                 reason: nil,
-                detail: summary.imageID,
+                detail: readiness.imageID,
                 auditFields: fields
             )
-        case .failure(let error):
-            let classification = dockerImagePreflightFailure(for: image, error: error)
+        case .listedButUnresolvable,
+             .missing,
+             .cliMissing,
+             .daemonUnavailable,
+             .unsafeRemoteContext,
+             .invalidReference:
+            let classification = dockerImagePreflightFailure(for: readiness)
             fields["result"] = classification.result
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityFailed.rawValue
             fields["stop_reason"] = classification.reason.rawValue
@@ -828,7 +839,18 @@ enum AgentRuntimeLaunchPreflight {
                 run: run,
                 modelContext: modelContext,
                 reason: classification.reason.rawValue,
-                payload: message
+                payload: message,
+                launchBlock: TaskRunLaunchBlockPayload(
+                    kind: .dockerImageUnavailable,
+                    title: readiness.state == .listedButUnresolvable
+                        ? "Docker image tag needs repair"
+                        : "Docker image is unavailable",
+                    message: classification.detail,
+                    remediation: classification.remediation,
+                    dockerImage: image,
+                    dockerImageID: readiness.imageID,
+                    dockerReadinessState: readiness.state.rawValue
+                )
             )
             return AgentRuntimeLaunchPreflightResult(
                 status: .dockerImageAvailabilityFailed,
@@ -1203,15 +1225,16 @@ enum AgentRuntimeLaunchPreflight {
     }
 
     private static func dockerImagePreflightFailure(
-        for image: String,
-        error: DockerImageAvailabilityError
+        for readiness: DockerImageReadiness
     ) -> (
         reason: TaskRunStopReason,
         result: String,
         detail: String,
         remediation: String
     ) {
-        switch error {
+        switch readiness.state {
+        case .ready:
+            preconditionFailure("Ready Docker images do not produce a preflight failure")
         case .cliMissing:
             return (
                 .dockerDaemonUnavailable,
@@ -1219,34 +1242,41 @@ enum AgentRuntimeLaunchPreflight {
                 "Docker CLI was not found on this Mac.",
                 "Install or reopen Docker Desktop, verify `docker version` works in Terminal, then retry."
             )
-        case .missingImage:
+        case .listedButUnresolvable:
+            return (
+                .dockerImageUnavailable,
+                "image_tag_unresolvable",
+                readiness.detail,
+                "Use Repair image and retry to restore the tag, rebuild the workspace image, or choose another environment."
+            )
+        case .missing:
             return (
                 .dockerImageUnavailable,
                 "image_missing",
-                "Docker image \(image) is not loaded on this Mac.",
+                readiness.detail,
                 "Build the workspace image from the Container panel, pull the image, or choose a loaded image before retrying."
             )
-        case .invalidImageReference(let invalidImage):
+        case .invalidReference:
             return (
                 .dockerImageUnavailable,
                 "invalid_image_reference",
-                "Docker image reference \(invalidImage) is not safe to pass to Docker.",
+                readiness.detail,
                 "Select or rebuild an image with a standard Docker image reference."
             )
-        case .unsafeRemoteContext(let detail):
+        case .unsafeRemoteContext:
             return (
                 .dockerContextUnapproved,
                 "unsafe_remote_context",
-                detail,
+                readiness.detail,
                 "Switch Docker Desktop back to a local context, or add an explicit remote-Docker approval flow before using this context for ASTRA tasks."
             )
-        case .unavailable(let detail):
-            let cleaned = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .daemonUnavailable:
+            let cleaned = readiness.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return (
                 .dockerDaemonUnavailable,
                 "docker_unavailable",
                 cleaned.isEmpty ? "Docker is not available." : cleaned,
-                "Start Docker Desktop, verify `docker image inspect \(image)` works in Terminal, then retry."
+                "Start Docker Desktop, verify `docker image inspect \(readiness.image)` works in Terminal, then retry."
             )
         }
     }
@@ -1272,7 +1302,8 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         reason: String,
-        payload: String
+        payload: String,
+        launchBlock: TaskRunLaunchBlockPayload? = nil
     ) {
         run.status = .failed
         run.typedStopReason = TaskRunStopReason.custom(reason)
@@ -1280,6 +1311,14 @@ enum AgentRuntimeLaunchPreflight {
         TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
         let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
         modelContext.insert(event)
+        if let launchBlock {
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                eventType: TaskEventTypes.System.runtimeLaunchBlocked,
+                payload: launchBlock,
+                run: run
+            ))
+        }
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
             "reason": reason
         ], level: .error)

@@ -396,6 +396,35 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.summary.contains("Retry with broader policy permissions"))
     }
 
+    @Test("Docker image launch failure offers repair as the primary action")
+    func dockerImageFailureOffersPrimaryRepairAction() throws {
+        let image = "astra-starr-data-lake:latest"
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: image
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+        #expect(dock.primaryAction?.title == "Repair image and retry")
+        #expect(dock.primaryAction?.payload == image)
+        #expect(dock.secondaryActions.contains { $0.kind == .retry })
+    }
+
+    @Test("Docker repair action is disabled while diagnosis or repair is running")
+    func dockerImageRepairActionDisablesWhileBusy() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-starr-data-lake:latest",
+            isDockerRecoveryBusy: true
+        ))
+
+        let action = try #require(presentation?.primaryAction)
+        #expect(action.kind == .repairDockerImage)
+        #expect(action.title == "Checking image…")
+        #expect(!action.isEnabled)
+    }
+
     private func context(
         status: TaskStatus,
         mission: MissionControlPresentation? = nil,
@@ -405,7 +434,9 @@ struct TaskDecisionDockPresentationTests {
         visibleThreadAffordances: Set<TaskThreadAffordance>? = nil,
         pendingReviewState: PendingTaskReviewState = .none,
         canRetry: Bool = true,
-        launchBlock: TaskRunLaunchBlockPayload? = nil
+        launchBlock: TaskRunLaunchBlockPayload? = nil,
+        dockerRecoveryImage: String? = nil,
+        isDockerRecoveryBusy: Bool = false
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -444,6 +475,8 @@ struct TaskDecisionDockPresentationTests {
             hasProviderSession: false,
             failureReason: nil,
             launchBlock: launchBlock,
+            dockerRecoveryImage: dockerRecoveryImage,
+            isDockerRecoveryBusy: isDockerRecoveryBusy,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )

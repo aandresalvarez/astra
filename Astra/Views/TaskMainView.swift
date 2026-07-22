@@ -4,34 +4,6 @@ import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
-enum TaskComposerPresentation {
-    static let usesCompactInputSpacing = true
-    static let usesForcedExpandedInputHeight = false
-    static let decisionRowUsesNestedChrome = false
-    static let decisionRowUsesNestedStroke = false
-    static let decisionDetailsUsePopover = true
-    static let decisionActionsUseOverflowMenu = false
-    static let decisionUtilitiesStayLeftAligned = true
-    static let decisionSummaryVisibleInCompactRow = false
-    static let decisionDockHorizontalPadding: CGFloat = 14
-    static let decisionDockTopPadding: CGFloat = 8
-    static let decisionDockBottomPadding: CGFloat = 6
-    static let decisionRowHorizontalPadding: CGFloat = 12
-    static let decisionRowVerticalPadding: CGFloat = 7
-    static let decisionRowSpacing: CGFloat = 12
-    static let decisionAccentWidth: CGFloat = 3
-    static let decisionAccentVerticalInset: CGFloat = 5
-    static let decisionIconFrame: CGFloat = 16
-    static let decisionIconFontSize: CGFloat = 12
-    static let decisionTitleFontSize: CGFloat = 13
-    static let decisionDetailFontSize: CGFloat = 12
-    static let decisionDetailsWidth: CGFloat = 540
-    static let decisionDetailsMaxHeight: CGFloat = 460
-    static let inputHorizontalPadding: CGFloat = 14
-    static let inputTopPadding: CGFloat = 12
-    static let inputTopPaddingWithAttachments: CGFloat = 8
-    static let inputBottomPadding: CGFloat = 9
-}
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
@@ -316,6 +288,7 @@ struct TaskMainView: View {
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
+    @StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -586,6 +559,10 @@ struct TaskMainView: View {
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
+        .modifier(DockerImageRecoveryDialogModifier(
+            coordinator: dockerImageRecovery,
+            onConfirm: performDockerImageRecovery
+        ))
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
@@ -3911,6 +3888,15 @@ struct TaskMainView: View {
             .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
     }
 
+    private var dockerRecoveryImage: String? {
+        DockerImageRecoveryPresentation.image(
+            stopReason: latestRun?.stopReason,
+            launchBlockImage: latestRunLaunchBlock?.dockerImage,
+            runID: latestRun?.id,
+            runs: task.runs
+        )
+    }
+
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3952,6 +3938,8 @@ struct TaskMainView: View {
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
             launchBlock: latestRunLaunchBlock,
+            dockerRecoveryImage: onRetryTask == nil ? nil : dockerRecoveryImage,
+            isDockerRecoveryBusy: dockerImageRecovery.isBusy,
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -4378,6 +4366,17 @@ struct TaskMainView: View {
         case .switchRuntime:
             guard let runtime = action.payload else { return }
             TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
+            onRetryTask?(task)
+        case .repairDockerImage:
+            guard let image = action.payload else { return }
+            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id)
+        }
+    }
+
+    private func performDockerImageRecovery(_ plan: DockerImageRecoveryPlan) {
+        let run = latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } }
+        dockerImageRecovery.perform(plan, task: task, run: run, modelContext: modelContext) {
+            threadViewModel.refreshSnapshot(for: task)
             onRetryTask?(task)
         }
     }

@@ -36,6 +36,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case closeWithoutRunningPlan
     case reopenTask
     case switchRuntime
+    case repairDockerImage
 }
 
 enum TaskThreadAffordance: Hashable {
@@ -106,6 +107,8 @@ struct TaskDecisionDockPresentation: Equatable {
         var hasProviderSession: Bool
         var failureReason: String?
         var launchBlock: TaskRunLaunchBlockPayload?
+        var dockerRecoveryImage: String? = nil
+        var isDockerRecoveryBusy: Bool = false
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
@@ -442,6 +445,16 @@ struct TaskDecisionDockPresentation: Equatable {
 
     private static func failedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
         let overBudget = context.status == .budgetExceeded
+        let dockerRecoveryAction = context.dockerRecoveryImage.map { image in
+            action(
+                .repairDockerImage,
+                title: context.isDockerRecoveryBusy ? "Checking image…" : "Repair image and retry",
+                systemImage: "wrench.and.screwdriver.fill",
+                payload: image,
+                help: "Diagnose and repair \(image), verify it, then retry this task.",
+                isEnabled: !context.isDockerRecoveryBusy
+            )
+        }
         return TaskDecisionDockPresentation(
             id: overBudget ? "budget-exceeded" : "failed",
             icon: overBudget ? "speedometer" : "exclamationmark.triangle.fill",
@@ -452,13 +465,18 @@ struct TaskDecisionDockPresentation: Equatable {
                 : (context.failureReason ?? "The run failed. Review the output, then resume or retry."),
             metrics: metrics(context),
             details: details(context),
-            primaryAction: context.canResume && context.hasProviderSession
+            primaryAction: dockerRecoveryAction ?? (context.canResume && context.hasProviderSession
                 ? action(.resume, title: "Resume", systemImage: "play.fill")
-                : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil),
+                : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil)),
             secondaryActions: [
-                context.canResume && context.hasProviderSession && context.canRetry
-                    ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
+                dockerRecoveryAction != nil && context.canResume && context.hasProviderSession
+                    ? action(.resume, title: "Resume", systemImage: "play.fill")
                     : nil,
+                dockerRecoveryAction != nil && context.canRetry
+                    ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
+                    : (context.canResume && context.hasProviderSession && context.canRetry
+                        ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
+                        : nil),
                 context.canReportProblem
                     ? action(.reportProblem, title: "Report a Problem", systemImage: "exclamationmark.bubble")
                     : nil,
@@ -1002,7 +1020,8 @@ private extension TaskDecisionDockActionKind {
              .closeAnyway,
              .closeWithoutRunningPlan,
              .reopenTask,
-             .switchRuntime:
+             .switchRuntime,
+             .repairDockerImage:
             false
         }
     }
