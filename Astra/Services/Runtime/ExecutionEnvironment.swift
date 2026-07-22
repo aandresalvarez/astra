@@ -282,6 +282,7 @@ enum DockerExecutionPlanner {
         environment: WorkspaceExecutionEnvironment,
         task: AgentTask,
         runID: UUID?,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         additionalReadOnlyInputPaths: [String] = [],
         dockerExecutablePath: String = defaultDockerExecutable
     ) -> Result<AgentRuntimeProcessLaunchPlan, DockerExecutionPlanningError> {
@@ -301,6 +302,7 @@ enum DockerExecutionPlanner {
             base: base,
             environment: environment,
             task: task,
+            workspaceAccess: workspaceAccess,
             additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         for mount in mounts {
@@ -507,12 +509,14 @@ enum DockerExecutionPlanner {
         base: AgentRuntimeProcessLaunchPlan,
         environment: WorkspaceExecutionEnvironment,
         task: AgentTask,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         mountPlan(
             currentDirectory: base.currentDirectory,
             environment: environment,
             task: task,
+            workspaceAccess: workspaceAccess,
             additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
     }
@@ -521,6 +525,7 @@ enum DockerExecutionPlanner {
         currentDirectory: String,
         environment: WorkspaceExecutionEnvironment,
         task: AgentTask,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
@@ -602,11 +607,16 @@ enum DockerExecutionPlanner {
             ))
         }
 
-        append(currentDirectory, environment.containerWorkingDirectory, .workspace)
+        append(
+            currentDirectory,
+            environment.containerWorkingDirectory,
+            .workspace,
+            access: workspaceAccess == .shared ? .readOnly : .readWrite
+        )
         let taskAccess = TaskWorkspaceAccess(task: task)
         append(taskAccess.taskFolder, "/astra/task", .taskFolder)
         var index = 1
-        for path in AgentRuntimeProcessRunner.runtimeWritablePaths(for: task) {
+        for path in AgentRuntimeProcessRunner.runtimeWritablePaths(for: task, workspaceAccess: workspaceAccess) {
             let standardized = WorkspacePathPresentation.standardizedPath(path)
             guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory),
                   standardized != WorkspacePathPresentation.standardizedPath(taskAccess.taskFolder) else {
@@ -634,6 +644,7 @@ enum DockerExecutionPlanner {
     static func snapshotForRun(
         task: AgentTask,
         currentDirectory: String,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         additionalReadOnlyInputPaths: [String] = []
     ) -> WorkspaceExecutionEnvironment {
         var environment = resolveEnvironment(for: task)
@@ -642,6 +653,7 @@ enum DockerExecutionPlanner {
             currentDirectory: currentDirectory,
             environment: environment,
             task: task,
+            workspaceAccess: workspaceAccess,
             additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         return environment

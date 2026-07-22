@@ -137,6 +137,59 @@ struct ExecutionEnvironmentTests {
         #expect(projectedAttachment["access"] as? String == "ro")
     }
 
+    @Test("Docker mounts a shared workspace read-only while preserving task output writes")
+    func dockerMountsSharedWorkspaceReadOnly() throws {
+        let root = try makeTempDir("docker-shared-workspace")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspacePath = (root as NSString).appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Docker", primaryPath: workspacePath)
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        )
+
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: workspacePath,
+            environment: environment,
+            task: task,
+            workspaceAccess: .shared
+        )
+
+        let workspaceMount = mounts.first { $0.role == .workspace }
+        let taskFolderMount = mounts.first { $0.role == .taskFolder }
+        #expect(workspaceMount?.access == ExecutionEnvironmentMountAccess.readOnly)
+        #expect(taskFolderMount?.access == ExecutionEnvironmentMountAccess.readWrite)
+        #expect(AgentRuntimeProcessRunner.runtimeWritablePaths(
+            for: task,
+            workspaceAccess: .shared
+        ) == [TaskWorkspaceAccess(task: task).taskFolder])
+
+        let containerEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:test-container",
+            kind: .dockerImage,
+            displayName: "Container Test",
+            image: "astra/test:latest",
+            runtimeExecutablePath: "/bin/claude",
+            providerPlacement: .container
+        )
+        let launchPlan = try DockerExecutionPlanner.plan(
+            base: makeBasePlan(currentDirectory: workspacePath),
+            environment: containerEnvironment,
+            task: task,
+            runID: UUID(),
+            workspaceAccess: .shared
+        ).get()
+        #expect(launchPlan.arguments.contains("\(workspacePath):/workspace:ro"))
+        #expect(launchPlan.arguments.contains("\(TaskWorkspaceAccess(task: task).taskFolder):/astra/task:rw"))
+    }
+
     @Test("Docker provider launch binds current-message inputs read-only")
     func dockerProviderLaunchBindsCurrentMessageInputReadOnly() throws {
         let root = try makeTempDir("docker-message-input-provider")

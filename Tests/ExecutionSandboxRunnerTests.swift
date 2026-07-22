@@ -200,6 +200,49 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("Shared workspace forces a strict host boundary even when sandboxing is off")
+    func sharedWorkspaceForcesStrictBoundary() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-runner-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        )
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected shared workspace launch to apply a strict sandbox")
+                return
+            }
+            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
+            #expect(plan.arguments.contains("/bin/sh"))
+        }
+    }
+
     @Test("sandboxedPlan projects task-scoped Docker client config before sandboxing")
     func sandboxedPlanProjectsTaskScopedDockerClientConfig() throws {
         let fm = FileManager.default

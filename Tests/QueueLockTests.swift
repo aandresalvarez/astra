@@ -500,10 +500,10 @@ struct QueueLockTests {
         let submission = try #require(optionalSubmission)
 
         let queue = TaskQueue(poolSize: 1)
-        let processing = Task { @MainActor in
-            await queue.processQueue(modelContext: context)
-        }
-        try await Task.sleep(for: .milliseconds(250))
+        // Await the queue's owned processing boundary. A fixed delay (or even
+        // a generous poll timeout) is nondeterministic when the full suite
+        // saturates MainActor and does not prove that admission completed.
+        await queue.processQueue(modelContext: context)
 
         #expect(forked.status == .queued)
         #expect(forked.runs.count == 1)
@@ -516,9 +516,6 @@ struct QueueLockTests {
         )
         #expect(request.state == .failed)
         #expect(request.terminalReason == "read_only_task")
-
-        queue.cancelAll()
-        await processing.value
     }
 }
 

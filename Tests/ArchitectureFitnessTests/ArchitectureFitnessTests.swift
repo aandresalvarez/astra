@@ -1950,6 +1950,12 @@ struct ArchitectureFitnessTests {
             // TaskRun must be constructed before requirements are resolved
             // isn't safely compressible further without losing the "why".
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
+            // Global multi-resource admission remains coordinated here, while
+            // claim resolution, compatibility, fairness, persistence events,
+            // and store lifetime are extracted into focused task services.
+            // Keep a tight ceiling so new policy cannot drift back into the
+            // queue orchestrator.
+            "Astra/Services/Tasks/TaskQueue.swift": .init(2_100, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

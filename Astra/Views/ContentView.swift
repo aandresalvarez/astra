@@ -2162,7 +2162,7 @@ struct ContentView: View {
 
     private var hasUpdateBlockingWork: Bool {
         AppUpdateSafety.isInstallBlocked(
-            queueIsProcessing: runtime.taskQueue.isProcessing,
+            queueIsProcessing: runtime.taskQueue.hasProcessingLoop || runtime.taskQueue.isStopping,
             activeWorkerCount: runtime.taskQueue.activeCount,
             activeTaskCount: runtime.taskQueue.activeTasks.count,
             runningTaskCount: runningTaskCount
@@ -2171,7 +2171,7 @@ struct ContentView: View {
 
     private func isUpdateBlockedNow() -> Bool {
         AppUpdateSafety.isInstallBlocked(
-            queueIsProcessing: runtime.taskQueue.isProcessing,
+            queueIsProcessing: runtime.taskQueue.hasProcessingLoop || runtime.taskQueue.isStopping,
             activeWorkerCount: runtime.taskQueue.activeCount,
             activeTaskCount: runtime.taskQueue.activeTasks.count,
             runningTaskCount: fetchRunningTaskCount()

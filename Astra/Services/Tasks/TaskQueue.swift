@@ -11,12 +11,9 @@ final class TaskQueue {
     private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
+    private(set) var isStopping = false
     private var processingScheduleGeneration = 0
     private let requestTaskRegistry: ExecutionRequestTaskRegistry
-    /// Recovery replays are scheduled once per process. Their durable request
-    /// state, rather than this set, remains the authority after a later restart.
-    private var replayingRecoveredTurnIDs: Set<UUID> = []
-
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
 
@@ -27,7 +24,7 @@ final class TaskQueue {
     private(set) var waitingResourceLocks: [UUID: TaskResourceLockClaim] = [:]
 
     private var dispatchedRequestIDs: Set<UUID> = []
-    private var processingModelContext: ModelContext?
+    private var storeSession: TaskQueueStoreSession?
     @MainActor
     init(
         poolSize: Int = 3,
@@ -45,7 +42,7 @@ final class TaskQueue {
 
     var hasActiveUpdateBlockingWork: Bool {
         AppUpdateSafety.isInstallBlocked(
-            queueIsProcessing: isProcessing,
+            queueIsProcessing: hasProcessingLoop || isStopping,
             activeWorkerCount: activeCount,
             activeTaskCount: activeTasks.count,
             runningTaskCount: 0
@@ -61,12 +58,18 @@ final class TaskQueue {
         isProcessing || isProcessingScheduled
     }
 
+    var hasBoundStoreSession: Bool { storeSession != nil }
+    @MainActor var ownedCoroutineCount: Int { requestTaskRegistry.ownedTaskCount }
+    @MainActor var pendingCompletionHandleCount: Int { requestTaskRegistry.promisedCompletionCount }
+
     /// Restarts waiting turns after startup recovery has reconciled stale
     /// process-local worker/lock ownership. Call only after runtime settings
     /// have been applied; each replay still passes through normal FIFO and
     /// resource-lock admission.
     @MainActor
     func replayRecoveredTurns(modelContext: ModelContext) {
+        guard let storeSession = bindStoreSession(to: modelContext) else { return }
+        let modelContext = storeSession.modelContext
         let requests: [TaskTurnRequest]
         do {
             requests = try TaskTurnRequestRepository.allActiveRequests(
@@ -92,6 +95,7 @@ final class TaskQueue {
             uniquingKeysWith: { first, _ in first }
         )
 
+        var hasReplayableRequest = false
         for request in requests {
             guard let task = tasksByID[request.taskID] else {
                 _ = TaskTurnRequestStateMachine.transition(
@@ -118,44 +122,80 @@ final class TaskQueue {
                 failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
                 continue
             }
-            guard replayingRecoveredTurnIDs.insert(request.id).inserted else {
-                continue
-            }
-            let requestID = request.id
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                defer { self.replayingRecoveredTurnIDs.remove(requestID) }
-                let launch = self.signalExecutionRequest(
-                    id: requestID,
-                    task: task,
-                    modelContext: modelContext,
-                )
-                await launch.value
-            }
+            hasReplayableRequest = true
+        }
+        // Durable requests are already the replay authority. One queue wake is
+        // sufficient; per-request Tasks would only capture SwiftData models
+        // across an unnecessary suspension and complicate shutdown ownership.
+        if hasReplayableRequest {
+            _ = processQueueIfIdle(modelContext: storeSession.modelContext)
         }
     }
 
-    @discardableResult
     @MainActor
-    func processQueueIfIdle(modelContext: ModelContext) -> Bool {
-        guard !hasProcessingLoop else {
-            return false
+    private func bindStoreSession(to modelContext: ModelContext) -> TaskQueueStoreSession? {
+        if let storeSession {
+            guard storeSession.matches(modelContext) else {
+                AppLogger.audit(.workerBlocked, category: "Queue", fields: [
+                    "reason": "different_store_context_while_queue_bound"
+                ], level: .error)
+                return nil
+            }
+            return storeSession
         }
+        let session = TaskQueueStoreSession(modelContext: modelContext)
+        storeSession = session
+        return session
+    }
+
+    @MainActor
+    private func startProcessing(storeSession: TaskQueueStoreSession) -> Task<Void, Never>? {
+        guard !hasProcessingLoop, !isStopping else { return nil }
 
         isProcessingScheduled = true
         processingScheduleGeneration += 1
         let generation = processingScheduleGeneration
-        let processingTask = Task { @MainActor in
-            defer { self.requestTaskRegistry.finishProcessing() }
+        let processingID = UUID()
+        let processingTask = Task { @MainActor [storeSession] in
+            defer { self.requestTaskRegistry.finishProcessing(id: processingID) }
             guard self.isProcessingScheduled,
                   self.processingScheduleGeneration == generation else {
                 return
             }
             self.isProcessingScheduled = false
-            await self.processQueue(modelContext: modelContext)
+            storeSession.repairLegacyRequestsIfNeeded()
+            await self.processQueueLoop(storeSession: storeSession)
         }
-        requestTaskRegistry.registerProcessing(processingTask)
-        return true
+        requestTaskRegistry.registerProcessing(processingTask, id: processingID)
+        return processingTask
+    }
+
+    /// Registers queue-adjacent lifecycle work that uses the same persistence
+    /// session (for example post-run workflow resumption). Awaited shutdown
+    /// cancels and drains these tasks together with processing and dispatch.
+    @discardableResult
+    @MainActor
+    func registerLifecycleTask(
+        modelContext: ModelContext,
+        operation: @escaping @MainActor (ModelContext) async -> Void
+    ) -> Task<Void, Never> {
+        guard !isStopping, let storeSession = bindStoreSession(to: modelContext) else {
+            return Task {}
+        }
+        let lifecycleID = UUID()
+        let lifecycleTask = Task { @MainActor [storeSession] in
+            defer { self.requestTaskRegistry.finishLifecycle(id: lifecycleID) }
+            await operation(storeSession.modelContext)
+        }
+        requestTaskRegistry.registerLifecycle(lifecycleTask, id: lifecycleID)
+        return lifecycleTask
+    }
+
+    @discardableResult
+    @MainActor
+    func processQueueIfIdle(modelContext: ModelContext) -> Bool {
+        guard let storeSession = bindStoreSession(to: modelContext) else { return false }
+        return startProcessing(storeSession: storeSession) != nil
     }
 
     @discardableResult
@@ -166,6 +206,11 @@ final class TaskQueue {
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> Task<Void, Never> {
+        guard !isStopping,
+              let storeSession = bindStoreSession(to: modelContext),
+              storeSession.matches(modelContext) else {
+            return Task {}
+        }
         guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
               request.taskID == task.id,
               request.state.isActive else {
@@ -176,7 +221,7 @@ final class TaskQueue {
             return Task {}
         }
 
-        processQueueIfIdle(modelContext: modelContext)
+        _ = processQueueIfIdle(modelContext: storeSession.modelContext)
         // A signal is not a reservation; durable work stays queued when busy.
         guard hasAvailableWorker else { return Task {} }
         return requestTaskRegistry.completionHandle(requestID: request.id)
@@ -280,16 +325,24 @@ final class TaskQueue {
             return
         }
 
-        guard let resourceClaim = await waitForResourceLock(
+        let requestedResources = resourceLockClaims(
+            for: executionRequest,
             task: task,
-            accessMode: resourceAccess,
             runMode: "task",
-            modelContext: modelContext
+            fallbackAccess: resourceAccess
+        )
+        guard let resourceLease = await waitForResourceLocks(
+            task: task,
+            claims: requestedResources,
+            modelContext: modelContext,
+            shouldAbort: executionRequest.map { request in
+                { request.isDeleted || !request.state.isActive }
+            }
         ) else {
             return
         }
         defer {
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
         }
 
         guard let worker = nextAvailableWorker() else {
@@ -568,17 +621,22 @@ final class TaskQueue {
             return false
         }
 
-        guard let resourceClaim = await waitForResourceLock(
+        let requestedResources = resourceLockClaims(
+            for: nil,
             task: task,
-            accessMode: resourceAccess,
             runMode: "continue",
+            fallbackAccess: resourceAccess
+        )
+        guard let resourceLease = await waitForResourceLocks(
+            task: task,
+            claims: requestedResources,
             modelContext: modelContext
         ) else {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
         defer {
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
         }
 
         guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
@@ -689,26 +747,29 @@ final class TaskQueue {
                 continue
             }
 
-            let pendingClaim = TaskResourceLockClaim(
-                taskID: task.id,
-                resourceKey: resourceKey(for: task),
-                accessMode: resourceAccess,
-                runMode: "continue"
+            let pendingClaims = resourceLockClaims(
+                for: request,
+                task: task,
+                runMode: "continue",
+                fallbackAccess: resourceAccess
             )
-            let blockingTaskID = activeResourceLocks.first {
-                resourceKeysConflict($0.resourceKey, pendingClaim.resourceKey)
-            }?.taskID
+            let blockingTaskID = TaskExecutionResourceBroker.firstConflict(
+                requested: pendingClaims,
+                active: activeResourceLocks
+            )?.holder.taskID
             _ = transitionPersistedTurn(
                 request,
                 to: .waitingForResource,
                 blockingTaskID: blockingTaskID,
-                blockerSummary: blockingTaskID == nil ? nil : resourceLockBlockerSummary(for: pendingClaim),
+                blockerSummary: blockingTaskID == nil ? nil : TaskExecutionResourceBroker.blockerSummary(
+                    requested: pendingClaims,
+                    active: activeResourceLocks
+                ),
                 modelContext: modelContext
             )
-            guard let resourceClaim = await waitForResourceLock(
+            guard let resourceLease = await waitForResourceLocks(
                 task: task,
-                accessMode: resourceAccess,
-                runMode: "continue",
+                claims: pendingClaims,
                 modelContext: modelContext,
                 shouldAbort: { request.isDeleted || !request.state.isActive }
             ) else {
@@ -725,7 +786,7 @@ final class TaskQueue {
 
             guard !request.isDeleted, request.state.isActive,
                   turnAdmissionGeneration == entryAdmissionGeneration else {
-                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 // The post-loop tail terminalizes a still-active request
                 // (queue stopped mid-lock-wait) and no-ops a terminal one.
                 break
@@ -734,7 +795,7 @@ final class TaskQueue {
             // running (occupying its mapped worker) while this coroutine was
             // suspended. A busy mapped worker must never be selected.
             guard !activeTasks.contains(task.id) else {
-                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 _ = transitionPersistedTurn(
                     request,
                     to: .waitingForWorker,
@@ -745,7 +806,7 @@ final class TaskQueue {
                 continue
             }
             guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
-                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 _ = transitionPersistedTurn(
                     request,
                     to: .waitingForWorker,
@@ -755,7 +816,7 @@ final class TaskQueue {
                 continue
             }
             guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
-                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
                 return false
             }
@@ -767,7 +828,7 @@ final class TaskQueue {
             // fail the turn in memory (best effort — the disk row stays
             // waiting and replays after restart) and do not launch.
             guard transitionPersistedTurn(request, to: .admitted, modelContext: modelContext).persisted else {
-                releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+                releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 failPersistedTurn(request, reason: "admission_persist_failed", modelContext: modelContext)
                 return false
             }
@@ -793,7 +854,7 @@ final class TaskQueue {
             )
             taskWorkerMap.removeValue(forKey: task.id)
             activeTasks.remove(task.id)
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
 
             // The task (and its request rows) can be deleted while the worker
             // ran; the deleted model must not be transitioned or reported on.
@@ -1030,16 +1091,24 @@ final class TaskQueue {
             return
         }
 
-        guard let resourceClaim = await waitForResourceLock(
+        let requestedResources = resourceLockClaims(
+            for: executionRequest,
             task: task,
-            accessMode: resourceAccess,
             runMode: "approved_plan",
-            modelContext: modelContext
+            fallbackAccess: resourceAccess
+        )
+        guard let resourceLease = await waitForResourceLocks(
+            task: task,
+            claims: requestedResources,
+            modelContext: modelContext,
+            shouldAbort: executionRequest.map { request in
+                { request.isDeleted || !request.state.isActive }
+            }
         ) else {
             return
         }
         defer {
-            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+            releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
         }
 
         guard let worker = nextAvailableWorker() else {
@@ -1194,6 +1263,16 @@ final class TaskQueue {
 
     @MainActor
     func processQueue(modelContext: ModelContext) async {
+        guard let storeSession = bindStoreSession(to: modelContext),
+              let processingTask = startProcessing(storeSession: storeSession) else {
+            return
+        }
+        await processingTask.value
+    }
+
+    @MainActor
+    private func processQueueLoop(storeSession: TaskQueueStoreSession) async {
+        let modelContext = storeSession.modelContext
         guard !isProcessing else {
             AppLogger.audit(.workerBlocked, category: "Queue", fields: [
                 "reason": "queue_already_processing"
@@ -1202,11 +1281,9 @@ final class TaskQueue {
         }
         isProcessingScheduled = false
         isProcessing = true
-        processingModelContext = modelContext
         dispatchedRequestIDs.removeAll()
 
         while !Task.isCancelled && isProcessing {
-            ExecutionRequestAdmissionScheduler.synthesizeLegacyQueuedRequests(in: modelContext)
             guard let projection = try? ExecutionRequestAdmissionScheduler.projection(in: modelContext) else {
                 AppLogger.audit(.taskFailed, category: "Queue", fields: [
                     "reason": "execution_request_projection_failed"
@@ -1265,42 +1342,67 @@ final class TaskQueue {
                 from: projection,
                 dispatchedRequestIDs: dispatchedRequestIDs,
                 activeTaskIDs: activeTasks,
-                resourceIsAvailable: {
-                    TaskForkPolicyService.readOnlyReason(for: $0) == nil
-                        && canAcquireResourceLock(for: $0, accessMode: resourceAccess(for: $0))
+                resourceIsAvailable: { candidate in
+                    TaskForkPolicyService.readOnlyReason(for: candidate.task) == nil
+                        && canAdmitResourceClaims(
+                            for: candidate,
+                            in: projection,
+                            dispatchedRequestIDs: dispatchedRequestIDs,
+                            activeTaskIDs: activeTasks
+                        )
                 }
             ) else {
-                if let blocked = projection.ordered.first(where: {
-                    !dispatchedRequestIDs.contains($0.request.id) && !activeTasks.contains($0.task.id)
-                }) {
-                    let accessMode = resourceAccess(for: blocked.task)
-                    let claim = TaskResourceLockClaim(
-                        taskID: blocked.task.id,
-                        resourceKey: resourceKey(for: blocked.task),
-                        accessMode: accessMode,
+                let resourceBlocked = projection.ordered.filter {
+                    !dispatchedRequestIDs.contains($0.request.id)
+                        && !activeTasks.contains($0.task.id)
+                }
+                for blocked in resourceBlocked {
+                    let claims = resourceLockClaims(
+                        for: blocked.request,
+                        task: blocked.task,
                         runMode: "request"
                     )
-                    if waitingResourceLocks[blocked.task.id] == nil {
-                        waitingResourceLocks[blocked.task.id] = claim
-                        _ = transitionPersistedTurn(
-                            blocked.request,
-                            to: .waitingForResource,
-                            blockingTaskID: activeResourceLocks.first {
-                                resourceKeysConflict($0.resourceKey, claim.resourceKey)
-                            }?.taskID,
-                            blockerSummary: resourceLockBlockerSummary(for: claim),
-                            modelContext: modelContext
-                        )
+                    guard let primary = TaskExecutionResourceBroker.firstConflict(
+                        requested: claims,
+                        active: activeResourceLocks
+                    )?.requested ?? TaskExecutionResourceAdmissionPolicy.earlierCompetingClaim(
+                        for: blocked,
+                        claims: claims,
+                        in: projection,
+                        dispatchedRequestIDs: dispatchedRequestIDs,
+                        activeTaskIDs: activeTasks
+                    ) else { continue }
+                    let wasAlreadyWaiting = waitingResourceLocks[blocked.task.id] != nil
+                    waitingResourceLocks[blocked.task.id] = primary
+                    let activeConflict = TaskExecutionResourceBroker.firstConflict(
+                        requested: claims,
+                        active: activeResourceLocks
+                    )
+                    _ = transitionPersistedTurn(
+                        blocked.request,
+                        to: .waitingForResource,
+                        blockingTaskID: activeConflict?.holder.taskID,
+                        blockerSummary: activeConflict == nil
+                            ? "Waiting behind an earlier request for \(TaskExecutionResourceBroker.displayName(primary))."
+                            : TaskExecutionResourceBroker.blockerSummary(
+                                requested: claims,
+                                active: activeResourceLocks
+                            ),
+                        modelContext: modelContext
+                    )
+                    if !wasAlreadyWaiting {
                         AppLogger.audit(.resourceLockWaiting, category: "Queue", taskID: blocked.task.id, fields: [
-                            "resource_key": claim.resourceKey,
-                            "access_mode": claim.accessMode.rawValue,
-                            "run_mode": claim.runMode,
-                            "reason": resourceLockBlockerSummary(for: claim)
+                            "resource_kind": primary.resourceKind.rawValue,
+                            "resource_key": primary.resourceKey,
+                            "access_mode": primary.accessMode.rawValue,
+                            "run_mode": primary.runMode,
+                            "reason": activeConflict == nil ? "earlier_request" : "active_holder"
                         ], level: .warning)
                     }
-                } else if let blocked = projection.ordered.first(where: {
-                    !dispatchedRequestIDs.contains($0.request.id) && activeTasks.contains($0.task.id)
-                }) {
+                }
+                for blocked in projection.ordered where
+                    !dispatchedRequestIDs.contains(blocked.request.id)
+                        && activeTasks.contains(blocked.task.id) {
                     _ = transitionPersistedTurn(
                         blocked.request,
                         to: .waitingForWorker,
@@ -1325,16 +1427,16 @@ final class TaskQueue {
 
             let queue = self
             let requestID = next.request.id
-            let dispatchTask = Task { @MainActor in
+            let taskID = next.task.id
+            let dispatchTask = Task { @MainActor [storeSession] in
                 defer {
                     queue.dispatchedRequestIDs.remove(requestID)
                     queue.requestTaskRegistry.finishDispatch(requestID: requestID)
                 }
                 await queue.executeQueuedRequest(
-                    next.request,
-                    task: next.task,
-                    modelContext: modelContext,
-                    resourceAccess: queue.resourceAccess(for: next.task)
+                    requestID: requestID,
+                    taskID: taskID,
+                    storeSession: storeSession
                 )
             }
             requestTaskRegistry.registerDispatch(dispatchTask, requestID: requestID)
@@ -1351,17 +1453,28 @@ final class TaskQueue {
         }
 
         dispatchedRequestIDs.removeAll()
-        processingModelContext = nil
         isProcessing = false
     }
 
     @MainActor
     private func executeQueuedRequest(
-        _ request: TaskTurnRequest,
-        task: AgentTask,
-        modelContext: ModelContext,
-        resourceAccess: TaskResourceAccessMode
+        requestID: UUID,
+        taskID: UUID,
+        storeSession: TaskQueueStoreSession
     ) async {
+        let modelContext = storeSession.modelContext
+        guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
+              request.state.isActive else {
+            return
+        }
+        let tasks = try? modelContext.fetch(
+            FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+        )
+        guard let task = tasks?.first, request.taskID == task.id else {
+            failPersistedTurn(request, reason: "task_missing", modelContext: modelContext)
+            return
+        }
+        let resourceAccess = resourceAccess(for: request, task: task)
         guard let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
             return
@@ -1559,6 +1672,7 @@ final class TaskQueue {
     /// Cancel all running workers
     @MainActor
     func cancelAll() {
+        isStopping = true
         for worker in workers {
             worker.cancel()
         }
@@ -1569,8 +1683,8 @@ final class TaskQueue {
         dispatchedRequestIDs.removeAll()
         let waitingRequestIDs = requestTaskRegistry.waitingRequestIDs
         var completedRequestIDs = cancelledDispatchIDs
-        if let processingModelContext,
-           let requests = try? TaskTurnRequestRepository.allActiveRequests(in: processingModelContext) {
+        if let modelContext = storeSession?.modelContext,
+           let requests = try? TaskTurnRequestRepository.allActiveRequests(in: modelContext) {
             for request in requests {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
@@ -1582,14 +1696,13 @@ final class TaskQueue {
                 }
             }
             _ = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-                modelContext: processingModelContext,
+                modelContext: modelContext,
                 auditFields: ["operation": "cancel_all_execution_requests"]
             )
         }
         for requestID in waitingRequestIDs where !completedRequestIDs.contains(requestID) {
             requestTaskRegistry.complete(requestID: requestID)
         }
-        processingModelContext = nil
         activeResourceLocks.removeAll()
         waitingResourceLocks.removeAll()
         isProcessingScheduled = false
@@ -1611,9 +1724,14 @@ final class TaskQueue {
     /// objects from outliving their ModelContext.
     @MainActor
     func cancelAllAndWait() async {
+        let drainingSession = storeSession
         let drain = requestTaskRegistry.drainSnapshot()
         cancelAll()
         await drain.wait()
+        if storeSession === drainingSession, !hasProcessingLoop {
+            storeSession = nil
+        }
+        isStopping = false
     }
 
     /// Resize the worker pool at runtime (only adds/removes idle workers).
@@ -1653,89 +1771,141 @@ final class TaskQueue {
         }
     }
 
-    private func workerIndex(_ worker: AgentRuntimeWorker) -> Int {
-        workers.firstIndex(where: { $0 === worker }) ?? 0
-    }
+    private func workerIndex(_ worker: AgentRuntimeWorker) -> Int { workers.firstIndex(where: { $0 === worker }) ?? 0 }
 
     // MARK: - Resource Locks
 
     @MainActor
     func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
-        let declarations = task.constraints + task.inputs
-        let normalized = declarations
-            .map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                    .replacingOccurrences(of: "-", with: "_")
-            }
-        let readOnlyMarkers = [
-            "astra_resource_access=read_only",
-            "astra_resource_access:read_only",
-            "resource_access=read_only",
-            "resource_access:read_only"
-        ]
-        if normalized.contains(where: { declaration in
-            readOnlyMarkers.contains { marker in
-                declaration.replacingOccurrences(of: " ", with: "").contains(marker)
-            }
-        }) {
-            return .readOnly
-        }
-        return .write
-    }
+        TaskExecutionResourceClaimResolver.workspaceAccess(for: task) == .shared ? .readOnly : .write }
+
+    @MainActor
+    func resourceAccess(for request: TaskTurnRequest?, task: AgentTask) -> TaskResourceAccessMode {
+        TaskExecutionResourceClaimResolver.workspaceClaim(for: request, task: task)?.access == .shared ? .readOnly : .write }
 
     @MainActor
     func resourceKey(for task: AgentTask) -> String {
-        let access = TaskWorkspaceAccess(task: task)
-        let rawPath = access.codeWorkingDirectory.isEmpty ? access.effectiveWorkspacePath : access.codeWorkingDirectory
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        guard !expanded.isEmpty else {
-            return "task:\(task.id.uuidString)"
-        }
-        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        TaskExecutionResourceClaimResolver.workspaceClaim(for: nil, task: task)?.key ?? "task:\(task.id.uuidString)" }
+
+    @MainActor
+    func resourceKey(for request: TaskTurnRequest?, task: AgentTask) -> String {
+        TaskExecutionResourceClaimResolver.workspaceClaim(for: request, task: task)?.key ?? resourceKey(for: task) }
+
+    @MainActor
+    func resourceLockClaims(
+        for request: TaskTurnRequest?,
+        task: AgentTask,
+        runMode: String,
+        fallbackAccess: TaskResourceAccessMode? = nil
+    ) -> [TaskResourceLockClaim] {
+        TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: request,
+            task: task,
+            runMode: runMode,
+            fallbackAccess: fallbackAccess
+        )
     }
 
     @MainActor
-    func canAcquireResourceLock(for task: AgentTask, accessMode: TaskResourceAccessMode) -> Bool {
-        canAcquireResourceLock(
+    func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim]) -> Bool {
+        !claims.isEmpty && TaskExecutionResourceBroker.canAcquire(claims, active: activeResourceLocks)
+    }
+
+    @MainActor
+    func canAdmitResourceClaims(
+        for candidate: ExecutionRequestAdmissionScheduler.Candidate,
+        in projection: ExecutionRequestAdmissionScheduler.Projection,
+        dispatchedRequestIDs: Set<UUID>,
+        activeTaskIDs: Set<UUID>
+    ) -> Bool {
+        TaskExecutionResourceAdmissionPolicy.canAdmit(
+            candidate,
+            in: projection,
+            dispatchedRequestIDs: dispatchedRequestIDs,
+            activeTaskIDs: activeTaskIDs,
+            activeClaims: activeResourceLocks
+        )
+    }
+
+    @MainActor
+    func canAcquireResourceLock(
+        for task: AgentTask,
+        resourceKey: String? = nil,
+        accessMode: TaskResourceAccessMode
+    ) -> Bool {
+        canAcquireResourceLocks([
             TaskResourceLockClaim(
                 taskID: task.id,
-                resourceKey: resourceKey(for: task),
+                resourceKey: resourceKey ?? self.resourceKey(for: task),
                 accessMode: accessMode,
                 runMode: "probe"
             )
-        )
+        ])
+    }
+
+    @MainActor
+    @discardableResult
+    func acquireResourceLocksIfAvailable(
+        _ claims: [TaskResourceLockClaim],
+        task: AgentTask,
+        modelContext: ModelContext? = nil
+    ) -> [TaskResourceLockClaim]? {
+        guard canAcquireResourceLocks(claims) else { return nil }
+        activeResourceLocks.append(contentsOf: claims)
+        waitingResourceLocks.removeValue(forKey: task.id)
+        for claim in claims {
+            recordResourceLockEvent(
+                type: TaskResourceLockEventTypes.acquired,
+                auditEvent: .resourceLockAcquired,
+                task: task,
+                claim: claim,
+                status: "acquired",
+                modelContext: modelContext,
+                autoExport: false
+            )
+        }
+        return claims
     }
 
     @MainActor
     @discardableResult
     func acquireResourceLockIfAvailable(
         task: AgentTask,
+        resourceKey: String? = nil,
         accessMode: TaskResourceAccessMode,
         runMode: String,
         modelContext: ModelContext? = nil
     ) -> TaskResourceLockClaim? {
         let claim = TaskResourceLockClaim(
             taskID: task.id,
-            resourceKey: resourceKey(for: task),
+            resourceKey: resourceKey ?? self.resourceKey(for: task),
             accessMode: accessMode,
             runMode: runMode
         )
-        guard canAcquireResourceLock(claim) else {
-            return nil
-        }
-        activeResourceLocks.append(claim)
+        return acquireResourceLocksIfAvailable([claim], task: task, modelContext: modelContext)?.first
+    }
+
+    @MainActor
+    func releaseResourceLocks(
+        _ claims: [TaskResourceLockClaim],
+        task: AgentTask,
+        modelContext: ModelContext? = nil
+    ) {
+        let released = Set(claims)
+        activeResourceLocks.removeAll { released.contains($0) }
         waitingResourceLocks.removeValue(forKey: task.id)
-        recordResourceLockEvent(
-            type: TaskResourceLockEventTypes.acquired,
-            auditEvent: .resourceLockAcquired,
-            task: task,
-            claim: claim,
-            status: "acquired",
-            modelContext: modelContext,
-            autoExport: false
-        )
-        return claim
+        for (index, claim) in claims.enumerated() {
+            recordResourceLockEvent(
+                type: TaskResourceLockEventTypes.released,
+                auditEvent: .resourceLockReleased,
+                task: task,
+                claim: claim,
+                status: "released",
+                modelContext: modelContext,
+                autoExport: index == claims.count - 1
+            )
+        }
+        wakeAllTurnAdmissionWaiters()
     }
 
     @MainActor
@@ -1744,72 +1914,56 @@ final class TaskQueue {
         task: AgentTask,
         modelContext: ModelContext? = nil
     ) {
-        activeResourceLocks.removeAll { $0 == claim }
-        waitingResourceLocks.removeValue(forKey: task.id)
-        recordResourceLockEvent(
-            type: TaskResourceLockEventTypes.released,
-            auditEvent: .resourceLockReleased,
-            task: task,
-            claim: claim,
-            status: "released",
-            modelContext: modelContext
-        )
-        // Every release path (worker hand-back, legacy continuation, initial
-        // runs) funnels through here, and availability is queue-global.
-        wakeAllTurnAdmissionWaiters()
+        releaseResourceLocks([claim], task: task, modelContext: modelContext)
     }
 
     @MainActor
-    private func waitForResourceLock(
+    private func waitForResourceLocks(
         task: AgentTask,
-        accessMode: TaskResourceAccessMode,
-        runMode: String,
+        claims: [TaskResourceLockClaim],
         modelContext: ModelContext,
-        // Durable-turn admission passes this so the wait ends the moment its
-        // request is cancelled/deleted, instead of only checking Task
-        // cancellation. Without it, a request cancelled or deleted while
-        // another task holds the lock keeps polling and can go on to
-        // `acquireResourceLockIfAvailable`, which inserts and saves a
-        // resource-lock event referencing the now-deleted task before any
-        // caller-side guard runs.
         shouldAbort: (() -> Bool)? = nil
-    ) async -> TaskResourceLockClaim? {
-        let claim = TaskResourceLockClaim(
-            taskID: task.id,
-            resourceKey: resourceKey(for: task),
-            accessMode: accessMode,
-            runMode: runMode
-        )
-        recordResourceLockEvent(
-            type: TaskResourceLockEventTypes.requested,
-            auditEvent: .resourceLockRequested,
-            task: task,
-            claim: claim,
-            status: "requested",
-            modelContext: modelContext,
-            autoExport: false
-        )
+    ) async -> [TaskResourceLockClaim]? {
+        guard !claims.isEmpty, !(shouldAbort?() ?? false) else { return nil }
+        for claim in claims {
+            recordResourceLockEvent(
+                type: TaskResourceLockEventTypes.requested,
+                auditEvent: .resourceLockRequested,
+                task: task,
+                claim: claim,
+                status: "requested",
+                modelContext: modelContext,
+                autoExport: false
+            )
+        }
 
         var recordedWaiting = false
         while !Task.isCancelled && !(shouldAbort?() ?? false) {
-            if let acquired = acquireResourceLockIfAvailable(
+            if let acquired = acquireResourceLocksIfAvailable(
+                claims,
                 task: task,
-                accessMode: accessMode,
-                runMode: runMode,
                 modelContext: modelContext
             ) {
                 return acquired
             }
 
-            waitingResourceLocks[task.id] = claim
+            let conflict = TaskExecutionResourceBroker.firstConflict(
+                requested: claims,
+                active: activeResourceLocks
+            )
+            let primary = conflict?.requested ?? claims[0]
+            waitingResourceLocks[task.id] = primary
             if !recordedWaiting {
                 recordResourceLockEvent(
                     type: TaskResourceLockEventTypes.waiting,
                     auditEvent: .resourceLockWaiting,
                     task: task,
-                    claim: claim,
+                    claim: primary,
                     status: "waiting",
-                    reason: resourceLockBlockerSummary(for: claim),
+                    reason: TaskExecutionResourceBroker.blockerSummary(
+                        requested: claims,
+                        active: activeResourceLocks
+                    ),
                     modelContext: modelContext,
                     autoExport: false
                 )
@@ -1826,27 +1980,6 @@ final class TaskQueue {
 
         waitingResourceLocks.removeValue(forKey: task.id)
         return nil
-    }
-
-    private func canAcquireResourceLock(_ claim: TaskResourceLockClaim) -> Bool {
-        let sameResourceLocks = activeResourceLocks.filter {
-            resourceKeysConflict($0.resourceKey, claim.resourceKey)
-        }
-        guard !sameResourceLocks.isEmpty else { return true }
-        switch claim.accessMode {
-        case .readOnly:
-            return sameResourceLocks.allSatisfy { $0.accessMode == .readOnly }
-        case .write:
-            return false
-        }
-    }
-
-    private func resourceLockBlockerSummary(for claim: TaskResourceLockClaim) -> String {
-        let blockers = activeResourceLocks
-            .filter { resourceKeysConflict($0.resourceKey, claim.resourceKey) }
-        guard !blockers.isEmpty else { return "resource lock unavailable" }
-        let modes = blockers.map(\.accessMode.rawValue).joined(separator: ",")
-        return "waiting for \(blockers.count) active \(modes) lock\(blockers.count == 1 ? "" : "s")"
     }
 
     @MainActor
@@ -1874,26 +2007,6 @@ final class TaskQueue {
         )
     }
 
-    private func resourceKeysConflict(_ lhs: String, _ rhs: String) -> Bool {
-        if lhs.hasPrefix("task:") || rhs.hasPrefix("task:") {
-            return lhs == rhs
-        }
-        let left = URL(fileURLWithPath: lhs)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        let right = URL(fileURLWithPath: rhs)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
-    }
-
-    private func isPath(_ possibleAncestor: String, ancestorOf path: String) -> Bool {
-        let ancestor = possibleAncestor.hasSuffix("/") ? possibleAncestor : possibleAncestor + "/"
-        return path.hasPrefix(ancestor)
-    }
-
     @MainActor
     private func recordResourceLockEvent(
         type: String,
@@ -1905,60 +2018,17 @@ final class TaskQueue {
         modelContext: ModelContext?,
         autoExport: Bool = true
     ) {
-        let holder = activeResourceLocks.first {
-            $0.resourceKey == claim.resourceKey && $0.taskID != claim.taskID
-        }?.taskID
-        let payload = TaskResourceLockPayload(
-            version: 1,
-            resourceKey: claim.resourceKey,
-            accessMode: claim.accessMode,
-            runMode: claim.runMode,
+        TaskResourceLockEventRecorder.record(
+            type: type,
+            auditEvent: auditEvent,
+            task: task,
+            claim: claim,
             status: status,
-            holderTaskID: holder,
-            reason: reason
+            reason: reason,
+            modelContext: modelContext,
+            activeClaims: activeResourceLocks,
+            autoExport: autoExport
         )
-        if let modelContext {
-            modelContext.insert(TaskEvent(task: task, type: type, payload: encodeResourceLockPayload(payload)))
-            // Requested/waiting/acquired all fire before executeTask admits
-            // the task to .running, while the detached auto-export write for
-            // this snapshot races the later, authoritative admission/terminal
-            // export with no ordering guarantee — a losing race would leave
-            // the workspace JSON mirror showing a stale queued task. Those
-            // call sites pass autoExport: false; only released (which fires
-            // at actual completion/cleanup) still exports.
-            if autoExport {
-                WorkspacePersistenceCoordinator.saveAndAutoExport(
-                    workspace: task.workspace,
-                    modelContext: modelContext,
-                    taskID: task.id,
-                    auditFields: ["operation": "resource_lock_event"]
-                )
-            } else {
-                WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-                    modelContext: modelContext,
-                    taskID: task.id,
-                    auditFields: ["operation": "resource_lock_event"]
-                )
-            }
-        }
-        AppLogger.audit(auditEvent, category: "Queue", taskID: task.id, fields: [
-            "resource_key": claim.resourceKey,
-            "access_mode": claim.accessMode.rawValue,
-            "run_mode": claim.runMode,
-            "status": status,
-            "holder_task_id": holder?.uuidString ?? "none",
-            "reason": reason ?? "none"
-        ], level: type == TaskResourceLockEventTypes.waiting ? .warning : .info)
-    }
-
-    private func encodeResourceLockPayload(_ payload: TaskResourceLockPayload) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload),
-              let json = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return json
     }
 
     // MARK: - Template Hooks Injection

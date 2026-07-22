@@ -495,6 +495,7 @@ enum ExecutionSandbox: Sendable {
         providerHomeDirectory: String,
         additionalWritablePaths: [String] = [],
         additionalReadablePaths: [String]? = nil,
+        workspaceWritable: Bool = true,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -527,10 +528,11 @@ enum ExecutionSandbox: Sendable {
             plan: plan,
             providerHomeDirectory: providerHomeDirectory,
             additionalWritablePaths: additionalWritablePaths,
-            canonicalWorkspace: workspace
+            canonicalWorkspace: workspace,
+            includeWorkspace: workspaceWritable
         )
-        // Defense-in-depth: `writableRoots` always seeds at least the workspace
-        // and `/tmp`, so this is currently unreachable — but it keeps the
+        // Defense-in-depth: `writableRoots` always seeds at least `/tmp`, so
+        // this is currently unreachable — but it keeps the
         // invariant explicit (never wrap with an empty allowlist, which would
         // produce an all-writes-denied profile) if that derivation ever changes.
         guard !roots.isEmpty else {
@@ -859,12 +861,14 @@ enum ExecutionSandbox: Sendable {
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
         additionalWritablePaths: [String] = [],
-        canonicalWorkspace: String
+        canonicalWorkspace: String,
+        includeWorkspace: Bool = true
     ) -> [String] {
-        var raw: [String] = [canonicalWorkspace]
+        var raw: [String] = includeWorkspace ? [canonicalWorkspace] : []
         raw.append(contentsOf: plan.directoriesToCreate)
-        // Workspaces can span multiple writable roots. Read-only task inputs are
-        // projected separately and must never enter this write allow-list.
+        // Exclusive workspaces can span multiple writable roots. Shared
+        // workspaces omit their anchor and supply only the task output folder.
+        // Read-only task inputs must never enter this write allow-list.
         raw.append(contentsOf: additionalWritablePaths)
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)

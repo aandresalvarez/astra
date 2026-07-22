@@ -58,6 +58,14 @@ final class AppRuntimeController {
         pluginCatalog.loadApprovedCapabilities()
     }
 
+    /// Store-lifetime teardown boundary used by application termination and
+    /// tests that replace a model container. The store must remain retained
+    /// until every queue-owned coroutine has returned.
+    func shutdown() async {
+        taskScheduler.stop()
+        await taskQueue.cancelAllAndWait()
+    }
+
     /// One-time-per-launch task-store housekeeping: prune abandoned low-signal
     /// drafts and remove duplicate session imports. Skipped during seeded UI
     /// test launches so fixtures stay deterministic.

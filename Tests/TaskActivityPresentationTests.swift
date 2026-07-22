@@ -53,7 +53,7 @@ struct TaskActivityPresentationTests {
         )
         #expect(waitingOnly.kind == .waitingForResource)
         #expect(waitingOnly.sidebarSubtitle == "Build task is using this workspace")
-        #expect(waitingOnly.dockTitle == "Waiting for workspace")
+        #expect(waitingOnly.dockTitle == "Waiting for resource")
     }
 
     @Test("A queued follow-up behind a running task stays individually retractable")
@@ -149,7 +149,7 @@ struct TaskActivityPresentationTests {
         )
 
         #expect(firstChip?.title == "Queued")
-        #expect(secondChip?.title == "Waiting for workspace")
+        #expect(secondChip?.title == "Waiting for resource")
         #expect(secondChip?.detail == "Report task is using this workspace")
         #expect(TaskTurnMessageLifecyclePresentation.resolve(messageEventID: UUID(), requests: [first, second]) == nil)
     }

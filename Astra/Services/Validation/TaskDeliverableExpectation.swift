@@ -17,15 +17,17 @@ enum TaskDeliverableExpectation {
             .joined(separator: " ")
             .lowercased()
 
-        let artifactActionWords = [
+        let artifactActionWords: Set<String> = [
             "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
         ]
         let artifactActionPhrases = [
             "put this in files", "write this in files"
         ]
-        guard containsAnyWholeWord(text, artifactActionWords)
-                || containsJoinedArticleAction(text, artifactActionWords)
-                || containsAny(text, artifactActionPhrases) else {
+        guard TaskIntentLanguagePolicy.containsAffirmativeAction(
+            in: text,
+            words: artifactActionWords,
+            phrases: artifactActionPhrases
+        ) || containsJoinedArticleAction(text, Array(artifactActionWords)) else {
             return false
         }
 

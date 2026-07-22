@@ -576,6 +576,9 @@ final class AgentRuntimeWorker {
         defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { isRunning = false; return }
+        let executionWorkspaceAccess = TaskExecutionResourceClaimResolver.workspaceAccess(
+            for: turnBegin.request
+        )
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
@@ -663,6 +666,31 @@ final class AgentRuntimeWorker {
         )
 
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        if TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: turnBegin.request,
+            task: task
+        ) {
+            let claimedPath = turnBegin.request?.resourceClaims.first {
+                $0.kind == .workspace
+            }?.key ?? "unknown"
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "reason": "execution_request_workspace_drift",
+                "claimed_path": claimedPath,
+                "live_path": codeDir
+            ], level: .error)
+            run.status = .failed
+            run.completedAt = Date()
+            run.typedStopReason = TaskRunStopReason.custom("execution_request_workspace_drift")
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.error,
+                payload: "The task workspace changed after this run was submitted. Start a new run so ASTRA can acquire the correct workspace lock.",
+                run: run
+            ))
+            isRunning = false
+            return
+        }
         var isDir: ObjCBool = false
         let workspaceExists = FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir) && isDir.boolValue
         if runtimeAdapter.shouldCheckWorkspaceDirectory(phase: auditPhase),
@@ -739,6 +767,7 @@ final class AgentRuntimeWorker {
             homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
         let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
             task: task, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
+            workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.taskSnapshot)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
@@ -765,6 +794,7 @@ final class AgentRuntimeWorker {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
+            workspaceAccess: executionWorkspaceAccess,
             // appliedRuntime.requirements is already resolved above (~line 528),
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of

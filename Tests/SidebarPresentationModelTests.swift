@@ -12,6 +12,14 @@ import Testing
 @Suite("SidebarPresentationModel")
 struct SidebarPresentationModelTests {
 
+    private final class TestMonotonicClock {
+        var now = ContinuousClock().now
+
+        func advance(by duration: Duration) {
+            now = now.advanced(by: duration)
+        }
+    }
+
     private func makeModel(shown: Bool) -> SidebarPresentationModel {
         let defaults = UserDefaults(suiteName: "sidebar.test.\(UUID().uuidString)")!
         defaults.set(shown, forKey: "sidebarUserVisible")
@@ -237,18 +245,71 @@ struct SidebarPresentationModelTests {
         #expect(model.isSettling == false)
     }
 
-    @Test("Reveal settle watchdog recovers when the AppKit width probe is missed")
-    func revealSettleWatchdogRecoversWithoutProbe() async throws {
-        let model = makeModel(shown: false)
+    @Test("An expired monotonic deadline recovers when the AppKit width probe and watchdog are missed")
+    func revealSettleDeadlineRecoversWithoutProbeOrWatchdog() {
+        let defaults = UserDefaults(suiteName: "sidebar.test.\(UUID().uuidString)")!
+        defaults.set(false, forKey: "sidebarUserVisible")
+        let clock = TestMonotonicClock()
+        let model = SidebarPresentationModel(defaults: defaults, monotonicNow: { clock.now })
         model.setHasRightSidePanel(false)
         model.setResponsiveWidth(1_400)
 
         model.toggle()
         #expect(model.isSettling)
 
-        let recovered = await waitUntil(timeout: .seconds(2)) { !model.isSettling }
-        #expect(recovered)
+        // Do not yield to or wait for the watchdog task. Advancing the injected
+        // monotonic clock simulates delayed timer delivery; the next relevant
+        // event must reconcile the authoritative deadline itself.
+        clock.advance(by: .seconds(1))
         model.proposeCompressedCollapse()
+        #expect(model.mode == .collapsed)
+        #expect(!model.isSettling)
+    }
+
+    @Test("A previous reveal deadline cannot expire a newer settle window")
+    func renewedRevealUsesItsOwnDeadline() {
+        let defaults = UserDefaults(suiteName: "sidebar.test.\(UUID().uuidString)")!
+        defaults.set(false, forKey: "sidebarUserVisible")
+        let clock = TestMonotonicClock()
+        let model = SidebarPresentationModel(defaults: defaults, monotonicNow: { clock.now })
+        model.setHasRightSidePanel(false)
+        model.setResponsiveWidth(1_400)
+
+        model.toggle() // reveal 1
+        clock.advance(by: .milliseconds(300))
+        model.toggle() // hide and retire reveal 1
+        model.toggle() // reveal 2 with a later deadline
+
+        clock.advance(by: .milliseconds(200)) // past reveal 1, before reveal 2
+        model.proposeCompressedCollapse()
+
+        #expect(model.isSettling)
+        #expect(model.mode == .docked)
+        #expect(model.isSidebarShown)
+
+        clock.advance(by: .milliseconds(300))
+        model.proposeCompressedCollapse()
+        #expect(!model.isSettling)
+        #expect(model.mode == .collapsed)
+    }
+
+    @Test("An external collapse echo is accepted after the settle deadline without watchdog delivery")
+    func externalCollapseReconcilesExpiredDeadline() {
+        let defaults = UserDefaults(suiteName: "sidebar.test.\(UUID().uuidString)")!
+        defaults.set(false, forKey: "sidebarUserVisible")
+        let clock = TestMonotonicClock()
+        let model = SidebarPresentationModel(defaults: defaults, monotonicNow: { clock.now })
+        model.setHasRightSidePanel(false)
+        model.setResponsiveWidth(1_400)
+
+        model.toggle()
+        #expect(model.isSettling)
+        clock.advance(by: .seconds(1))
+
+        model.columnVisibilityBinding().wrappedValue = .detailOnly
+
+        #expect(!model.isSettling)
+        #expect(!model.isSidebarShown)
         #expect(model.mode == .collapsed)
     }
 

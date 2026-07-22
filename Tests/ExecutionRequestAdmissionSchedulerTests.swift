@@ -90,7 +90,7 @@ struct ExecutionRequestAdmissionSchedulerTests {
             from: projection,
             dispatchedRequestIDs: [],
             activeTaskIDs: [],
-            resourceIsAvailable: { $0.id != taskA.id }
+            resourceIsAvailable: { $0.task.id != taskA.id }
         )
 
         #expect(selected?.request.id == requestB.id)
@@ -123,6 +123,240 @@ struct ExecutionRequestAdmissionSchedulerTests {
         )
 
         #expect(selected?.task.id == taskB.id)
+    }
+
+    @Test("Candidate resource predicate admits a shared request beside a shared holder")
+    func sharedRequestAdmitsBesideSharedHolder() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let resourceKey = "/tmp/astra-scheduler-shared"
+        let workspace = Workspace(name: "Shared", primaryPath: resourceKey)
+        let holder = AgentTask(title: "Holder", goal: "Read current state", workspace: workspace)
+        let candidateTask = AgentTask(title: "Candidate", goal: "Summarize current state", workspace: workspace)
+        context.insert(workspace)
+        context.insert(holder)
+        context.insert(candidateTask)
+
+        let sharedClaim = TaskExecutionResourceClaim(
+            kind: .workspace,
+            key: resourceKey,
+            access: .shared
+        )
+        let request = TaskTurnRequest(
+            task: candidateTask,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [sharedClaim]
+        )
+        context.insert(request)
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        let held = try #require(queue.acquireResourceLockIfAvailable(
+            task: holder,
+            resourceKey: resourceKey,
+            accessMode: .readOnly,
+            runMode: "test"
+        ))
+        defer { queue.releaseResourceLock(held, task: holder, modelContext: context) }
+
+        let projection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+        let selected = ExecutionRequestAdmissionScheduler.nextCandidate(
+            from: projection,
+            dispatchedRequestIDs: [],
+            activeTaskIDs: [],
+            resourceIsAvailable: { candidate in
+                queue.canAcquireResourceLock(
+                    for: candidate.task,
+                    resourceKey: queue.resourceKey(for: candidate.request, task: candidate.task),
+                    accessMode: queue.resourceAccess(for: candidate.request, task: candidate.task)
+                )
+            }
+        )
+
+        #expect(selected?.request.id == request.id)
+        #expect(queue.resourceAccess(for: request, task: candidateTask) == .readOnly)
+    }
+
+    @Test("Candidate resource predicate skips an exclusive request but admits a shared peer")
+    func sharedHolderBlocksExclusiveButNotSharedCandidate() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let resourceKey = "/tmp/astra-scheduler-mixed-access"
+        let workspace = Workspace(name: "Mixed", primaryPath: resourceKey)
+        let holder = AgentTask(title: "Holder", goal: "Read current state", workspace: workspace)
+        let writer = AgentTask(title: "Writer", goal: "Modify current state", workspace: workspace)
+        let reader = AgentTask(title: "Reader", goal: "Summarize current state", workspace: workspace)
+        context.insert(workspace)
+        context.insert(holder)
+        context.insert(writer)
+        context.insert(reader)
+
+        let writerRequest = TaskTurnRequest(
+            task: writer,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [TaskExecutionResourceClaim(
+                kind: .workspace,
+                key: resourceKey,
+                access: .exclusive
+            )],
+            submittedAt: Date(timeIntervalSince1970: 10)
+        )
+        let readerRequest = TaskTurnRequest(
+            task: reader,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [TaskExecutionResourceClaim(
+                kind: .workspace,
+                key: resourceKey,
+                access: .shared
+            )],
+            submittedAt: Date(timeIntervalSince1970: 11)
+        )
+        context.insert(writerRequest)
+        context.insert(readerRequest)
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        let held = try #require(queue.acquireResourceLockIfAvailable(
+            task: holder,
+            resourceKey: resourceKey,
+            accessMode: .readOnly,
+            runMode: "test"
+        ))
+        defer { queue.releaseResourceLock(held, task: holder, modelContext: context) }
+
+        let projection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+        let selected = ExecutionRequestAdmissionScheduler.nextCandidate(
+            from: projection,
+            dispatchedRequestIDs: [],
+            activeTaskIDs: [],
+            resourceIsAvailable: { candidate in
+                queue.canAcquireResourceLock(
+                    for: candidate.task,
+                    resourceKey: queue.resourceKey(for: candidate.request, task: candidate.task),
+                    accessMode: queue.resourceAccess(for: candidate.request, task: candidate.task)
+                )
+            }
+        )
+
+        #expect(selected?.request.id == readerRequest.id)
+        #expect(queue.resourceAccess(for: writerRequest, task: writer) == .write)
+        #expect(queue.resourceAccess(for: readerRequest, task: reader) == .readOnly)
+    }
+
+    @Test("An earlier global writer prevents later readers from starving it across workspaces")
+    @MainActor
+    func globalWriterReservationPreventsReaderStarvation() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/astra-fairness-first")
+        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/astra-fairness-second")
+        let holder = AgentTask(title: "Holder", goal: "Read account", workspace: firstWorkspace)
+        let writer = AgentTask(title: "Writer", goal: "Update account", workspace: secondWorkspace)
+        let laterReader = AgentTask(title: "Later reader", goal: "Read account", workspace: firstWorkspace)
+        let unrelated = AgentTask(title: "Unrelated", goal: "Read another account", workspace: secondWorkspace)
+        [firstWorkspace, secondWorkspace].forEach(context.insert)
+        [holder, writer, laterReader, unrelated].forEach(context.insert)
+
+        let writerRequest = TaskTurnRequest(
+            task: writer,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [
+                TaskExecutionResourceClaim(
+                    kind: .workspace,
+                    key: secondWorkspace.primaryPath,
+                    access: .shared
+                ),
+                TaskExecutionResourceClaim(
+                    kind: .accountSession,
+                    key: "provider:shared-account",
+                    access: .exclusive
+                )
+            ],
+            submittedAt: Date(timeIntervalSince1970: 10)
+        )
+        let readerRequest = TaskTurnRequest(
+            task: laterReader,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [
+                TaskExecutionResourceClaim(
+                    kind: .workspace,
+                    key: firstWorkspace.primaryPath,
+                    access: .shared
+                ),
+                TaskExecutionResourceClaim(
+                    kind: .accountSession,
+                    key: "provider:shared-account",
+                    access: .shared
+                )
+            ],
+            submittedAt: Date(timeIntervalSince1970: 11)
+        )
+        let unrelatedRequest = TaskTurnRequest(
+            task: unrelated,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [
+                TaskExecutionResourceClaim(
+                    kind: .workspace,
+                    key: secondWorkspace.primaryPath,
+                    access: .shared
+                ),
+                TaskExecutionResourceClaim(
+                    kind: .accountSession,
+                    key: "provider:other-account",
+                    access: .shared
+                )
+            ],
+            submittedAt: Date(timeIntervalSince1970: 12)
+        )
+        [writerRequest, readerRequest, unrelatedRequest].forEach(context.insert)
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 2)
+        let holderClaims = TaskExecutionResourceBroker.lockClaims(
+            for: [TaskExecutionResourceClaim(
+                kind: .accountSession,
+                key: "provider:shared-account",
+                access: .shared
+            )],
+            taskID: holder.id,
+            requestID: UUID(),
+            runMode: "test"
+        )
+        let held = try #require(queue.acquireResourceLocksIfAvailable(holderClaims, task: holder))
+        defer { queue.releaseResourceLocks(held, task: holder, modelContext: context) }
+
+        let projection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+        let candidates = Dictionary(
+            uniqueKeysWithValues: projection.ordered.map { ($0.request.id, $0) }
+        )
+        let writerCandidate = try #require(candidates[writerRequest.id])
+        let readerCandidate = try #require(candidates[readerRequest.id])
+        let unrelatedCandidate = try #require(candidates[unrelatedRequest.id])
+
+        #expect(!queue.canAdmitResourceClaims(
+            for: writerCandidate,
+            in: projection,
+            dispatchedRequestIDs: [],
+            activeTaskIDs: []
+        ))
+        #expect(!queue.canAdmitResourceClaims(
+            for: readerCandidate,
+            in: projection,
+            dispatchedRequestIDs: [],
+            activeTaskIDs: []
+        ))
+        #expect(queue.canAdmitResourceClaims(
+            for: unrelatedCandidate,
+            in: projection,
+            dispatchedRequestIDs: [],
+            activeTaskIDs: []
+        ))
     }
 
     @Test("Queue snapshot exposes durable backlog breadth without task content")
@@ -169,6 +403,36 @@ struct ExecutionRequestAdmissionSchedulerTests {
         #expect(!values.contains("Secret"))
         #expect(!values.contains("Never log this"))
         #expect(!values.contains("/private/"))
+    }
+
+    @Test("Task-local sequence wins over an inverted submission timestamp")
+    func taskLocalSequenceCannotBeOvertakenByTimestamp() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "FIFO", primaryPath: "/tmp/astra-sequence-fifo")
+        let task = AgentTask(title: "FIFO", goal: "Preserve order", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let first = TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 1,
+            submittedAt: Date(timeIntervalSince1970: 20)
+        )
+        let second = TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 2,
+            submittedAt: Date(timeIntervalSince1970: 10)
+        )
+        context.insert(first)
+        context.insert(second)
+        try context.save()
+
+        let projection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+
+        #expect(projection.ordered.count == 1)
+        #expect(projection.ordered.first?.request.id == first.id)
     }
 
     @Test("Three-project backlog remains FIFO per task and bypasses a blocked project at scale")
@@ -219,7 +483,7 @@ struct ExecutionRequestAdmissionSchedulerTests {
             from: projection,
             dispatchedRequestIDs: [],
             activeTaskIDs: [],
-            resourceIsAvailable: { $0.workspace?.id != blockedWorkspaceID }
+            resourceIsAvailable: { $0.task.workspace?.id != blockedWorkspaceID }
         )
 
         #expect(selected?.task.id == tasks[1].id)

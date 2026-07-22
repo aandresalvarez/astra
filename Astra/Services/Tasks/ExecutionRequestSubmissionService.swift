@@ -346,7 +346,7 @@ enum ExecutionRequestSubmissionService {
             messageEventID: event.id,
             sequence: nextSequence,
             kind: kind,
-            resourceClaims: resourceClaims(for: task),
+            resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task),
             submittedAt: date
         )
         modelContext.insert(event)
@@ -385,16 +385,4 @@ enum ExecutionRequestSubmissionService {
         return .success(Submission(requestID: request.id, eventID: event.id, sequence: nextSequence))
     }
 
-    private static func resourceClaims(for task: AgentTask) -> [TaskExecutionResourceClaim] {
-        let access = TaskWorkspaceAccess(task: task)
-        let rawPath = access.codeWorkingDirectory.isEmpty ? access.effectiveWorkspacePath : access.codeWorkingDirectory
-        guard !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        let path = URL(fileURLWithPath: (rawPath as NSString).expandingTildeInPath).standardizedFileURL.path
-        guard !path.isEmpty else { return [] }
-        return [TaskExecutionResourceClaim(
-            kind: .workspace,
-            key: path,
-            access: .exclusive
-        )]
-    }
 }

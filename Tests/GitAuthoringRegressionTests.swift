@@ -3,6 +3,47 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
+private final class GitAuthoringTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedTimeouts: [TimeInterval] = []
+    private var runnerStarted = false
+    private var runnerCancelled = false
+    private var runnerFinished = false
+
+    func recordTimeout(_ timeout: TimeInterval) {
+        lock.withLock { observedTimeouts.append(timeout) }
+    }
+
+    func markStarted() { lock.withLock { runnerStarted = true } }
+    func markCancelled() { lock.withLock { runnerCancelled = true } }
+    func markFinished() { lock.withLock { runnerFinished = true } }
+
+    var timeouts: [TimeInterval] { lock.withLock { observedTimeouts } }
+    var started: Bool { lock.withLock { runnerStarted } }
+    var cancelled: Bool { lock.withLock { runnerCancelled } }
+    var finished: Bool { lock.withLock { runnerFinished } }
+}
+
+private struct StubGitAuthoringUtilityRunner: GitAuthoringUtilityRunning {
+    typealias Handler = @Sendable (
+        _ prompt: String,
+        _ workspacePath: String,
+        _ configuration: AgentUtilityRuntimeConfiguration,
+        _ toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult
+
+    let handler: Handler
+
+    func runPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        await handler(prompt, workspacePath, configuration, toolMode)
+    }
+}
+
 @Suite("Git Authoring Regression")
 struct GitAuthoringRegressionTests {
 
@@ -147,6 +188,126 @@ struct GitAuthoringRegressionTests {
     }
 
     // MARK: - Timeout race regression
+
+    @Test("Git authoring passes its timeout budget to the owned runner")
+    func passesTimeoutBudgetToOwnedRunner() async throws {
+        let state = GitAuthoringTestState()
+        let runner = StubGitAuthoringUtilityRunner { _, _, configuration, toolMode in
+            state.recordTimeout(configuration.timeoutSeconds)
+            #expect(toolMode == .readOnly)
+            return AgentUtilityRunResult(
+                exitCode: 0,
+                output: "ASTRA_COMMIT_SUGGESTION {\"subject\":\"Before deadline\",\"body\":\"\",\"type\":\"test\"}",
+                error: ""
+            )
+        }
+        let service = AgentGitAuthoringService(
+            utilityRuntime: .claude(),
+            timeoutSeconds: 5,
+            utilityRunner: runner
+        )
+
+        let suggestion = try await service.suggestCommitMessage(
+            repoPath: "/tmp/astra-git-authoring-before-deadline",
+            diff: "diff --git a/foo b/foo\n+line",
+            recentSubjects: []
+        )
+
+        #expect(suggestion.subject == "Before deadline")
+        #expect(state.timeouts == [5])
+    }
+
+    @Test("Runner timeout result is the Git authoring timeout authority")
+    func runnerTimeoutResultIsAuthoritative() async {
+        let state = GitAuthoringTestState()
+        let runner = StubGitAuthoringUtilityRunner { _, _, configuration, _ in
+            state.recordTimeout(configuration.timeoutSeconds)
+            return AgentUtilityRunResult(
+                exitCode: 124,
+                output: "",
+                error: "Process timed out after 5 seconds."
+            )
+        }
+        let service = AgentGitAuthoringService(
+            utilityRuntime: .claude(),
+            timeoutSeconds: 5,
+            utilityRunner: runner
+        )
+
+        do {
+            _ = try await service.suggestCommitMessage(
+                repoPath: "/tmp/astra-git-authoring-after-deadline",
+                diff: "diff --git a/foo b/foo\n+line",
+                recentSubjects: []
+            )
+            Issue.record("Expected the runner timeout to propagate")
+        } catch let error as GitAuthoringError {
+            guard case .providerFailed(let message) = error else {
+                Issue.record("Expected providerFailed, got \(error)")
+                return
+            }
+            #expect(message.contains("Timed out after 5s"))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+        #expect(state.timeouts == [5])
+    }
+
+    @Test("Caller cancellation reaches the owned runner and leaves no helper task behind")
+    func cancellationTearsDownOwnedRunner() async {
+        let state = GitAuthoringTestState()
+        let runner = StubGitAuthoringUtilityRunner { _, _, configuration, _ in
+            state.recordTimeout(configuration.timeoutSeconds)
+            state.markStarted()
+            return await withTaskCancellationHandler {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    // The cancellation handler records ownership; returning
+                    // here proves the service directly awaits this runner and
+                    // has no detached watchdog left to settle afterward.
+                }
+                state.markFinished()
+                return AgentUtilityRunResult(exitCode: -1, output: "", error: "Cancelled")
+            } onCancel: {
+                state.markCancelled()
+            }
+        }
+        let service = AgentGitAuthoringService(
+            utilityRuntime: .claude(),
+            timeoutSeconds: 30,
+            utilityRunner: runner
+        )
+
+        let work = Task {
+            try await service.suggestCommitMessage(
+                repoPath: "/tmp/astra-git-authoring-cancel",
+                diff: "diff --git a/foo b/foo\n+line",
+                recentSubjects: []
+            )
+        }
+        for _ in 0..<100 where !state.started { await Task.yield() }
+        #expect(state.started)
+
+        work.cancel()
+        do {
+            _ = try await work.value
+            Issue.record("Expected cancellation to stop authoring")
+        } catch let error as GitAuthoringError {
+            guard case .providerFailed(let message) = error else {
+                Issue.record("Expected providerFailed, got \(error)")
+                return
+            }
+            #expect(message == "Cancelled")
+            #expect(!message.localizedCaseInsensitiveContains("timed out"))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+
+        #expect(state.cancelled)
+        #expect(state.finished)
+        #expect(state.timeouts == [30])
+    }
 
     @Test("runWithTimeout returns fast helper result without false timeout")
     func runWithTimeoutReturnsFastResult() async throws {

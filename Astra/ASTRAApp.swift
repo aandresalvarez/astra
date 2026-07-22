@@ -231,7 +231,11 @@ private struct AboutHighlightLabelStyle: LabelStyle {
 /// the time `applicationDidFinishLaunching` fires, SwiftUI has already
 /// bootstrapped NSApplication through the normal path, so these are
 /// side-effect-free.
+@MainActor
 final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
+    weak var runtimeController: AppRuntimeController?
+    private var isDrainingForTermination = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app (matters when launched from a terminal via
         // `swift run`; a no-op for a normally-activated .app bundle).
@@ -252,6 +256,22 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         // installer is foregrounded with ASTRA's real icon already set.
         ApplicationInstallationCoordinator.presentIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let runtimeController,
+              runtimeController.taskQueue.hasProcessingLoop
+                || runtimeController.taskQueue.isStopping
+                || runtimeController.taskQueue.activeCount > 0 else {
+            return .terminateNow
+        }
+        guard !isDrainingForTermination else { return .terminateLater }
+        isDrainingForTermination = true
+        Task { @MainActor in
+            await runtimeController.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -978,6 +998,7 @@ public struct ASTRAApp: App {
                     .environmentObject(feedbackCrashOfferService)
                     .tint(Stanford.interactive)
                     .preferredColorScheme(resolvedAppearance.colorScheme)
+                    .onAppear { appDelegate.runtimeController = runtime }
                     .onOpenURL { url in
                         guard let route = AstraExternalRouteCodec.route(from: url) else { return }
                         AstraExternalRouteStore.shared.submit(route)

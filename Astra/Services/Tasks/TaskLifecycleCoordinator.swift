@@ -29,7 +29,10 @@ final class TaskLifecycleCoordinator {
     // MARK: - Task Lifecycle
 
     func runQueue() {
-        if taskQueue.isProcessing {
+        if taskQueue.hasProcessingLoop || taskQueue.isStopping {
+            guard !taskQueue.isStopping else { return }
+            // Revoke queue authority synchronously for responsive UI, then
+            // drain every queue-owned coroutine before allowing a restart.
             taskQueue.cancelAll()
             let summary = TaskRunLifecycleService.cancelAllRunningTasks(modelContext: modelContext)
             AppLogger.audit(.taskCancelled, category: "UI", fields: [
@@ -37,10 +40,14 @@ final class TaskLifecycleCoordinator {
                 "running_runs_cancelled": String(summary.runsUpdated),
                 "tasks_cancelled": String(summary.tasksUpdated)
             ])
+            Task { @MainActor [taskQueue] in
+                await taskQueue.cancelAllAndWait()
+            }
             return
         }
-        Task {
+        taskQueue.registerLifecycleTask(modelContext: modelContext) { [taskQueue] modelContext in
             await taskQueue.processQueue(modelContext: modelContext)
+            guard !Task.isCancelled else { return }
             // B2-live: resume any Workspace App workflow run whose awaited agent
             // task just finished in the queue.
             await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
@@ -86,10 +93,16 @@ final class TaskLifecycleCoordinator {
             task: task,
             modelContext: modelContext
         )
-        return Task {
+        let taskID = task.id
+        return taskQueue.registerLifecycleTask(modelContext: modelContext) { modelContext in
             await launch.value
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue
+            guard !Task.isCancelled else { return }
+            let tasks = try? modelContext.fetch(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+            )
+            guard let refreshedTask = tasks?.first else { return }
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: taskID, fields: [
+                "status": refreshedTask.status.rawValue
             ])
             // B2-live: resume any Workspace App workflow awaiting this agent task.
             await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)

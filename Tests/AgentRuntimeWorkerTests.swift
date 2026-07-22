@@ -396,6 +396,17 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
+    @Test("Artifact detector respects explicit no-write constraints")
+    func artifactDetectorRespectsExplicitNoWriteConstraints() {
+        let task = AgentTask(
+            title: "Research the scheduler",
+            goal: "Summarize the behavior in chat. Do not create or write workspace files."
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
     @Test("Named deliverables require artifact evidence without action words")
     func namedDeliverablesRequireArtifactEvidenceWithoutActionWords() {
         let task = AgentTask(
