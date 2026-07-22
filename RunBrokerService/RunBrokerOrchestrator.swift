@@ -262,6 +262,13 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
     /// authenticated by live control or its capability-authenticated offline
     /// spool. A durable vault record alone is preparation state, not runtime
     /// provenance and cannot authorize observation or destructive control.
+    ///
+    /// The caller authorizes on the CURRENT authority: `identity.authority`
+    /// must be the projection's live fencing epoch or the caller is stale.
+    /// The supervisor child and its vaulted capability, by contrast, are
+    /// bound forever to the immutable LAUNCH identity from the manifest (a
+    /// journaled authority transfer never re-bootstraps the child), so vault
+    /// and transport comparisons address that identity.
     func authenticateSupervisorProvenance(
         identity: RunSupervisorIdentity,
         expectedManifestSHA256: ExecutionLaunchArgumentsSHA256
@@ -272,12 +279,15 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                   execution.manifest.storeID == identity.storeID,
                   execution.authority == identity.authority,
                   try RunSupervisorDigests.manifest(execution.manifest)
-                    == expectedManifestSHA256,
-                  let capability = try vault.load(executionID: identity.executionID),
-                  capability.identity == identity,
+                    == expectedManifestSHA256 else {
+                throw RunBrokerServiceError.supervisorUnavailable
+            }
+            let launchIdentity = RunSupervisorIdentity(manifest: execution.manifest)
+            guard let capability = try vault.load(executionID: identity.executionID),
+                  capability.identity == launchIdentity,
                   capability.manifestSHA256 == expectedManifestSHA256,
                   try transport.presence(
-                    identity: identity,
+                    identity: launchIdentity,
                     capability: capability.capability
                   ) == .authenticated else {
                 throw RunBrokerServiceError.supervisorUnavailable
@@ -307,12 +317,16 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
             guard let execution = try ledger.projection().executions[request.executionID] else {
                 throw RunBrokerServiceError.supervisorIdentityMismatch
             }
+            // Authorization and the durable audit are fenced on the CURRENT
+            // authority; the supervisor child and its vaulted capability keep
+            // the immutable LAUNCH identity across journaled transfers.
             let identity = RunSupervisorIdentity(
                 installationID: execution.manifest.installationID,
                 storeID: execution.manifest.storeID,
                 executionID: request.executionID,
                 authority: execution.authority
             )
+            let launchIdentity = RunSupervisorIdentity(manifest: execution.manifest)
             let authorization = try terminationAuthorizer.authorize(
                 request: request,
                 expectedIdentity: identity
@@ -321,7 +335,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 throw RunBrokerServiceError.immediateTerminationUnauthorized
             }
             guard let capability = try vault.load(executionID: request.executionID),
-                  capability.identity == identity else {
+                  capability.identity == launchIdentity else {
                 throw RunBrokerServiceError.missingCapability
             }
 
@@ -368,7 +382,7 @@ public final class RunBrokerOrchestrator: @unchecked Sendable {
                 }
             }
             try transport.requestImmediateTermination(
-                identity: identity,
+                identity: launchIdentity,
                 capability: capability.capability
             )
             logger.record(event: "run_broker.immediate_termination_issued", fields: safeFields(identity))
