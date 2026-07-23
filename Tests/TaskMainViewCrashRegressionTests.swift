@@ -3,6 +3,17 @@ import Testing
 
 @Suite("TaskMainView crash regressions")
 struct TaskMainViewCrashRegressionTests {
+    @Test("Docker recovery ownership is app-scoped across main windows")
+    func dockerRecoveryOwnershipIsAppScoped() throws {
+        let contentSource = try fileText("Astra/Views/ContentView.swift")
+        let appSource = try fileText("Astra/ASTRAApp.swift")
+
+        #expect(contentSource.contains("@ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator"))
+        #expect(!contentSource.contains("@StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()"))
+        #expect(appSource.contains("@StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()"))
+        #expect(appSource.contains("dockerImageRecovery: dockerImageRecovery"))
+    }
+
     @Test("TaskMainView defers selected-task refresh work out of view update callbacks")
     func taskMainViewDefersSelectedTaskRefreshWork() throws {
         let source = try fileText("Astra/Views/TaskMainView.swift")

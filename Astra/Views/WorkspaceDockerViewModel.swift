@@ -850,18 +850,26 @@ final class WorkspaceDockerViewModel: ObservableObject {
         }
     }
 
-    private static func validateImageCandidates(
+    nonisolated static let maxConcurrentReadinessChecks = 4
+
+    static func validateImageCandidates(
         _ candidates: [DockerWorkspaceCandidate],
         readiness: any DockerImageReadinessChecking
     ) async -> [DockerWorkspaceCandidate] {
         await Task.detached(priority: .utility) {
             await withTaskGroup(of: (Int, DockerWorkspaceCandidate).self, returning: [DockerWorkspaceCandidate].self) { group in
-                for (index, candidate) in candidates.enumerated() {
-                    guard let image = candidate.environment.image else {
-                        group.addTask { (index, candidate) }
-                        continue
-                    }
+                var nextIndex = 0
+                var results: [(Int, DockerWorkspaceCandidate)] = []
+
+                func addNextCandidate() {
+                    guard nextIndex < candidates.count else { return }
+                    let index = nextIndex
+                    nextIndex += 1
+                    let candidate = candidates[index]
                     group.addTask {
+                        guard let image = candidate.environment.image else {
+                            return (index, candidate)
+                        }
                         let report = await readiness.checkImageReadiness(image)
                         var validated = candidate
                         validated.isRunnable = report.isRunnable
@@ -870,9 +878,12 @@ final class WorkspaceDockerViewModel: ObservableObject {
                     }
                 }
 
-                var results: [(Int, DockerWorkspaceCandidate)] = []
+                for _ in 0..<min(maxConcurrentReadinessChecks, candidates.count) {
+                    addNextCandidate()
+                }
                 for await result in group {
                     results.append(result)
+                    addNextCandidate()
                 }
                 return results
                     .sorted { $0.0 < $1.0 }

@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 final class DockerImageRecoveryCoordinator: ObservableObject {
@@ -26,6 +27,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private let recovery: any DockerImageRecovering
     private let eventRecorder: any DockerImageRecoveryEventRecording
     private var operationID: UUID?
+    private var recoveryEventOperationID: UUID?
     private var expectedRunID: UUID?
     private var expectedTaskID: UUID?
     private var isInvalidated = false
@@ -99,8 +101,11 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         isBusy = true
         isConfirmationPresented = false
         pendingPlan = nil
+        let recoveryEventOperationID = UUID()
+        self.recoveryEventOperationID = recoveryEventOperationID
         guard eventRecorder.record(
-            task: task, run: run, plan: plan, result: .started, detail: nil, modelContext: modelContext
+            task: task, run: run, plan: plan, result: .started, detail: nil,
+            operationID: recoveryEventOperationID, verifiedImageID: nil, modelContext: modelContext
         ) else {
             isBusy = false
             finishOperation()
@@ -128,6 +133,8 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                     plan: plan,
                     result: .failed,
                     detail: "Recovery was invalidated before retry; ASTRA did not retry.",
+                    operationID: recoveryEventOperationID,
+                    verifiedImageID: nil,
                     modelContext: modelContext
                 )
                 finishOperation()
@@ -140,9 +147,26 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                 return
             }
             switch result {
-            case .success:
+            case .success(let verification):
+                guard persistVerifiedImageID(verification.imageID, task: task, run: run, modelContext: modelContext) else {
+                    let detail = "Docker recovery verified the image, but ASTRA could not durably persist its image ID. The task was not retried."
+                    let recorded = eventRecorder.record(
+                        task: task,
+                        run: run,
+                        plan: plan,
+                        result: .failed,
+                        detail: detail,
+                        operationID: recoveryEventOperationID,
+                        verifiedImageID: verification.imageID,
+                        modelContext: modelContext
+                    )
+                    finishOperation()
+                    setError(recorded ? detail : "\(detail) ASTRA also could not durably record the recovery failure.", for: task.id)
+                    return
+                }
                 guard eventRecorder.record(
-                    task: task, run: run, plan: plan, result: .succeeded, detail: nil, modelContext: modelContext
+                    task: task, run: run, plan: plan, result: .succeeded, detail: nil,
+                    operationID: recoveryEventOperationID, verifiedImageID: verification.imageID, modelContext: modelContext
                 ) else {
                     finishOperation()
                     setError("Docker recovery verified the image, but ASTRA could not durably record success. The task was not retried.", for: task.id)
@@ -157,6 +181,8 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                     plan: plan,
                     result: .failed,
                     detail: error.localizedDescription,
+                    operationID: recoveryEventOperationID,
+                    verifiedImageID: nil,
                     modelContext: modelContext
                 )
                 finishOperation()
@@ -168,6 +194,33 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                 )
             }
         }
+    }
+
+    private func persistVerifiedImageID(
+        _ imageID: String,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) -> Bool {
+        var taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        if !taskEnvironment.isContainerized, let run {
+            taskEnvironment = ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON)
+        }
+        guard taskEnvironment.isContainerized else { return false }
+        taskEnvironment.imageDigest = imageID
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(taskEnvironment)
+        if let run {
+            var runEnvironment = ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON)
+            runEnvironment.imageDigest = imageID
+            run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment)
+        }
+        task.updatedAt = Date()
+        return WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "docker_image_recovery_verified_image_id"]
+        )
     }
 
     func invalidateIfRunChanged(for taskID: UUID, to latestRunID: UUID?) {
@@ -214,6 +267,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         operationID = nil
         expectedRunID = nil
         expectedTaskID = nil
+        recoveryEventOperationID = nil
         activeTaskID = nil
         pendingTaskID = nil
         isInvalidated = false

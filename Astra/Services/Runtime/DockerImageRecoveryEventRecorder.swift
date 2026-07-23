@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
@@ -11,6 +12,8 @@ protocol DockerImageRecoveryEventRecording {
         plan: DockerImageRecoveryPlan,
         result: DockerImageRecoveryEventPayload.Result,
         detail: String?,
+        operationID: UUID?,
+        verifiedImageID: String?,
         modelContext: ModelContext
     ) -> Bool
 }
@@ -24,14 +27,23 @@ struct DockerImageRecoveryEventRecorder: DockerImageRecoveryEventRecording {
         plan: DockerImageRecoveryPlan,
         result: DockerImageRecoveryEventPayload.Result,
         detail: String?,
+        operationID: UUID?,
+        verifiedImageID: String?,
         modelContext: ModelContext
     ) -> Bool {
         let imageID: String?
-        if case .retag(let value) = plan.action { imageID = value } else { imageID = nil }
+        if let verifiedImageID {
+            imageID = verifiedImageID
+        } else if case .retag(let value) = plan.action {
+            imageID = value
+        } else {
+            imageID = nil
+        }
         let event = TaskEvent.structuredPayloadEvent(
             task: task,
             eventType: TaskEventTypes.System.dockerImageRecovery,
             payload: DockerImageRecoveryEventPayload(
+                operationID: operationID,
                 image: plan.image,
                 action: plan.auditAction,
                 result: result,

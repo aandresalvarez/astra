@@ -67,8 +67,8 @@ struct ContentView: View {
     // App Studio is a conversation (center) + a docked live preview (the .appPreview shelf);
     // both observe this one session, so a chat turn updates the preview.
     @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
-    /// Owns Docker recovery above task-detail identity so confirmed repairs finish durably.
-    @StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()
+    /// App-scoped Docker recovery owner shared by every main window.
+    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
@@ -162,9 +162,8 @@ struct ContentView: View {
     /// (and vice versa).
 
     @MainActor
-    init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
-        self.appUpdateController = appUpdateController
-        self.runtime = runtime
+    init(appUpdateController: AppUpdateController, runtime: AppRuntimeController, dockerImageRecovery: DockerImageRecoveryCoordinator) {
+        self.appUpdateController = appUpdateController; self.runtime = runtime; self.dockerImageRecovery = dockerImageRecovery
     }
 
     var selectedTask: AgentTask? {

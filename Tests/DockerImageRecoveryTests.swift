@@ -94,10 +94,11 @@ struct DockerImageRecoveryTests {
         #expect(plan.action == .retag(imageID: imageID))
         #expect(await tagger.recordedTags().isEmpty)
 
-        try await service.performRecovery(plan).get()
+        let verification = try await service.performRecovery(plan).get()
 
         #expect(await tagger.recordedTags() == [.init(imageID: imageID, image: image)])
         #expect(await readiness.checkedImages() == [image, image])
+        #expect(verification.imageID == imageID)
     }
 
     @Test("Tag repair passes validated identifiers as separate process arguments")
@@ -200,8 +201,9 @@ struct DockerImageRecoveryTests {
             sourcePath: root
         )))
 
-        try await service.performRecovery(plan).get()
+        let verification = try await service.performRecovery(plan).get()
         #expect(await builder.recordedRequests().count == 1)
+        #expect(verification.imageID == "sha256:built")
     }
 
     @Test("Recovery canonicalizes an untagged requested image reference")
@@ -229,6 +231,104 @@ struct DockerImageRecoveryTests {
             dockerfilePath: dockerfile,
             sourcePath: root
         )))
+    }
+
+    @MainActor
+    @Test("Startup reconciliation closes an unmatched recovery start idempotently")
+    func startupReconciliationClosesInterruptedRecovery() throws {
+        let fixture = try makeCoordinatorFixture()
+        let operationID = UUID()
+        let startedPayload = DockerImageRecoveryEventPayload(
+            operationID: operationID,
+            image: "astra-project:latest",
+            action: "rebuild",
+            result: .started,
+            imageID: nil,
+            detail: nil
+        )
+        fixture.context.insert(TaskEvent.structuredPayloadEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.System.dockerImageRecovery,
+            payload: startedPayload,
+            run: fixture.run
+        ))
+        try fixture.context.save()
+
+        #expect(DockerImageRecoveryReconciler.reconcileInterruptedRecoveries(modelContext: fixture.context) == 1)
+        let events = try fixture.context.fetch(FetchDescriptor<TaskEvent>())
+            .filter { $0.type == TaskEventTypes.System.dockerImageRecovery.rawValue }
+        #expect(events.count == 2)
+        let terminal = try #require(events.first {
+            (try? $0.decodePayload(
+                as: DockerImageRecoveryEventPayload.self,
+                expecting: TaskEventTypes.System.dockerImageRecovery
+            ).get())?.result == .failed
+        })
+        let terminalPayload = try terminal.decodePayload(
+            as: DockerImageRecoveryEventPayload.self,
+            expecting: TaskEventTypes.System.dockerImageRecovery
+        ).get()
+        #expect(terminalPayload.operationID == operationID)
+        #expect(terminalPayload.detail?.contains("interrupted") == true)
+        #expect(DockerImageRecoveryReconciler.reconcileInterruptedRecoveries(modelContext: fixture.context) == 0)
+    }
+
+    @MainActor
+    @Test("Coordinator persists verified image IDs before retry")
+    func coordinatorPersistsVerifiedImageIDBeforeRetry() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))
+            ),
+            eventRecorder: recorder
+        )
+        var retried = false
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) {
+            retried = true
+        }
+        #expect(await waitUntil { !coordinator.isBusy })
+
+        #expect(retried)
+        #expect(ExecutionEnvironmentStore.decode(fixture.task.executionEnvironmentSnapshotJSON).imageDigest == "sha256:verified")
+        #expect(ExecutionEnvironmentStore.decode(fixture.run.executionEnvironmentSnapshotJSON).imageDigest == "sha256:verified")
+        #expect(recorder.recordedImageIDs == [nil, "sha256:verified"])
+    }
+
+    @MainActor
+    @Test("Readiness probes are bounded and preserve candidate order")
+    func readinessProbesAreBounded() async {
+        let candidates = (0..<12).map { index in
+            DockerWorkspaceCandidate(
+                environment: WorkspaceExecutionEnvironment(
+                    id: "image:\(index)",
+                    kind: .dockerImage,
+                    displayName: "Image \(index)",
+                    image: "astra-\(index):latest"
+                ),
+                isRunnable: false,
+                issue: "not checked"
+            )
+        }
+        let readiness = RecoveryConcurrencyReadiness()
+
+        let validated = await WorkspaceDockerViewModel.validateImageCandidates(candidates, readiness: readiness)
+
+        #expect(validated.map(\.id) == candidates.map(\.id))
+        #expect(validated.allSatisfy { $0.isRunnable })
+        #expect(await readiness.maxConcurrent() <= WorkspaceDockerViewModel.maxConcurrentReadinessChecks)
     }
 
     @Test("Recovery refuses ambiguous rebuild roots and honors the failed run source path")
@@ -286,7 +386,10 @@ struct DockerImageRecoveryTests {
             confirmation: "Retry",
             auditAction: "retry_only"
         )
-        let recovery = RecoveryCoordinatorService(plan: .success(plan), perform: .success(()))
+        let recovery = RecoveryCoordinatorService(
+            plan: .success(plan),
+            perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))
+        )
         let recorder = RecoveryCoordinatorEventRecorder(results: [false])
         let coordinator = DockerImageRecoveryCoordinator(recovery: recovery, eventRecorder: recorder)
 
@@ -313,7 +416,7 @@ struct DockerImageRecoveryTests {
         )
         let recovery = RecoveryCoordinatorService(
             plan: .success(plan),
-            perform: .success(()),
+            perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
             performDelayNanoseconds: 30_000_000
         )
         let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
@@ -334,7 +437,7 @@ struct DockerImageRecoveryTests {
 
         let unpersistedSuccessRecorder = RecoveryCoordinatorEventRecorder(results: [true, false])
         let secondCoordinator = DockerImageRecoveryCoordinator(
-            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))),
             eventRecorder: unpersistedSuccessRecorder
         )
         secondCoordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
@@ -360,7 +463,7 @@ struct DockerImageRecoveryTests {
         let coordinator = DockerImageRecoveryCoordinator(
             recovery: RecoveryCoordinatorService(
                 plan: .success(plan),
-                perform: .success(()),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
                 performDelayNanoseconds: 30_000_000
             ),
             eventRecorder: recorder
@@ -391,7 +494,7 @@ struct DockerImageRecoveryTests {
         let coordinator = DockerImageRecoveryCoordinator(
             recovery: RecoveryCoordinatorService(
                 plan: .success(plan),
-                perform: .success(()),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
                 performDelayNanoseconds: 30_000_000
             ),
             eventRecorder: recorder
@@ -423,7 +526,7 @@ struct DockerImageRecoveryTests {
         var coordinator: DockerImageRecoveryCoordinator? = DockerImageRecoveryCoordinator(
             recovery: RecoveryCoordinatorService(
                 plan: .success(plan),
-                perform: .success(()),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
                 performDelayNanoseconds: 30_000_000
             ),
             eventRecorder: recorder
@@ -446,7 +549,7 @@ struct DockerImageRecoveryTests {
     @Test("Shared recovery state blocks task retries while Docker work is active")
     func sharedRecoveryStateBlocksTaskRetries() {
         let coordinator = DockerImageRecoveryCoordinator(
-            recovery: RecoveryCoordinatorService(plan: .failure(.notRecoverable("unused")), perform: .success(())),
+            recovery: RecoveryCoordinatorService(plan: .failure(.notRecoverable("unused")), perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))),
             eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
         )
 
@@ -469,7 +572,7 @@ struct DockerImageRecoveryTests {
         let coordinator = DockerImageRecoveryCoordinator(
             recovery: RecoveryCoordinatorService(
                 plan: .success(plan),
-                perform: .success(()),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
                 performDelayNanoseconds: 30_000_000
             ),
             eventRecorder: RecoveryCoordinatorEventRecorder(results: [true, true])
@@ -492,7 +595,7 @@ struct DockerImageRecoveryTests {
         let coordinator = DockerImageRecoveryCoordinator(
             recovery: RecoveryCoordinatorService(
                 plan: .failure(.notRecoverable("Dockerfile unavailable")),
-                perform: .success(())
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))
             ),
             eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
         )
@@ -524,7 +627,7 @@ struct DockerImageRecoveryTests {
             auditAction: "retry_only"
         )
         let coordinator = DockerImageRecoveryCoordinator(
-            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))),
             eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
         )
 
@@ -550,7 +653,7 @@ struct DockerImageRecoveryTests {
             auditAction: "retry_only"
         )
         let coordinator = DockerImageRecoveryCoordinator(
-            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))),
             eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
         )
 
@@ -748,6 +851,21 @@ private actor RecoveryThreadRecordingReadiness: DockerImageReadinessChecking {
     }
 }
 
+private actor RecoveryConcurrencyReadiness: DockerImageReadinessChecking {
+    private var active = 0
+    private var maximum = 0
+
+    func maxConcurrent() -> Int { maximum }
+
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness {
+        active += 1
+        maximum = max(maximum, active)
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        active -= 1
+        return DockerImageReadiness(image: image, state: .ready, imageID: "sha256:ready", detail: "ready")
+    }
+}
+
 private actor RecoverySequencedAvailability: DockerImageAvailabilityChecking {
     private var results: [Result<DockerImageAvailability, DockerImageAvailabilityError>]
     private var images: [String] = []
@@ -819,7 +937,7 @@ private actor RecoveryRecordingRunner: BinaryRunner {
 
 private actor RecoveryCoordinatorService: DockerImageRecovering {
     private let plan: Result<DockerImageRecoveryPlan, DockerImageRecoveryError>
-    private let performResult: Result<Void, DockerImageRecoveryError>
+    private let performResult: Result<DockerImageRecoveryVerification, DockerImageRecoveryError>
     private let performDelayNanoseconds: UInt64
     private var planOnMainThread: Bool?
     private var performOnMainThread: Bool?
@@ -827,7 +945,7 @@ private actor RecoveryCoordinatorService: DockerImageRecovering {
 
     init(
         plan: Result<DockerImageRecoveryPlan, DockerImageRecoveryError>,
-        perform: Result<Void, DockerImageRecoveryError>,
+        perform: Result<DockerImageRecoveryVerification, DockerImageRecoveryError>,
         performDelayNanoseconds: UInt64 = 0
     ) {
         self.plan = plan
@@ -843,7 +961,7 @@ private actor RecoveryCoordinatorService: DockerImageRecovering {
         return plan
     }
 
-    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<Void, DockerImageRecoveryError> {
+    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<DockerImageRecoveryVerification, DockerImageRecoveryError> {
         performCalls += 1
         performOnMainThread = recoveryThreadIsMain()
         if performDelayNanoseconds > 0 {
@@ -863,6 +981,7 @@ private func recoveryThreadIsMain() -> Bool { Thread.isMainThread }
 private final class RecoveryCoordinatorEventRecorder: DockerImageRecoveryEventRecording {
     private var results: [Bool]
     private(set) var recordedResults: [DockerImageRecoveryEventPayload.Result] = []
+    private(set) var recordedImageIDs: [String?] = []
 
     init(results: [Bool]) {
         self.results = results
@@ -874,9 +993,12 @@ private final class RecoveryCoordinatorEventRecorder: DockerImageRecoveryEventRe
         plan: DockerImageRecoveryPlan,
         result: DockerImageRecoveryEventPayload.Result,
         detail: String?,
+        operationID: UUID?,
+        verifiedImageID: String?,
         modelContext: ModelContext
     ) -> Bool {
         recordedResults.append(result)
+        recordedImageIDs.append(verifiedImageID)
         return results.isEmpty ? true : results.removeFirst()
     }
 }

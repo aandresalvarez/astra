@@ -8,11 +8,16 @@ struct DockerImageRecoveryEventPayload: Codable, Equatable, Sendable {
         case failed
     }
 
+    var operationID: UUID?
     var image: String
     var action: String
     var result: Result
     var imageID: String?
     var detail: String?
+}
+
+struct DockerImageRecoveryVerification: Equatable, Sendable {
+    var imageID: String
 }
 
 struct DockerImageRecoveryWorkspace: Equatable, Sendable {
@@ -141,7 +146,7 @@ protocol DockerImageRecovering: Sendable {
         workspace: DockerImageRecoveryWorkspace
     ) async -> Result<DockerImageRecoveryPlan, DockerImageRecoveryError>
 
-    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<Void, DockerImageRecoveryError>
+    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<DockerImageRecoveryVerification, DockerImageRecoveryError>
 }
 
 /// Plans only repairs that can be proven from local state, performs exactly one
@@ -207,7 +212,7 @@ struct DockerImageRecoveryService: DockerImageRecovering {
         }
     }
 
-    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<Void, DockerImageRecoveryError> {
+    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<DockerImageRecoveryVerification, DockerImageRecoveryError> {
         switch plan.action {
         case .retryOnly:
             break
@@ -222,12 +227,12 @@ struct DockerImageRecoveryService: DockerImageRecovering {
         }
 
         let verified = await readiness.checkImageReadiness(plan.image)
-        guard verified.isRunnable else {
+        guard verified.isRunnable, let imageID = verified.imageID, !imageID.isEmpty else {
             return .failure(.verificationFailed(
-                "Docker repair finished, but \(plan.image) still failed launch verification: \(verified.detail)"
+                "Docker repair finished, but \(plan.image) still failed launch verification and did not produce a durable image ID: \(verified.detail)"
             ))
         }
-        return .success(())
+        return .success(DockerImageRecoveryVerification(imageID: imageID))
     }
 
     private static func buildRequest(
