@@ -187,6 +187,14 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         if !isBusy { finishOperation() }
     }
 
+    func invalidateIfTaskClosed(_ taskID: UUID) {
+        guard expectedTaskID == taskID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+        if !isBusy { finishOperation() }
+    }
+
     func isConfirmationVisible(for taskID: UUID) -> Bool {
         isConfirmationPresented && pendingTaskID == taskID
     }

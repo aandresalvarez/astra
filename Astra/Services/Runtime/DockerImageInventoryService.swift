@@ -11,6 +11,12 @@ struct DockerImageReference: Identifiable, Equatable, Sendable {
     var name: String {
         tag.isEmpty || tag == "<none>" ? repository : "\(repository):\(tag)"
     }
+
+    static func canonicalName(for image: String) -> String {
+        guard !image.contains("@") else { return image }
+        let lastPathComponent = image.split(separator: "/").last.map(String.init) ?? image
+        return lastPathComponent.contains(":") ? image : "\(image):latest"
+    }
 }
 
 struct DockerImageAvailability: Equatable, Sendable {
@@ -155,7 +161,10 @@ struct DockerImageReadinessService: DockerImageReadinessChecking {
             return readiness(for: error, image: image)
         }
 
-        guard let listed = images.first(where: { $0.name == image }) else {
+        let canonicalImage = DockerImageReference.canonicalName(for: image)
+        guard let listed = images.first(where: {
+            DockerImageReference.canonicalName(for: $0.name) == canonicalImage
+        }) else {
             return DockerImageReadiness(
                 image: image,
                 state: .missing,

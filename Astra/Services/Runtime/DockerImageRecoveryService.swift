@@ -281,8 +281,6 @@ struct DockerImageRecoveryService: DockerImageRecovering {
     }
 
     private static func imageWithDefaultTag(_ image: String) -> String {
-        guard !image.contains("@") else { return image }
-        let lastPathComponent = image.split(separator: "/").last.map(String.init) ?? image
-        return lastPathComponent.contains(":") ? image : "\(image):latest"
+        DockerImageReference.canonicalName(for: image)
     }
 }

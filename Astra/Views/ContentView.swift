@@ -2548,7 +2548,7 @@ struct ContentView: View {
 
         let linkedSchedules = coordinator.activeSameThreadSchedules(for: task)
         guard !linkedSchedules.isEmpty else {
-            coordinator.setDoneState(task, to: true)
+            dockerImageRecovery.invalidateIfTaskClosed(task.id); coordinator.setDoneState(task, to: true)
             refreshRunningTaskCount()
             return
         }
@@ -2561,7 +2561,7 @@ struct ContentView: View {
 
         switch warning.action {
         case .markDone:
-            coordinator.setDoneState(warning.task, to: true)
+            dockerImageRecovery.invalidateIfTaskClosed(warning.task.id); coordinator.setDoneState(warning.task, to: true)
             refreshRunningTaskCount()
         case .delete:
             deleteTask(warning.task)

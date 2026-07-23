@@ -8,6 +8,28 @@ import ASTRAPersistence
 
 @Suite("Docker image readiness and recovery")
 struct DockerImageRecoveryTests {
+    @Test("Readiness matches untagged references to Docker's latest tag")
+    func readinessCanonicalizesUntaggedInventoryReference() async {
+        let image = "astra-starr-data-lake"
+        let imageID = "sha256:" + String(repeating: "e", count: 64)
+        let availability = RecoverySequencedAvailability(results: [
+            .failure(.missingImage(image)),
+            .success(DockerImageAvailability(image: imageID, imageID: imageID))
+        ])
+        let service = DockerImageReadinessService(
+            inventory: RecoveryImageInventory(result: .success([
+                DockerImageReference(repository: "astra-starr-data-lake", tag: "latest", imageID: imageID)
+            ])),
+            availability: availability
+        )
+
+        let readiness = await service.checkImageReadiness(image)
+
+        #expect(readiness.state == .listedButUnresolvable)
+        #expect(readiness.imageID == imageID)
+        #expect(await availability.checkedImages() == [image, imageID])
+    }
+
     @Test("Readiness distinguishes a listed tag that exact-reference inspect cannot resolve")
     func readinessDistinguishesBrokenTagIndex() async {
         let image = "astra-starr-data-lake:latest"
@@ -351,6 +373,38 @@ struct DockerImageRecoveryTests {
 
         #expect(await waitUntil { !coordinator.isBusy })
         #expect(coordinator.errorMessage?.contains("could not durably record") == true)
+        #expect(recorder.recordedResults == [.started, .failed])
+    }
+
+    @MainActor
+    @Test("Closing a task invalidates its active recovery before retry")
+    func closingTaskInvalidatesRecovery() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(()),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: recorder
+        )
+        var retried = false
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
+        coordinator.invalidateIfTaskClosed(fixture.task.id)
+
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(!retried)
         #expect(recorder.recordedResults == [.started, .failed])
     }
 
