@@ -188,7 +188,11 @@ public final class TaskTurnRequest {
         self.blockingTaskID = nil
         self.blockerSummary = nil
         self.kindRawValue = kind.rawValue
-        self.runtimeIDSnapshot = task.runtimeID
+        // Fall back to the task's resolved runtime when the raw field is nil
+        // (e.g. tasks created before runtimeID was persisted explicitly), so
+        // TaskExecutionLaunchSnapshotApplicator's fail-closed nil check never
+        // spuriously discards an otherwise-valid launch snapshot.
+        self.runtimeIDSnapshot = task.runtimeID ?? task.resolvedRuntimeID.rawValue
         self.modelSnapshot = task.model
         self.tokenBudgetSnapshot = task.tokenBudget
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(task: task))
