@@ -36,6 +36,7 @@ struct TaskSidebarContainerView: View {
     var onCancelTask: ((AgentTask) -> Void)?
     var onRetryTask: ((AgentTask) -> Void)?
     var isDockerRecoveryBusy = false
+    var dockerRecoveryTaskID: UUID?
     var onDeleteTask: ((AgentTask) -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
     var onShowConfigure: (() -> Void)?
@@ -70,6 +71,7 @@ struct TaskSidebarContainerView: View {
             onCancelTask: onCancelTask,
             onRetryTask: onRetryTask,
             isDockerRecoveryBusy: isDockerRecoveryBusy,
+            dockerRecoveryTaskID: dockerRecoveryTaskID,
             onDeleteTask: onDeleteTask,
             onEditWorkspace: onEditWorkspace,
             onShowConfigure: onShowConfigure,
@@ -363,6 +365,7 @@ struct TaskSidebarView: View {
     var onCancelTask: ((AgentTask) -> Void)?
     var onRetryTask: ((AgentTask) -> Void)?
     var isDockerRecoveryBusy = false
+    var dockerRecoveryTaskID: UUID?
     var onDeleteTask: ((AgentTask) -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
     var onShowConfigure: (() -> Void)?
@@ -2120,7 +2123,7 @@ struct TaskSidebarView: View {
         // While a durable follow-up is waiting or starting, the task keeps its
         // terminal status, but retrying then would race the pending admission
         // into out-of-order or duplicate execution.
-        if !isDockerRecoveryBusy,
+        if !(isDockerRecoveryBusy && dockerRecoveryTaskID == task.id),
            task.status == .failed || task.status == .cancelled || task.status == .budgetExceeded,
            (taskActivities[task.id]?.kind ?? .idle) == .idle {
             Button {

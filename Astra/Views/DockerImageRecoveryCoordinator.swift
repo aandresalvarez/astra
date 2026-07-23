@@ -7,11 +7,21 @@ import ASTRAModels
 final class DockerImageRecoveryCoordinator: ObservableObject {
     @Published var pendingPlan: DockerImageRecoveryPlan?
     @Published private(set) var pendingTaskID: UUID?
+    @Published private(set) var activeTaskID: UUID?
     @Published var isConfirmationPresented = false
     @Published var isBusy = false
     @Published var errorMessage: String?
+    @Published private(set) var errorTaskID: UUID?
 
     var canStartTaskRetry: Bool { !isBusy }
+
+    func canStartTaskRetry(for taskID: UUID) -> Bool {
+        !isBusy || activeTaskID != taskID
+    }
+
+    func isBusy(for taskID: UUID) -> Bool {
+        isBusy && activeTaskID == taskID
+    }
 
     private let recovery: any DockerImageRecovering
     private let eventRecorder: any DockerImageRecoveryEventRecording
@@ -32,8 +42,10 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         guard !isBusy, let workspace else { return }
         isBusy = true
         errorMessage = nil
+        errorTaskID = nil
         expectedRunID = run?.id
         expectedTaskID = taskID
+        activeTaskID = taskID
         isInvalidated = false
         let operationID = UUID()
         self.operationID = operationID
@@ -66,7 +78,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                 isConfirmationPresented = true
                 audit(taskID: taskID, result: "recovery_plan_ready", plan: plan)
             case .failure(let error):
-                errorMessage = error.localizedDescription
+                setError(error.localizedDescription, for: taskID)
                 audit(taskID: taskID, result: "recovery_plan_unavailable", image: image, detail: error.localizedDescription, level: .warning)
                 finishOperation()
             }
@@ -81,7 +93,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         onSuccess: @escaping @MainActor () -> Void
     ) {
         guard !isBusy, !isInvalidated, expectedTaskID == task.id, expectedRunID == run?.id else {
-            errorMessage = "The failed run changed before Docker recovery could start. Diagnose the latest run again."
+            setError("The failed run changed before Docker recovery could start. Diagnose the latest run again.", for: task.id)
             return
         }
         isBusy = true
@@ -92,12 +104,13 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         ) else {
             isBusy = false
             finishOperation()
-            errorMessage = "ASTRA could not durably record authorization for this Docker repair, so no Docker command was run."
+            setError("ASTRA could not durably record authorization for this Docker repair, so no Docker command was run.", for: task.id)
             return
         }
         let operationID = UUID()
         self.operationID = operationID
         expectedTaskID = task.id
+        activeTaskID = task.id
         let recovery = self.recovery
 
         // The shared coordinator remains the operation owner even if the
@@ -126,7 +139,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                     task: task, run: run, plan: plan, result: .succeeded, detail: nil, modelContext: modelContext
                 ) else {
                     finishOperation()
-                    errorMessage = "Docker recovery verified the image, but ASTRA could not durably record success. The task was not retried."
+                    setError("Docker recovery verified the image, but ASTRA could not durably record success. The task was not retried.", for: task.id)
                     return
                 }
                 finishOperation()
@@ -141,9 +154,12 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                     modelContext: modelContext
                 )
                 finishOperation()
-                errorMessage = recorded
-                    ? error.localizedDescription
-                    : "\(error.localizedDescription) ASTRA also could not durably record the recovery failure."
+                setError(
+                    recorded
+                        ? error.localizedDescription
+                        : "\(error.localizedDescription) ASTRA also could not durably record the recovery failure.",
+                    for: task.id
+                )
             }
         }
     }
@@ -167,6 +183,10 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         isConfirmationPresented && pendingTaskID == taskID
     }
 
+    func isErrorVisible(for taskID: UUID) -> Bool {
+        errorTaskID == taskID && errorMessage != nil
+    }
+
     func cancelPending() {
         guard !isBusy else { return }
         pendingPlan = nil
@@ -178,8 +198,20 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         operationID = nil
         expectedRunID = nil
         expectedTaskID = nil
+        activeTaskID = nil
         pendingTaskID = nil
         isInvalidated = false
+    }
+
+    func dismissError(for taskID: UUID) {
+        guard errorTaskID == taskID else { return }
+        errorMessage = nil
+        errorTaskID = nil
+    }
+
+    private func setError(_ message: String, for taskID: UUID) {
+        errorMessage = message
+        errorTaskID = taskID
     }
 
     private func audit(
@@ -233,12 +265,14 @@ struct DockerImageRecoveryDialogModifier: ViewModifier {
                 Text(taskPlan?.confirmation ?? "ASTRA will verify the image before retrying.")
             }
             .alert("Docker Image Recovery Failed", isPresented: Binding(
-                get: { coordinator.errorMessage != nil },
-                set: { if !$0 { coordinator.errorMessage = nil } }
+                get: { coordinator.isErrorVisible(for: taskID) },
+                set: { if !$0 { coordinator.dismissError(for: taskID) } }
             )) {
-                Button("OK", role: .cancel) { coordinator.errorMessage = nil }
+                Button("OK", role: .cancel) { coordinator.dismissError(for: taskID) }
             } message: {
-                Text(coordinator.errorMessage ?? "ASTRA could not repair the Docker image.")
+                Text(coordinator.errorTaskID == taskID
+                    ? (coordinator.errorMessage ?? "ASTRA could not repair the Docker image.")
+                    : "ASTRA could not repair the Docker image.")
             }
     }
 }

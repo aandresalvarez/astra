@@ -3940,7 +3940,7 @@ struct TaskMainView: View {
             failureReason: failureReason,
             launchBlock: latestRunLaunchBlock,
             dockerRecoveryImage: onRetryTask == nil ? nil : dockerRecoveryImage,
-            isDockerRecoveryBusy: dockerImageRecovery.isBusy,
+            isDockerRecoveryBusy: dockerImageRecovery.isBusy(for: task.id),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -4354,9 +4354,9 @@ struct TaskMainView: View {
         case .runTask:
             onRunTask?(task)
         case .retry:
-            if !dockerImageRecovery.isBusy { onRetryTask?(task) }
+            if !dockerImageRecovery.isBusy(for: task.id) { onRetryTask?(task) }
         case .resume:
-            if !dockerImageRecovery.isBusy { onResumeTask?(task) }
+            if !dockerImageRecovery.isBusy(for: task.id) { onResumeTask?(task) }
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:

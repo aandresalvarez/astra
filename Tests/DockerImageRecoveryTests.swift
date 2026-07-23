@@ -355,6 +355,63 @@ struct DockerImageRecoveryTests {
     }
 
     @MainActor
+    @Test("Recovery retry lock only blocks the originating task")
+    func recoveryBusyStateIsTaskScoped() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(()),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [true, true])
+        )
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) {}
+
+        #expect(coordinator.isBusy(for: fixture.task.id))
+        #expect(!coordinator.canStartTaskRetry(for: fixture.task.id))
+        #expect(coordinator.canStartTaskRetry(for: UUID()))
+        #expect(await waitUntil { !coordinator.isBusy })
+    }
+
+    @MainActor
+    @Test("Recovery errors remain scoped to the originating task")
+    func recoveryErrorStateIsTaskScoped() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .failure(.notRecoverable("Dockerfile unavailable")),
+                perform: .success(())
+            ),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
+        )
+
+        coordinator.prepare(
+            image: "astra-project:latest",
+            workspace: fixture.workspace,
+            taskID: fixture.task.id,
+            run: fixture.run
+        )
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(coordinator.isErrorVisible(for: fixture.task.id))
+        #expect(!coordinator.isErrorVisible(for: UUID()))
+        coordinator.dismissError(for: UUID())
+        #expect(coordinator.isErrorVisible(for: fixture.task.id))
+        coordinator.dismissError(for: fixture.task.id)
+        #expect(!coordinator.isErrorVisible(for: fixture.task.id))
+    }
+
+    @MainActor
     @Test("Recovery invalidation removes deleted task dialogs and prevents retry")
     func recoveryInvalidatesDeletedTask() async throws {
         let fixture = try makeCoordinatorFixture()

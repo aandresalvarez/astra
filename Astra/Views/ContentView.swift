@@ -513,7 +513,7 @@ struct ContentView: View {
             onToggleDone: toggleDone,
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
-            isDockerRecoveryBusy: !dockerImageRecovery.canStartTaskRetry,
+            isDockerRecoveryBusy: dockerImageRecovery.isBusy, dockerRecoveryTaskID: dockerImageRecovery.activeTaskID,
             onDeleteTask: requestDeleteTask,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
@@ -2491,7 +2491,7 @@ struct ContentView: View {
     }
 
     private func retryTask(_ task: AgentTask) {
-        guard dockerImageRecovery.canStartTaskRetry else {
+        guard dockerImageRecovery.canStartTaskRetry(for: task.id) else {
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "retry_mode": "rejected_docker_recovery_busy"
             ], level: .warning)
