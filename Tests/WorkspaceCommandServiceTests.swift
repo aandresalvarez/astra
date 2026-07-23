@@ -167,4 +167,37 @@ struct WorkspaceCommandServiceTests {
         #expect(before.status == .queued)
         #expect(creation.mainTask.status == .draft)
     }
+
+    @MainActor
+    @Test("Failed template submission leaves no queued task without a durable request", arguments: [false, true])
+    func failedTemplateSubmissionRestoresDraftState(hasBeforePhase: Bool) throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let template = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: fixture.workspace)
+        if hasBeforePhase {
+            template.beforeGoal = "Prepare the checkout"
+        }
+        fixture.context.insert(template)
+
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template,
+            taskTitle: "Review",
+            variables: [:],
+            selectedSkills: [],
+            defaultModel: "",
+            defaultRuntimeID: "claude_code",
+            workspace: fixture.workspace,
+            modelContext: fixture.context,
+            source: "test",
+            submitInitial: { _, _ in .failure(.persistenceFailed("forced_test_failure")) }
+        )
+
+        let tasks = try fixture.context.fetch(FetchDescriptor<AgentTask>())
+        let requests = try fixture.context.fetch(FetchDescriptor<TaskTurnRequest>())
+        #expect(tasks.count == (hasBeforePhase ? 2 : 1))
+        #expect(tasks.allSatisfy { $0.status == .draft })
+        #expect(requests.isEmpty)
+        #expect(creation.mainTask.status == .draft)
+        #expect(creation.beforeTask?.status != .queued)
+    }
 }

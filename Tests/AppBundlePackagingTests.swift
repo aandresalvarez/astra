@@ -31,7 +31,7 @@ struct AppBundlePackagingTests {
         #expect(script.contains(preReplacementSequence))
         #expect(!script.contains(#"pkill -x "$APP_NAME""#))
         #expect(script.contains("ASTRA_ALLOW_CROSS_BUNDLE_TAKEOVER"))
-        #expect(script.contains(#"command="$(ps -p "$pid" -o command= | sed -e 's/^[[:space:]]*//')""#))
+        #expect(script.contains(#"if ! command="$(ps -p "$pid" -o command= 2>/dev/null | sed -e 's/^[[:space:]]*//')"; then"#))
         #expect(script.contains(#"if [[ "$command" == "$APP_BINARY"* ]]"#))
         #expect(script.contains(launch))
         #expect(script.contains(launchSequence))
@@ -109,6 +109,44 @@ struct AppBundlePackagingTests {
         #expect(process.terminationStatus == 0)
         #expect(output.contains("KILLED:4242"))
         #expect(!output.contains("unbound variable"))
+    }
+
+    @Test("build launcher ignores processes that exit during command-path inspection")
+    func launcherToleratesProcessExitBetweenDiscoveryAndInspection() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let function = try extractFunction(named: "stop_existing_app", from: script)
+        let fixture = """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        APP_NAME='ASTRA Dev'
+        APP_BUNDLE='/current/dist/ASTRA Dev.app'
+        APP_BINARY='/current/dist/ASTRA Dev.app/Contents/MacOS/ASTRA Dev'
+        vanished_state="$(mktemp)"
+        pgrep() {
+          if [[ -s "$vanished_state" ]]; then return 1; fi
+          printf '4242\\n'
+        }
+        ps() { printf vanished > "$vanished_state"; return 1; }
+        kill() { printf 'UNEXPECTED_KILL:%s\\n' "$1"; }
+        sleep() { :; }
+        \(function)
+        stop_existing_app
+        printf 'COMPLETED\\n'
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["--noprofile", "--norc", "-c", fixture]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        #expect(process.terminationStatus == 0)
+        #expect(output.contains("COMPLETED"))
+        #expect(!output.contains("UNEXPECTED_KILL"))
     }
 
     @Test("build script stages SwiftPM resources inside Contents/Resources before signing")

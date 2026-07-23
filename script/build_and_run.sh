@@ -334,7 +334,9 @@ stop_existing_app() {
   local pid command
   while IFS= read -r pid; do
     [[ -n "$pid" ]] || continue
-    command="$(ps -p "$pid" -o command= | sed -e 's/^[[:space:]]*//')"
+    if ! command="$(ps -p "$pid" -o command= 2>/dev/null | sed -e 's/^[[:space:]]*//')"; then
+      continue
+    fi
     if [[ "$command" == "$APP_BINARY"* ]]; then
       owned_pids="${owned_pids}${pid}"$'\n'
     else
