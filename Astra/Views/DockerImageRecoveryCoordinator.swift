@@ -122,15 +122,21 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             guard self.operationID == operationID else { return }
             isBusy = false
             if isInvalidated {
-                _ = eventRecorder.record(
+                let recorded = eventRecorder.record(
                     task: task,
                     run: run,
                     plan: plan,
                     result: .failed,
-                    detail: "Recovery invalidated because the task's latest run changed; ASTRA did not retry.",
+                    detail: "Recovery was invalidated before retry; ASTRA did not retry.",
                     modelContext: modelContext
                 )
                 finishOperation()
+                if !recorded {
+                    setError(
+                        "Recovery was invalidated, but ASTRA could not durably record its terminal failure. The task was not retried.",
+                        for: task.id
+                    )
+                }
                 return
             }
             switch result {

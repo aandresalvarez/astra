@@ -31,6 +31,20 @@ struct DockerImageRecoveryTests {
         #expect(await availability.checkedImages() == [image, imageID])
     }
 
+    @Test("Readiness preserves inventory daemon failures during missing-image diagnosis")
+    func readinessPreservesInventoryFailure() async {
+        let image = "astra-starr-data-lake:latest"
+        let service = DockerImageReadinessService(
+            inventory: RecoveryImageInventory(result: .failure(.unavailable("Docker Desktop is not responding."))),
+            availability: RecoverySequencedAvailability(results: [.failure(.missingImage(image))])
+        )
+
+        let readiness = await service.checkImageReadiness(image)
+
+        #expect(readiness.state == .daemonUnavailable)
+        #expect(readiness.detail == "Docker Desktop is not responding.")
+    }
+
     @Test("Recovery retags only a verified image ID and verifies before succeeding")
     func recoveryRetagsAndVerifies() async throws {
         let image = "astra-starr-data-lake:latest"
@@ -305,6 +319,37 @@ struct DockerImageRecoveryTests {
         #expect(await waitUntil { !secondCoordinator.isBusy })
         #expect(!retried)
         #expect(secondCoordinator.errorMessage?.contains("task was not retried") == true)
+    }
+
+    @MainActor
+    @Test("Invalidated recovery reports a terminal event persistence failure")
+    func invalidatedRecoveryReportsEventPersistenceFailure() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, false])
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(()),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: recorder
+        )
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) {}
+        coordinator.invalidateIfTaskDeleted(fixture.task.id)
+
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(coordinator.errorMessage?.contains("could not durably record") == true)
+        #expect(recorder.recordedResults == [.started, .failed])
     }
 
     @MainActor
