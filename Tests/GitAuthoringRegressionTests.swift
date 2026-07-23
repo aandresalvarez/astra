@@ -286,7 +286,12 @@ struct GitAuthoringRegressionTests {
                 recentSubjects: []
             )
         }
-        for _ in 0..<100 where !state.started { await Task.yield() }
+        // A bare yield count starves under heavy full-suite parallelism
+        // (553 concurrent suites); wait on wall-clock time instead.
+        let startDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !state.started, ContinuousClock.now < startDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
         #expect(state.started)
 
         work.cancel()
