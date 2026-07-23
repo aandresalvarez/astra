@@ -5,6 +5,13 @@ import ASTRAModels
 
 @Suite("Task execution resource claim resolver")
 struct TaskExecutionResourceClaimResolverTests {
+    @Test("Contrast after a negated read action remains a write request")
+    func contrastAfterNegationIsExclusive() {
+        let task = AgentTask(title: "Review", goal: "Don't just review—fix the bug")
+
+        #expect(TaskExecutionResourceClaimResolver.workspaceAccess(for: task) == .exclusive)
+    }
+
     @Test("Informational work in one workspace uses a shared claim")
     func informationalWorkUsesSharedClaim() throws {
         let workspace = Workspace(name: "Research", primaryPath: "/tmp/astra-claim-research")
@@ -19,6 +26,67 @@ struct TaskExecutionResourceClaimResolverTests {
         #expect(claim.kind == .workspace)
         #expect(claim.key == "/tmp/astra-claim-research")
         #expect(claim.access == .shared)
+    }
+
+    @Test("Every writable workspace path receives a deterministic claim")
+    func additionalWritablePathsAreClaimed() {
+        let workspace = Workspace(
+            name: "Multi-root",
+            primaryPath: "/tmp/astra-claim-primary",
+            additionalPaths: [
+                "/tmp/astra-claim-shared/../astra-claim-shared",
+                "/tmp/astra-claim-primary",
+                "/tmp/astra-claim-secondary"
+            ]
+        )
+        let task = AgentTask(
+            title: "Update shared data",
+            goal: "Write the requested changes.",
+            workspace: workspace
+        )
+
+        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+
+        #expect(claims.map(\.key) == [
+            "/tmp/astra-claim-primary",
+            "/tmp/astra-claim-shared",
+            "/tmp/astra-claim-secondary"
+        ])
+        #expect(claims.allSatisfy { $0.kind == .workspace && $0.access == .exclusive })
+
+        let otherWorkspace = Workspace(
+            name: "Other multi-root",
+            primaryPath: "/tmp/astra-claim-other",
+            additionalPaths: ["/tmp/astra-claim-shared"]
+        )
+        let otherTask = AgentTask(
+            title: "Update other shared data",
+            goal: "Write the requested changes.",
+            workspace: otherWorkspace
+        )
+        let otherClaims = TaskExecutionResourceClaimResolver.claims(for: otherTask)
+        #expect(Set(claims.map(\.key)).intersection(otherClaims.map(\.key)) == Set([
+            "/tmp/astra-claim-shared"
+        ]))
+    }
+
+    @Test("Accepted follow-up intent can strengthen an informational task claim")
+    func acceptedTurnStrengthensClaim() {
+        let workspace = Workspace(name: "Follow-up", primaryPath: "/tmp/astra-claim-follow-up")
+        let task = AgentTask(
+            title: "Research the scheduler",
+            goal: "Explain the current implementation.",
+            workspace: workspace
+        )
+
+        #expect(TaskExecutionResourceClaimResolver.claims(
+            for: task,
+            acceptedTurn: "Summarize the remaining risks."
+        ).first?.access == .shared)
+        #expect(TaskExecutionResourceClaimResolver.claims(
+            for: task,
+            acceptedTurn: "Now fix the scheduler and update the tests."
+        ).first?.access == .exclusive)
     }
 
     @Test("Negated mutation language keeps informational work shared")

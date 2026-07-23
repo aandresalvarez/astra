@@ -7,13 +7,14 @@ import ASTRAPersistence
 /// snapshot so a request can never be scheduled as a reader and launched as a
 /// writer.
 enum TaskExecutionResourceClaimResolver {
-    static func claims(for task: AgentTask) -> [TaskExecutionResourceClaim] {
-        guard let key = workspaceKey(for: task) else { return [] }
-        return [TaskExecutionResourceClaim(
-            kind: .workspace,
-            key: key,
-            access: workspaceAccess(for: task)
-        )]
+    static func claims(
+        for task: AgentTask,
+        acceptedTurn: String? = nil
+    ) -> [TaskExecutionResourceClaim] {
+        let access = workspaceAccess(for: task, acceptedTurn: acceptedTurn)
+        return workspaceKeys(for: task).map {
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
+        }
     }
 
     static func workspaceClaim(
@@ -67,7 +68,10 @@ enum TaskExecutionResourceClaimResolver {
         return persisted.key != liveKey
     }
 
-    static func workspaceAccess(for task: AgentTask) -> TaskExecutionResourceAccess {
+    static func workspaceAccess(
+        for task: AgentTask,
+        acceptedTurn: String? = nil
+    ) -> TaskExecutionResourceAccess {
         let declarations = (task.constraints + task.inputs).map(normalizedDeclaration)
         if declarations.contains(where: { containsAccessMarker($0, access: "write") }) {
             return .exclusive
@@ -89,24 +93,42 @@ enum TaskExecutionResourceClaimResolver {
         if TaskDeliverableExpectation.requiresDeliverableArtifact(task) {
             return .exclusive
         }
-        if hasWorkspaceMutationIntent(task) {
+        if hasWorkspaceMutationIntent(task, acceptedTurn: acceptedTurn) {
             return .exclusive
         }
-        return hasInformationalIntent(task) ? .shared : .exclusive
+        return hasInformationalIntent(task, acceptedTurn: acceptedTurn) ? .shared : .exclusive
+    }
+
+    /// Every path a runtime may write must participate in admission. The
+    /// primary execution root stays first because legacy drift and runtime
+    /// access checks use it as the task's canonical workspace boundary.
+    private static func workspaceKeys(for task: AgentTask) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        let primary = access.codeWorkingDirectory.isEmpty
+            ? access.effectiveWorkspacePath
+            : access.codeWorkingDirectory
+        var seen = Set<String>()
+        return ([primary] + access.runtimeWritablePaths).compactMap { rawPath in
+            guard let key = standardizedPath(rawPath), seen.insert(key).inserted else { return nil }
+            return key
+        }
     }
 
     private static func workspaceKey(for task: AgentTask) -> String? {
-        let access = TaskWorkspaceAccess(task: task)
-        let rawPath = access.codeWorkingDirectory.isEmpty
-            ? access.effectiveWorkspacePath
-            : access.codeWorkingDirectory
+        workspaceKeys(for: task).first
+    }
+
+    private static func standardizedPath(_ rawPath: String) -> String? {
         let expanded = (rawPath as NSString).expandingTildeInPath
         guard !expanded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private static func hasWorkspaceMutationIntent(_ task: AgentTask) -> Bool {
-        let text = intentText(for: task)
+    private static func hasWorkspaceMutationIntent(
+        _ task: AgentTask,
+        acceptedTurn: String?
+    ) -> Bool {
+        let text = intentText(for: task, acceptedTurn: acceptedTurn)
         let mutationWords: Set<String> = [
             "add", "apply", "build", "change", "commit", "configure", "create",
             "delete", "edit", "fix", "generate", "implement", "install", "make",
@@ -121,8 +143,11 @@ enum TaskExecutionResourceClaimResolver {
         ].contains { text.contains($0) }
     }
 
-    private static func hasInformationalIntent(_ task: AgentTask) -> Bool {
-        let tokens = Set(intentText(for: task)
+    private static func hasInformationalIntent(
+        _ task: AgentTask,
+        acceptedTurn: String?
+    ) -> Bool {
+        let tokens = Set(intentText(for: task, acceptedTurn: acceptedTurn)
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init))
         let informationalWords: Set<String> = [
@@ -133,8 +158,8 @@ enum TaskExecutionResourceClaimResolver {
         return !tokens.isDisjoint(with: informationalWords)
     }
 
-    private static func intentText(for task: AgentTask) -> String {
-        [task.title, task.goal, task.acceptanceCriteria.joined(separator: " ")]
+    private static func intentText(for task: AgentTask, acceptedTurn: String?) -> String {
+        [task.title, task.goal, task.acceptanceCriteria.joined(separator: " "), acceptedTurn ?? ""]
             .joined(separator: " ")
             .lowercased()
     }

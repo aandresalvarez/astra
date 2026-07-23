@@ -8,6 +8,7 @@ import ASTRAPersistence
 final class TaskQueue {
     let poolSize: Int
     private let workerFactory: @MainActor () -> AgentRuntimeWorker
+    private let persistQueueCancellation: @MainActor (ModelContext) -> Bool
     private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
@@ -28,10 +29,12 @@ final class TaskQueue {
     @MainActor
     init(
         poolSize: Int = 3,
-        workerFactory: @escaping @MainActor () -> AgentRuntimeWorker = { AgentRuntimeWorker() }
+        workerFactory: @escaping @MainActor () -> AgentRuntimeWorker = { AgentRuntimeWorker() },
+        persistQueueCancellation: @escaping @MainActor (ModelContext) -> Bool = TaskQueueCancellationService.persist
     ) {
         self.poolSize = poolSize
         self.workerFactory = workerFactory
+        self.persistQueueCancellation = persistQueueCancellation
         self.workers = (0..<poolSize).map { _ in workerFactory() }
         self.requestTaskRegistry = ExecutionRequestTaskRegistry()
     }
@@ -223,7 +226,6 @@ final class TaskQueue {
 
         _ = processQueueIfIdle(modelContext: storeSession.modelContext)
         // A signal is not a reservation; durable work stays queued when busy.
-        guard hasAvailableWorker else { return Task {} }
         return requestTaskRegistry.completionHandle(requestID: request.id)
     }
 
@@ -1307,19 +1309,6 @@ final class TaskQueue {
                 continue
             }
 
-            let readOnlyBlocked = projection.ordered.filter {
-                TaskForkPolicyService.readOnlyReason(for: $0.task) != nil
-            }
-            for blocked in readOnlyBlocked {
-                failPersistedTurn(blocked.request, reason: "read_only_task", modelContext: modelContext)
-                requestTaskRegistry.complete(requestID: blocked.request.id)
-            }
-            // Re-project after terminalization. Reusing the stale candidate
-            // objects below could legally transition `.failed` back to
-            // `.waitingForWorker`, resurrecting a request that must stay
-            // blocked by the read-only boundary.
-            if !readOnlyBlocked.isEmpty { continue }
-
             guard hasAvailableWorker else {
                 for waiting in projection.ordered where !dispatchedRequestIDs.contains(waiting.request.id) {
                     _ = transitionPersistedTurn(
@@ -1352,9 +1341,25 @@ final class TaskQueue {
                         )
                 }
             ) else {
+                var forkBlockedRequestIDs = Set<UUID>()
+                for blocked in projection.ordered where
+                    !dispatchedRequestIDs.contains(blocked.request.id)
+                        && !activeTasks.contains(blocked.task.id) {
+                    guard let blocker = TaskForkPolicyService.activeSharedWorktreeBlocker(for: blocked.task),
+                          let reason = TaskForkPolicyService.readOnlyReason(for: blocked.task) else { continue }
+                    forkBlockedRequestIDs.insert(blocked.request.id)
+                    _ = transitionPersistedTurn(
+                        blocked.request,
+                        to: .waitingForResource,
+                        blockingTaskID: blocker.id,
+                        blockerSummary: reason,
+                        modelContext: modelContext
+                    )
+                }
                 let resourceBlocked = projection.ordered.filter {
                     !dispatchedRequestIDs.contains($0.request.id)
                         && !activeTasks.contains($0.task.id)
+                        && !forkBlockedRequestIDs.contains($0.request.id)
                 }
                 for blocked in resourceBlocked {
                     let claims = resourceLockClaims(
@@ -1473,6 +1478,17 @@ final class TaskQueue {
         guard let task = tasks?.first, request.taskID == task.id else {
             failPersistedTurn(request, reason: "task_missing", modelContext: modelContext)
             return
+        }
+        let launchRestoration = TaskExecutionLaunchSnapshotApplicator.apply(request: request, to: task)
+        defer {
+            if let launchRestoration {
+                launchRestoration.restore(task)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    auditFields: ["operation": "restore_execution_launch_configuration"]
+                )
+            }
         }
         let resourceAccess = resourceAccess(for: request, task: task)
         guard let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
@@ -1639,6 +1655,22 @@ final class TaskQueue {
         ])
     }
 
+    /// Atomically retracts every not-yet-admitted request before returning a
+    /// queued task to editable draft state. Without this boundary the durable
+    /// request can be replayed after the UI says the task is a draft.
+    @MainActor
+    func moveQueuedTaskToDraftForEditing(
+        _ task: AgentTask,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard let requestIDs = QueuedTaskDraftTransitionService.transition(
+            task,
+            modelContext: modelContext
+        ) else { return false }
+        requestIDs.forEach { requestTaskRegistry.complete(requestID: $0) }
+        return true
+    }
+
     /// Reverts a request to its pre-cancellation snapshot after
     /// `cancelTurnRequest` fails to persist. `.cancelled -> .waitingForWorker`
     /// is the only path the state machine allows back out of `.cancelled`; a
@@ -1671,7 +1703,16 @@ final class TaskQueue {
 
     /// Cancel all running workers
     @MainActor
-    func cancelAll() {
+    @discardableResult
+    func cancelAll() -> Bool {
+        var durableRequestIDs = Set<UUID>()
+        if let modelContext = storeSession?.modelContext {
+            guard let requestIDs = TaskQueueCancellationService.cancelActiveRequests(
+                in: modelContext,
+                persist: { persistQueueCancellation(modelContext) }
+            ) else { return false }
+            durableRequestIDs.formUnion(requestIDs)
+        }
         isStopping = true
         for worker in workers {
             worker.cancel()
@@ -1683,22 +1724,8 @@ final class TaskQueue {
         dispatchedRequestIDs.removeAll()
         let waitingRequestIDs = requestTaskRegistry.waitingRequestIDs
         var completedRequestIDs = cancelledDispatchIDs
-        if let modelContext = storeSession?.modelContext,
-           let requests = try? TaskTurnRequestRepository.allActiveRequests(in: modelContext) {
-            for request in requests {
-                _ = TaskTurnRequestStateMachine.transition(
-                    request,
-                    to: .cancelled,
-                    terminalReason: "queue_cancelled"
-                )
-                if completedRequestIDs.insert(request.id).inserted {
-                    requestTaskRegistry.complete(requestID: request.id)
-                }
-            }
-            _ = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-                modelContext: modelContext,
-                auditFields: ["operation": "cancel_all_execution_requests"]
-            )
+        for requestID in durableRequestIDs where completedRequestIDs.insert(requestID).inserted {
+            requestTaskRegistry.complete(requestID: requestID)
         }
         for requestID in waitingRequestIDs where !completedRequestIDs.contains(requestID) {
             requestTaskRegistry.complete(requestID: requestID)
@@ -1716,6 +1743,7 @@ final class TaskQueue {
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
         ])
+        return true
     }
 
     /// Scene/test teardown boundary. `cancelAll()` synchronously revokes queue
@@ -1723,15 +1751,17 @@ final class TaskQueue {
     /// already received SwiftData objects has returned them, preventing those
     /// objects from outliving their ModelContext.
     @MainActor
-    func cancelAllAndWait() async {
+    @discardableResult
+    func cancelAllAndWait() async -> Bool {
         let drainingSession = storeSession
         let drain = requestTaskRegistry.drainSnapshot()
-        cancelAll()
+        guard cancelAll() else { return false }
         await drain.wait()
         if storeSession === drainingSession, !hasProcessingLoop {
             storeSession = nil
         }
         isStopping = false
+        return true
     }
 
     /// Resize the worker pool at runtime (only adds/removes idle workers).

@@ -5,6 +5,8 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+private enum PermissionSubmissionTestError: Error { case forcedPersistenceFailure }
+
 /// Covers `TaskLifecycleCoordinator.resumeTask`, the UI "continue where you left
 /// off" path. The continuation is driven through a zero-size `TaskQueue` pool so
 /// no real provider process is launched: `TaskQueue.continueSession` finds no
@@ -35,6 +37,101 @@ struct TaskLifecycleResumeTests {
         let queue = TaskQueue(poolSize: 0)
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
         return Environment(coordinator: coordinator, queue: queue, context: context, container: container, root: url.path)
+    }
+
+    @Test("Permission submission rollback restores open requests, grants, and approval events")
+    func permissionSubmissionRollbackRestoresAllMutations() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let task = AgentTask(title: "Permission rollback", goal: "Use the requested tool")
+        task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = "[{\"open\":true}]"
+        task.runtimePermissionGrantsJSON = "[{\"grant\":\"before\"}]"
+        env.context.insert(task)
+        let snapshot = ExecutionMutationSnapshot(task)
+
+        task.runtimePermissionOpenRequestsJSON = "[]"
+        task.runtimePermissionGrantsJSON = "[{\"grant\":\"after\"}]"
+        let approval = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Transient approval mutation"
+        )
+        env.context.insert(approval)
+
+        snapshot.restore(task, in: env.context)
+
+        #expect(task.status == .pendingUser)
+        #expect(task.runtimePermissionOpenRequestsJSON == "[{\"open\":true}]")
+        #expect(task.runtimePermissionGrantsJSON == "[{\"grant\":\"before\"}]")
+        #expect(!task.events.contains { $0.id == approval.id && !$0.isDeleted })
+    }
+
+    @Test("Failed durable permission resume rolls back approval mutations")
+    func failedPermissionResumeRollsBackApprovalMutation() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let task = AgentTask(title: "Permission save failure", goal: "Use the requested tool")
+        task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = "[{\"open\":true}]"
+        env.context.insert(task)
+        let snapshot = ExecutionMutationSnapshot(task)
+
+        let result = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: "Continue with the approved permission.",
+            executionPolicy: .default,
+            for: task,
+            into: env.context,
+            persist: { throw PermissionSubmissionTestError.forcedPersistenceFailure },
+            prepare: {
+                task.runtimePermissionOpenRequestsJSON = "[]"
+                env.context.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Task.approved,
+                    payload: "Must roll back"
+                ))
+            },
+            rollback: { snapshot.restore(task, in: env.context) }
+        )
+
+        guard case .failure = result else {
+            Issue.record("Expected forced persistence failure")
+            return
+        }
+        #expect(task.runtimePermissionOpenRequestsJSON == "[{\"open\":true}]")
+        #expect(!task.events.contains {
+            $0.type == TaskEventTypes.Task.approved.rawValue && !$0.isDeleted
+        })
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: env.context).isEmpty)
+    }
+
+    @Test("A mutating follow-up persists an exclusive claim for an informational task")
+    func mutatingFollowUpPersistsStrengthenedClaim() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Follow-up claim", primaryPath: env.root)
+        let task = AgentTask(
+            title: "Research the scheduler",
+            goal: "Explain the current implementation.",
+            workspace: workspace
+        )
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let result = ExecutionRequestSubmissionService.submitFollowUp(
+            message: "Now fix the scheduler and update the tests.",
+            for: task,
+            into: env.context
+        )
+        let submission: ExecutionRequestSubmissionService.Submission?
+        if case .success(let value) = result { submission = value } else { submission = nil }
+        let accepted = try #require(submission)
+        let request = try #require(try TaskTurnRequestRepository.request(
+            id: accepted.requestID,
+            in: env.context
+        ))
+
+        #expect(request.resourceClaims.first?.access == .exclusive)
     }
 
     @Test("Resume without a session id does not start a continuation")

@@ -2034,7 +2034,7 @@ struct ChatPanelView: View {
                 summary += "\nVariables: " + values.map { "`\($0.key)` = `\($0.value)`" }.joined(separator: ", ")
             }
 
-            summary += "\n\nThe task is queued and ready to run."
+            summary += creation.initialRequestSubmitted ? "\n\nThe task is queued and ready to run." : "\n\nThe task was saved as a draft because ASTRA could not queue its initial run. You can retry from the task."
             messages.append(ChatMessage(role: "assistant", content: summary))
 
             onTaskCreated?(creation.mainTask)
@@ -2431,6 +2431,7 @@ struct ChatPanelView: View {
                 source: "template"
             )
             activeSlashContext = nil
+            if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
             onTaskCreated?(creation.mainTask)
 
         case "create_schedule":

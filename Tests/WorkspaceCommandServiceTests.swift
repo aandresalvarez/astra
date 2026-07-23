@@ -133,6 +133,7 @@ struct WorkspaceCommandServiceTests {
 
         let requests = try TaskTurnRequestRepository.requests(for: creation.mainTask, in: fixture.context)
         let request = try #require(requests.first)
+        #expect(creation.initialRequestSubmitted)
         #expect(requests.count == 1)
         #expect(request.kind == .initial)
         #expect(creation.mainTask.events.contains {
@@ -162,6 +163,7 @@ struct WorkspaceCommandServiceTests {
         )
 
         let before = try #require(creation.beforeTask)
+        #expect(creation.initialRequestSubmitted)
         #expect(try TaskTurnRequestRepository.requests(for: before, in: fixture.context).count == 1)
         #expect(try TaskTurnRequestRepository.requests(for: creation.mainTask, in: fixture.context).isEmpty)
         #expect(before.status == .queued)
@@ -197,6 +199,7 @@ struct WorkspaceCommandServiceTests {
         #expect(tasks.count == (hasBeforePhase ? 2 : 1))
         #expect(tasks.allSatisfy { $0.status == .draft })
         #expect(requests.isEmpty)
+        #expect(!creation.initialRequestSubmitted)
         #expect(creation.mainTask.status == .draft)
         #expect(creation.beforeTask?.status != .queued)
     }

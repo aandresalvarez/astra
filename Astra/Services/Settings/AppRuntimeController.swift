@@ -61,9 +61,10 @@ final class AppRuntimeController {
     /// Store-lifetime teardown boundary used by application termination and
     /// tests that replace a model container. The store must remain retained
     /// until every queue-owned coroutine has returned.
-    func shutdown() async {
+    @discardableResult
+    func shutdown() async -> Bool {
         taskScheduler.stop()
-        await taskQueue.cancelAllAndWait()
+        return await taskQueue.cancelAllAndWait()
     }
 
     /// One-time-per-launch task-store housekeeping: prune abandoned low-signal

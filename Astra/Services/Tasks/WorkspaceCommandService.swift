@@ -13,6 +13,7 @@ enum WorkspaceCommandService {
     struct TemplateTaskCreation {
         let mainTask: AgentTask
         let beforeTask: AgentTask?
+        let initialRequestSubmitted: Bool
     }
 
     @discardableResult
@@ -215,14 +216,22 @@ enum WorkspaceCommandService {
             AppLogger.audit(.taskFailed, category: "UI", taskID: runnableTask.id, fields: [
                 "operation": "template_execution_submission"
             ], level: .error)
-            return TemplateTaskCreation(mainTask: mainTask, beforeTask: beforeTask)
+            return TemplateTaskCreation(
+                mainTask: mainTask,
+                beforeTask: beforeTask,
+                initialRequestSubmitted: false
+            )
         }
         AppLogger.audit(.taskCreated, category: "UI", taskID: mainTask.id, fields: [
             "source": source,
             "workspace_id": workspace.id.uuidString,
             "template_id": template.id.uuidString
         ])
-        return TemplateTaskCreation(mainTask: mainTask, beforeTask: beforeTask)
+        return TemplateTaskCreation(
+            mainTask: mainTask,
+            beforeTask: beforeTask,
+            initialRequestSubmitted: true
+        )
     }
 
     static func connectorIcon(for serviceType: String) -> String {

@@ -268,8 +268,9 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         guard !isDrainingForTermination else { return .terminateLater }
         isDrainingForTermination = true
         Task { @MainActor in
-            await runtimeController.shutdown()
-            sender.reply(toApplicationShouldTerminate: true)
+            let cancellationIsDurable = await runtimeController.shutdown()
+            if !cancellationIsDurable { self.isDrainingForTermination = false }
+            sender.reply(toApplicationShouldTerminate: cancellationIsDurable)
         }
         return .terminateLater
     }

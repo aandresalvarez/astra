@@ -184,6 +184,38 @@ struct TaskTurnRequestAdmissionTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Moving a queued task to draft durably cancels its pending request")
+    func moveQueuedTaskToDraftCancelsRequest() throws {
+        let root = try makeWorkspaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Edit queued", primaryPath: root.path)
+        let task = AgentTask(title: "Queued", goal: "Edit me", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submissionResult = ExecutionRequestSubmissionService.submitInitial(
+            for: task,
+            into: context
+        )
+        let submission: ExecutionRequestSubmissionService.Submission?
+        if case .success(let value) = submissionResult { submission = value } else { submission = nil }
+        let accepted = try #require(submission)
+        let request = try #require(try TaskTurnRequestRepository.request(
+            id: accepted.requestID,
+            in: context
+        ))
+
+        let queue = TaskQueue(poolSize: 0)
+        #expect(queue.moveQueuedTaskToDraftForEditing(task, modelContext: context))
+
+        #expect(task.status == .draft)
+        #expect(request.state == .cancelled)
+        #expect(request.terminalReason == "moved_to_draft_for_editing")
+        #expect(try TaskTurnRequestRepository.activeRequests(for: task, in: context).isEmpty)
+    }
+
     @Test("A follow-up parks while the same task's current run holds its worker")
     func followUpWaitsWhileSameTaskRunIsActive() async throws {
         let root = try makeWorkspaceRoot()
@@ -356,13 +388,13 @@ struct TaskTurnRequestAdmissionTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
         let staleHandle = coordinator.retryTask(task)
         #expect(request.state == .failed)
-        _ = await staleHandle?.value
         let staleReplacement = try #require(
             try TaskTurnRequestRepository.activeRequests(for: task, in: context).first
         )
         #expect(staleReplacement.id != request.id)
         #expect(staleReplacement.kind == .retry)
         queue.cancelTurnRequest(id: staleReplacement.id, workspace: workspace, modelContext: context)
+        _ = await staleHandle?.value
 
         // When every run predates the request's failure, its message becomes
         // the retry source, but the immutable failed row is never resurrected:

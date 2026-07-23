@@ -33,7 +33,13 @@ final class TaskLifecycleCoordinator {
             guard !taskQueue.isStopping else { return }
             // Revoke queue authority synchronously for responsive UI, then
             // drain every queue-owned coroutine before allowing a restart.
-            taskQueue.cancelAll()
+            guard taskQueue.cancelAll() else {
+                AppLogger.audit(.taskFailed, category: "UI", fields: [
+                    "operation": "stop_queue",
+                    "reason": "cancellation_persist_failed"
+                ], level: .error)
+                return
+            }
             let summary = TaskRunLifecycleService.cancelAllRunningTasks(modelContext: modelContext)
             AppLogger.audit(.taskCancelled, category: "UI", fields: [
                 "source": "queue_toggle",
@@ -363,16 +369,11 @@ final class TaskLifecycleCoordinator {
             return approveTask(task)
         }
 
+        let mutationSnapshot = ExecutionMutationSnapshot(task)
         let runtime = task.resolvedRuntimeID
         let latestGrants = Self.latestRuntimePermissionGrants(for: task)
         let latestRequestedTool = Self.latestRequestedPermissionTool(for: task)
-        let taskScopedGrants = TaskRuntimePermissionGrants.record(
-            grants: latestGrants,
-            providerID: runtime,
-            task: task,
-            modelContext: modelContext,
-            source: "approve_similar"
-        )
+        let taskScopedGrants = PermissionBroker.taskScopedApprovalGrants(for: latestGrants)
         guard !taskScopedGrants.isEmpty else {
             return approveRuntimePermissionAndContinue(task)
         }
@@ -383,21 +384,33 @@ final class TaskLifecycleCoordinator {
             "runtime": runtime.rawValue,
             "grant_count": String(taskScopedGrants.count)
         ])
-        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
-        task.updatedAt = Date()
-        task.markRead()
-        let event = TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.Task.approved,
-            payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
-        )
-        modelContext.insert(event)
+        let applyApprovalMutation = {
+            _ = TaskRuntimePermissionGrants.record(
+                grants: latestGrants,
+                providerID: runtime,
+                task: task,
+                modelContext: self.modelContext,
+                source: "approve_similar"
+            )
+            TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
+            task.updatedAt = Date()
+            task.markRead()
+            self.modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Task.approved,
+                payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
+            ))
+        }
 
         // A live in-flight ask means the provider process is still alive and
         // blocked on this decision: answer it over the control channel instead
         // of relaunching a new run. The recorded grants cover later turns.
         if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
-            guard persistLivePermissionApproval(task) else { return Task {} }
+            applyApprovalMutation()
+            guard persistLivePermissionApproval(task) else {
+                mutationSnapshot.restore(task, in: modelContext)
+                return Task {}
+            }
             if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
                 return Task {}
             }
@@ -414,12 +427,15 @@ final class TaskLifecycleCoordinator {
             message: resumeMessage,
             executionPolicy: .default,
             for: task,
-            into: modelContext
+            into: modelContext,
+            prepare: applyApprovalMutation,
+            rollback: { mutationSnapshot.restore(task, in: modelContext) }
         ) else { return nil }
         return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
     }
 
     private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
+        let mutationSnapshot = ExecutionMutationSnapshot(task)
         let runtime = task.resolvedRuntimeID
         let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
         let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
@@ -427,20 +443,25 @@ final class TaskLifecycleCoordinator {
             "approval_type": "runtime_permission",
             "runtime": runtime.rawValue
         ])
-        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
-        task.updatedAt = Date()
-        task.markRead()
-        let event = TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.Task.approved,
-            payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
-        )
-        modelContext.insert(event)
+        let applyApprovalMutation = {
+            TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
+            task.updatedAt = Date()
+            task.markRead()
+            self.modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Task.approved,
+                payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
+            ))
+        }
 
         // Live in-flight ask: answer the waiting provider process instead of
         // relaunching a new run.
         if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
-            guard persistLivePermissionApproval(task) else { return Task {} }
+            applyApprovalMutation()
+            guard persistLivePermissionApproval(task) else {
+                mutationSnapshot.restore(task, in: modelContext)
+                return Task {}
+            }
             if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
                 AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
                     "approval_type": "runtime_permission_live",
@@ -455,7 +476,9 @@ final class TaskLifecycleCoordinator {
             message: resumeMessage,
             executionPolicy: executionPolicy,
             for: task,
-            into: modelContext
+            into: modelContext,
+            prepare: applyApprovalMutation,
+            rollback: { mutationSnapshot.restore(task, in: modelContext) }
         ) else { return Task {} }
         return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
     }
@@ -1027,12 +1050,14 @@ final class TaskLifecycleCoordinator {
 }
 
 @MainActor
-private struct ExecutionMutationSnapshot {
+struct ExecutionMutationSnapshot {
     let state: TaskStateMachine.Snapshot
     let updatedAt: Date
     let unreadAt: Date?
     let tokensUsed: Int
     let costUSD: Double
+    let runtimePermissionOpenRequestsJSON: String?
+    let runtimePermissionGrantsJSON: String?
     let eventIDs: Set<UUID>
 
     init(_ task: AgentTask) {
@@ -1041,6 +1066,8 @@ private struct ExecutionMutationSnapshot {
         unreadAt = task.unreadAt
         tokensUsed = task.tokensUsed
         costUSD = task.costUSD
+        runtimePermissionOpenRequestsJSON = task.runtimePermissionOpenRequestsJSON
+        runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         eventIDs = Set(task.events.map(\.id))
     }
 
@@ -1055,6 +1082,8 @@ private struct ExecutionMutationSnapshot {
         task.unreadAt = unreadAt
         task.tokensUsed = tokensUsed
         task.costUSD = costUSD
+        task.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
+        task.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
         for event in task.events where !eventIDs.contains(event.id) {
             modelContext.delete(event)
         }

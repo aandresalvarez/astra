@@ -45,7 +45,11 @@ enum TaskIntentLanguagePolicy {
             .replacingOccurrences(of: " but ", with: ".")
             .replacingOccurrences(of: " however ", with: ".")
             .replacingOccurrences(of: " then ", with: ".")
-        return normalized.components(separatedBy: CharacterSet(charactersIn: ".,;:!?\n"))
+            .replacingOccurrences(of: " - ", with: ".")
+        // Dashes commonly introduce the affirmative correction to a negated
+        // action ("don't review—fix"). They are semantic clause boundaries,
+        // not punctuation that should let negation leak into the correction.
+        return normalized.components(separatedBy: CharacterSet(charactersIn: ".,;:!?—–\n"))
     }
 
     private static func tokens(_ text: String) -> [String] {

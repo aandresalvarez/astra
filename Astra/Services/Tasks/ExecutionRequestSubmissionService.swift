@@ -105,6 +105,7 @@ enum ExecutionRequestSubmissionService {
             kind: .followUp,
             sourceEventType: TaskEventTypes.Conversation.userMessage.rawValue,
             sourcePayload: trimmed,
+            acceptedTurn: trimmed,
             task: task,
             modelContext: modelContext,
             at: date
@@ -176,6 +177,7 @@ enum ExecutionRequestSubmissionService {
         for task: AgentTask,
         into modelContext: ModelContext,
         at date: Date = Date(),
+        persist: (() throws -> Void)? = nil,
         prepare: () -> Void = {},
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
@@ -190,6 +192,7 @@ enum ExecutionRequestSubmissionService {
             task: task,
             modelContext: modelContext,
             at: date,
+            persist: persist,
             prepare: prepare,
             rollback: rollback
         )
@@ -302,6 +305,7 @@ enum ExecutionRequestSubmissionService {
         task: AgentTask,
         modelContext: ModelContext,
         at date: Date,
+        persist: (() throws -> Void)? = nil,
         prepare: () -> Void = {},
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
@@ -313,9 +317,11 @@ enum ExecutionRequestSubmissionService {
             kind: kind,
             sourceEventType: eventType,
             sourcePayload: encoded,
+            acceptedTurn: payload.message,
             task: task,
             modelContext: modelContext,
             at: date,
+            persist: persist,
             prepare: prepare,
             rollback: rollback
         )
@@ -325,9 +331,11 @@ enum ExecutionRequestSubmissionService {
         kind: TaskExecutionRequestKind,
         sourceEventType: String,
         sourcePayload: String,
+        acceptedTurn: String? = nil,
         task: AgentTask,
         modelContext: ModelContext,
         at date: Date,
+        persist: (() throws -> Void)? = nil,
         prepare: () -> Void = {},
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
@@ -346,7 +354,10 @@ enum ExecutionRequestSubmissionService {
             messageEventID: event.id,
             sequence: nextSequence,
             kind: kind,
-            resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task),
+            resourceClaims: TaskExecutionResourceClaimResolver.claims(
+                for: task,
+                acceptedTurn: acceptedTurn
+            ),
             submittedAt: date
         )
         modelContext.insert(event)
@@ -358,7 +369,9 @@ enum ExecutionRequestSubmissionService {
             "request_kind": kind.rawValue
         ]
         do {
-            if task.status == .running {
+            if let persist {
+                try persist()
+            } else if task.status == .running {
                 try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
                     workspace: task.workspace,
                     modelContext: modelContext,

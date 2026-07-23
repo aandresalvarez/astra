@@ -148,6 +148,85 @@ struct TaskQueueStoreSessionTests {
         #expect(queue.ownedCoroutineCount == 0)
     }
 
+    @Test("A busy queue still returns a completion handle for accepted durable work")
+    func busyQueueReturnsCompletionHandle() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let root = "/tmp/busy-signal-\(UUID())"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Busy signal", primaryPath: root)
+        let task = AgentTask(title: "Queued", goal: "Wait for a worker", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submissionResult = ExecutionRequestSubmissionService.submitInitial(
+            for: task,
+            into: context
+        )
+        let submission: ExecutionRequestSubmissionService.Submission?
+        if case .success(let value) = submissionResult { submission = value } else { submission = nil }
+        let accepted = try #require(submission)
+
+        let queue = TaskQueue(poolSize: 0)
+        let completion = queue.signalExecutionRequest(
+            id: accepted.requestID,
+            task: task,
+            modelContext: context
+        )
+
+        #expect(queue.pendingCompletionHandleCount == 1)
+        queue.cancelTurnRequest(id: accepted.requestID, workspace: workspace, modelContext: context)
+        await completion.value
+        #expect(queue.pendingCompletionHandleCount == 0)
+        await queue.cancelAllAndWait()
+    }
+
+    @Test("Failed cancellation persistence preserves durable queue authority and blocks shutdown")
+    func failedCancellationPersistenceBlocksShutdown() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Cancellation", primaryPath: "/tmp")
+        let task = AgentTask(title: "Queued", goal: "Stay durable", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submissionResult = ExecutionRequestSubmissionService.submitInitial(for: task, into: context)
+        let submission: ExecutionRequestSubmissionService.Submission?
+        if case let .success(value) = submissionResult { submission = value } else { submission = nil }
+        let accepted = try #require(submission)
+        let request = try #require(
+            try TaskTurnRequestRepository.request(id: accepted.requestID, in: context)
+        )
+        var persistenceIsAvailable = false
+        let queue = TaskQueue(poolSize: 0, persistQueueCancellation: { modelContext in
+            guard persistenceIsAvailable else { return false }
+            do {
+                try modelContext.save()
+                return true
+            } catch {
+                return false
+            }
+        })
+        _ = queue.signalExecutionRequest(
+            id: accepted.requestID,
+            task: task,
+            modelContext: context
+        )
+
+        #expect(!queue.cancelAll())
+        #expect(request.state.isActive)
+        #expect(request.terminalAt == nil)
+        #expect(queue.hasBoundStoreSession)
+        #expect(!queue.isStopping)
+
+        persistenceIsAvailable = true
+        #expect(await queue.cancelAllAndWait())
+        #expect(request.state == .cancelled)
+        #expect(request.terminalReason == "queue_cancelled")
+        #expect(!queue.hasBoundStoreSession)
+    }
+
     @Test("Cancellation retains every owned task handle until its completion defer")
     func registryCancellationRetainsDrainHandles() async {
         let registry = ExecutionRequestTaskRegistry()

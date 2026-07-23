@@ -463,8 +463,8 @@ struct QueueLockTests {
         })
     }
 
-    @Test("queue terminalizes but never dispatches a read-only Git fork request")
-    func queueSkipsReadOnlyGitFork() async throws {
+    @Test("queue keeps a Git fork waiting while a sibling owns its shared worktree")
+    func queueWaitsForReadOnlyGitForkBlock() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeQueueLockContainer()
@@ -498,24 +498,28 @@ struct QueueLockTests {
             optionalSubmission = nil
         }
         let submission = try #require(optionalSubmission)
-
-        let queue = TaskQueue(poolSize: 1)
-        // Await the queue's owned processing boundary. A fixed delay (or even
-        // a generous poll timeout) is nondeterministic when the full suite
-        // saturates MainActor and does not prove that admission completed.
-        await queue.processQueue(modelContext: context)
-
-        #expect(forked.status == .queued)
-        #expect(forked.runs.count == 1)
-        #expect(!forked.events.contains {
-            $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("shared Git worktree")
-        })
-        #expect(queue.activeTasks.isEmpty)
         let request = try #require(
             try TaskTurnRequestRepository.request(id: submission.requestID, in: context)
         )
-        #expect(request.state == .failed)
-        #expect(request.terminalReason == "read_only_task")
+
+        let queue = TaskQueue(poolSize: 1)
+        let processing = Task { @MainActor in
+            await queue.processQueue(modelContext: context)
+        }
+        while request.state != .waitingForResource {
+            await Task.yield()
+        }
+
+        #expect(forked.status == .queued)
+        #expect(forked.runs.count == 1)
+        #expect(queue.activeTasks.isEmpty)
+        #expect(request.state.isActive)
+        #expect(request.blockingTaskID == source.id)
+        #expect(request.blockerSummary?.contains("shared Git worktree") == true)
+        #expect(request.terminalReason == nil)
+
+        await queue.cancelAllAndWait()
+        await processing.value
     }
 }
 

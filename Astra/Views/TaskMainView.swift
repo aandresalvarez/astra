@@ -5610,18 +5610,18 @@ struct TaskMainView: View {
             "task_status": task.status.rawValue,
             "message_length": String(msg.count)
         ])
-
         if isPlanMode {
-            messageText = ""
-            attachedFiles = []
+            (messageText, attachedFiles) = ("", [])
             sendPlanningMessage(msg, traceID: traceID)
             return
         }
-
         if task.status == .queued {
+            guard let taskQueue, taskQueue.moveQueuedTaskToDraftForEditing(task, modelContext: modelContext) else {
+                AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: ["operation": "move_queued_task_to_draft", "result": "rejected_or_persist_failed"], level: .error)
+                return
+            }
             messageText = ""
             attachedFiles = []
-            TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)

@@ -462,6 +462,17 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
+    @Test("Unrelated temporary cleanup cannot erase a persistent named output")
+    func unrelatedCleanupDoesNotEraseDeliverable() {
+        let task = AgentTask(
+            title: "Final report",
+            goal: "Remove the temporary placeholder and create final report.md."
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["report.md"])
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
     @Test("Input and example lists do not require output artifacts")
     func inputAndExampleListsDoNotRequireOutputArtifacts() {
         let task = AgentTask(

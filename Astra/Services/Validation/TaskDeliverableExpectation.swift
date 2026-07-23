@@ -341,23 +341,60 @@ enum TaskDeliverableExpectation {
 
     private static func transientOutputFilenames(in text: String) -> Set<String> {
         let filenames = outputFilenames(in: text)
-        guard filenames.count == 1 else { return [] }
+        guard !filenames.isEmpty else { return [] }
 
-        let lower = text.lowercased()
-        let tokens = Set(lower
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init))
+        let clauses = text.lowercased()
+            .replacingOccurrences(
+                of: #"(?:\r?\n|;|\.\s+|,\s*(?:and\s+(?:then\s+)?)?|\s+and\s+(?:then\s+)?)"#,
+                with: "\n",
+                options: .regularExpression
+            )
+            .components(separatedBy: .newlines)
         let transientWords: Set<String> = ["temporary", "temp", "scratch", "probe"]
-        guard !tokens.isDisjoint(with: transientWords) else { return [] }
-
         let removalWords: Set<String> = ["delete", "discard", "remove"]
-        let explicitlyRemoved = TaskIntentLanguagePolicy.containsAffirmativeAction(
-            in: lower,
-            words: removalWords,
-            phrases: ["clean up"]
-        )
-        guard explicitlyRemoved else { return [] }
-        return filenames
+        let containsRemovalAction: (String) -> Bool = { clause in
+            TaskIntentLanguagePolicy.containsAffirmativeAction(
+                in: clause,
+                words: removalWords,
+                phrases: ["clean up"]
+            )
+        }
+
+        return Set(filenames.filter { filename in
+            let needle = filename.lowercased()
+            for index in clauses.indices where clauses[index].contains(needle) {
+                let filenameClause = clauses[index]
+                let tokens = Set(filenameClause
+                    .split { !$0.isLetter && !$0.isNumber }
+                    .map(String.init))
+                let namedAsTransient = !tokens.isDisjoint(with: transientWords)
+                    || transientWords.contains(where: { needle.contains($0) })
+                guard namedAsTransient else { continue }
+
+                if containsRemovalAction(filenameClause) { return true }
+
+                // Creation, verification, and cleanup are commonly separate
+                // clauses or task fields. Look only forward from the named
+                // transient file, stopping before a different output is
+                // introduced, so an unrelated cleanup instruction cannot
+                // erase a later persistent deliverable.
+                for laterIndex in clauses.indices where laterIndex > index {
+                    let later = clauses[laterIndex]
+                    if filenames.contains(where: {
+                        $0.caseInsensitiveCompare(filename) != .orderedSame
+                            && later.contains($0.lowercased())
+                    }) {
+                        break
+                    }
+                    if containsRemovalAction(later),
+                       later.contains(needle)
+                        || later.range(of: #"\b(it|this file|the file)\b"#, options: .regularExpression) != nil {
+                        return true
+                    }
+                }
+            }
+            return false
+        })
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {
