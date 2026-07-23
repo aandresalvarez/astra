@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
@@ -48,7 +49,9 @@ struct DockerImageRecoveryEventRecorder: DockerImageRecoveryEventRecording {
                 action: plan.auditAction,
                 result: result,
                 imageID: imageID,
-                detail: detail
+                detail: detail,
+                dockerfilePath: plan.authorizedDockerfilePath.map(WorkspacePathPresentation.standardizedPath),
+                sourcePath: plan.authorizedSourcePath.map(WorkspacePathPresentation.standardizedPath)
             ),
             run: run
         )

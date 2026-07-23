@@ -24,6 +24,14 @@ struct TaskMainViewCrashRegressionTests {
         #expect(reconcilerSource.contains("saveWithoutAutoExport(modelContext: modelContext"))
     }
 
+    @Test("Docker recovery reconciliation fetches only recovery events")
+    func dockerRecoveryReconciliationFiltersItsFetch() throws {
+        let reconcilerSource = try fileText("Astra/Services/Runtime/DockerImageRecoveryReconciler.swift")
+
+        #expect(reconcilerSource.contains("FetchDescriptor<TaskEvent>("))
+        #expect(reconcilerSource.contains("event.type == recoveryType"))
+    }
+
     @Test("Workspace deletion invalidates task Docker recovery before the cascade")
     func workspaceDeletionInvalidatesDockerRecoveryBeforeCascade() throws {
         let source = try fileText("Astra/Views/ContentView.swift")
@@ -50,6 +58,7 @@ struct TaskMainViewCrashRegressionTests {
         #expect(sendSource.contains("sendAction.launchesProviderWork && dockerImageRecovery.isBusy(for: task.id)"))
         #expect(sendSource.contains("composer_blocked_docker_recovery"))
         #expect(conversationSource.contains("guard !dockerImageRecovery.isBusy(for: task.id) else"))
+        #expect(source.contains("isDockerRecoveryOccupied: dockerImageRecovery.isRecoveryOccupiedByOtherTask(for: task.id)"))
         #expect(source.contains("isRunning: task.status == .running || isPlanning || dockerImageRecovery.isBusy(for: task.id)"))
     }
 

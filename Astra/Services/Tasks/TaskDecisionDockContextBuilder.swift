@@ -87,6 +87,7 @@ enum TaskDecisionDockContextBuilder {
         var launchBlock: TaskRunLaunchBlockPayload?
         var dockerRecoveryImage: String? = nil
         var isDockerRecoveryBusy: Bool = false
+        var isDockerRecoveryOccupied: Bool = false
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
     }
@@ -156,6 +157,7 @@ enum TaskDecisionDockContextBuilder {
             launchBlock: input.launchBlock,
             dockerRecoveryImage: input.dockerRecoveryImage,
             isDockerRecoveryBusy: input.isDockerRecoveryBusy,
+            isDockerRecoveryOccupied: input.isDockerRecoveryOccupied,
             artifactPaths: input.artifactPaths,
             extraDetails: input.extraDetails,
             visibleThreadAffordances: visibleThreadAffordances(

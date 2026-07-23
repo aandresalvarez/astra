@@ -429,6 +429,35 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.secondaryActions.filter { $0.kind == .retry || $0.kind == .resume }.allSatisfy { !$0.isEnabled })
     }
 
+    @Test("Docker recovery stays unavailable on another task while the coordinator is occupied")
+    func dockerRecoveryActionDisablesForAnotherTaskWhileOccupied() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-other:latest",
+            isDockerRecoveryOccupied: true
+        )))
+
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+        #expect(dock.primaryAction?.title == "Repair unavailable")
+        #expect(dock.primaryAction?.isEnabled == false)
+    }
+
+    @Test("Docker recovery takes priority over an executable approved plan")
+    func dockerRecoveryPrecedesApprovedPlan() throws {
+        let plan = TaskPlanPayload(
+            title: "Run approved plan",
+            goal: "Build image",
+            steps: [TaskPlanPayloadStep(id: "step", title: "Run")]
+        )
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-project:latest",
+            executableApprovedPlan: plan
+        )))
+
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+    }
+
     @Test("Docker repair is not offered when the task cannot retry")
     func dockerRepairRequiresRetryCapability() throws {
         let dock = try #require(TaskDecisionDockPresentation.build(context(
@@ -452,7 +481,9 @@ struct TaskDecisionDockPresentationTests {
         canRetry: Bool = true,
         launchBlock: TaskRunLaunchBlockPayload? = nil,
         dockerRecoveryImage: String? = nil,
+        executableApprovedPlan: TaskPlanPayload? = nil,
         isDockerRecoveryBusy: Bool = false,
+        isDockerRecoveryOccupied: Bool = false,
         canResume: Bool = false,
         hasProviderSession: Bool = false
     ) -> TaskDecisionDockPresentation.Context {
@@ -474,9 +505,9 @@ struct TaskDecisionDockPresentationTests {
             runtimePermissionCommandPreview: nil,
             runtimePermissionAllowSimilarLabel: nil,
             canApproveSimilarRuntimePermission: false,
-            hasExecutableApprovedPlan: false,
-            planActionTitle: nil,
-            planActionDetail: nil,
+            hasExecutableApprovedPlan: executableApprovedPlan != nil,
+            planActionTitle: executableApprovedPlan?.title,
+            planActionDetail: executableApprovedPlan?.title,
             planModeLabel: nil,
             canOpenPlan: false,
             isPlanCanvasVisible: false,
@@ -495,6 +526,7 @@ struct TaskDecisionDockPresentationTests {
             launchBlock: launchBlock,
             dockerRecoveryImage: dockerRecoveryImage,
             isDockerRecoveryBusy: isDockerRecoveryBusy,
+            isDockerRecoveryOccupied: isDockerRecoveryOccupied,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )

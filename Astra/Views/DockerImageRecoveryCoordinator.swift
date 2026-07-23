@@ -20,6 +20,12 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
 
     var canStartTaskRetry: Bool { !isBusy && !hasPendingConfirmation }
 
+    var isRecoveryOccupied: Bool { isBusy || hasPendingConfirmation }
+
+    func isRecoveryOccupiedByOtherTask(for taskID: UUID) -> Bool {
+        isRecoveryOccupied && activeTaskID != taskID
+    }
+
     func canStartTaskRetry(for taskID: UUID) -> Bool {
         (!isBusy && !hasPendingConfirmation) || activeTaskID != taskID
     }
@@ -35,6 +41,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private var expectedRunID: UUID?
     private var expectedTaskID: UUID?
     private var expectedEnvironment: WorkspaceExecutionEnvironment?
+    private var expectedWorkspaceRootsFingerprint: String?
     private var isInvalidated = false
 
     init(
@@ -62,6 +69,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             taskEnvironment: taskEnvironment,
             run: run
         )
+        expectedWorkspaceRootsFingerprint = Self.workspaceRootsFingerprint(workspace)
         activeTaskID = taskID
         isInvalidated = false
         let operationID = UUID()
@@ -113,11 +121,11 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             setError("The failed run changed before Docker recovery could start. Diagnose the latest run again.", for: task.id)
             return
         }
-        guard environmentStillMatches(task: task, run: run) else {
+        guard environmentStillMatches(task: task, run: run), workspaceRootsStillMatch(task: task) else {
             pendingPlan = nil
             isConfirmationPresented = false
             finishOperation()
-            setError("The task environment changed before Docker recovery could start. Select the current environment and diagnose the latest run again.", for: task.id)
+            setError("The task environment changed, or its workspace roots changed, before Docker recovery could start. Select the current environment and diagnose the latest run again.", for: task.id)
             return
         }
         isBusy = true
@@ -170,8 +178,8 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             }
             switch result {
             case .success(let verification):
-                guard environmentStillMatches(task: task, run: run) else {
-                    let detail = "Docker recovery completed, but the task environment changed before ASTRA could apply the verified image ID. The task was not retried."
+                guard environmentStillMatches(task: task, run: run), workspaceRootsStillMatch(task: task) else {
+                    let detail = "Docker recovery completed, but the task environment changed or its workspace roots changed before ASTRA could apply the verified image ID. The task was not retried."
                     let recorded = eventRecorder.record(
                         task: task,
                         run: run,
@@ -299,6 +307,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         expectedRunID = nil
         expectedTaskID = nil
         expectedEnvironment = nil
+        expectedWorkspaceRootsFingerprint = nil
         recoveryEventOperationID = nil
         activeTaskID = nil
         pendingTaskID = nil
@@ -311,6 +320,18 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     ) -> WorkspaceExecutionEnvironment {
         let runEnvironment = ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON)
         return runEnvironment.isContainerized ? runEnvironment : taskEnvironment
+    }
+
+    private static func workspaceRootsFingerprint(_ workspace: Workspace) -> String {
+        ([workspace.primaryPath] + workspace.additionalPaths)
+            .map(WorkspacePathPresentation.standardizedPath)
+            .joined(separator: "\u{001F}")
+    }
+
+    private func workspaceRootsStillMatch(task: AgentTask) -> Bool {
+        guard let expectedWorkspaceRootsFingerprint,
+              let workspace = task.workspace else { return false }
+        return Self.workspaceRootsFingerprint(workspace) == expectedWorkspaceRootsFingerprint
     }
 
     private func environmentStillMatches(task: AgentTask, run: TaskRun?) -> Bool {

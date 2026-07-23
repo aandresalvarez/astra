@@ -3940,7 +3940,7 @@ struct TaskMainView: View {
             failureReason: failureReason,
             launchBlock: latestRunLaunchBlock,
             dockerRecoveryImage: onRetryTask == nil ? nil : dockerRecoveryImage,
-            isDockerRecoveryBusy: dockerImageRecovery.isBusy(for: task.id),
+            isDockerRecoveryBusy: dockerImageRecovery.isBusy(for: task.id), isDockerRecoveryOccupied: dockerImageRecovery.isRecoveryOccupiedByOtherTask(for: task.id),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))

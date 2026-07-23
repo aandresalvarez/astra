@@ -274,6 +274,52 @@ struct DockerImageRecoveryTests {
     }
 
     @MainActor
+    @Test("Recovery events retain the authorized Dockerfile and source path")
+    func recoveryEventRecordsAuthorizedBuildSource() throws {
+        let root = try makeTempDir("docker-recovery-event")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let task = AgentTask(title: "Repair", goal: "Retry safely", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .rebuild(DockerImageBuildRequest(
+                image: "astra-project:latest",
+                dockerfilePath: "\(root)/Dockerfile",
+                sourcePath: root
+            )),
+            title: "Rebuild",
+            confirmation: "Rebuild",
+            auditAction: "rebuild"
+        )
+
+        #expect(DockerImageRecoveryEventRecorder().record(
+            task: task,
+            run: nil,
+            plan: plan,
+            result: .started,
+            detail: nil,
+            operationID: UUID(),
+            verifiedImageID: nil,
+            modelContext: context
+        ))
+        let event = try #require(try context.fetch(FetchDescriptor<TaskEvent>()).first)
+        let payload = try event.decodePayload(
+            as: DockerImageRecoveryEventPayload.self,
+            expecting: TaskEventTypes.System.dockerImageRecovery
+        ).get()
+        #expect(payload.dockerfilePath == WorkspacePathPresentation.standardizedPath("\(root)/Dockerfile"))
+        #expect(payload.sourcePath == WorkspacePathPresentation.standardizedPath(root))
+    }
+
+    @MainActor
     @Test("Coordinator persists verified image IDs before retry")
     func coordinatorPersistsVerifiedImageIDBeforeRetry() async throws {
         let fixture = try makeCoordinatorFixture()
@@ -729,6 +775,39 @@ struct DockerImageRecoveryTests {
         #expect(ExecutionEnvironmentStore.decode(fixture.run.executionEnvironmentSnapshotJSON).imageDigest == nil)
         #expect(recorder.recordedResults == [.started, .failed])
         #expect(coordinator.errorMessage?.contains("environment changed") == true)
+    }
+
+    @MainActor
+    @Test("Recovery does not retry after workspace roots change during Docker work")
+    func recoveryRevalidatesWorkspaceRootsBeforeRetry() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: recorder
+        )
+        var retried = false
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator.isConfirmationVisible(for: fixture.task.id) })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
+        fixture.workspace.additionalPaths = ["/tmp/changed-workspace-root"]
+
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(!retried)
+        #expect(recorder.recordedResults == [.started, .failed])
+        #expect(coordinator.errorMessage?.contains("workspace roots changed") == true)
     }
 
     @Test("Invalid Docker references do not offer image repair")

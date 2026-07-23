@@ -21,7 +21,13 @@ enum DockerImageRecoveryReconciler {
     static func reconcileInterruptedRecoveries(modelContext: ModelContext, autoExportWorkspaces: Bool = true) -> Int {
         let events: [TaskEvent]
         do {
-            events = try modelContext.fetch(FetchDescriptor<TaskEvent>())
+            let recoveryType = TaskEventTypes.System.dockerImageRecovery.rawValue
+            let descriptor = FetchDescriptor<TaskEvent>(
+                predicate: #Predicate<TaskEvent> { event in
+                    event.type == recoveryType
+                }
+            )
+            events = try modelContext.fetch(descriptor)
         } catch {
             AppLogger.error("Docker recovery reconciliation could not read task events", category: "ExecutionEnvironment")
             return 0

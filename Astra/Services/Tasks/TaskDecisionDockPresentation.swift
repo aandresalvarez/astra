@@ -109,6 +109,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var launchBlock: TaskRunLaunchBlockPayload?
         var dockerRecoveryImage: String? = nil
         var isDockerRecoveryBusy: Bool = false
+        var isDockerRecoveryOccupied: Bool = false
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
@@ -166,6 +167,10 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if let correction = context.mission?.correction {
             return correctionPresentation(context, correction: correction)
+        }
+
+        if context.dockerRecoveryImage != nil && context.canRetry {
+            return failedPresentation(context)
         }
 
         if context.hasExecutableApprovedPlan {
@@ -446,13 +451,18 @@ struct TaskDecisionDockPresentation: Equatable {
     private static func failedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
         let overBudget = context.status == .budgetExceeded
         let dockerRecoveryAction = context.canRetry ? context.dockerRecoveryImage.map { image in
-            action(
+            let recoveryUnavailable = context.isDockerRecoveryBusy || context.isDockerRecoveryOccupied
+            return action(
                 .repairDockerImage,
-                title: context.isDockerRecoveryBusy ? "Checking image…" : "Repair image and retry",
+                title: context.isDockerRecoveryBusy
+                    ? "Checking image…"
+                    : (context.isDockerRecoveryOccupied ? "Repair unavailable" : "Repair image and retry"),
                 systemImage: "wrench.and.screwdriver.fill",
                 payload: image,
-                help: "Diagnose and repair \(image), verify it, then retry this task.",
-                isEnabled: !context.isDockerRecoveryBusy
+                help: recoveryUnavailable
+                    ? "Another task is using the Docker recovery coordinator. Wait for it to finish, then retry."
+                    : "Diagnose and repair \(image), verify it, then retry this task.",
+                isEnabled: !recoveryUnavailable
             )
         } : nil
         return TaskDecisionDockPresentation(

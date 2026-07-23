@@ -14,6 +14,8 @@ struct DockerImageRecoveryEventPayload: Codable, Equatable, Sendable {
     var result: Result
     var imageID: String?
     var detail: String?
+    var dockerfilePath: String? = nil
+    var sourcePath: String? = nil
 }
 
 struct DockerImageRecoveryVerification: Equatable, Sendable {
@@ -40,6 +42,16 @@ struct DockerImageRecoveryPlan: Equatable, Sendable {
     var title: String
     var confirmation: String
     var auditAction: String
+
+    var authorizedDockerfilePath: String? {
+        guard case .rebuild(let request) = action else { return nil }
+        return request.dockerfilePath
+    }
+
+    var authorizedSourcePath: String? {
+        guard case .rebuild(let request) = action else { return nil }
+        return request.sourcePath
+    }
 }
 
 enum DockerImageRecoveryError: LocalizedError, Equatable, Sendable {

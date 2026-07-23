@@ -69,6 +69,29 @@ struct DockerCLIResolutionTests {
         #expect(calls.allSatisfy { $0.args.first != "docker" })
     }
 
+    @Test("Docker builds serialize per image across service instances")
+    func buildsSerializePerImage() async {
+        let runner = OverlapDetectingDockerRunner()
+        let service = DockerImageBuildService(
+            runner: runner,
+            environment: [:],
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
+        )
+        let request = DockerImageBuildRequest(
+            image: "astra-serialized:latest",
+            dockerfilePath: "/tmp/demo/Dockerfile",
+            sourcePath: "/tmp/demo"
+        )
+
+        async let first = service.buildImage(request)
+        async let second = service.buildImage(request)
+        _ = await (first, second)
+
+        #expect(await runner.maximumConcurrentBuilds() == 1)
+    }
+
     @Test("Docker build reports a missing CLI before attempting a process launch")
     func buildReportsMissingCLIWithoutLaunching() async {
         let runner = DockerCLIRecordingRunner(results: [])
@@ -172,6 +195,29 @@ private actor DockerCLIRecordingRunner: BinaryRunner {
             return .exited(code: 127, stdout: "", stderr: "unexpected Docker process launch")
         }
         return results.removeFirst()
+    }
+}
+
+private actor OverlapDetectingDockerRunner: BinaryRunner {
+    private var activeBuilds = 0
+    private var maximumBuilds = 0
+
+    func maximumConcurrentBuilds() -> Int { maximumBuilds }
+
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        guard args.first == "build" else {
+            return .exited(code: 0, stdout: "desktop-linux\n", stderr: "")
+        }
+        activeBuilds += 1
+        maximumBuilds = max(maximumBuilds, activeBuilds)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        activeBuilds -= 1
+        return .exited(code: 0, stdout: "built\n", stderr: "")
     }
 }
 
