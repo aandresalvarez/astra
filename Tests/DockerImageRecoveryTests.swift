@@ -301,7 +301,9 @@ struct DockerImageRecoveryTests {
         coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
         #expect(await waitUntil { !coordinator.isBusy })
         coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
-        coordinator.invalidateIfRunChanged(to: UUID())
+        coordinator.invalidateIfRunChanged(for: UUID(), to: UUID())
+        #expect(coordinator.isBusy)
+        coordinator.invalidateIfRunChanged(for: fixture.task.id, to: UUID())
         #expect(await waitUntil { !coordinator.isBusy })
 
         #expect(await recovery.performRanOnMainThread() == false)

@@ -643,7 +643,7 @@ struct TaskMainView: View {
                         refreshForkSourceAvailabilityWarning()
                     }
                 },
-                onLatestRunChange: { dockerImageRecovery.invalidateIfRunChanged(to: $0) }
+                onLatestRunChange: { dockerImageRecovery.invalidateIfRunChanged(for: task.id, to: $0) }
             )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in

@@ -170,8 +170,10 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         }
     }
 
-    func invalidateIfRunChanged(to latestRunID: UUID?) {
-        guard let expectedRunID, expectedRunID != latestRunID else { return }
+    func invalidateIfRunChanged(for taskID: UUID, to latestRunID: UUID?) {
+        guard expectedTaskID == taskID,
+              let expectedRunID,
+              expectedRunID != latestRunID else { return }
         isInvalidated = true
         pendingPlan = nil
         isConfirmationPresented = false
