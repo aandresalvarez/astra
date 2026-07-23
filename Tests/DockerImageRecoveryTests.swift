@@ -477,6 +477,40 @@ struct DockerImageRecoveryTests {
         #expect(viewModel.runnableCandidates.map(\.environment.image) == [image])
     }
 
+    @MainActor
+    @Test("Container view model hides unrelated image failures when a runnable image exists")
+    func viewModelHidesUnselectedImageFailure() {
+        let broken = DockerWorkspaceCandidate(
+            environment: WorkspaceExecutionEnvironment(
+                id: "image:broken",
+                kind: .dockerImage,
+                displayName: "Broken Image",
+                image: "astra-broken:latest"
+            ),
+            isRunnable: false,
+            issue: "Docker cannot resolve this image."
+        )
+        let ready = DockerWorkspaceCandidate(
+            environment: WorkspaceExecutionEnvironment(
+                id: "image:ready",
+                kind: .dockerImage,
+                displayName: "Ready Image",
+                image: "astra-ready:latest"
+            ),
+            isRunnable: true,
+            issue: nil
+        )
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: RecoveryImageInventory(result: .success([]))
+        )
+        viewModel.candidates = [broken, ready]
+
+        #expect(viewModel.dockerIssueTitle == nil)
+        #expect(viewModel.dockerIssueSubtitle == nil)
+        viewModel.selectedEnvironment = broken.environment
+        #expect(viewModel.dockerIssueTitle == "Docker image is not runnable")
+    }
+
     private func makeTempDir(_ name: String) throws -> String {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)

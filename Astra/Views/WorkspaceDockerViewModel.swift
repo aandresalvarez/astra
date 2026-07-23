@@ -384,7 +384,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     private var unavailableImageCandidate: DockerWorkspaceCandidate? {
-        candidates.first { $0.environment.kind == .dockerImage && !$0.isRunnable }
+        let unavailable = candidates.filter { $0.environment.kind == .dockerImage && !$0.isRunnable }
+        if let selected = unavailable.first(where: { isSelected($0) }) { return selected }
+        return runnableCandidates.contains(where: { $0.environment.kind == .dockerImage }) ? nil : unavailable.first
     }
 
     var buildCommand: String? {
