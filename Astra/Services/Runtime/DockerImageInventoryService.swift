@@ -58,11 +58,11 @@ enum DockerImageAvailabilityError: LocalizedError, Equatable, Sendable {
     }
 }
 
-protocol DockerImageInventoryListing {
+protocol DockerImageInventoryListing: Sendable {
     func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError>
 }
 
-protocol DockerImageAvailabilityChecking {
+protocol DockerImageAvailabilityChecking: Sendable {
     func checkImageAvailability(_ image: String) async -> Result<DockerImageAvailability, DockerImageAvailabilityError>
 }
 
@@ -85,7 +85,7 @@ struct DockerImageReadiness: Equatable, Sendable {
     var isRunnable: Bool { state == .ready }
 }
 
-protocol DockerImageReadinessChecking {
+protocol DockerImageReadinessChecking: Sendable {
     func checkImageReadiness(_ image: String) async -> DockerImageReadiness
 }
 

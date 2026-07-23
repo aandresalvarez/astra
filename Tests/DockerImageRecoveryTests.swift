@@ -1,7 +1,9 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Docker image readiness and recovery")
@@ -166,6 +168,118 @@ struct DockerImageRecoveryTests {
         #expect(await builder.recordedRequests().count == 1)
     }
 
+    @Test("Recovery refuses ambiguous rebuild roots and honors the failed run source path")
+    func recoveryDisambiguatesMatchingWorkspaceBuilds() async throws {
+        let root = try makeTempDir("docker-recovery-ambiguous")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let first = (root as NSString).appendingPathComponent("one/shared")
+        let second = (root as NSString).appendingPathComponent("two/shared")
+        try FileManager.default.createDirectory(atPath: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: second, withIntermediateDirectories: true)
+        try "FROM scratch\n".write(toFile: (first as NSString).appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+        try "FROM scratch\n".write(toFile: (second as NSString).appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+        let image = "\(DockerWorkspaceDiscoveryService.generatedImageName(for: first)):latest"
+        let service = DockerImageRecoveryService(
+            readiness: RecoveryFixedReadiness(readiness: DockerImageReadiness(
+                image: image, state: .missing, imageID: nil, detail: "missing"
+            )),
+            tagger: RecoveryRecordingTagger(result: .failure(.tagFailed("unused"))),
+            builder: RecoveryRecordingBuilder(result: .failure(.failed("unused")))
+        )
+
+        let ambiguous = await service.recoveryPlan(
+            image: image,
+            workspace: DockerImageRecoveryWorkspace(primaryPath: first, additionalPaths: [second])
+        )
+        guard case .failure(.notRecoverable(let detail)) = ambiguous else {
+            Issue.record("Expected ambiguous matching Dockerfiles to be rejected")
+            return
+        }
+        #expect(detail.contains("multiple workspace Dockerfiles"))
+
+        let selected = try await service.recoveryPlan(
+            image: image,
+            workspace: DockerImageRecoveryWorkspace(
+                primaryPath: first,
+                additionalPaths: [second],
+                preferredSourcePath: second
+            )
+        ).get()
+        #expect(selected.action == .rebuild(DockerImageBuildRequest(
+            image: image,
+            dockerfilePath: (second as NSString).appendingPathComponent("Dockerfile"),
+            sourcePath: second
+        )))
+    }
+
+    @MainActor
+    @Test("Coordinator keeps Docker off-main and aborts when authorization is not durable")
+    func coordinatorFailsClosedBeforeDockerMutation() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recovery = RecoveryCoordinatorService(plan: .success(plan), perform: .success(()))
+        let recorder = RecoveryCoordinatorEventRecorder(results: [false])
+        let coordinator = DockerImageRecoveryCoordinator(recovery: recovery, eventRecorder: recorder)
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(await recovery.planRanOnMainThread() == false)
+
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) {}
+
+        #expect(await recovery.performCallCount() == 0)
+        #expect(coordinator.errorMessage?.contains("no Docker command was run") == true)
+    }
+
+    @MainActor
+    @Test("Coordinator does not retry after an unpersisted success or a stale run")
+    func coordinatorRequiresDurableCurrentSuccessBeforeRetry() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recovery = RecoveryCoordinatorService(
+            plan: .success(plan),
+            perform: .success(()),
+            performDelayNanoseconds: 30_000_000
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        let coordinator = DockerImageRecoveryCoordinator(recovery: recovery, eventRecorder: recorder)
+        var retried = false
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !coordinator.isBusy })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
+        coordinator.invalidateIfRunChanged(to: UUID())
+        #expect(await waitUntil { !coordinator.isBusy })
+
+        #expect(await recovery.performRanOnMainThread() == false)
+        #expect(!retried)
+        #expect(recorder.recordedResults == [.started, .failed])
+
+        let unpersistedSuccessRecorder = RecoveryCoordinatorEventRecorder(results: [true, false])
+        let secondCoordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            eventRecorder: unpersistedSuccessRecorder
+        )
+        secondCoordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { !secondCoordinator.isBusy })
+        secondCoordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
+        #expect(await waitUntil { !secondCoordinator.isBusy })
+        #expect(!retried)
+        #expect(secondCoordinator.errorMessage?.contains("task was not retried") == true)
+    }
+
     @MainActor
     @Test("Container view model never promotes a listed but unresolvable image")
     func viewModelRejectsUnresolvableListedImage() async throws {
@@ -199,6 +313,51 @@ struct DockerImageRecoveryTests {
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    @MainActor
+    private func makeCoordinatorFixture() throws -> (
+        container: ModelContainer,
+        context: ModelContext,
+        workspace: Workspace,
+        task: AgentTask,
+        run: TaskRun
+    ) {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: "/tmp/project")
+        let task = AgentTask(title: "Repair", goal: "Retry safely", workspace: workspace)
+        let run = TaskRun(task: task)
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            WorkspaceExecutionEnvironment(
+                id: "dockerfile:/tmp/project/Dockerfile",
+                kind: .dockerfile,
+                displayName: "Project Dockerfile",
+                sourcePath: "/tmp/project",
+                image: "astra-project:latest",
+                dockerfilePath: "/tmp/project/Dockerfile"
+            )
+        )
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        return (container, context, workspace, task, run)
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 1_000_000_000,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + .nanoseconds(Int64(timeoutNanoseconds))
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return condition()
     }
 }
 
@@ -278,5 +437,69 @@ private actor RecoveryRecordingRunner: BinaryRunner {
         return results.isEmpty
             ? .exited(code: 127, stdout: "", stderr: "no docker runner result configured")
             : results.removeFirst()
+    }
+}
+
+private actor RecoveryCoordinatorService: DockerImageRecovering {
+    private let plan: Result<DockerImageRecoveryPlan, DockerImageRecoveryError>
+    private let performResult: Result<Void, DockerImageRecoveryError>
+    private let performDelayNanoseconds: UInt64
+    private var planOnMainThread: Bool?
+    private var performOnMainThread: Bool?
+    private var performCalls = 0
+
+    init(
+        plan: Result<DockerImageRecoveryPlan, DockerImageRecoveryError>,
+        perform: Result<Void, DockerImageRecoveryError>,
+        performDelayNanoseconds: UInt64 = 0
+    ) {
+        self.plan = plan
+        self.performResult = perform
+        self.performDelayNanoseconds = performDelayNanoseconds
+    }
+
+    func recoveryPlan(
+        image: String,
+        workspace: DockerImageRecoveryWorkspace
+    ) async -> Result<DockerImageRecoveryPlan, DockerImageRecoveryError> {
+        planOnMainThread = recoveryThreadIsMain()
+        return plan
+    }
+
+    func performRecovery(_ plan: DockerImageRecoveryPlan) async -> Result<Void, DockerImageRecoveryError> {
+        performCalls += 1
+        performOnMainThread = recoveryThreadIsMain()
+        if performDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: performDelayNanoseconds)
+        }
+        return performResult
+    }
+
+    func planRanOnMainThread() -> Bool? { planOnMainThread }
+    func performRanOnMainThread() -> Bool? { performOnMainThread }
+    func performCallCount() -> Int { performCalls }
+}
+
+private func recoveryThreadIsMain() -> Bool { Thread.isMainThread }
+
+@MainActor
+private final class RecoveryCoordinatorEventRecorder: DockerImageRecoveryEventRecording {
+    private var results: [Bool]
+    private(set) var recordedResults: [DockerImageRecoveryEventPayload.Result] = []
+
+    init(results: [Bool]) {
+        self.results = results
+    }
+
+    func record(
+        task: AgentTask,
+        run: TaskRun?,
+        plan: DockerImageRecoveryPlan,
+        result: DockerImageRecoveryEventPayload.Result,
+        detail: String?,
+        modelContext: ModelContext
+    ) -> Bool {
+        recordedResults.append(result)
+        return results.isEmpty ? true : results.removeFirst()
     }
 }

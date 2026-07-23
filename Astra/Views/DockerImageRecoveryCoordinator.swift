@@ -11,24 +11,46 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     @Published var errorMessage: String?
 
     private let recovery: any DockerImageRecovering
+    private let eventRecorder: any DockerImageRecoveryEventRecording
+    private var operationID: UUID?
+    private var expectedRunID: UUID?
+    private var isInvalidated = false
 
-    init(recovery: any DockerImageRecovering = DockerImageRecoveryService()) {
+    init(
+        recovery: any DockerImageRecovering = DockerImageRecoveryService(),
+        eventRecorder: any DockerImageRecoveryEventRecording = DockerImageRecoveryEventRecorder()
+    ) {
         self.recovery = recovery
+        self.eventRecorder = eventRecorder
     }
 
-    func prepare(image: String, workspace: Workspace?, taskID: UUID) {
+    func prepare(image: String, workspace: Workspace?, taskID: UUID, run: TaskRun?) {
         guard !isBusy, let workspace else { return }
         isBusy = true
         errorMessage = nil
+        expectedRunID = run?.id
+        isInvalidated = false
+        let operationID = UUID()
+        self.operationID = operationID
         let recoveryWorkspace = DockerImageRecoveryWorkspace(
             primaryPath: workspace.primaryPath,
-            additionalPaths: workspace.additionalPaths
+            additionalPaths: workspace.additionalPaths,
+            preferredSourcePath: ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON).sourcePath
         )
         audit(taskID: taskID, result: "recovery_diagnosis_started", image: image)
+        let recovery = self.recovery
 
-        Task { @MainActor in
-            let result = await recovery.recoveryPlan(image: image, workspace: recoveryWorkspace)
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                await recovery.recoveryPlan(image: image, workspace: recoveryWorkspace)
+            }.value
+            guard let self, self.operationID == operationID else { return }
             isBusy = false
+            guard !isInvalidated else {
+                audit(taskID: taskID, result: "recovery_plan_invalidated", image: image, level: .warning)
+                finishOperation()
+                return
+            }
             switch result {
             case .success(let plan):
                 pendingPlan = plan
@@ -37,6 +59,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             case .failure(let error):
                 errorMessage = error.localizedDescription
                 audit(taskID: taskID, result: "recovery_plan_unavailable", image: image, detail: error.localizedDescription, level: .warning)
+                finishOperation()
             }
         }
     }
@@ -48,25 +71,56 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         modelContext: ModelContext,
         onSuccess: @escaping @MainActor () -> Void
     ) {
-        guard !isBusy else { return }
+        guard !isBusy, !isInvalidated, expectedRunID == run?.id else {
+            errorMessage = "The failed run changed before Docker recovery could start. Diagnose the latest run again."
+            return
+        }
         isBusy = true
         isConfirmationPresented = false
         pendingPlan = nil
-        DockerImageRecoveryEventRecorder.record(
+        guard eventRecorder.record(
             task: task, run: run, plan: plan, result: .started, detail: nil, modelContext: modelContext
-        )
-
-        Task { @MainActor in
-            let result = await recovery.performRecovery(plan)
+        ) else {
             isBusy = false
+            finishOperation()
+            errorMessage = "ASTRA could not durably record authorization for this Docker repair, so no Docker command was run."
+            return
+        }
+        let operationID = UUID()
+        self.operationID = operationID
+        let recovery = self.recovery
+
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                await recovery.performRecovery(plan)
+            }.value
+            guard let self, self.operationID == operationID else { return }
+            isBusy = false
+            if isInvalidated {
+                _ = eventRecorder.record(
+                    task: task,
+                    run: run,
+                    plan: plan,
+                    result: .failed,
+                    detail: "Recovery invalidated because the task's latest run changed; ASTRA did not retry.",
+                    modelContext: modelContext
+                )
+                finishOperation()
+                return
+            }
             switch result {
             case .success:
-                DockerImageRecoveryEventRecorder.record(
+                guard eventRecorder.record(
                     task: task, run: run, plan: plan, result: .succeeded, detail: nil, modelContext: modelContext
-                )
+                ) else {
+                    finishOperation()
+                    errorMessage = "Docker recovery verified the image, but ASTRA could not durably record success. The task was not retried."
+                    return
+                }
+                finishOperation()
                 onSuccess()
             case .failure(let error):
-                DockerImageRecoveryEventRecorder.record(
+                let recorded = eventRecorder.record(
                     task: task,
                     run: run,
                     plan: plan,
@@ -74,9 +128,32 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
                     detail: error.localizedDescription,
                     modelContext: modelContext
                 )
-                errorMessage = error.localizedDescription
+                finishOperation()
+                errorMessage = recorded
+                    ? error.localizedDescription
+                    : "\(error.localizedDescription) ASTRA also could not durably record the recovery failure."
             }
         }
+    }
+
+    func invalidateIfRunChanged(to latestRunID: UUID?) {
+        guard let expectedRunID, expectedRunID != latestRunID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+    }
+
+    func cancelPending() {
+        guard !isBusy else { return }
+        pendingPlan = nil
+        isConfirmationPresented = false
+        finishOperation()
+    }
+
+    private func finishOperation() {
+        operationID = nil
+        expectedRunID = nil
+        isInvalidated = false
     }
 
     private func audit(
@@ -110,7 +187,7 @@ struct DockerImageRecoveryDialogModifier: ViewModifier {
                 if let plan = coordinator.pendingPlan {
                     Button(plan.action == .retryOnly ? "Retry task" : "Repair and retry") { onConfirm(plan) }
                 }
-                Button("Cancel", role: .cancel) { coordinator.pendingPlan = nil }
+                Button("Cancel", role: .cancel) { coordinator.cancelPending() }
             } message: {
                 Text(coordinator.pendingPlan?.confirmation ?? "ASTRA will verify the image before retrying.")
             }

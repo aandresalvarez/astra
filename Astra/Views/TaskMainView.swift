@@ -190,15 +190,14 @@ private struct AgentGeneratedFilesListView: View {
 /// audit (Cluster 1).
 ///
 /// Thread refresh is revision/event driven. `AgentTask.updatedAt` covers durable
-/// lifecycle and ordinary event mutations, while `taskThreadDidChange` covers
-/// coalesced streaming mutations that do not create a new relationship row.
-/// Neither path walks the complete event or run relationships.
+/// lifecycle and ordinary event mutations; `taskThreadDidChange` covers coalesced streaming mutations.
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
+    let latestRunID: UUID?
     let onSnapshotChange: () -> Void
     let onGeneratedFilesChange: () -> Void
-
+    let onLatestRunChange: (UUID?) -> Void
     var body: some View {
         Color.clear
             .onChange(of: task.updatedAt) { _, _ in
@@ -212,8 +211,8 @@ private struct TaskThreadChangeObserver: View {
             .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
                 onGeneratedFilesChange()
             }
+            .onChange(of: latestRunID) { _, runID in onLatestRunChange(runID) }
     }
-
 }
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
@@ -625,6 +624,7 @@ struct TaskMainView: View {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
+                latestRunID: currentThreadSnapshot.latestRun?.id,
                 onSnapshotChange: {
                     deferTaskViewMutation {
                         threadViewModel.requestSnapshotRefresh(for: task)
@@ -642,7 +642,8 @@ struct TaskMainView: View {
                         refreshTaskContextState()
                         refreshForkSourceAvailabilityWarning()
                     }
-                }
+                },
+                onLatestRunChange: { dockerImageRecovery.invalidateIfRunChanged(to: $0) }
             )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
@@ -4353,9 +4354,9 @@ struct TaskMainView: View {
         case .runTask:
             onRunTask?(task)
         case .retry:
-            onRetryTask?(task)
+            if !dockerImageRecovery.isBusy { onRetryTask?(task) }
         case .resume:
-            onResumeTask?(task)
+            if !dockerImageRecovery.isBusy { onResumeTask?(task) }
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4369,7 +4370,7 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .repairDockerImage:
             guard let image = action.payload else { return }
-            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id)
+            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id, run: latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } })
         }
     }
 

@@ -445,7 +445,7 @@ struct TaskDecisionDockPresentation: Equatable {
 
     private static func failedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
         let overBudget = context.status == .budgetExceeded
-        let dockerRecoveryAction = context.dockerRecoveryImage.map { image in
+        let dockerRecoveryAction = context.canRetry ? context.dockerRecoveryImage.map { image in
             action(
                 .repairDockerImage,
                 title: context.isDockerRecoveryBusy ? "Checking image…" : "Repair image and retry",
@@ -454,7 +454,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 help: "Diagnose and repair \(image), verify it, then retry this task.",
                 isEnabled: !context.isDockerRecoveryBusy
             )
-        }
+        } : nil
         return TaskDecisionDockPresentation(
             id: overBudget ? "budget-exceeded" : "failed",
             icon: overBudget ? "speedometer" : "exclamationmark.triangle.fill",
@@ -470,10 +470,10 @@ struct TaskDecisionDockPresentation: Equatable {
                 : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil)),
             secondaryActions: [
                 dockerRecoveryAction != nil && context.canResume && context.hasProviderSession
-                    ? action(.resume, title: "Resume", systemImage: "play.fill")
+                    ? action(.resume, title: "Resume", systemImage: "play.fill", isEnabled: !context.isDockerRecoveryBusy)
                     : nil,
                 dockerRecoveryAction != nil && context.canRetry
-                    ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
+                    ? action(.retry, title: "Retry", systemImage: "arrow.clockwise", isEnabled: !context.isDockerRecoveryBusy)
                     : (context.canResume && context.hasProviderSession && context.canRetry
                         ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
                         : nil),

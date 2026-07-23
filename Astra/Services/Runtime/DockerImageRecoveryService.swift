@@ -18,6 +18,9 @@ struct DockerImageRecoveryEventPayload: Codable, Equatable, Sendable {
 struct DockerImageRecoveryWorkspace: Equatable, Sendable {
     var primaryPath: String
     var additionalPaths: [String]
+    /// The source root persisted by the failed run. A rebuild must use this
+    /// root when multiple workspace Dockerfiles generate the same image tag.
+    var preferredSourcePath: String? = nil
 }
 
 enum DockerImageRecoveryAction: Equatable, Sendable {
@@ -53,7 +56,7 @@ enum DockerImageRecoveryError: LocalizedError, Equatable, Sendable {
     }
 }
 
-protocol DockerImageTagging {
+protocol DockerImageTagging: Sendable {
     func tagImage(imageID: String, as image: String) async -> Result<Void, DockerImageRecoveryError>
 }
 
@@ -132,7 +135,7 @@ struct DockerImageTagService: DockerImageTagging {
     }
 }
 
-protocol DockerImageRecovering {
+protocol DockerImageRecovering: Sendable {
     func recoveryPlan(
         image: String,
         workspace: DockerImageRecoveryWorkspace
@@ -185,10 +188,12 @@ struct DockerImageRecoveryService: DockerImageRecovering {
                 auditAction: "retag"
             ))
         case .missing:
-            guard let request = Self.buildRequest(image: image, workspace: workspace) else {
-                return .failure(.notRecoverable(
-                    "The image is missing and ASTRA could not find a matching workspace Dockerfile. Build or pull the image in the Container panel, or choose another environment."
-                ))
+            let request: DockerImageBuildRequest
+            switch Self.buildRequest(image: image, workspace: workspace) {
+            case .success(let value):
+                request = value
+            case .failure(let error):
+                return .failure(error)
             }
             return .success(DockerImageRecoveryPlan(
                 image: image,
@@ -228,25 +233,48 @@ struct DockerImageRecoveryService: DockerImageRecovering {
     private static func buildRequest(
         image: String,
         workspace: DockerImageRecoveryWorkspace
-    ) -> DockerImageBuildRequest? {
-        DockerWorkspaceDiscoveryService.candidates(
+    ) -> Result<DockerImageBuildRequest, DockerImageRecoveryError> {
+        let matches = DockerWorkspaceDiscoveryService.candidates(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         )
-        .first { candidate in
+        .filter { candidate in
             guard candidate.environment.kind == .dockerfile,
                   let candidateImage = candidate.environment.image else { return false }
             return imageWithDefaultTag(candidateImage) == image
         }
-        .flatMap { candidate in
-            guard let dockerfilePath = candidate.environment.dockerfilePath,
-                  let sourcePath = candidate.environment.sourcePath else { return nil }
-            return DockerImageBuildRequest(
-                image: image,
-                dockerfilePath: dockerfilePath,
-                sourcePath: sourcePath
-            )
+
+        let selected: DockerWorkspaceCandidate
+        if let preferredSourcePath = workspace.preferredSourcePath {
+            let preferred = WorkspacePathPresentation.standardizedPath(preferredSourcePath)
+            let sourceMatches = matches.filter {
+                $0.environment.sourcePath.map(WorkspacePathPresentation.standardizedPath) == preferred
+            }
+            guard sourceMatches.count == 1, let match = sourceMatches.first else {
+                return .failure(.notRecoverable(
+                    "ASTRA refused to rebuild \(image) because the failed run's source path does not identify exactly one matching workspace Dockerfile."
+                ))
+            }
+            selected = match
+        } else {
+            guard matches.count == 1, let match = matches.first else {
+                let detail = matches.count > 1
+                    ? "ASTRA found multiple workspace Dockerfiles that build \(image) and refused to choose the wrong project. Select the intended container environment and retry."
+                    : "The image is missing and ASTRA could not find a matching workspace Dockerfile. Build or pull the image in the Container panel, or choose another environment."
+                return .failure(.notRecoverable(detail))
+            }
+            selected = match
         }
+
+        guard let dockerfilePath = selected.environment.dockerfilePath,
+              let sourcePath = selected.environment.sourcePath else {
+            return .failure(.notRecoverable("The matching Docker environment is missing its Dockerfile or source path."))
+        }
+        return .success(DockerImageBuildRequest(
+            image: image,
+            dockerfilePath: dockerfilePath,
+            sourcePath: sourcePath
+        ))
     }
 
     private static func imageWithDefaultTag(_ image: String) -> String {

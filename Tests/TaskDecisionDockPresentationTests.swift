@@ -416,13 +416,29 @@ struct TaskDecisionDockPresentationTests {
         let presentation = TaskDecisionDockPresentation.build(context(
             status: .failed,
             dockerRecoveryImage: "astra-starr-data-lake:latest",
-            isDockerRecoveryBusy: true
+            isDockerRecoveryBusy: true,
+            canResume: true,
+            hasProviderSession: true
         ))
 
-        let action = try #require(presentation?.primaryAction)
+        let dock = try #require(presentation)
+        let action = try #require(dock.primaryAction)
         #expect(action.kind == .repairDockerImage)
         #expect(action.title == "Checking image…")
         #expect(!action.isEnabled)
+        #expect(dock.secondaryActions.filter { $0.kind == .retry || $0.kind == .resume }.allSatisfy { !$0.isEnabled })
+    }
+
+    @Test("Docker repair is not offered when the task cannot retry")
+    func dockerRepairRequiresRetryCapability() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            canRetry: false,
+            dockerRecoveryImage: "astra-starr-data-lake:latest"
+        )))
+
+        #expect(dock.primaryAction?.kind != .repairDockerImage)
+        #expect(!dock.secondaryActions.contains { $0.kind == .repairDockerImage })
     }
 
     private func context(
@@ -436,7 +452,9 @@ struct TaskDecisionDockPresentationTests {
         canRetry: Bool = true,
         launchBlock: TaskRunLaunchBlockPayload? = nil,
         dockerRecoveryImage: String? = nil,
-        isDockerRecoveryBusy: Bool = false
+        isDockerRecoveryBusy: Bool = false,
+        canResume: Bool = false,
+        hasProviderSession: Bool = false
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -469,10 +487,10 @@ struct TaskDecisionDockPresentationTests {
             canRun: true,
             canApprove: true,
             canRetry: canRetry,
-            canResume: false,
+            canResume: canResume,
             canReportProblem: canReportProblem,
             canToggleDone: true,
-            hasProviderSession: false,
+            hasProviderSession: hasProviderSession,
             failureReason: nil,
             launchBlock: launchBlock,
             dockerRecoveryImage: dockerRecoveryImage,

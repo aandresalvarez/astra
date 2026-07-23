@@ -40,7 +40,7 @@ enum DockerImageBuildError: LocalizedError, Equatable, Sendable {
     }
 }
 
-protocol DockerImageBuilding {
+protocol DockerImageBuilding: Sendable {
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError>
 }
 

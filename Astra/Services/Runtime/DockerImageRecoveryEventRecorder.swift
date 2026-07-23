@@ -2,19 +2,33 @@ import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
-@MainActor
-enum DockerImageRecoveryEventRecorder {
-    static func record(
+protocol DockerImageRecoveryEventRecording {
+    @discardableResult
+    @MainActor
+    func record(
         task: AgentTask,
         run: TaskRun?,
         plan: DockerImageRecoveryPlan,
         result: DockerImageRecoveryEventPayload.Result,
         detail: String?,
         modelContext: ModelContext
-    ) {
+    ) -> Bool
+}
+
+struct DockerImageRecoveryEventRecorder: DockerImageRecoveryEventRecording {
+    @discardableResult
+    @MainActor
+    func record(
+        task: AgentTask,
+        run: TaskRun?,
+        plan: DockerImageRecoveryPlan,
+        result: DockerImageRecoveryEventPayload.Result,
+        detail: String?,
+        modelContext: ModelContext
+    ) -> Bool {
         let imageID: String?
         if case .retag(let value) = plan.action { imageID = value } else { imageID = nil }
-        modelContext.insert(TaskEvent.structuredPayloadEvent(
+        let event = TaskEvent.structuredPayloadEvent(
             task: task,
             eventType: TaskEventTypes.System.dockerImageRecovery,
             payload: DockerImageRecoveryEventPayload(
@@ -25,13 +39,32 @@ enum DockerImageRecoveryEventRecorder {
                 detail: detail
             ),
             run: run
-        ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        )
+        modelContext.insert(event)
+        let persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "docker_image_recovery", "recovery_result": result.rawValue]
+        )
+        guard persisted else {
+            // Never let an in-memory event masquerade as durable authorization
+            // or durable success after its save failed.
+            modelContext.delete(event)
+            AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", taskID: task.id, fields: [
+                "result": "recovery_event_persistence_failed",
+                "image": plan.image,
+                "recovery_action": plan.auditAction,
+                "recovery_result": result.rawValue
+            ], level: .error)
+            return false
+        }
         AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", taskID: task.id, fields: [
             "result": "recovery_\(result.rawValue)",
             "image": plan.image,
             "recovery_action": plan.auditAction,
             "detail": detail ?? "none"
         ], level: result == .failed ? .error : .info)
+        return true
     }
 }
