@@ -157,6 +157,16 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             guard self.operationID == operationID else { return }
             isBusy = false
             if isInvalidated {
+                // The task may have been hard-deleted from the model context
+                // while recovery was in flight (see TaskLifecycleCoordinator
+                // .deleteTask); touching `task` past that point -- including
+                // constructing a TaskEvent from it -- reads/writes a deleted
+                // SwiftData object. Same guard style as
+                // ObjectiveAssessmentService.swift's post-await re-check.
+                guard !task.isDeleted, task.modelContext != nil else {
+                    finishOperation()
+                    return
+                }
                 let recorded = eventRecorder.record(
                     task: task,
                     run: run,
