@@ -220,6 +220,7 @@ struct TaskMainView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
 
     let task: AgentTask
+    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     var taskQueue: TaskQueue?
     var onRunTask: ((AgentTask) -> Void)?
@@ -287,7 +288,6 @@ struct TaskMainView: View {
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
-    @StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""

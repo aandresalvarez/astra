@@ -101,17 +101,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
         case .success(let images):
             imageInventoryError = nil
             let discoveredImages = imageCandidates(for: workspace, images: images)
-            for candidate in discoveredImages {
-                guard let image = candidate.environment.image else {
-                    next.append(candidate)
-                    continue
-                }
-                let readiness = await imageReadiness.checkImageReadiness(image)
-                var validated = candidate
-                validated.isRunnable = readiness.isRunnable
-                validated.issue = readiness.isRunnable ? nil : readiness.detail
-                next.append(validated)
-            }
+            next.append(contentsOf: await Self.validateImageCandidates(
+                discoveredImages,
+                readiness: imageReadiness
+            ))
         case .failure(let error):
             imageInventoryError = error
         }
@@ -853,6 +846,37 @@ final class WorkspaceDockerViewModel: ObservableObject {
                     )
                 }
         }
+    }
+
+    private static func validateImageCandidates(
+        _ candidates: [DockerWorkspaceCandidate],
+        readiness: any DockerImageReadinessChecking
+    ) async -> [DockerWorkspaceCandidate] {
+        await Task.detached(priority: .utility) {
+            await withTaskGroup(of: (Int, DockerWorkspaceCandidate).self, returning: [DockerWorkspaceCandidate].self) { group in
+                for (index, candidate) in candidates.enumerated() {
+                    guard let image = candidate.environment.image else {
+                        group.addTask { (index, candidate) }
+                        continue
+                    }
+                    group.addTask {
+                        let report = await readiness.checkImageReadiness(image)
+                        var validated = candidate
+                        validated.isRunnable = report.isRunnable
+                        validated.issue = report.isRunnable ? nil : report.detail
+                        return (index, validated)
+                    }
+                }
+
+                var results: [(Int, DockerWorkspaceCandidate)] = []
+                for await result in group {
+                    results.append(result)
+                }
+                return results
+                    .sorted { $0.0 < $1.0 }
+                    .map(\.1)
+            }
+        }.value
     }
 
     private static func deduplicated(_ candidates: [DockerWorkspaceCandidate]) -> [DockerWorkspaceCandidate] {

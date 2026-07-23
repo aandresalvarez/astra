@@ -67,6 +67,8 @@ struct ContentView: View {
     // App Studio is a conversation (center) + a docked live preview (the .appPreview shelf);
     // both observe this one session, so a chat turn updates the preview.
     @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
+    /// Owns Docker recovery above task-detail identity so confirmed repairs finish durably.
+    @StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
@@ -511,6 +513,7 @@ struct ContentView: View {
             onToggleDone: toggleDone,
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
+            isDockerRecoveryBusy: !dockerImageRecovery.canStartTaskRetry,
             onDeleteTask: requestDeleteTask,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
@@ -590,6 +593,7 @@ struct ContentView: View {
     private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
+            dockerImageRecovery: dockerImageRecovery,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
@@ -2487,6 +2491,12 @@ struct ContentView: View {
     }
 
     private func retryTask(_ task: AgentTask) {
+        guard dockerImageRecovery.canStartTaskRetry else {
+            AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
+                "retry_mode": "rejected_docker_recovery_busy"
+            ], level: .warning)
+            return
+        }
         coordinator.retryTask(task)
         refreshRunningTaskCount()
     }
@@ -2833,6 +2843,7 @@ private struct CollapsedSidebarUpdateToolbar: ToolbarContent {
 
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
+    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
@@ -3258,6 +3269,7 @@ private struct ContentDetailAreaView: View {
     private var detailContent: some View {
         ContentDetailContentView(
             selectedTask: selectedTask,
+            dockerImageRecovery: dockerImageRecovery,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
@@ -3359,6 +3371,7 @@ private struct ContentDetailAreaView: View {
 
 private struct ContentDetailContentView: View {
     let selectedTask: AgentTask?
+    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
@@ -3432,6 +3445,7 @@ private struct ContentDetailContentView: View {
             if let task = selectedTask {
                 TaskMainView(
                     task: task,
+                    dockerImageRecovery: dockerImageRecovery,
                     taskOpenResponsivenessScope: taskOpenResponsivenessScope,
                     taskQueue: taskQueue,
                     onRunTask: onRunTask,

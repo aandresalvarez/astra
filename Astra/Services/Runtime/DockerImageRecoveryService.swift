@@ -241,7 +241,10 @@ struct DockerImageRecoveryService: DockerImageRecovering {
         .filter { candidate in
             guard candidate.environment.kind == .dockerfile,
                   let candidateImage = candidate.environment.image else { return false }
-            return imageWithDefaultTag(candidateImage) == image
+            // Docker treats an untagged reference as `:latest`; compare the
+            // canonical forms on both sides while retaining the original
+            // requested reference in the build request and verification path.
+            return imageWithDefaultTag(candidateImage) == imageWithDefaultTag(image)
         }
 
         let selected: DockerWorkspaceCandidate

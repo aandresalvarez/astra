@@ -10,6 +10,8 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     @Published var isBusy = false
     @Published var errorMessage: String?
 
+    var canStartTaskRetry: Bool { !isBusy }
+
     private let recovery: any DockerImageRecovering
     private let eventRecorder: any DockerImageRecoveryEventRecording
     private var operationID: UUID?
@@ -40,11 +42,14 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         audit(taskID: taskID, result: "recovery_diagnosis_started", image: image)
         let recovery = self.recovery
 
-        Task { [weak self] in
+        // Keep the task-scoped operation alive through navigation. The view
+        // that initiated recovery may be replaced while Docker is running,
+        // but the durable started event still needs a terminal outcome.
+        Task { [self] in
             let result = await Task.detached(priority: .userInitiated) {
                 await recovery.recoveryPlan(image: image, workspace: recoveryWorkspace)
             }.value
-            guard let self, self.operationID == operationID else { return }
+            guard self.operationID == operationID else { return }
             isBusy = false
             guard !isInvalidated else {
                 audit(taskID: taskID, result: "recovery_plan_invalidated", image: image, level: .warning)
@@ -90,11 +95,13 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         self.operationID = operationID
         let recovery = self.recovery
 
-        Task { [weak self] in
+        // The shared coordinator remains the operation owner even if the
+        // selected task view is replaced during a long Docker build.
+        Task { [self] in
             let result = await Task.detached(priority: .userInitiated) {
                 await recovery.performRecovery(plan)
             }.value
-            guard let self, self.operationID == operationID else { return }
+            guard self.operationID == operationID else { return }
             isBusy = false
             if isInvalidated {
                 _ = eventRecorder.record(

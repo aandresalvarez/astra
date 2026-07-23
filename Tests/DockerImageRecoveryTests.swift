@@ -168,6 +168,33 @@ struct DockerImageRecoveryTests {
         #expect(await builder.recordedRequests().count == 1)
     }
 
+    @Test("Recovery canonicalizes an untagged requested image reference")
+    func recoveryMatchesUntaggedRequestedImage() async throws {
+        let root = try makeTempDir("docker-recovery-untagged")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let dockerfile = (root as NSString).appendingPathComponent("Dockerfile")
+        try "FROM scratch\n".write(toFile: dockerfile, atomically: true, encoding: .utf8)
+        let image = DockerWorkspaceDiscoveryService.generatedImageName(for: root)
+        let service = DockerImageRecoveryService(
+            readiness: RecoveryFixedReadiness(readiness: DockerImageReadiness(
+                image: image, state: .missing, imageID: nil, detail: "missing"
+            )),
+            tagger: RecoveryRecordingTagger(result: .failure(.tagFailed("unused"))),
+            builder: RecoveryRecordingBuilder(result: .failure(.failed("unused")))
+        )
+
+        let plan = try await service.recoveryPlan(
+            image: image,
+            workspace: DockerImageRecoveryWorkspace(primaryPath: root, additionalPaths: [])
+        ).get()
+
+        #expect(plan.action == .rebuild(DockerImageBuildRequest(
+            image: image,
+            dockerfilePath: dockerfile,
+            sourcePath: root
+        )))
+    }
+
     @Test("Recovery refuses ambiguous rebuild roots and honors the failed run source path")
     func recoveryDisambiguatesMatchingWorkspaceBuilds() async throws {
         let root = try makeTempDir("docker-recovery-ambiguous")
@@ -281,6 +308,53 @@ struct DockerImageRecoveryTests {
     }
 
     @MainActor
+    @Test("Coordinator completes durable recovery after its task view is released")
+    func coordinatorCompletesAfterViewRelease() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        var coordinator: DockerImageRecoveryCoordinator? = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(()),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: recorder
+        )
+        var retried = false
+
+        coordinator?.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator?.isBusy == false })
+        coordinator?.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) {
+            retried = true
+        }
+        coordinator = nil
+
+        #expect(await waitUntil { recorder.recordedResults.last == .succeeded })
+        #expect(retried)
+        #expect(recorder.recordedResults == [.started, .succeeded])
+    }
+
+    @MainActor
+    @Test("Shared recovery state blocks task retries while Docker work is active")
+    func sharedRecoveryStateBlocksTaskRetries() {
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(plan: .failure(.notRecoverable("unused")), perform: .success(())),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
+        )
+
+        #expect(coordinator.canStartTaskRetry)
+        coordinator.isBusy = true
+        #expect(!coordinator.canStartTaskRetry)
+    }
+
+    @MainActor
     @Test("Container view model never promotes a listed but unresolvable image")
     func viewModelRejectsUnresolvableListedImage() async throws {
         let root = try makeTempDir("docker-viewmodel-unresolvable")
@@ -306,6 +380,35 @@ struct DockerImageRecoveryTests {
         #expect(viewModel.environmentOptions.map(\.title) == ["Host"])
         #expect(viewModel.dockerIssueTitle == "Docker image is not runnable")
         #expect(viewModel.dockerIssueSubtitle?.contains("cannot resolve") == true)
+    }
+
+    @MainActor
+    @Test("Container view model validates image readiness off the main actor")
+    func viewModelValidatesReadinessOffMainActor() async throws {
+        let root = try makeTempDir("docker-viewmodel-off-main")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try "FROM scratch\n".write(
+            toFile: (root as NSString).appendingPathComponent("Dockerfile"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let repository = DockerWorkspaceDiscoveryService.generatedImageName(for: root)
+        let image = "\(repository):latest"
+        let readiness = RecoveryThreadRecordingReadiness(
+            result: DockerImageReadiness(image: image, state: .ready, imageID: "sha256:ready", detail: "ready")
+        )
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: RecoveryImageInventory(result: .success([
+                DockerImageReference(repository: repository, tag: "latest", imageID: "sha256:ready")
+            ])),
+            imageReadiness: readiness
+        )
+        viewModel.setWorkspaceForTesting(Workspace(name: "Docker", primaryPath: root))
+
+        await viewModel.refresh()
+
+        #expect(await readiness.mainThreadObservations() == [false])
+        #expect(viewModel.runnableCandidates.map(\.environment.image) == [image])
     }
 
     private func makeTempDir(_ name: String) throws -> String {
@@ -369,6 +472,22 @@ private struct RecoveryImageInventory: DockerImageInventoryListing {
 private struct RecoveryFixedReadiness: DockerImageReadinessChecking {
     let readiness: DockerImageReadiness
     func checkImageReadiness(_ image: String) async -> DockerImageReadiness { readiness }
+}
+
+private actor RecoveryThreadRecordingReadiness: DockerImageReadinessChecking {
+    private let result: DockerImageReadiness
+    private var observations: [Bool] = []
+
+    init(result: DockerImageReadiness) {
+        self.result = result
+    }
+
+    func mainThreadObservations() -> [Bool] { observations }
+
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness {
+        observations.append(recoveryThreadIsMain())
+        return result
+    }
 }
 
 private actor RecoverySequencedAvailability: DockerImageAvailabilityChecking {
