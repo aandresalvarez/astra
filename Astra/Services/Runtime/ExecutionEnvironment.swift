@@ -284,7 +284,7 @@ enum DockerExecutionPlanner {
         runID: UUID?,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         additionalReadOnlyInputPaths: [String] = [],
-        dockerExecutablePath: String = defaultDockerExecutable
+        dockerRuntime: DockerRuntimeResolution = .environmentLookup
     ) -> Result<AgentRuntimeProcessLaunchPlan, DockerExecutionPlanningError> {
         guard environment.isContainerized else { return .success(base) }
         guard environment.kind == .dockerImage || environment.kind == .dockerfile else {
@@ -339,8 +339,9 @@ enum DockerExecutionPlanner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let containerExecutable = explicitExecutable?.isEmpty == false ? explicitExecutable! : providerExecutable
         guard !containerExecutable.isEmpty else { return .failure(.missingRuntimeExecutable) }
-        var dockerArgs = [
-            "docker", "run", "--rm", "-i",
+        var dockerArgs = dockerRuntime.usesEnvironmentLookup ? ["docker"] : []
+        dockerArgs += [
+            "run", "--rm", "-i",
             "--name", name,
             "--label", "com.coral.astra.task=\(task.id.uuidString)",
             "--label", "com.coral.astra.environment=\(environment.id)",
@@ -356,7 +357,13 @@ enum DockerExecutionPlanner {
 
         let allowedEnv = containerEnvironment(baseEnvironment: base.environment, environment: environment)
         for key in allowedEnv.keys.sorted() {
-            dockerArgs += ["--env", key]
+            // The container PATH belongs in the docker argument, while the host
+            // Docker process must retain its CLI directory for credential helpers.
+            if key == "PATH", let path = allowedEnv[key] {
+                dockerArgs += ["--env", "PATH=\(path)"]
+            } else {
+                dockerArgs += ["--env", key]
+            }
         }
         dockerArgs.append("--")
         dockerArgs.append(image)
@@ -388,16 +395,14 @@ enum DockerExecutionPlanner {
         commandFields["docker_argument_count"] = String(dockerArgs.count)
         commandFields["os_sandbox_claim"] = "false"
 
-        var processEnvironment: [String: String] = [
-            "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        ]
-        for (key, value) in allowedEnv {
+        var processEnvironment = dockerRuntime.environment
+        for (key, value) in allowedEnv where key != "PATH" {
             processEnvironment[key] = value
         }
 
         return .success(AgentRuntimeProcessLaunchPlan(
             runtime: base.runtime,
-            executablePath: dockerExecutablePath,
+            executablePath: dockerRuntime.executablePath,
             arguments: dockerArgs,
             currentDirectory: base.currentDirectory,
             environment: processEnvironment,
@@ -1012,7 +1017,8 @@ enum DockerWorkspaceMCPProjection {
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
-        runID: UUID?
+        runID: UUID?,
+        dockerRuntime: DockerRuntimeResolution = DockerRuntimeResolver.resolve() ?? .environmentLookup
     ) -> [String: String] {
         guard isEnabled(for: environment),
               let image = environment.image,
@@ -1032,7 +1038,9 @@ enum DockerWorkspaceMCPProjection {
         let jobRootContainer = mapper.containerPath(forHostPath: jobRootHost)
             ?? (workdir as NSString).appendingPathComponent(".astra/tasks/\(String(task.id.uuidString.prefix(8)))/jobs")
         var variables = [
-            "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": "docker",
+            "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": dockerRuntime.usesEnvironmentLookup
+                ? "docker"
+                : dockerRuntime.executablePath,
             "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
             "ASTRA_WORKSPACE_DOCKER_CONTAINER": containerName,
             "ASTRA_WORKSPACE_DOCKER_WORKDIR": workdir,

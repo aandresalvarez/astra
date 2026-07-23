@@ -103,6 +103,15 @@ struct ExecutionSandboxRunnerTests {
         )
     }
 
+    private var testDockerRuntimeProvider: AgentRuntimeProcessRunner.DockerRuntimeProvider {
+        {
+            DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
+        }
+    }
+
     /// Builds sandbox settings from an isolated `UserDefaults` suite (never
     /// `.standard`) so concurrently-running suites that also flip global sandbox
     /// keys (`ExecutionSandboxTests`, `AgentUtilityRuntimeTests`) can't race this
@@ -273,7 +282,10 @@ struct ExecutionSandboxRunnerTests {
         )
 
         withStandardEnforcement(.off) { sandboxSettingsProvider in
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: ws.path),
                 context: context
@@ -662,7 +674,15 @@ struct ExecutionSandboxRunnerTests {
         )
 
         withStandardEnforcement(.off) { sandboxSettingsProvider in
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: {
+                    DockerRuntimeResolver.resolution(
+                        executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                        environment: ["PATH": "/usr/bin:/bin"]
+                    )
+                }
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(
                     currentDirectory: workspace.path,
@@ -676,6 +696,9 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(plan.executionEnvironment.providerRunsInsideContainer)
+            #expect(plan.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
+            #expect(plan.arguments.first == "run")
+            #expect(plan.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
             #expect(plan.readOnlyBoundaryReceipt?.surfaces == [.providerContainer])
             #expect(plan.readOnlyBoundaryReceipt?.protects(input.path) == true)
             #expect(plan.readOnlyBoundaryReceipt?.protects("/mnt/astra/input-1") == true)
@@ -971,7 +994,10 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context
@@ -983,6 +1009,72 @@ struct ExecutionSandboxRunnerTests {
             }
             #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
             #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
+            #expect(plan.sandboxReadablePaths.contains("/Applications/Docker.app/Contents/Resources/bin"))
+            #expect(plan.commandPlannedFields["docker_host_tool_readable_path"] == "/Applications/Docker.app/Contents/Resources/bin")
+        }
+    }
+
+    @Test("sandboxedPlan grants the resolved target directory when the Docker CLI is a symlink")
+    func sandboxedPlanGrantsDockerSymlinkTargetDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-docker-symlink-\(UUID().uuidString)")
+        let targetDirectory = root.appendingPathComponent("Docker.app/Contents/Resources/bin", isDirectory: true)
+        let linkDirectory = root.appendingPathComponent("usr-local-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkDirectory, withIntermediateDirectories: true)
+        let targetExecutable = targetDirectory.appendingPathComponent("docker")
+        try Data().write(to: targetExecutable)
+        let linkExecutable = linkDirectory.appendingPathComponent("docker")
+        try FileManager.default.createSymbolicLink(at: linkExecutable, withDestinationURL: targetExecutable)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let resolvedExecutablePath = (linkExecutable.path as NSString).resolvingSymlinksInPath
+        let resolvedTargetDirectory = (resolvedExecutablePath as NSString).deletingLastPathComponent
+        // Sanity check the fixture actually exercises a symlink whose resolved
+        // target differs from the link's own directory; otherwise this test
+        // would pass trivially without covering the code path it targets.
+        try #require(resolvedTargetDirectory != linkDirectory.path)
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/codex",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                dockerRuntimeProvider: {
+                    DockerRuntimeResolver.resolution(
+                        executablePath: linkExecutable.path,
+                        environment: ["PATH": "/usr/bin:/bin"]
+                    )
+                }
+            )
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Codex Docker workspace execution to proceed to a launch plan")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains(linkDirectory.path))
+            #expect(plan.sandboxReadablePaths.contains(resolvedTargetDirectory))
+            #expect(plan.commandPlannedFields["docker_host_tool_readable_path"] == linkDirectory.path)
         }
     }
 
@@ -1014,14 +1106,18 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
-                GitCredentialSandboxContext(
-                    readablePaths: [gitConfig.path],
-                    writablePaths: [gitDirectory.path],
-                    transports: [.ssh],
-                    diagnostics: []
-                )
-            })
+            let runner = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider,
+                gitCredentialContextProvider: { _ in
+                    GitCredentialSandboxContext(
+                        readablePaths: [gitConfig.path],
+                        writablePaths: [gitDirectory.path],
+                        transports: [.ssh],
+                        diagnostics: []
+                    )
+                },
+                dockerRuntimeProvider: testDockerRuntimeProvider
+            )
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context

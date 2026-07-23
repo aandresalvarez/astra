@@ -673,6 +673,7 @@ struct WorkspaceToolSupportTests {
         #expect(!runLine.contains("GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json"))
         #expect(logLines.contains("env CLOUDSDK_CONFIG=/root/.config/gcloud"))
         let pathLine = try #require(logLines.first { $0.hasPrefix("env PATH=") })
+        #expect(pathLine.hasPrefix("env PATH=\(root.path):"))
         #expect(!pathLine.contains("/opt/\(root.lastPathComponent)/.venv/bin"))
         #expect(!pathLine.contains("/workspace/.venv/bin"))
         #expect(logLines.contains { $0.contains("DOCKER_CONFIG=\(dockerConfig.path)") })

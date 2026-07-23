@@ -1212,6 +1212,13 @@ enum AgentRuntimeLaunchPreflight {
         remediation: String
     ) {
         switch error {
+        case .cliMissing:
+            return (
+                .dockerDaemonUnavailable,
+                "docker_cli_missing",
+                "Docker CLI was not found on this Mac.",
+                "Install or reopen Docker Desktop, verify `docker version` works in Terminal, then retry."
+            )
         case .missingImage:
             return (
                 .dockerImageUnavailable,
