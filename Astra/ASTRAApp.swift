@@ -236,6 +236,13 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     weak var runtimeController: AppRuntimeController?
     private var isDrainingForTermination = false
 
+    static func requiresTerminationDrain(for queue: TaskQueue) -> Bool {
+        queue.hasProcessingLoop
+            || queue.isStopping
+            || queue.activeCount > 0
+            || queue.ownedCoroutineCount > 0
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app (matters when launched from a terminal via
         // `swift run`; a no-op for a normally-activated .app bundle).
@@ -260,9 +267,7 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtimeController,
-              runtimeController.taskQueue.hasProcessingLoop
-                || runtimeController.taskQueue.isStopping
-                || runtimeController.taskQueue.activeCount > 0 else {
+              Self.requiresTerminationDrain(for: runtimeController.taskQueue) else {
             return .terminateNow
         }
         guard !isDrainingForTermination else { return .terminateLater }

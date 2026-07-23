@@ -63,8 +63,15 @@ final class AppRuntimeController {
     /// until every queue-owned coroutine has returned.
     @discardableResult
     func shutdown() async -> Bool {
-        taskScheduler.stop()
-        return await taskQueue.cancelAllAndWait()
+        // Cancellation persistence is the commit point for shutdown.  If it
+        // fails, AppKit keeps the process alive and scheduled work must remain
+        // live too; stopping the scheduler before that failure would leave a
+        // session that can never fire schedules again.
+        let cancellationIsDurable = await taskQueue.cancelAllAndWait()
+        if cancellationIsDurable {
+            taskScheduler.stop()
+        }
+        return cancellationIsDurable
     }
 
     /// One-time-per-launch task-store housekeeping: prune abandoned low-signal

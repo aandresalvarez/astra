@@ -104,6 +104,49 @@ struct TaskQueueStoreSessionTests {
         #expect(!queue.hasBoundStoreSession)
     }
 
+    @Test("Failed runtime shutdown keeps the scheduler alive for a retry")
+    func failedRuntimeShutdownKeepsSchedulerAlive() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Scheduler retry", primaryPath: "/tmp")
+        let task = AgentTask(title: "Queued", goal: "Remain durable", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submission = try #require(
+            try? ExecutionRequestSubmissionService.submitInitial(for: task, into: context).get()
+        )
+        var persistenceAvailable = false
+        let queue = TaskQueue(poolSize: 0, persistQueueCancellation: { modelContext in
+            guard persistenceAvailable else { return false }
+            try? modelContext.save()
+            return true
+        })
+        _ = queue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: context)
+        let scheduler = TaskScheduler()
+        let runtime = AppRuntimeController(taskQueue: queue, taskScheduler: scheduler)
+        scheduler.start(modelContext: context, taskQueue: queue)
+
+        #expect(await runtime.shutdown() == false)
+        #expect(scheduler.isRunning)
+
+        persistenceAvailable = true
+        #expect(await runtime.shutdown())
+        #expect(!scheduler.isRunning)
+    }
+
+    @Test("Termination drain includes lifecycle coroutines after workers finish")
+    func terminationDrainIncludesLifecycleCoroutines() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let queue = TaskQueue(poolSize: 0)
+        #expect(!ASTRAAppDelegate.requiresTerminationDrain(for: queue))
+        _ = queue.registerLifecycleTask(modelContext: context) { _ in
+            await Task.yield()
+        }
+        #expect(ASTRAAppDelegate.requiresTerminationDrain(for: queue))
+    }
+
     @Test("Signals arriving during shutdown cannot create orphan completion handles")
     func signalDuringShutdownIsRejectedBeforePromiseRegistration() async throws {
         let container = try makeContainer()

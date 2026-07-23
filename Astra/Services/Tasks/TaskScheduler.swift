@@ -89,6 +89,11 @@ final class TaskScheduler {
     func stop() {
         checkTask?.cancel()
         checkTask = nil
+        // Publish the stopped state synchronously with cancellation.  The
+        // loop's defer repeats this assignment when it observes cancellation,
+        // but callers such as application shutdown must not observe a stale
+        // running flag while awaiting the next scheduler tick.
+        isRunning = false
         AppLogger.audit(.schedulerStopped, category: "Scheduler")
     }
 

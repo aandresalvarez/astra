@@ -86,16 +86,16 @@ final class AgentRuntimeWorker {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
-            task: task,
-            selectedRuntime: selectedRuntime,
-            phase: "run")
-        alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
-        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
-        TaskCapabilitySnapshotter.refreshForFreshRun(task: task)
+            task: launchTask, selectedRuntime: selectedRuntime, phase: "run")
+        alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "run")
+        clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: selectedRuntime, phase: "run")
+        TaskCapabilitySnapshotter.refreshForFreshRun(task: launchTask)
         await executeRuntimeSession(
             task: task,
+            launchTask: launchTask,
             modelContext: modelContext,
             selectedRuntime: selectedRuntime,
             onEvent: onEvent,
@@ -117,8 +117,10 @@ final class AgentRuntimeWorker {
         existingStartEventID: UUID? = nil,
         executionRequestID: UUID? = nil,
         modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
+        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
@@ -159,24 +161,21 @@ final class AgentRuntimeWorker {
         }
 
         TaskPlanService.recordExecutionStarted(planID: currentPlan.planID, task: task, modelContext: modelContext)
-        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
-            task: task,
-            selectedRuntime: selectedRuntime,
-            phase: "run"
-        )
+            task: launchTask, selectedRuntime: selectedRuntime, phase: "run")
         let prompt = if let approvedStep {
-            AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: task, plan: currentPlan, step: approvedStep)
+            AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: launchTask, plan: currentPlan, step: approvedStep)
         } else {
-            AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: currentPlan)
+            AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: launchTask, plan: currentPlan)
         }
-        let executionPolicy = Self.approvedPlanExecutionPolicy(
+        let runExecutionPolicy = Self.approvedPlanExecutionPolicy(
             runtime: selectedRuntime,
             currentPermissionPolicy: permissionPolicy,
-            task: task,
+            task: launchTask,
             plan: currentPlan,
             step: approvedStep
-        )
+        ).withLaunchSnapshot(executionPolicy.launchSnapshot)
         await execute(
             task: task,
             modelContext: modelContext,
@@ -185,7 +184,7 @@ final class AgentRuntimeWorker {
                 ?? "Agent started executing approved plan: \(currentPlan.title)",
             existingStartEventID: existingStartEventID,
             executionRequestID: executionRequestID,
-            executionPolicy: executionPolicy,
+            executionPolicy: runExecutionPolicy,
             onEvent: onEvent
         )
         if task.status == .completed {
@@ -423,21 +422,23 @@ final class AgentRuntimeWorker {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
-            task: task,
+            task: launchTask,
             selectedRuntime: selectedRuntime,
             phase: "resume"
         )
-        alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
-        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
+        alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "resume")
+        clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: selectedRuntime, phase: "resume")
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: message,
-            task: task,
+            task: launchTask,
             executionPolicy: executionPolicy
         )
         await executeRuntimeSession(
             task: task,
+            launchTask: launchTask,
             modelContext: modelContext,
             selectedRuntime: selectedRuntime,
             onEvent: onEvent,
@@ -455,6 +456,7 @@ final class AgentRuntimeWorker {
     @MainActor
     private func executeRuntimeSession(
         task: AgentTask,
+        launchTask: AgentTask,
         modelContext: ModelContext,
         selectedRuntime: AgentRuntimeID,
         onEvent: @escaping (ParsedEvent) -> Void,
@@ -471,7 +473,7 @@ final class AgentRuntimeWorker {
         var launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
-            "model": task.model,
+            "model": launchTask.model,
             "runtime": selectedRuntime.rawValue,
             "phase": auditPhase.rawValue,
             "workspace_id": task.workspace?.id.uuidString ?? "none"
@@ -527,14 +529,14 @@ final class AgentRuntimeWorker {
         // run.providerSessionId (would capture task.sessionId before a
         // reroute clears it). Settling just the field TaskRun.init would
         // otherwise settle avoids both.
-        if task.executionEnvironmentSnapshotJSON == nil {
-            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
-                ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+        if launchTask.executionEnvironmentSnapshotJSON == nil {
+            launchTask.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+                ExecutionEnvironmentStore.decode(launchTask.workspace?.activeExecutionEnvironmentJSON)
             )
         }
 
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
-            task: task,
+            task: launchTask,
             requestedRuntime: selectedRuntime,
             runtimeConfiguration: runtimeConfiguration,
             promptOverride: promptOverride,
@@ -545,13 +547,13 @@ final class AgentRuntimeWorker {
         )
         let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
             runtimeResolution,
-            task: task,
+            task: launchTask,
             phase: auditPhase,
             alignModel: { runtime in
-                alignTaskModelWithSelectedRuntime(task, selectedRuntime: runtime, phase: auditPhase)
+                alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: runtime, phase: auditPhase)
             },
             clearMismatchedSession: { runtime in
-                clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: runtime, phase: auditPhase)
+                clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: runtime, phase: auditPhase)
             }
         )
         if appliedRuntime.reroutedFrom != nil {
@@ -570,7 +572,7 @@ final class AgentRuntimeWorker {
         // save) — if the link were set only in memory here, a crash before
         // any later save would leave the durable user message permanently
         // detached from the run that answered it.
-        let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
+        let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: launchTask)
         PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
         defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
@@ -587,19 +589,19 @@ final class AgentRuntimeWorker {
         )
 
         let providerLaunchContextText = runtimeAdapter.connectorPreflightContextText(
-            task: task,
+            task: launchTask,
             promptOverride: promptOverride,
             startPayload: startPayload,
             sessionMessage: sessionMessage,
             phase: auditPhase
         )
         let launchPermissionPolicy = effectivePermissionPolicy(
-            for: task,
+            for: launchTask,
             selectedRuntime: selectedRuntime,
             executionPolicy: executionPolicy
         )
         let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
-            for: task,
+            for: launchTask,
             providerLaunchContextText: providerLaunchContextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
             exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
@@ -665,10 +667,10 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime
         )
 
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        let codeDir = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
         if TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: turnBegin.request,
-            task: task
+            task: launchTask
         ) {
             let claimedPath = turnBegin.request?.resourceClaims.first {
                 $0.kind == .workspace
@@ -735,11 +737,11 @@ final class AgentRuntimeWorker {
         let shouldCleanupIsolation: Bool
         if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
             do {
-                executionPath = try await IsolationService.prepare(task: task)
+                executionPath = try await IsolationService.prepare(task: launchTask)
                 shouldCleanupIsolation = true
-                if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
+                if executionPath != TaskWorkspaceAccess(task: launchTask).effectiveWorkspacePath {
                     let isoEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use,
-                        payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
+                        payload: "Isolation: \(launchTask.isolationStrategy.rawValue) -> \(executionPath)", run: run)
                     modelContext.insert(isoEvent)
                 }
             } catch {
@@ -766,24 +768,23 @@ final class AgentRuntimeWorker {
             from: executionPolicy.permissionGrantsOverride ?? [],
             homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
         let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
-            task: task, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
+            task: launchTask, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
-        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.taskSnapshot)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
         let basePrompt = promptOverride ?? buildPrompt(
-            for: task,
+            for: launchTask,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
             to: basePrompt,
-            task: task,
+            task: launchTask,
             permissionPolicy: launchPermissionPolicy,
             contextText: providerLaunchContextText
         ))
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
-            task: task,
+            task: launchTask,
             runID: run.id,
             runtime: selectedRuntime,
             phase: auditPhase,
@@ -838,7 +839,7 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             runtime: selectedRuntime,
-            model: task.model,
+            model: launchTask.model,
             workspacePath: executionPath,
             phase: auditPhase,
             permissionPolicy: runPermissionPolicy,
@@ -928,14 +929,14 @@ final class AgentRuntimeWorker {
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
-            task: task,
+            task: launchTask,
             phase: auditPhase,
             idleTimeoutSeconds: timeoutSeconds
         )
         let result = await processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: prompt,
-            task: task,
+            task: launchTask,
             workspacePath: executionPath,
             executablePath: launchSettings.executablePath,
             homeDirectory: launchSettings.homeDirectory,

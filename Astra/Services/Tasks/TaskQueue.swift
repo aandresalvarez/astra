@@ -306,6 +306,7 @@ final class TaskQueue {
         modelContext: ModelContext,
         executionRequestID: UUID? = nil,
         resourceAccess: TaskResourceAccessMode = .write,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
         let executionRequest = executionRequestID.flatMap {
@@ -396,6 +397,7 @@ final class TaskQueue {
             modelContext: modelContext,
             existingStartEventID: nil,
             executionRequestID: executionRequest?.id,
+            executionPolicy: executionPolicy,
             onEvent: onEvent
         )
 
@@ -1071,6 +1073,7 @@ final class TaskQueue {
         modelContext: ModelContext,
         executionRequestID: UUID? = nil,
         resourceAccess: TaskResourceAccessMode = .write,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
         let executionRequest = executionRequestID.flatMap {
@@ -1164,6 +1167,7 @@ final class TaskQueue {
             existingStartEventID: nil,
             executionRequestID: executionRequest?.id,
             modelContext: modelContext,
+            executionPolicy: executionPolicy,
             onEvent: onEvent
         )
 
@@ -1479,29 +1483,21 @@ final class TaskQueue {
             failPersistedTurn(request, reason: "task_missing", modelContext: modelContext)
             return
         }
-        let launchRestoration = TaskExecutionLaunchSnapshotApplicator.apply(request: request, to: task)
-        defer {
-            if let launchRestoration {
-                launchRestoration.restore(task)
-                WorkspacePersistenceCoordinator.saveAndAutoExport(
-                    workspace: task.workspace,
-                    modelContext: modelContext,
-                    auditFields: ["operation": "restore_execution_launch_configuration"]
-                )
-            }
-        }
+        let launchSnapshot = TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task)
         let resourceAccess = resourceAccess(for: request, task: task)
         guard let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
             return
         }
         let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)
+        let requestExecutionPolicy = (source?.executionPolicyOverride?.executionPolicy ?? .default)
+            .withLaunchSnapshot(launchSnapshot)
         if source?.launchMode == .continuation || request.kind == .followUp {
             _ = await continuePersistedTurn(
                 task: task,
                 requestID: request.id,
                 modelContext: modelContext,
-                executionPolicy: source?.executionPolicyOverride?.executionPolicy ?? .default,
+                executionPolicy: requestExecutionPolicy,
                 resourceAccess: resourceAccess,
                 onEvent: { _ in }
             )
@@ -1524,7 +1520,8 @@ final class TaskQueue {
                 mode: mode,
                 modelContext: modelContext,
                 executionRequestID: request.id,
-                resourceAccess: resourceAccess
+                resourceAccess: resourceAccess,
+                executionPolicy: requestExecutionPolicy
             )
             return
         }
@@ -1532,7 +1529,8 @@ final class TaskQueue {
             task,
             modelContext: modelContext,
             executionRequestID: request.id,
-            resourceAccess: resourceAccess
+            resourceAccess: resourceAccess,
+            executionPolicy: requestExecutionPolicy
         )
     }
 

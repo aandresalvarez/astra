@@ -294,6 +294,20 @@ enum ExecutionRequestSubmissionService {
     }
 
     static func decodeSourcePayload(_ event: TaskEvent) -> TaskExecutionSourcePayloadV1? {
+        guard [
+            TaskEventTypes.ExecutionRequest.initial,
+            TaskEventTypes.ExecutionRequest.retry,
+            TaskEventTypes.ExecutionRequest.resume,
+            TaskEventTypes.ExecutionRequest.scheduled,
+            TaskEventTypes.ExecutionRequest.planStep,
+            TaskEventTypes.ExecutionRequest.chained,
+            TaskEventTypes.ExecutionRequest.permissionResume
+        ].contains(where: { $0.rawValue == event.type }) else {
+            // User-authored conversation payloads are intentionally opaque.
+            // A user message that happens to be valid envelope JSON must never
+            // gain the authority of an internal execution request.
+            return nil
+        }
         guard let data = event.payload.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(TaskExecutionSourcePayloadV1.self, from: data)
     }

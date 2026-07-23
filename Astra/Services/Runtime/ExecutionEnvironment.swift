@@ -529,6 +529,26 @@ enum DockerExecutionPlanner {
         additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
+        if workspaceAccess == .shared {
+            // Environment snapshots are durable and may have been produced by
+            // an earlier exclusive run.  Do not let a stale rw mount survive
+            // merely because appendMount deduplicates by host path: a shared
+            // request must downgrade every inherited workspace mount before
+            // the new plan is assembled.  The per-task output folder remains
+            // the only writable exception.
+            let taskFolder = ExecutionSandbox.canonicalize(TaskWorkspaceAccess(task: task).taskFolder)
+            mounts = mounts.map { mount in
+                let canonicalHostPath = ExecutionSandbox.canonicalize(mount.hostPath) ?? mount.hostPath
+                guard canonicalHostPath != taskFolder else { return mount }
+                guard mount.role != .credential else { return mount }
+                return ExecutionEnvironmentMount(
+                    hostPath: mount.hostPath,
+                    containerPath: mount.containerPath,
+                    access: .readOnly,
+                    role: mount.role
+                )
+            }
+        }
         func appendMount(_ mount: ExecutionEnvironmentMount, avoidContainerCollision: Bool = false) {
             let standardized = WorkspacePathPresentation.standardizedPath(mount.hostPath)
             guard !standardized.isEmpty else { return }

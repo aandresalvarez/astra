@@ -5,9 +5,15 @@ import ASTRAModels
 @MainActor
 @Suite("Task execution launch snapshot applicator")
 struct TaskExecutionLaunchSnapshotApplicatorTests {
-    @Test("Queued request launches with its immutable configuration and restores editable state")
-    func appliesAndRestoresCompleteSnapshot() throws {
-        let task = AgentTask(title: "Queued", goal: "Run")
+    @Test("Queued request uses a detached immutable configuration and preserves editable state")
+    func buildsDetachedCompleteSnapshot() throws {
+        let workspace = Workspace(name: "Queued workspace", primaryPath: "/tmp/queued-workspace")
+        let task = AgentTask(title: "Queued", goal: "Run", workspace: workspace)
+        let priorRun = TaskRun(task: task)
+        priorRun.status = .completed
+        let priorEvent = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "prior")
+        task.runs = [priorRun]
+        task.events = [priorEvent]
         task.runtimeID = "codex_cli"
         task.model = "submitted-model"
         task.tokenBudget = 1_234
@@ -43,17 +49,25 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         task.skillSnapshotsJSON = "edited-skills"
         task.runtimePermissionGrantsJSON = "edited-grants"
 
-        let restoration = try #require(TaskExecutionLaunchSnapshotApplicator.apply(request: request, to: task))
-        #expect(task.runtimeID == "codex_cli")
-        #expect(task.model == "submitted-model")
-        #expect(task.tokenBudget == 1_234)
-        #expect(task.maxTurns == 7)
-        #expect(task.isolationStrategy == .gitBranch)
-        #expect(task.validationStrategy == .runTests)
-        #expect(task.executionRootPath == "/tmp/submitted-root")
-        #expect(task.runtimePermissionGrantsJSON == "submitted-grants")
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let launchTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        #expect(launchTask.runtimeID == "codex_cli")
+        #expect(launchTask.model == "submitted-model")
+        #expect(launchTask.tokenBudget == 1_234)
+        #expect(launchTask.maxTurns == 7)
+        #expect(launchTask.isolationStrategy == .gitBranch)
+        #expect(launchTask.validationStrategy == .runTests)
+        #expect(launchTask.executionRootPath == "/tmp/submitted-root")
+        #expect(launchTask.runtimePermissionGrantsJSON == "submitted-grants")
+        #expect(launchTask.workspace?.primaryPath == workspace.primaryPath)
+        #expect(launchTask.events.contains { $0.id == priorEvent.id })
+        #expect(launchTask.runs.contains { $0.id == priorRun.id })
+        #expect(task.workspace === workspace)
+        #expect(task.events.contains { $0.id == priorEvent.id })
+        #expect(task.runs.contains { $0.id == priorRun.id })
+        #expect(priorEvent.task === task)
+        #expect(priorRun.task === task)
 
-        restoration.restore(task)
         #expect(task.runtimeID == "claude_code")
         #expect(task.model == "edited-model")
         #expect(task.tokenBudget == 9_999)

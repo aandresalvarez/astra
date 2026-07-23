@@ -100,7 +100,7 @@ struct ProviderLaunchCapabilityScopeTests {
             workerSource,
             """
             let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
-                for: task,
+                for: launchTask,
                 providerLaunchContextText: providerLaunchContextText,
                 additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
                 exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
