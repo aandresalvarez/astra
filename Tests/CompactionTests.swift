@@ -216,6 +216,47 @@ struct CompactionTests {
         #expect(remainingEvents.contains { $0.type == "activity.compacted" })
     }
 
+    @Test("Compaction preserves Docker recovery audit events")
+    func preservesDockerRecoveryAuditEvents() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+        let recoveryPayload = DockerImageRecoveryEventPayload(
+            operationID: UUID(),
+            image: "astra-project:latest",
+            action: "rebuild",
+            result: .succeeded,
+            imageID: "sha256:verified",
+            detail: nil
+        )
+        let recoveryEvent = TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.dockerImageRecovery,
+            payload: recoveryPayload
+        )
+        recoveryEvent.timestamp = Date(timeIntervalSince1970: 5)
+        context.insert(recoveryEvent)
+
+        for index in 0..<230 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+        let preserved = try #require(remainingEvents.first { $0.type == TaskEventTypes.System.dockerImageRecovery.rawValue })
+        let preservedPayload = try preserved.decodePayload(
+            as: DockerImageRecoveryEventPayload.self,
+            expecting: TaskEventTypes.System.dockerImageRecovery
+        ).get()
+        #expect(preservedPayload.imageID == "sha256:verified")
+        #expect(remainingEvents.contains { $0.type == "activity.compacted" })
+    }
+
     @Test("Compaction preserves plan and validation lifecycle so state still reconstructs")
     func preservesPlanAndValidationLifecycleEvents() throws {
         let container = try makeCompactionTestContainer()

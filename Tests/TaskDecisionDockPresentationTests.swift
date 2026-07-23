@@ -396,6 +396,80 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.summary.contains("Retry with broader policy permissions"))
     }
 
+    @Test("Docker image launch failure offers repair as the primary action")
+    func dockerImageFailureOffersPrimaryRepairAction() throws {
+        let image = "astra-starr-data-lake:latest"
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: image
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+        #expect(dock.primaryAction?.title == "Repair image and retry")
+        #expect(dock.primaryAction?.payload == image)
+        #expect(dock.secondaryActions.contains { $0.kind == .retry })
+    }
+
+    @Test("Docker repair action is disabled while diagnosis or repair is running")
+    func dockerImageRepairActionDisablesWhileBusy() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-starr-data-lake:latest",
+            isDockerRecoveryBusy: true,
+            canResume: true,
+            hasProviderSession: true
+        ))
+
+        let dock = try #require(presentation)
+        let action = try #require(dock.primaryAction)
+        #expect(action.kind == .repairDockerImage)
+        #expect(action.title == "Checking image…")
+        #expect(!action.isEnabled)
+        #expect(dock.secondaryActions.filter { $0.kind == .retry || $0.kind == .resume }.allSatisfy { !$0.isEnabled })
+    }
+
+    @Test("Docker recovery stays unavailable on another task while the coordinator is occupied")
+    func dockerRecoveryActionDisablesForAnotherTaskWhileOccupied() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-other:latest",
+            isDockerRecoveryOccupied: true
+        )))
+
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+        #expect(dock.primaryAction?.title == "Repair unavailable")
+        #expect(dock.primaryAction?.isEnabled == false)
+    }
+
+    @Test("Docker recovery takes priority over an executable approved plan")
+    func dockerRecoveryPrecedesApprovedPlan() throws {
+        let plan = TaskPlanPayload(
+            title: "Run approved plan",
+            goal: "Build image",
+            steps: [TaskPlanPayloadStep(id: "step", title: "Run")]
+        )
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            dockerRecoveryImage: "astra-project:latest",
+            executableApprovedPlan: plan
+        )))
+
+        #expect(dock.primaryAction?.kind == .repairDockerImage)
+    }
+
+    @Test("Docker repair is not offered when the task cannot retry")
+    func dockerRepairRequiresRetryCapability() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            canRetry: false,
+            dockerRecoveryImage: "astra-starr-data-lake:latest"
+        )))
+
+        #expect(dock.primaryAction?.kind != .repairDockerImage)
+        #expect(!dock.secondaryActions.contains { $0.kind == .repairDockerImage })
+    }
+
     private func context(
         status: TaskStatus,
         mission: MissionControlPresentation? = nil,
@@ -405,7 +479,13 @@ struct TaskDecisionDockPresentationTests {
         visibleThreadAffordances: Set<TaskThreadAffordance>? = nil,
         pendingReviewState: PendingTaskReviewState = .none,
         canRetry: Bool = true,
-        launchBlock: TaskRunLaunchBlockPayload? = nil
+        launchBlock: TaskRunLaunchBlockPayload? = nil,
+        dockerRecoveryImage: String? = nil,
+        executableApprovedPlan: TaskPlanPayload? = nil,
+        isDockerRecoveryBusy: Bool = false,
+        isDockerRecoveryOccupied: Bool = false,
+        canResume: Bool = false,
+        hasProviderSession: Bool = false
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -425,9 +505,9 @@ struct TaskDecisionDockPresentationTests {
             runtimePermissionCommandPreview: nil,
             runtimePermissionAllowSimilarLabel: nil,
             canApproveSimilarRuntimePermission: false,
-            hasExecutableApprovedPlan: false,
-            planActionTitle: nil,
-            planActionDetail: nil,
+            hasExecutableApprovedPlan: executableApprovedPlan != nil,
+            planActionTitle: executableApprovedPlan?.title,
+            planActionDetail: executableApprovedPlan?.title,
             planModeLabel: nil,
             canOpenPlan: false,
             isPlanCanvasVisible: false,
@@ -438,12 +518,15 @@ struct TaskDecisionDockPresentationTests {
             canRun: true,
             canApprove: true,
             canRetry: canRetry,
-            canResume: false,
+            canResume: canResume,
             canReportProblem: canReportProblem,
             canToggleDone: true,
-            hasProviderSession: false,
+            hasProviderSession: hasProviderSession,
             failureReason: nil,
             launchBlock: launchBlock,
+            dockerRecoveryImage: dockerRecoveryImage,
+            isDockerRecoveryBusy: isDockerRecoveryBusy,
+            isDockerRecoveryOccupied: isDockerRecoveryOccupied,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )

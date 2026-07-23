@@ -73,4 +73,21 @@ struct TaskFailureReasonPresentationTests {
         let decoded = try #require(TaskRunLaunchBlockPayload.decode(from: json))
         #expect(decoded.suggestedRuntimeID == nil)
     }
+
+    @Test("TaskRunLaunchBlockPayload decodes payloads written before Docker recovery fields existed")
+    func launchBlockPayloadDecodesLegacyJSON() throws {
+        let json = """
+        {
+          "kind": "runtimeIncompatible",
+          "title": "Runtime unavailable",
+          "message": "The selected runtime cannot launch this task.",
+          "missingCapabilities": []
+        }
+        """
+
+        let decoded = try #require(TaskRunLaunchBlockPayload.decode(from: json))
+        #expect(decoded.dockerImage == nil)
+        #expect(decoded.dockerImageID == nil)
+        #expect(decoded.dockerReadinessState == nil)
+    }
 }

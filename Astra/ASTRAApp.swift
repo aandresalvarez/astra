@@ -676,6 +676,7 @@ public struct ASTRAApp: App {
     @StateObject private var appSettings = AppSettingsSnapshotStore()
     @StateObject private var feedbackRouter = FeedbackReportRouter()
     @StateObject private var feedbackCrashOfferService = FeedbackCrashOfferService()
+    @StateObject private var dockerImageRecovery = DockerImageRecoveryCoordinator()
     @State private var runtime = AppRuntimeController()
     private let startupBlocker: PersistentStoreRecoveryBlocker?
 
@@ -850,6 +851,13 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
+        let reconciledDockerRecoveries = DockerImageRecoveryReconciler.reconcileInterruptedRecoveries(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
+        if reconciledDockerRecoveries > 0 {
+            AppLogger.warning(
+                "Reconciled \(reconciledDockerRecoveries) interrupted Docker recovery operation(s)",
+                category: "ExecutionEnvironment"
+            )
+        }
         TaskTurnRequestRecoveryService.recoverInterruptedRequests(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
@@ -972,7 +980,11 @@ public struct ASTRAApp: App {
                     )
                 }
             case .main:
-                ContentView(appUpdateController: appUpdateController, runtime: runtime)
+                ContentView(
+                    appUpdateController: appUpdateController,
+                    runtime: runtime,
+                    dockerImageRecovery: dockerImageRecovery
+                )
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                     .environmentObject(appSettings)
                     .environmentObject(feedbackRouter)

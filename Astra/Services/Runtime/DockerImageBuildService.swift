@@ -40,8 +40,45 @@ enum DockerImageBuildError: LocalizedError, Equatable, Sendable {
     }
 }
 
-protocol DockerImageBuilding {
+protocol DockerImageBuilding: Sendable {
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError>
+}
+
+/// Docker tags are mutable daemon-wide names. Two independent UI surfaces can
+/// otherwise build the same tag concurrently and recovery may verify whichever
+/// build happened to finish last. Keep the lock shared across all build-service
+/// instances, but scope it to the canonical image reference so unrelated images
+/// can still build concurrently.
+actor DockerImageBuildLock {
+    static let shared = DockerImageBuildLock()
+
+    private var heldImages: Set<String> = []
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    func withLock<T: Sendable>(image: String, operation: @Sendable () async -> T) async -> T {
+        await acquire(image)
+        let result = await operation()
+        release(image)
+        return result
+    }
+
+    private func acquire(_ image: String) async {
+        if heldImages.insert(image).inserted { return }
+        await withCheckedContinuation { continuation in
+            waiters[image, default: []].append(continuation)
+        }
+    }
+
+    private func release(_ image: String) {
+        if var imageWaiters = waiters[image], !imageWaiters.isEmpty {
+            let next = imageWaiters.removeFirst()
+            waiters[image] = imageWaiters
+            next.resume()
+        } else {
+            heldImages.remove(image)
+            waiters[image] = nil
+        }
+    }
 }
 
 struct DockerImageBuildService: DockerImageBuilding {
@@ -72,6 +109,13 @@ struct DockerImageBuildService: DockerImageBuilding {
     }
 
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError> {
+        let lockImage = DockerImageReference.canonicalName(for: request.image)
+        return await DockerImageBuildLock.shared.withLock(image: lockImage) {
+            await buildImageWithoutLock(request)
+        }
+    }
+
+    private func buildImageWithoutLock(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError> {
         let environment = environmentProvider()
         guard let dockerRuntime = resolveDockerRuntime(environment) else {
             return .failure(.cliMissing)

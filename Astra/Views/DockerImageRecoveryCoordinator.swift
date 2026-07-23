@@ -1,0 +1,455 @@
+import SwiftUI
+import SwiftData
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+
+@MainActor
+final class DockerImageRecoveryCoordinator: ObservableObject {
+    @Published var pendingPlan: DockerImageRecoveryPlan?
+    @Published private(set) var pendingTaskID: UUID?
+    @Published private(set) var activeTaskID: UUID?
+    @Published var isConfirmationPresented = false
+    @Published var isBusy = false
+    @Published var errorMessage: String?
+    @Published private(set) var errorTaskID: UUID?
+
+    private var hasPendingConfirmation: Bool {
+        pendingPlan != nil && pendingTaskID != nil && isConfirmationPresented
+    }
+
+    var canStartTaskRetry: Bool { !isBusy && !hasPendingConfirmation }
+
+    var isRecoveryOccupied: Bool { isBusy || hasPendingConfirmation }
+
+    func isRecoveryOccupiedByOtherTask(for taskID: UUID) -> Bool {
+        isRecoveryOccupied && activeTaskID != taskID
+    }
+
+    func canStartTaskRetry(for taskID: UUID) -> Bool {
+        (!isBusy && !hasPendingConfirmation) || activeTaskID != taskID
+    }
+
+    func isBusy(for taskID: UUID) -> Bool {
+        isBusy && activeTaskID == taskID
+    }
+
+    private let recovery: any DockerImageRecovering
+    private let eventRecorder: any DockerImageRecoveryEventRecording
+    private var operationID: UUID?
+    private var recoveryEventOperationID: UUID?
+    private var expectedRunID: UUID?
+    private var expectedTaskID: UUID?
+    private var expectedEnvironment: WorkspaceExecutionEnvironment?
+    private var expectedWorkspaceRootsFingerprint: String?
+    private var isInvalidated = false
+
+    init(
+        recovery: any DockerImageRecovering = DockerImageRecoveryService(),
+        eventRecorder: any DockerImageRecoveryEventRecording = DockerImageRecoveryEventRecorder()
+    ) {
+        self.recovery = recovery
+        self.eventRecorder = eventRecorder
+    }
+
+    func prepare(
+        image: String,
+        workspace: Workspace?,
+        taskID: UUID,
+        run: TaskRun?,
+        taskEnvironment: WorkspaceExecutionEnvironment = .host
+    ) {
+        guard !isBusy, !hasPendingConfirmation, let workspace else { return }
+        isBusy = true
+        errorMessage = nil
+        errorTaskID = nil
+        expectedRunID = run?.id
+        expectedTaskID = taskID
+        expectedEnvironment = Self.recoveryEnvironment(
+            taskEnvironment: taskEnvironment,
+            run: run
+        )
+        expectedWorkspaceRootsFingerprint = Self.workspaceRootsFingerprint(workspace)
+        activeTaskID = taskID
+        isInvalidated = false
+        let operationID = UUID()
+        self.operationID = operationID
+        let recoveryWorkspace = DockerImageRecoveryWorkspace(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths,
+            preferredSourcePath: ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON).sourcePath
+        )
+        audit(taskID: taskID, result: "recovery_diagnosis_started", image: image)
+        let recovery = self.recovery
+
+        // Keep the task-scoped operation alive through navigation. The view
+        // that initiated recovery may be replaced while Docker is running,
+        // but the durable started event still needs a terminal outcome.
+        Task { [self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                await recovery.recoveryPlan(image: image, workspace: recoveryWorkspace)
+            }.value
+            guard self.operationID == operationID else { return }
+            isBusy = false
+            guard !isInvalidated else {
+                audit(taskID: taskID, result: "recovery_plan_invalidated", image: image, level: .warning)
+                finishOperation()
+                return
+            }
+            switch result {
+            case .success(let plan):
+                pendingPlan = plan
+                pendingTaskID = taskID
+                isConfirmationPresented = true
+                audit(taskID: taskID, result: "recovery_plan_ready", plan: plan)
+            case .failure(let error):
+                setError(error.localizedDescription, for: taskID)
+                audit(taskID: taskID, result: "recovery_plan_unavailable", image: image, detail: error.localizedDescription, level: .warning)
+                finishOperation()
+            }
+        }
+    }
+
+    func perform(
+        _ plan: DockerImageRecoveryPlan,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext,
+        onSuccess: @escaping @MainActor () -> Void
+    ) {
+        guard !isBusy, !isInvalidated, expectedTaskID == task.id, expectedRunID == run?.id else {
+            setError("The failed run changed before Docker recovery could start. Diagnose the latest run again.", for: task.id)
+            return
+        }
+        guard environmentStillMatches(task: task, run: run), workspaceRootsStillMatch(task: task) else {
+            pendingPlan = nil
+            isConfirmationPresented = false
+            finishOperation()
+            setError("The task environment changed, or its workspace roots changed, before Docker recovery could start. Select the current environment and diagnose the latest run again.", for: task.id)
+            return
+        }
+        isBusy = true
+        isConfirmationPresented = false
+        pendingPlan = nil
+        let recoveryEventOperationID = UUID()
+        self.recoveryEventOperationID = recoveryEventOperationID
+        guard eventRecorder.record(
+            task: task, run: run, plan: plan, result: .started, detail: nil,
+            operationID: recoveryEventOperationID, verifiedImageID: nil, modelContext: modelContext
+        ) else {
+            isBusy = false
+            finishOperation()
+            setError("ASTRA could not durably record authorization for this Docker repair, so no Docker command was run.", for: task.id)
+            return
+        }
+        let operationID = UUID()
+        self.operationID = operationID
+        expectedTaskID = task.id
+        activeTaskID = task.id
+        let recovery = self.recovery
+
+        // The shared coordinator remains the operation owner even if the
+        // selected task view is replaced during a long Docker build.
+        Task { [self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                await recovery.performRecovery(plan)
+            }.value
+            guard self.operationID == operationID else { return }
+            isBusy = false
+            if isInvalidated {
+                // The task may have been hard-deleted from the model context
+                // while recovery was in flight (see TaskLifecycleCoordinator
+                // .deleteTask); touching `task` past that point -- including
+                // constructing a TaskEvent from it -- reads/writes a deleted
+                // SwiftData object. Same guard style as
+                // ObjectiveAssessmentService.swift's post-await re-check.
+                guard !task.isDeleted, task.modelContext != nil else {
+                    finishOperation()
+                    return
+                }
+                let recorded = eventRecorder.record(
+                    task: task,
+                    run: run,
+                    plan: plan,
+                    result: .failed,
+                    detail: "Recovery was invalidated before retry; ASTRA did not retry.",
+                    operationID: recoveryEventOperationID,
+                    verifiedImageID: nil,
+                    modelContext: modelContext
+                )
+                finishOperation()
+                if !recorded {
+                    setError(
+                        "Recovery was invalidated, but ASTRA could not durably record its terminal failure. The task was not retried.",
+                        for: task.id
+                    )
+                }
+                return
+            }
+            switch result {
+            case .success(let verification):
+                guard environmentStillMatches(task: task, run: run), workspaceRootsStillMatch(task: task) else {
+                    let detail = "Docker recovery completed, but the task environment changed or its workspace roots changed before ASTRA could apply the verified image ID. The task was not retried."
+                    let recorded = eventRecorder.record(
+                        task: task,
+                        run: run,
+                        plan: plan,
+                        result: .failed,
+                        detail: detail,
+                        operationID: recoveryEventOperationID,
+                        verifiedImageID: verification.imageID,
+                        modelContext: modelContext
+                    )
+                    finishOperation()
+                    setError(recorded ? detail : "\(detail) ASTRA also could not durably record the recovery failure.", for: task.id)
+                    return
+                }
+                guard persistVerifiedImageID(verification.imageID, task: task, modelContext: modelContext) else {
+                    let detail = "Docker recovery verified the image, but ASTRA could not durably persist its image ID. The task was not retried."
+                    let recorded = eventRecorder.record(
+                        task: task,
+                        run: run,
+                        plan: plan,
+                        result: .failed,
+                        detail: detail,
+                        operationID: recoveryEventOperationID,
+                        verifiedImageID: verification.imageID,
+                        modelContext: modelContext
+                    )
+                    finishOperation()
+                    setError(recorded ? detail : "\(detail) ASTRA also could not durably record the recovery failure.", for: task.id)
+                    return
+                }
+                guard eventRecorder.record(
+                    task: task, run: run, plan: plan, result: .succeeded, detail: nil,
+                    operationID: recoveryEventOperationID, verifiedImageID: verification.imageID, modelContext: modelContext
+                ) else {
+                    finishOperation()
+                    setError("Docker recovery verified the image, but ASTRA could not durably record success. The task was not retried.", for: task.id)
+                    return
+                }
+                finishOperation()
+                onSuccess()
+            case .failure(let error):
+                let recorded = eventRecorder.record(
+                    task: task,
+                    run: run,
+                    plan: plan,
+                    result: .failed,
+                    detail: error.localizedDescription,
+                    operationID: recoveryEventOperationID,
+                    verifiedImageID: nil,
+                    modelContext: modelContext
+                )
+                finishOperation()
+                setError(
+                    recorded
+                        ? error.localizedDescription
+                        : "\(error.localizedDescription) ASTRA also could not durably record the recovery failure.",
+                    for: task.id
+                )
+            }
+        }
+    }
+
+    private func persistVerifiedImageID(
+        _ imageID: String,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) -> Bool {
+        var taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        guard taskEnvironment.isContainerized else { return false }
+        taskEnvironment.imageDigest = imageID
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(taskEnvironment)
+        task.updatedAt = Date()
+        return WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "docker_image_recovery_verified_image_id"]
+        )
+    }
+
+    func invalidateIfRunChanged(for taskID: UUID, to latestRunID: UUID?) {
+        guard expectedTaskID == taskID,
+              let expectedRunID,
+              expectedRunID != latestRunID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+    }
+
+    func invalidateIfTaskDeleted(_ taskID: UUID) {
+        guard expectedTaskID == taskID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+        if !isBusy { finishOperation() }
+    }
+
+    func invalidateIfTaskClosed(_ taskID: UUID) {
+        guard expectedTaskID == taskID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+        if !isBusy { finishOperation() }
+    }
+
+    func isConfirmationVisible(for taskID: UUID) -> Bool {
+        isConfirmationPresented && pendingTaskID == taskID
+    }
+
+    func isErrorVisible(for taskID: UUID) -> Bool {
+        errorTaskID == taskID && errorMessage != nil
+    }
+
+    func cancelPending() {
+        guard !isBusy else { return }
+        pendingPlan = nil
+        isConfirmationPresented = false
+        finishOperation()
+    }
+
+    private func finishOperation() {
+        pendingPlan = nil
+        isConfirmationPresented = false
+        operationID = nil
+        expectedRunID = nil
+        expectedTaskID = nil
+        expectedEnvironment = nil
+        expectedWorkspaceRootsFingerprint = nil
+        recoveryEventOperationID = nil
+        activeTaskID = nil
+        pendingTaskID = nil
+        isInvalidated = false
+    }
+
+    private static func recoveryEnvironment(
+        taskEnvironment: WorkspaceExecutionEnvironment,
+        run: TaskRun?
+    ) -> WorkspaceExecutionEnvironment {
+        let runEnvironment = ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON)
+        return runEnvironment.isContainerized ? runEnvironment : taskEnvironment
+    }
+
+    private static func workspaceRootsFingerprint(_ workspace: Workspace) -> String {
+        ([workspace.primaryPath] + workspace.additionalPaths)
+            .map(WorkspacePathPresentation.standardizedPath)
+            .joined(separator: "\u{001F}")
+    }
+
+    private func workspaceRootsStillMatch(task: AgentTask) -> Bool {
+        guard let expectedWorkspaceRootsFingerprint,
+              let workspace = task.workspace else { return false }
+        return Self.workspaceRootsFingerprint(workspace) == expectedWorkspaceRootsFingerprint
+    }
+
+    private func environmentStillMatches(task: AgentTask, run: TaskRun?) -> Bool {
+        guard let expectedEnvironment else { return true }
+        let current: WorkspaceExecutionEnvironment
+        if let snapshot = task.executionEnvironmentSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            current = ExecutionEnvironmentStore.decode(snapshot)
+        } else {
+            current = ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON)
+        }
+        return Self.environmentIdentity(current) == Self.environmentIdentity(expectedEnvironment)
+    }
+
+    private static func environmentIdentity(_ environment: WorkspaceExecutionEnvironment) -> WorkspaceExecutionEnvironment {
+        var identity = environment
+        // Recovery is authorized to add only the verified digest; user-selected
+        // environment fields must remain unchanged.
+        identity.imageDigest = nil
+        return identity
+    }
+
+    func dismissError(for taskID: UUID) {
+        guard errorTaskID == taskID else { return }
+        errorMessage = nil
+        errorTaskID = nil
+    }
+
+    private func setError(_ message: String, for taskID: UUID) {
+        errorMessage = message
+        errorTaskID = taskID
+    }
+
+    private func audit(
+        taskID: UUID,
+        result: String,
+        image: String? = nil,
+        plan: DockerImageRecoveryPlan? = nil,
+        detail: String? = nil,
+        level: LogLevel = .info
+    ) {
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", taskID: taskID, fields: [
+            "result": result,
+            "image": image ?? plan?.image ?? "unknown",
+            "recovery_action": plan?.auditAction ?? "none",
+            "detail": detail ?? "none"
+        ], level: level)
+    }
+}
+
+struct DockerImageRecoveryDialogModifier: ViewModifier {
+    @ObservedObject var coordinator: DockerImageRecoveryCoordinator
+    let taskID: UUID
+    let onConfirm: (DockerImageRecoveryPlan) -> Void
+
+    private var taskPlan: DockerImageRecoveryPlan? {
+        coordinator.pendingTaskID == taskID ? coordinator.pendingPlan : nil
+    }
+
+    private var taskConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { coordinator.isConfirmationVisible(for: taskID) },
+            set: { isPresented in
+                guard !isPresented, coordinator.pendingTaskID == taskID else { return }
+                coordinator.cancelPending()
+            }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                taskPlan?.title ?? "Repair Docker image?",
+                isPresented: taskConfirmationBinding,
+                titleVisibility: .visible
+            ) {
+                if let plan = taskPlan {
+                    Button(plan.action == .retryOnly ? "Retry task" : "Repair and retry") { onConfirm(plan) }
+                }
+                Button("Cancel", role: .cancel) { coordinator.cancelPending() }
+            } message: {
+                Text(taskPlan?.confirmation ?? "ASTRA will verify the image before retrying.")
+            }
+            .alert("Docker Image Recovery Failed", isPresented: Binding(
+                get: { coordinator.isErrorVisible(for: taskID) },
+                set: { if !$0 { coordinator.dismissError(for: taskID) } }
+            )) {
+                Button("OK", role: .cancel) { coordinator.dismissError(for: taskID) }
+            } message: {
+                Text(coordinator.errorTaskID == taskID
+                    ? (coordinator.errorMessage ?? "ASTRA could not repair the Docker image.")
+                    : "ASTRA could not repair the Docker image.")
+            }
+    }
+}
+
+enum DockerImageRecoveryPresentation {
+    static func image(
+        stopReason: String?,
+        launchBlockImage: String?,
+        launchBlockReadinessState: String? = nil,
+        runID: UUID?,
+        runs: [TaskRun]
+    ) -> String? {
+        guard stopReason.map(TaskRunStopReason.init(rawValue:)) == .dockerImageUnavailable else { return nil }
+        guard launchBlockReadinessState != DockerImageReadinessState.invalidReference.rawValue else { return nil }
+        if let launchBlockImage, !launchBlockImage.isEmpty { return launchBlockImage }
+        guard let runID, let run = runs.first(where: { $0.id == runID }) else { return nil }
+        return ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON).image
+    }
+}

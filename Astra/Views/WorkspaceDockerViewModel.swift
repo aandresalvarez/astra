@@ -35,17 +35,36 @@ final class WorkspaceDockerViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private let imageInventory: any DockerImageInventoryListing
+    private let imageReadiness: any DockerImageReadinessChecking
     private let imageBuilder: any DockerImageBuilding
     private let fileManager: FileManager
     private let homeDirectoryPath: String
 
     init(
-        imageInventory: any DockerImageInventoryListing = DockerImageInventoryService(),
+        imageBuilder: any DockerImageBuilding = DockerImageBuildService(),
+        fileManager: FileManager = .default,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) {
+        self.imageInventory = DockerImageInventoryService()
+        self.imageReadiness = DockerImageReadinessService()
+        self.imageBuilder = imageBuilder
+        self.fileManager = fileManager
+        self.homeDirectoryPath = WorkspacePathPresentation.standardizedPath(homeDirectoryPath)
+    }
+
+    /// Dependency-injection initializer. Tests that supply a synthetic image
+    /// inventory may omit a readiness checker because those fixtures already
+    /// define their listed images as authoritative; production always uses the
+    /// launch-equivalent `DockerImageReadinessService` above.
+    init(
+        imageInventory: any DockerImageInventoryListing,
+        imageReadiness: any DockerImageReadinessChecking = ListedImageReadinessChecker(),
         imageBuilder: any DockerImageBuilding = DockerImageBuildService(),
         fileManager: FileManager = .default,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) {
         self.imageInventory = imageInventory
+        self.imageReadiness = imageReadiness
         self.imageBuilder = imageBuilder
         self.fileManager = fileManager
         self.homeDirectoryPath = WorkspacePathPresentation.standardizedPath(homeDirectoryPath)
@@ -81,7 +100,11 @@ final class WorkspaceDockerViewModel: ObservableObject {
         switch loadedImages {
         case .success(let images):
             imageInventoryError = nil
-            next.append(contentsOf: imageCandidates(for: workspace, images: images))
+            let discoveredImages = imageCandidates(for: workspace, images: images)
+            next.append(contentsOf: await Self.validateImageCandidates(
+                discoveredImages,
+                readiness: imageReadiness
+            ))
         case .failure(let error):
             imageInventoryError = error
         }
@@ -325,6 +348,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var dockerIssueTitle: String? {
+        if unavailableImageCandidate != nil {
+            return "Docker image is not runnable"
+        }
         switch imageInventoryError {
         case .cliMissing:
             return "Docker CLI was not found"
@@ -338,6 +364,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var dockerIssueSubtitle: String? {
+        if let candidate = unavailableImageCandidate {
+            return candidate.issue ?? "Docker cannot resolve the selected image reference."
+        }
         switch imageInventoryError {
         case .cliMissing:
             return "Install or reopen Docker Desktop, then refresh."
@@ -351,7 +380,13 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var imageInventoryIssue: String? {
-        imageInventoryError?.localizedDescription
+        unavailableImageCandidate?.issue ?? imageInventoryError?.localizedDescription
+    }
+
+    private var unavailableImageCandidate: DockerWorkspaceCandidate? {
+        let unavailable = candidates.filter { $0.environment.kind == .dockerImage && !$0.isRunnable }
+        if let selected = unavailable.first(where: { isSelected($0) }) { return selected }
+        return runnableCandidates.contains(where: { $0.environment.kind == .dockerImage }) ? nil : unavailable.first
     }
 
     var buildCommand: String? {
@@ -815,6 +850,48 @@ final class WorkspaceDockerViewModel: ObservableObject {
         }
     }
 
+    nonisolated static let maxConcurrentReadinessChecks = 4
+
+    static func validateImageCandidates(
+        _ candidates: [DockerWorkspaceCandidate],
+        readiness: any DockerImageReadinessChecking
+    ) async -> [DockerWorkspaceCandidate] {
+        await Task.detached(priority: .utility) {
+            await withTaskGroup(of: (Int, DockerWorkspaceCandidate).self, returning: [DockerWorkspaceCandidate].self) { group in
+                var nextIndex = 0
+                var results: [(Int, DockerWorkspaceCandidate)] = []
+
+                func addNextCandidate() {
+                    guard nextIndex < candidates.count else { return }
+                    let index = nextIndex
+                    nextIndex += 1
+                    let candidate = candidates[index]
+                    group.addTask {
+                        guard let image = candidate.environment.image else {
+                            return (index, candidate)
+                        }
+                        let report = await readiness.checkImageReadiness(image)
+                        var validated = candidate
+                        validated.isRunnable = report.isRunnable
+                        validated.issue = report.isRunnable ? nil : report.detail
+                        return (index, validated)
+                    }
+                }
+
+                for _ in 0..<min(maxConcurrentReadinessChecks, candidates.count) {
+                    addNextCandidate()
+                }
+                for await result in group {
+                    results.append(result)
+                    addNextCandidate()
+                }
+                return results
+                    .sorted { $0.0 < $1.0 }
+                    .map(\.1)
+            }
+        }.value
+    }
+
     private static func deduplicated(_ candidates: [DockerWorkspaceCandidate]) -> [DockerWorkspaceCandidate] {
         var seen: Set<String> = []
         return candidates.filter { candidate in
@@ -956,5 +1033,16 @@ final class WorkspaceDockerViewModel: ObservableObject {
         var isDirectory = ObjCBool(false)
         return fileManager.fileExists(atPath: gcpADCCredentialFilePath, isDirectory: &isDirectory)
             && !isDirectory.boolValue
+    }
+}
+
+private struct ListedImageReadinessChecker: DockerImageReadinessChecking {
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness {
+        DockerImageReadiness(
+            image: image,
+            state: .ready,
+            imageID: nil,
+            detail: "Synthetic inventory marks this image as ready."
+        )
     }
 }

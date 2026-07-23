@@ -199,6 +199,8 @@ public enum TaskEventTypes {
         /// alongside the free-text `error` event whenever a run is blocked
         /// before or without launching a provider process.
         public static let runtimeLaunchBlocked: TaskEventType = "runtime.launch_blocked"
+        /// Structured audit trail for a user-authorized Docker image repair.
+        public static let dockerImageRecovery: TaskEventType = "runtime.docker_image_recovery"
     }
 
     private static let lifecycleTypes: Set<TaskEventType> = [
@@ -295,7 +297,8 @@ public enum TaskEventTypes {
         System.skillActive,
         System.recapResult,
         System.scheduleResult,
-        System.runtimeLaunchBlocked
+        System.runtimeLaunchBlocked,
+        System.dockerImageRecovery
     ]
 
     public static func category(for eventType: TaskEventType) -> TaskEventCategory {
