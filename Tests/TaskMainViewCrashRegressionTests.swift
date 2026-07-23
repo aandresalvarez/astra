@@ -14,6 +14,16 @@ struct TaskMainViewCrashRegressionTests {
         #expect(appSource.contains("dockerImageRecovery: dockerImageRecovery"))
     }
 
+    @Test("Docker recovery reconciliation honors the workspace recovery export flag")
+    func dockerRecoveryReconciliationHonorsExportFlag() throws {
+        let appSource = try fileText("Astra/ASTRAApp.swift")
+        let reconcilerSource = try fileText("Astra/Services/Runtime/DockerImageRecoveryReconciler.swift")
+
+        #expect(appSource.contains("reconcileInterruptedRecoveries(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)"))
+        #expect(reconcilerSource.contains("autoExportWorkspaces: Bool = true"))
+        #expect(reconcilerSource.contains("saveWithoutAutoExport(modelContext: modelContext"))
+    }
+
     @Test("Workspace deletion invalidates task Docker recovery before the cascade")
     func workspaceDeletionInvalidatesDockerRecoveryBeforeCascade() throws {
         let source = try fileText("Astra/Views/ContentView.swift")

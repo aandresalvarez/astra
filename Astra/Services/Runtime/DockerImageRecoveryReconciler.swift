@@ -18,7 +18,7 @@ enum DockerImageRecoveryReconciler {
     }
 
     @discardableResult
-    static func reconcileInterruptedRecoveries(modelContext: ModelContext) -> Int {
+    static func reconcileInterruptedRecoveries(modelContext: ModelContext, autoExportWorkspaces: Bool = true) -> Int {
         let events: [TaskEvent]
         do {
             events = try modelContext.fetch(FetchDescriptor<TaskEvent>())
@@ -57,15 +57,13 @@ enum DockerImageRecoveryReconciler {
                 run: startedEvent.run
             )
             modelContext.insert(terminalEvent)
-            let persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: [
-                    "operation": "docker_image_recovery_reconciliation",
-                    "recovery_result": DockerImageRecoveryEventPayload.Result.failed.rawValue
-                ]
-            )
+            let auditFields = [
+                "operation": "docker_image_recovery_reconciliation",
+                "recovery_result": DockerImageRecoveryEventPayload.Result.failed.rawValue
+            ]
+            let persisted = autoExportWorkspaces
+                ? WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: auditFields)
+                : WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, taskID: task.id, auditFields: auditFields)
             guard persisted else {
                 modelContext.delete(terminalEvent)
                 AppLogger.error(

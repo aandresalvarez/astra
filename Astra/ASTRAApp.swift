@@ -851,7 +851,7 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
-        let reconciledDockerRecoveries = DockerImageRecoveryReconciler.reconcileInterruptedRecoveries(modelContext: modelContext)
+        let reconciledDockerRecoveries = DockerImageRecoveryReconciler.reconcileInterruptedRecoveries(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
         if reconciledDockerRecoveries > 0 {
             AppLogger.warning(
                 "Reconciled \(reconciledDockerRecoveries) interrupted Docker recovery operation(s)",

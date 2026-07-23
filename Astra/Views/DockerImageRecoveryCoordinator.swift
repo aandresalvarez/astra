@@ -14,10 +14,14 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var errorTaskID: UUID?
 
-    var canStartTaskRetry: Bool { !isBusy }
+    private var hasPendingConfirmation: Bool {
+        pendingPlan != nil && pendingTaskID != nil && isConfirmationPresented
+    }
+
+    var canStartTaskRetry: Bool { !isBusy && !hasPendingConfirmation }
 
     func canStartTaskRetry(for taskID: UUID) -> Bool {
-        !isBusy || activeTaskID != taskID
+        (!isBusy && !hasPendingConfirmation) || activeTaskID != taskID
     }
 
     func isBusy(for taskID: UUID) -> Bool {
@@ -30,6 +34,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private var recoveryEventOperationID: UUID?
     private var expectedRunID: UUID?
     private var expectedTaskID: UUID?
+    private var expectedEnvironment: WorkspaceExecutionEnvironment?
     private var isInvalidated = false
 
     init(
@@ -40,13 +45,23 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         self.eventRecorder = eventRecorder
     }
 
-    func prepare(image: String, workspace: Workspace?, taskID: UUID, run: TaskRun?) {
-        guard !isBusy, let workspace else { return }
+    func prepare(
+        image: String,
+        workspace: Workspace?,
+        taskID: UUID,
+        run: TaskRun?,
+        taskEnvironment: WorkspaceExecutionEnvironment = .host
+    ) {
+        guard !isBusy, !hasPendingConfirmation, let workspace else { return }
         isBusy = true
         errorMessage = nil
         errorTaskID = nil
         expectedRunID = run?.id
         expectedTaskID = taskID
+        expectedEnvironment = Self.recoveryEnvironment(
+            taskEnvironment: taskEnvironment,
+            run: run
+        )
         activeTaskID = taskID
         isInvalidated = false
         let operationID = UUID()
@@ -96,6 +111,13 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     ) {
         guard !isBusy, !isInvalidated, expectedTaskID == task.id, expectedRunID == run?.id else {
             setError("The failed run changed before Docker recovery could start. Diagnose the latest run again.", for: task.id)
+            return
+        }
+        guard environmentStillMatches(task: task, run: run) else {
+            pendingPlan = nil
+            isConfirmationPresented = false
+            finishOperation()
+            setError("The task environment changed before Docker recovery could start. Select the current environment and diagnose the latest run again.", for: task.id)
             return
         }
         isBusy = true
@@ -148,7 +170,23 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             }
             switch result {
             case .success(let verification):
-                guard persistVerifiedImageID(verification.imageID, task: task, run: run, modelContext: modelContext) else {
+                guard environmentStillMatches(task: task, run: run) else {
+                    let detail = "Docker recovery completed, but the task environment changed before ASTRA could apply the verified image ID. The task was not retried."
+                    let recorded = eventRecorder.record(
+                        task: task,
+                        run: run,
+                        plan: plan,
+                        result: .failed,
+                        detail: detail,
+                        operationID: recoveryEventOperationID,
+                        verifiedImageID: verification.imageID,
+                        modelContext: modelContext
+                    )
+                    finishOperation()
+                    setError(recorded ? detail : "\(detail) ASTRA also could not durably record the recovery failure.", for: task.id)
+                    return
+                }
+                guard persistVerifiedImageID(verification.imageID, task: task, modelContext: modelContext) else {
                     let detail = "Docker recovery verified the image, but ASTRA could not durably persist its image ID. The task was not retried."
                     let recorded = eventRecorder.record(
                         task: task,
@@ -199,21 +237,12 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private func persistVerifiedImageID(
         _ imageID: String,
         task: AgentTask,
-        run: TaskRun?,
         modelContext: ModelContext
     ) -> Bool {
         var taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
-        if !taskEnvironment.isContainerized, let run {
-            taskEnvironment = ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON)
-        }
         guard taskEnvironment.isContainerized else { return false }
         taskEnvironment.imageDigest = imageID
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(taskEnvironment)
-        if let run {
-            var runEnvironment = ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON)
-            runEnvironment.imageDigest = imageID
-            run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment)
-        }
         task.updatedAt = Date()
         return WorkspacePersistenceCoordinator.saveAndAutoExport(
             workspace: task.workspace,
@@ -264,13 +293,44 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     }
 
     private func finishOperation() {
+        pendingPlan = nil
+        isConfirmationPresented = false
         operationID = nil
         expectedRunID = nil
         expectedTaskID = nil
+        expectedEnvironment = nil
         recoveryEventOperationID = nil
         activeTaskID = nil
         pendingTaskID = nil
         isInvalidated = false
+    }
+
+    private static func recoveryEnvironment(
+        taskEnvironment: WorkspaceExecutionEnvironment,
+        run: TaskRun?
+    ) -> WorkspaceExecutionEnvironment {
+        let runEnvironment = ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON)
+        return runEnvironment.isContainerized ? runEnvironment : taskEnvironment
+    }
+
+    private func environmentStillMatches(task: AgentTask, run: TaskRun?) -> Bool {
+        guard let expectedEnvironment else { return true }
+        let current: WorkspaceExecutionEnvironment
+        if let snapshot = task.executionEnvironmentSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            current = ExecutionEnvironmentStore.decode(snapshot)
+        } else {
+            current = ExecutionEnvironmentStore.decode(run?.executionEnvironmentSnapshotJSON)
+        }
+        return Self.environmentIdentity(current) == Self.environmentIdentity(expectedEnvironment)
+    }
+
+    private static func environmentIdentity(_ environment: WorkspaceExecutionEnvironment) -> WorkspaceExecutionEnvironment {
+        var identity = environment
+        // Recovery is authorized to add only the verified digest; user-selected
+        // environment fields must remain unchanged.
+        identity.imageDigest = nil
+        return identity
     }
 
     func dismissError(for taskID: UUID) {

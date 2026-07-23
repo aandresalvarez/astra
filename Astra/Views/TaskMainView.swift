@@ -4370,7 +4370,7 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .repairDockerImage:
             guard let image = action.payload else { return }
-            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id, run: latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } })
+            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id, run: latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } }, taskEnvironment: ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON))
         }
     }
 

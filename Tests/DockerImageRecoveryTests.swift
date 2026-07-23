@@ -303,7 +303,7 @@ struct DockerImageRecoveryTests {
 
         #expect(retried)
         #expect(ExecutionEnvironmentStore.decode(fixture.task.executionEnvironmentSnapshotJSON).imageDigest == "sha256:verified")
-        #expect(ExecutionEnvironmentStore.decode(fixture.run.executionEnvironmentSnapshotJSON).imageDigest == "sha256:verified")
+        #expect(ExecutionEnvironmentStore.decode(fixture.run.executionEnvironmentSnapshotJSON).imageDigest == nil)
         #expect(recorder.recordedImageIDs == [nil, "sha256:verified"])
     }
 
@@ -663,6 +663,74 @@ struct DockerImageRecoveryTests {
         #expect(coordinator.pendingTaskID == fixture.task.id)
     }
 
+    @MainActor
+    @Test("Pending recovery confirmation reserves the shared coordinator")
+    func pendingRecoveryConfirmationReservesCoordinator() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(DockerImageRecoveryPlan(
+                    image: "astra-project:latest",
+                    action: .retryOnly,
+                    title: "Ready",
+                    confirmation: "Retry",
+                    auditAction: "retry_only"
+                )),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified"))
+            ),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
+        )
+        let otherTaskID = UUID()
+
+        coordinator.prepare(image: "astra-project:latest", workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator.isConfirmationVisible(for: fixture.task.id) })
+        coordinator.prepare(image: "other-project:latest", workspace: fixture.workspace, taskID: otherTaskID, run: nil)
+
+        #expect(!coordinator.canStartTaskRetry)
+        #expect(!coordinator.canStartTaskRetry(for: fixture.task.id))
+        #expect(coordinator.canStartTaskRetry(for: otherTaskID))
+        #expect(coordinator.pendingTaskID == fixture.task.id)
+        coordinator.cancelPending()
+    }
+
+    @MainActor
+    @Test("Recovery does not overwrite a task environment changed during Docker work")
+    func recoveryRevalidatesTaskEnvironmentBeforeApplyingDigest() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let recorder = RecoveryCoordinatorEventRecorder(results: [true, true])
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(
+                plan: .success(plan),
+                perform: .success(DockerImageRecoveryVerification(imageID: "sha256:verified")),
+                performDelayNanoseconds: 30_000_000
+            ),
+            eventRecorder: recorder
+        )
+        var retried = false
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator.isConfirmationVisible(for: fixture.task.id) })
+        coordinator.perform(plan, task: fixture.task, run: fixture.run, modelContext: fixture.context) { retried = true }
+        fixture.task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            WorkspaceExecutionEnvironment(id: "image:other", kind: .dockerImage, displayName: "Other image", image: "astra-other:latest")
+        )
+
+        #expect(await waitUntil { !coordinator.isBusy })
+        #expect(!retried)
+        #expect(ExecutionEnvironmentStore.decode(fixture.task.executionEnvironmentSnapshotJSON).image == "astra-other:latest")
+        #expect(ExecutionEnvironmentStore.decode(fixture.task.executionEnvironmentSnapshotJSON).imageDigest == nil)
+        #expect(ExecutionEnvironmentStore.decode(fixture.run.executionEnvironmentSnapshotJSON).imageDigest == nil)
+        #expect(recorder.recordedResults == [.started, .failed])
+        #expect(coordinator.errorMessage?.contains("environment changed") == true)
+    }
+
     @Test("Invalid Docker references do not offer image repair")
     func invalidDockerReferenceDoesNotOfferRepair() {
         #expect(DockerImageRecoveryPresentation.image(
@@ -796,16 +864,16 @@ struct DockerImageRecoveryTests {
         let workspace = Workspace(name: "Docker", primaryPath: "/tmp/project")
         let task = AgentTask(title: "Repair", goal: "Retry safely", workspace: workspace)
         let run = TaskRun(task: task)
-        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
-            WorkspaceExecutionEnvironment(
-                id: "dockerfile:/tmp/project/Dockerfile",
-                kind: .dockerfile,
-                displayName: "Project Dockerfile",
-                sourcePath: "/tmp/project",
-                image: "astra-project:latest",
-                dockerfilePath: "/tmp/project/Dockerfile"
-            )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "dockerfile:/tmp/project/Dockerfile",
+            kind: .dockerfile,
+            displayName: "Project Dockerfile",
+            sourcePath: "/tmp/project",
+            image: "astra-project:latest",
+            dockerfilePath: "/tmp/project/Dockerfile"
         )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
         context.insert(workspace)
         context.insert(task)
         context.insert(run)
