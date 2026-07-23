@@ -4989,7 +4989,7 @@ struct TaskMainView: View {
                         return .ignored
                     }
                     .onChange(of: messageText) { slashSelectedIndex = 0 }
-                    .disabled(task.status == .running)
+                    .disabled(task.status == .running || dockerImageRecovery.isBusy(for: task.id))
 
                 Color.clear
                     .frame(height: 2)
@@ -5005,7 +5005,7 @@ struct TaskMainView: View {
                     taskStatus: task.status,
                     taskStatusOverride: composerTaskStatusOverride,
                     showsTaskStatusPill: decisionDockPresentation == nil,
-                    isRunning: task.status == .running || isPlanning,
+                    isRunning: task.status == .running || isPlanning || dockerImageRecovery.isBusy(for: task.id),
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
@@ -5509,13 +5509,12 @@ struct TaskMainView: View {
             hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
-
+        if sendAction.launchesProviderWork && dockerImageRecovery.isBusy(for: task.id) { AppLogger.breadcrumb(action: "composer_blocked_docker_recovery", category: "UI", taskID: task.id); return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
            sendAction.launchesProviderWork {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-
         shouldScrollAfterUserMessage = true
 
         switch sendAction {
@@ -5589,6 +5588,7 @@ struct TaskMainView: View {
     }
 
     private func sendConversationMessage(_ msg: String) {
+        guard !dockerImageRecovery.isBusy(for: task.id) else { AppLogger.breadcrumb(action: "conversation_blocked_docker_recovery", category: "UI", taskID: task.id); return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
             return

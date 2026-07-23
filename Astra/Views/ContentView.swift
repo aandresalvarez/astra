@@ -2301,6 +2301,7 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        for task in ws.tasks { dockerImageRecovery.invalidateIfTaskDeleted(task.id) } // Invalidate before the workspace task cascade.
         markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))

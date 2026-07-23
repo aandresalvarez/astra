@@ -14,6 +14,35 @@ struct TaskMainViewCrashRegressionTests {
         #expect(appSource.contains("dockerImageRecovery: dockerImageRecovery"))
     }
 
+    @Test("Workspace deletion invalidates task Docker recovery before the cascade")
+    func workspaceDeletionInvalidatesDockerRecoveryBeforeCascade() throws {
+        let source = try fileText("Astra/Views/ContentView.swift")
+        let deleteStart = try #require(source.range(of: "private func deleteWorkspace(_ ws: Workspace)"))
+        let deleteEnd = try #require(source[deleteStart.upperBound...].range(of: "\n    private func importWorkspace()"))
+        let deleteSource = String(source[deleteStart.lowerBound..<deleteEnd.lowerBound])
+        let invalidation = try #require(deleteSource.range(of: "dockerImageRecovery.invalidateIfTaskDeleted"))
+        let cascade = try #require(deleteSource.range(of: "coordinator.deleteWorkspace"))
+
+        #expect(deleteSource.contains("for task in ws.tasks"))
+        #expect(invalidation.lowerBound < cascade.lowerBound)
+    }
+
+    @Test("Composer submissions fail closed while task Docker recovery is active")
+    func composerSubmissionsGateDockerRecovery() throws {
+        let source = try fileText("Astra/Views/TaskMainView.swift")
+        let sendStart = try #require(source.range(of: "private func sendMessage()"))
+        let sendEnd = try #require(source[sendStart.upperBound...].range(of: "\n    private func recordMCPInstallCommand"))
+        let sendSource = String(source[sendStart.lowerBound..<sendEnd.lowerBound])
+        let conversationStart = try #require(source.range(of: "private func sendConversationMessage(_ msg: String)"))
+        let conversationEnd = try #require(source[conversationStart.upperBound...].range(of: "\n    private func sendPlanningMessage"))
+        let conversationSource = String(source[conversationStart.lowerBound..<conversationEnd.lowerBound])
+
+        #expect(sendSource.contains("sendAction.launchesProviderWork && dockerImageRecovery.isBusy(for: task.id)"))
+        #expect(sendSource.contains("composer_blocked_docker_recovery"))
+        #expect(conversationSource.contains("guard !dockerImageRecovery.isBusy(for: task.id) else"))
+        #expect(source.contains("isRunning: task.status == .running || isPlanning || dockerImageRecovery.isBusy(for: task.id)"))
+    }
+
     @Test("TaskMainView defers selected-task refresh work out of view update callbacks")
     func taskMainViewDefersSelectedTaskRefreshWork() throws {
         let source = try fileText("Astra/Views/TaskMainView.swift")
