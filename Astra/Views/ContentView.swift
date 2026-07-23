@@ -2512,7 +2512,7 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
-        let deletedTaskID = task.id
+        let deletedTaskID = task.id; dockerImageRecovery.invalidateIfTaskDeleted(deletedTaskID)
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }

@@ -6,6 +6,7 @@ import ASTRAModels
 @MainActor
 final class DockerImageRecoveryCoordinator: ObservableObject {
     @Published var pendingPlan: DockerImageRecoveryPlan?
+    @Published private(set) var pendingTaskID: UUID?
     @Published var isConfirmationPresented = false
     @Published var isBusy = false
     @Published var errorMessage: String?
@@ -16,6 +17,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private let eventRecorder: any DockerImageRecoveryEventRecording
     private var operationID: UUID?
     private var expectedRunID: UUID?
+    private var expectedTaskID: UUID?
     private var isInvalidated = false
 
     init(
@@ -31,6 +33,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         isBusy = true
         errorMessage = nil
         expectedRunID = run?.id
+        expectedTaskID = taskID
         isInvalidated = false
         let operationID = UUID()
         self.operationID = operationID
@@ -59,6 +62,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
             switch result {
             case .success(let plan):
                 pendingPlan = plan
+                pendingTaskID = taskID
                 isConfirmationPresented = true
                 audit(taskID: taskID, result: "recovery_plan_ready", plan: plan)
             case .failure(let error):
@@ -76,7 +80,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         modelContext: ModelContext,
         onSuccess: @escaping @MainActor () -> Void
     ) {
-        guard !isBusy, !isInvalidated, expectedRunID == run?.id else {
+        guard !isBusy, !isInvalidated, expectedTaskID == task.id, expectedRunID == run?.id else {
             errorMessage = "The failed run changed before Docker recovery could start. Diagnose the latest run again."
             return
         }
@@ -93,6 +97,7 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         }
         let operationID = UUID()
         self.operationID = operationID
+        expectedTaskID = task.id
         let recovery = self.recovery
 
         // The shared coordinator remains the operation owner even if the
@@ -150,6 +155,18 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
         isConfirmationPresented = false
     }
 
+    func invalidateIfTaskDeleted(_ taskID: UUID) {
+        guard expectedTaskID == taskID else { return }
+        isInvalidated = true
+        pendingPlan = nil
+        isConfirmationPresented = false
+        if !isBusy { finishOperation() }
+    }
+
+    func isConfirmationVisible(for taskID: UUID) -> Bool {
+        isConfirmationPresented && pendingTaskID == taskID
+    }
+
     func cancelPending() {
         guard !isBusy else { return }
         pendingPlan = nil
@@ -160,6 +177,8 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
     private func finishOperation() {
         operationID = nil
         expectedRunID = nil
+        expectedTaskID = nil
+        pendingTaskID = nil
         isInvalidated = false
     }
 
@@ -182,21 +201,36 @@ final class DockerImageRecoveryCoordinator: ObservableObject {
 
 struct DockerImageRecoveryDialogModifier: ViewModifier {
     @ObservedObject var coordinator: DockerImageRecoveryCoordinator
+    let taskID: UUID
     let onConfirm: (DockerImageRecoveryPlan) -> Void
+
+    private var taskPlan: DockerImageRecoveryPlan? {
+        coordinator.pendingTaskID == taskID ? coordinator.pendingPlan : nil
+    }
+
+    private var taskConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { coordinator.isConfirmationVisible(for: taskID) },
+            set: { isPresented in
+                guard !isPresented, coordinator.pendingTaskID == taskID else { return }
+                coordinator.cancelPending()
+            }
+        )
+    }
 
     func body(content: Content) -> some View {
         content
             .confirmationDialog(
-                coordinator.pendingPlan?.title ?? "Repair Docker image?",
-                isPresented: $coordinator.isConfirmationPresented,
+                taskPlan?.title ?? "Repair Docker image?",
+                isPresented: taskConfirmationBinding,
                 titleVisibility: .visible
             ) {
-                if let plan = coordinator.pendingPlan {
+                if let plan = taskPlan {
                     Button(plan.action == .retryOnly ? "Retry task" : "Repair and retry") { onConfirm(plan) }
                 }
                 Button("Cancel", role: .cancel) { coordinator.cancelPending() }
             } message: {
-                Text(coordinator.pendingPlan?.confirmation ?? "ASTRA will verify the image before retrying.")
+                Text(taskPlan?.confirmation ?? "ASTRA will verify the image before retrying.")
             }
             .alert("Docker Image Recovery Failed", isPresented: Binding(
                 get: { coordinator.errorMessage != nil },
@@ -213,10 +247,12 @@ enum DockerImageRecoveryPresentation {
     static func image(
         stopReason: String?,
         launchBlockImage: String?,
+        launchBlockReadinessState: String? = nil,
         runID: UUID?,
         runs: [TaskRun]
     ) -> String? {
         guard stopReason.map(TaskRunStopReason.init(rawValue:)) == .dockerImageUnavailable else { return nil }
+        guard launchBlockReadinessState != DockerImageReadinessState.invalidReference.rawValue else { return nil }
         if let launchBlockImage, !launchBlockImage.isEmpty { return launchBlockImage }
         guard let runID, let run = runs.first(where: { $0.id == runID }) else { return nil }
         return ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON).image

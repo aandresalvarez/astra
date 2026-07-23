@@ -355,6 +355,72 @@ struct DockerImageRecoveryTests {
     }
 
     @MainActor
+    @Test("Recovery invalidation removes deleted task dialogs and prevents retry")
+    func recoveryInvalidatesDeletedTask() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
+        )
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator.isConfirmationVisible(for: fixture.task.id) })
+        coordinator.invalidateIfTaskDeleted(fixture.task.id)
+
+        #expect(coordinator.pendingPlan == nil)
+        #expect(!coordinator.isConfirmationVisible(for: fixture.task.id))
+        #expect(coordinator.canStartTaskRetry)
+    }
+
+    @MainActor
+    @Test("Recovery confirmation remains scoped to its originating task")
+    func recoveryConfirmationIsTaskScoped() async throws {
+        let fixture = try makeCoordinatorFixture()
+        let otherTaskID = UUID()
+        let plan = DockerImageRecoveryPlan(
+            image: "astra-project:latest",
+            action: .retryOnly,
+            title: "Ready",
+            confirmation: "Retry",
+            auditAction: "retry_only"
+        )
+        let coordinator = DockerImageRecoveryCoordinator(
+            recovery: RecoveryCoordinatorService(plan: .success(plan), perform: .success(())),
+            eventRecorder: RecoveryCoordinatorEventRecorder(results: [])
+        )
+
+        coordinator.prepare(image: plan.image, workspace: fixture.workspace, taskID: fixture.task.id, run: fixture.run)
+        #expect(await waitUntil { coordinator.isConfirmationVisible(for: fixture.task.id) })
+        #expect(!coordinator.isConfirmationVisible(for: otherTaskID))
+        #expect(coordinator.pendingTaskID == fixture.task.id)
+    }
+
+    @Test("Invalid Docker references do not offer image repair")
+    func invalidDockerReferenceDoesNotOfferRepair() {
+        #expect(DockerImageRecoveryPresentation.image(
+            stopReason: TaskRunStopReason.dockerImageUnavailable.rawValue,
+            launchBlockImage: "astra project",
+            launchBlockReadinessState: DockerImageReadinessState.invalidReference.rawValue,
+            runID: nil,
+            runs: []
+        ) == nil)
+        #expect(DockerImageRecoveryPresentation.image(
+            stopReason: TaskRunStopReason.dockerImageUnavailable.rawValue,
+            launchBlockImage: "astra-project:latest",
+            launchBlockReadinessState: DockerImageReadinessState.missing.rawValue,
+            runID: nil,
+            runs: []
+        ) == "astra-project:latest")
+    }
+
+    @MainActor
     @Test("Container view model never promotes a listed but unresolvable image")
     func viewModelRejectsUnresolvableListedImage() async throws {
         let root = try makeTempDir("docker-viewmodel-unresolvable")

@@ -559,7 +559,7 @@ struct TaskMainView: View {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
         .modifier(DockerImageRecoveryDialogModifier(
-            coordinator: dockerImageRecovery,
+            coordinator: dockerImageRecovery, taskID: task.id,
             onConfirm: performDockerImageRecovery
         ))
         .task(id: runtimeAvailabilitySignature) {
@@ -729,7 +729,6 @@ struct TaskMainView: View {
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
     }
-
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
         Task { @MainActor in
             guard await waitForViewUpdateBoundary() else { return }
@@ -3893,6 +3892,7 @@ struct TaskMainView: View {
         DockerImageRecoveryPresentation.image(
             stopReason: latestRun?.stopReason,
             launchBlockImage: latestRunLaunchBlock?.dockerImage,
+            launchBlockReadinessState: latestRunLaunchBlock?.dockerReadinessState,
             runID: latestRun?.id,
             runs: task.runs
         )
