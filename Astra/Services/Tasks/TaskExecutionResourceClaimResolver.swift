@@ -59,13 +59,19 @@ enum TaskExecutionResourceClaimResolver {
         request?.resourceClaims.first(where: { $0.kind == .workspace })?.access ?? .exclusive
     }
 
+    /// Compares the *full* persisted writable-resource claim set against the
+    /// task's current writable set (working directory + every
+    /// additionalPaths entry), not just the primary path, so an
+    /// additionalPaths change since submission is detected as drift even
+    /// when the primary working directory is unchanged.
     static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
-        guard let request,
-              let persisted = request.resourceClaims.first(where: { $0.kind == .workspace }),
-              let liveKey = workspaceKey(for: task) else {
-            return false
-        }
-        return persisted.key != liveKey
+        guard let request else { return false }
+        let persistedKeys = Set(request.resourceClaims
+            .filter { $0.kind == .workspace }
+            .map(\.key))
+        let liveKeys = Set(workspaceKeys(for: task))
+        guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
+        return persistedKeys != liveKeys
     }
 
     static func workspaceAccess(
