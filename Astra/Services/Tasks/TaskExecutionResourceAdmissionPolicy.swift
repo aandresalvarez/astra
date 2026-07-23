@@ -38,8 +38,13 @@ enum TaskExecutionResourceAdmissionPolicy {
         activeClaims: [TaskResourceLockClaim]
     ) -> Bool {
         let claims = lockClaims(for: candidate.request, task: candidate.task, runMode: "request")
-        guard !claims.isEmpty,
-              TaskExecutionResourceBroker.canAcquire(claims, active: activeClaims) else { return false }
+        // A request with no resource claims (e.g. a no-workspace task routed to the
+        // direct worker path) has nothing to conflict on and must be immediately
+        // admissible; only requests that hold claims go through the broker's
+        // conflict check.
+        guard claims.isEmpty || TaskExecutionResourceBroker.canAcquire(claims, active: activeClaims) else {
+            return false
+        }
         return earlierCompetingClaim(
             for: candidate,
             claims: claims,
