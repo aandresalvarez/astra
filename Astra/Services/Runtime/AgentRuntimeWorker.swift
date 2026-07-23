@@ -855,11 +855,7 @@ final class AgentRuntimeWorker {
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
             if shouldCleanupIsolation {
-                // Cleanup must use the same launchTask.isolationStrategy that
-                // IsolationService.prepare(task: launchTask) used above, not the
-                // live task's current (possibly since-edited) isolation strategy —
-                // otherwise prep and cleanup can disagree about which isolation
-                // mode was actually used for this run.
+                // Match prepare(task: launchTask) above, not the live task.
                 IsolationService.cleanup(task: launchTask, executionPath: executionPath)
             }
             return
@@ -1147,12 +1143,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            // The token budget is frozen at admission on launchTask; tokensUsed
-            // is the live running total, which only ever accumulates on the
-            // durable `task` during this run (see AgentEventRecorder). Mixing
-            // launchTask's budget with task's live usage keeps this classification
-            // consistent with what was actually admitted, even if the user edits
-            // the live task's budget mid-run.
+            // Limit frozen on launchTask; usage is live on task.
             budget: AgentRuntimeBudgetSnapshot(
                 effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: launchTask),
                 tokensUsed: task.tokensUsed
@@ -1195,10 +1186,7 @@ final class AgentRuntimeWorker {
             )
             if !blockedByDeliverableVerification {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
-                    // Validation strategy is frozen at admission on launchTask, matching
-                    // the frozen budget above: a live edit to task.validationStrategy
-                    // after admission must not retroactively change how this run is
-                    // validated.
+                    // Frozen on launchTask, same as the budget above.
                     switch launchTask.validationStrategy {
                     case .manual:
                         let completed = TaskSuccessfulCompletionService.apply(
@@ -1354,9 +1342,7 @@ final class AgentRuntimeWorker {
         }
 
         if shouldCleanupIsolation {
-            // Same rationale as the early-return cleanup above: use launchTask's
-            // (frozen) isolation strategy, matching what IsolationService.prepare
-            // actually prepared, not the live task's possibly-edited strategy.
+            // Same rationale as the early-return cleanup above.
             IsolationService.cleanup(task: launchTask, executionPath: executionPath)
         }
         let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder

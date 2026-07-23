@@ -1949,7 +1949,11 @@ struct ArchitectureFitnessTests {
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
             // isn't safely compressible further without losing the "why".
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
+            // Raised again for PR #364 review follow-up: budget/validation-strategy
+            // classification and both isolation-cleanup call sites now read the
+            // frozen launchTask snapshot instead of the live task, closing a
+            // mid-run edit desync — each site needs a one-line note on why.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_100, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -1980,7 +1984,12 @@ struct ArchitectureFitnessTests {
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).
             "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift"))
+            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
+            // New in PR #364: ExecutionEnvironmentSharedMountTests coverage for the
+            // shared-workspace mount-downgrade fix pushed this over the 2,000-line
+            // threshold. Owns itself since ExecutionEnvironment.swift is still
+            // under budget.
+            "Tests/ExecutionEnvironmentTests.swift": .init(2_100, .owner("Execution environment tests"))
         ]
     }
 
