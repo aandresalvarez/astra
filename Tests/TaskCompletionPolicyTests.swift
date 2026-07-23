@@ -469,6 +469,16 @@ struct TaskCompletionPolicyTests {
         #expect(decision.auditFields["requires_artifact"] == "false")
     }
 
+    @Test("Transient filename stays required when later prose only uses a pronoun")
+    func transientFilenameNeedsExplicitRemovalAction() {
+        let task = AgentTask(
+            title: "Workspace probe",
+            goal: "Create a temporary file named probe.txt. It is important to verify the workspace."
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["probe.txt"])
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)

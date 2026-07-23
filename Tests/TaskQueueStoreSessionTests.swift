@@ -50,6 +50,33 @@ struct TaskQueueStoreSessionTests {
         #expect(try TaskTurnRequestRepository.activeRequests(for: second, in: context).count == 1)
     }
 
+    @Test("Failed legacy repair is not retried within the bound store session")
+    func failedLegacyRepairRunsOncePerSession() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-repair-file-(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let workspace = Workspace(name: "Broken legacy repair", primaryPath: fileURL.path)
+        let task = AgentTask(title: "Legacy task", goal: "Repair once", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let session = TaskQueueStoreSession(modelContext: context)
+        let firstReport = try #require(session.repairLegacyRequestsIfNeeded())
+        #expect(firstReport.isComplete == false)
+        #expect(firstReport.failedRequestCount == 1)
+        #expect(session.didAttemptLegacyRequestsRepair)
+        #expect(!session.didRepairLegacyRequests)
+
+        #expect(session.repairLegacyRequestsIfNeeded() == nil)
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: context).isEmpty)
+    }
+
     @Test("Rebinding never resurrects a cancelled modern request")
     func cancelledRequestIsNotLegacyAfterRebind() throws {
         let container = try makeContainer()

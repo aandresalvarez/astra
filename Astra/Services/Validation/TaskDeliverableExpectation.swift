@@ -386,9 +386,9 @@ enum TaskDeliverableExpectation {
                     }) {
                         break
                     }
-                    if containsRemovalAction(later),
-                       later.contains(needle)
-                        || later.range(of: #"\b(it|this file|the file)\b"#, options: .regularExpression) != nil {
+                    if containsRemovalAction(later)
+                        && (later.contains(needle)
+                            || later.range(of: #"\b(it|this file|the file)\b"#, options: .regularExpression) != nil) {
                         return true
                     }
                 }

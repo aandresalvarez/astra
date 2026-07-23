@@ -14,6 +14,7 @@ final class TaskQueueStoreSession {
     let modelContext: ModelContext
 
     private(set) var didRepairLegacyRequests = false
+    private(set) var didAttemptLegacyRequestsRepair = false
 
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -28,7 +29,8 @@ final class TaskQueueStoreSession {
     /// admission policy. It therefore runs at most once for this store session.
     @discardableResult
     func repairLegacyRequestsIfNeeded() -> ExecutionRequestLegacyRepairService.Report? {
-        guard !didRepairLegacyRequests else { return nil }
+        guard !didAttemptLegacyRequestsRepair else { return nil }
+        didAttemptLegacyRequestsRepair = true
         let report = ExecutionRequestLegacyRepairService.repair(in: modelContext)
         didRepairLegacyRequests = report.isComplete
         AppLogger.audit(.taskStats, category: "Persistence", fields: [
