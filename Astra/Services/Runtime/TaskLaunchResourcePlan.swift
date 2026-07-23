@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskLaunchResourceAccess: String, Codable, Sendable {
     case read
@@ -229,8 +230,21 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var hostProtectedWriteDenyPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            grant.access == .read ? grant.path : nil
+            grant.access == .read && grant.source != .workspace ? grant.path : nil
         })
+    }
+
+    var workspaceAccess: TaskExecutionResourceAccess {
+        let workspaceGrants = hostPathGrants.filter { $0.source == .workspace }
+        guard !workspaceGrants.isEmpty,
+              workspaceGrants.allSatisfy({ $0.access == .read }) else {
+            return .exclusive
+        }
+        return .shared
+    }
+
+    var requiresSharedWorkspaceBoundary: Bool {
+        workspaceAccess == .shared
     }
 
     var readOnlyResourceContract: ReadOnlyResourceContract {

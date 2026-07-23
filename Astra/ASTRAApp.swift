@@ -231,7 +231,18 @@ private struct AboutHighlightLabelStyle: LabelStyle {
 /// the time `applicationDidFinishLaunching` fires, SwiftUI has already
 /// bootstrapped NSApplication through the normal path, so these are
 /// side-effect-free.
+@MainActor
 final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
+    weak var runtimeController: AppRuntimeController?
+    private var isDrainingForTermination = false
+
+    static func requiresTerminationDrain(for queue: TaskQueue) -> Bool {
+        queue.hasProcessingLoop
+            || queue.isStopping
+            || queue.activeCount > 0
+            || queue.ownedCoroutineCount > 0
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app (matters when launched from a terminal via
         // `swift run`; a no-op for a normally-activated .app bundle).
@@ -252,6 +263,21 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         // installer is foregrounded with ASTRA's real icon already set.
         ApplicationInstallationCoordinator.presentIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let runtimeController,
+              Self.requiresTerminationDrain(for: runtimeController.taskQueue) else {
+            return .terminateNow
+        }
+        guard !isDrainingForTermination else { return .terminateLater }
+        isDrainingForTermination = true
+        Task { @MainActor in
+            let cancellationIsDurable = await runtimeController.shutdown()
+            if !cancellationIsDurable { self.isDrainingForTermination = false }
+            sender.reply(toApplicationShouldTerminate: cancellationIsDurable)
+        }
+        return .terminateLater
     }
 }
 
@@ -547,9 +573,8 @@ enum AstraStoreStartupCoordinator {
                     actions: [.revealStore, .quit]
                 )
             case .blockedUnknown, .verifiedCorruption:
-                blocker = PersistentStoreRecoveryBlocker(
-                    title: "ASTRA could not safely open its store",
-                    message: "The failure was not proven to be recoverable, so ASTRA left the store unchanged."
+                blocker = PersistentStoreRecoveryPolicy.unknownOpenFailureBlocker(
+                    channel: appInfo.channelRawValue
                 )
             }
             return Result(modelContainer: inMemoryContainer(), lease: lease, blocker: blocker)
@@ -979,6 +1004,7 @@ public struct ASTRAApp: App {
                     .environmentObject(feedbackCrashOfferService)
                     .tint(Stanford.interactive)
                     .preferredColorScheme(resolvedAppearance.colorScheme)
+                    .onAppear { appDelegate.runtimeController = runtime }
                     .onOpenURL { url in
                         guard let route = AstraExternalRouteCodec.route(from: url) else { return }
                         AstraExternalRouteStore.shared.submit(route)

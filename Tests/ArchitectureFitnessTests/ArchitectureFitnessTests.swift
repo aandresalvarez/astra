@@ -1560,16 +1560,35 @@ struct ArchitectureFitnessTests {
         // missing this before it was fixed. This ratchet doesn't verify a
         // new site calls the cleanup correctly, but it forces a deliberate,
         // reviewed bump instead of a silent regression the next time a
-        // deletion call site is added. Baseline 5: TaskLifecycleCoordinator
-        // .deleteTask/.deleteWorkspace, TaskQueue.routeScheduleResult
-        // (same-thread schedule merge), TaskStoreMaintenance
-        // .deduplicateImportedSessions — plus pruneAbandonedDrafts, which is
-        // exempt: it only ever deletes tasks with task.runs.isEmpty, and a
-        // TaskTurnRequest can only be created for a task that has already
-        // been submitted into conversation at least once.
+        // deletion call site is added. Baseline 7: TaskLifecycleCoordinator
+        // .deleteTask/.deleteWorkspace, TaskStoreMaintenance
+        // .deduplicateImportedSessions, and three pre-persistence submission
+        // rollback paths in TaskScheduler/ChatPanelView — plus
+        // pruneAbandonedDrafts. The submission rollback paths run only after
+        // the atomic submission service has removed its failed request row;
+        // abandoned drafts have never crossed the submission boundary.
         #expect(
-            count <= 5,
+            count <= 7,
             "New AgentTask/Workspace deletion site — route it through cancelAndRemoveTurnRequests (or the equivalent turn-request cleanup) before bumping this ratchet. Current count: \(count)"
+        )
+    }
+
+    @Test("Provider-bound launches stay behind the durable request queue")
+    func providerLaunchesStayBehindDurableRequestQueue() throws {
+        let root = try repositoryRoot()
+        let allowed = "Astra/Services/Tasks/TaskQueue.swift"
+        let callPatterns = [".continueSession(", ".executeTask(", ".executeApprovedPlan("]
+        let violations = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .compactMap { file -> String? in
+                let relative = relativePath(for: file, root: root)
+                guard relative != allowed else { return nil }
+                let source = try String(contentsOf: file, encoding: .utf8)
+                return callPatterns.contains(where: source.contains) ? relative : nil
+            }
+
+        #expect(
+            violations.isEmpty,
+            "Submit a durable execution request and signal TaskQueue instead of launching a provider directly: \(violations)"
         )
     }
 
@@ -1930,7 +1949,17 @@ struct ArchitectureFitnessTests {
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
             // isn't safely compressible further without losing the "why".
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
+            // Raised again for PR #364 review follow-up: budget/validation-strategy
+            // classification and both isolation-cleanup call sites now read the
+            // frozen launchTask snapshot instead of the live task, closing a
+            // mid-run edit desync — each site needs a one-line note on why.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_100, .owner("Runtime worker execution")),
+            // Global multi-resource admission remains coordinated here, while
+            // claim resolution, compatibility, fairness, persistence events,
+            // and store lifetime are extracted into focused task services.
+            // Keep a tight ceiling so new policy cannot drift back into the
+            // queue orchestrator.
+            "Astra/Services/Tasks/TaskQueue.swift": .init(2_100, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -1955,7 +1984,12 @@ struct ArchitectureFitnessTests {
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).
             "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift"))
+            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
+            // New in PR #364: ExecutionEnvironmentSharedMountTests coverage for the
+            // shared-workspace mount-downgrade fix pushed this over the 2,000-line
+            // threshold. Owns itself since ExecutionEnvironment.swift is still
+            // under budget.
+            "Tests/ExecutionEnvironmentTests.swift": .init(2_100, .owner("Execution environment tests"))
         ]
     }
 

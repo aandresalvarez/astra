@@ -5481,20 +5481,24 @@ struct TaskMainView: View {
             return
         }
 
-        recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
-        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPlan(
+            plan: plan,
+            mode: mode,
+            mutation: .existingTask,
+            for: task,
+            into: modelContext,
+            recordAdditionalPolicy: {
+                recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
+            }
+        ) else { return }
         showPlanCanvasIfNeeded()
-        TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
 
-        Task {
-            await taskQueue.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
-            await MainActor.run {
-                _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-                threadViewModel.refreshSnapshot(for: task)
-            }
-        }
+        taskQueue.signalExecutionRequest(
+            id: submission.requestID,
+            task: task,
+            modelContext: modelContext
+        )
     }
 
     private func showPlanCanvasIfNeeded() {
@@ -5606,18 +5610,18 @@ struct TaskMainView: View {
             "task_status": task.status.rawValue,
             "message_length": String(msg.count)
         ])
-
         if isPlanMode {
-            messageText = ""
-            attachedFiles = []
+            (messageText, attachedFiles) = ("", [])
             sendPlanningMessage(msg, traceID: traceID)
             return
         }
-
         if task.status == .queued {
+            guard let taskQueue, taskQueue.moveQueuedTaskToDraftForEditing(task, modelContext: modelContext) else {
+                AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: ["operation": "move_queued_task_to_draft", "result": "rejected_or_persist_failed"], level: .error)
+                return
+            }
             messageText = ""
             attachedFiles = []
-            TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
@@ -5662,15 +5666,11 @@ struct TaskMainView: View {
             }
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
-            Task {
-                _ = await taskQueue.continueSession(
-                    task: task,
-                    message: msg,
-                    existingMessageEventID: savedTurn.eventID,
-                    turnRequestID: savedTurn.requestID,
-                    modelContext: modelContext
-                ) { _ in }
-            }
+            taskQueue.signalExecutionRequest(
+                id: savedTurn.requestID,
+                task: task,
+                modelContext: modelContext
+            )
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, into: modelContext)

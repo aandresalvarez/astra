@@ -110,4 +110,97 @@ struct WorkspaceCommandServiceTests {
         let fetched = try fixture.context.fetch(FetchDescriptor<Connector>())
         #expect(fetched.contains { $0.id == connector.id })
     }
+
+    @MainActor
+    @Test("Template main task persists one initial execution request")
+    func templateMainPersistsInitialExecutionRequest() throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let template = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: fixture.workspace)
+        fixture.context.insert(template)
+
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template,
+            taskTitle: "Review",
+            variables: [:],
+            selectedSkills: [],
+            defaultModel: "",
+            defaultRuntimeID: "claude_code",
+            workspace: fixture.workspace,
+            modelContext: fixture.context,
+            source: "test"
+        )
+
+        let requests = try TaskTurnRequestRepository.requests(for: creation.mainTask, in: fixture.context)
+        let request = try #require(requests.first)
+        #expect(creation.initialRequestSubmitted)
+        #expect(requests.count == 1)
+        #expect(request.kind == .initial)
+        #expect(creation.mainTask.events.contains {
+            $0.id == request.sourceEventID && $0.type == TaskEventTypes.ExecutionRequest.initial.rawValue
+        })
+    }
+
+    @MainActor
+    @Test("Template before phase is the only initially runnable request")
+    func templateBeforePhaseOwnsInitialExecutionRequest() throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let template = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: fixture.workspace)
+        template.beforeGoal = "Prepare the checkout"
+        fixture.context.insert(template)
+
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template,
+            taskTitle: "Review",
+            variables: [:],
+            selectedSkills: [],
+            defaultModel: "",
+            defaultRuntimeID: "claude_code",
+            workspace: fixture.workspace,
+            modelContext: fixture.context,
+            source: "test"
+        )
+
+        let before = try #require(creation.beforeTask)
+        #expect(creation.initialRequestSubmitted)
+        #expect(try TaskTurnRequestRepository.requests(for: before, in: fixture.context).count == 1)
+        #expect(try TaskTurnRequestRepository.requests(for: creation.mainTask, in: fixture.context).isEmpty)
+        #expect(before.status == .queued)
+        #expect(creation.mainTask.status == .draft)
+    }
+
+    @MainActor
+    @Test("Failed template submission leaves no queued task without a durable request", arguments: [false, true])
+    func failedTemplateSubmissionRestoresDraftState(hasBeforePhase: Bool) throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let template = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: fixture.workspace)
+        if hasBeforePhase {
+            template.beforeGoal = "Prepare the checkout"
+        }
+        fixture.context.insert(template)
+
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template,
+            taskTitle: "Review",
+            variables: [:],
+            selectedSkills: [],
+            defaultModel: "",
+            defaultRuntimeID: "claude_code",
+            workspace: fixture.workspace,
+            modelContext: fixture.context,
+            source: "test",
+            submitInitial: { _, _ in .failure(.persistenceFailed("forced_test_failure")) }
+        )
+
+        let tasks = try fixture.context.fetch(FetchDescriptor<AgentTask>())
+        let requests = try fixture.context.fetch(FetchDescriptor<TaskTurnRequest>())
+        #expect(tasks.count == (hasBeforePhase ? 2 : 1))
+        #expect(tasks.allSatisfy { $0.status == .draft })
+        #expect(requests.isEmpty)
+        #expect(!creation.initialRequestSubmitted)
+        #expect(creation.mainTask.status == .draft)
+        #expect(creation.beforeTask?.status != .queued)
+    }
 }

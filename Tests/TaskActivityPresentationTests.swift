@@ -53,7 +53,7 @@ struct TaskActivityPresentationTests {
         )
         #expect(waitingOnly.kind == .waitingForResource)
         #expect(waitingOnly.sidebarSubtitle == "Build task is using this workspace")
-        #expect(waitingOnly.dockTitle == "Waiting for workspace")
+        #expect(waitingOnly.dockTitle == "Waiting for resource")
     }
 
     @Test("A queued follow-up behind a running task stays individually retractable")
@@ -149,7 +149,7 @@ struct TaskActivityPresentationTests {
         )
 
         #expect(firstChip?.title == "Queued")
-        #expect(secondChip?.title == "Waiting for workspace")
+        #expect(secondChip?.title == "Waiting for resource")
         #expect(secondChip?.detail == "Report task is using this workspace")
         #expect(TaskTurnMessageLifecyclePresentation.resolve(messageEventID: UUID(), requests: [first, second]) == nil)
     }
@@ -232,6 +232,41 @@ struct TaskActivityPresentationTests {
         #expect(index.runningTaskCount(in: workspace) == 1)
         #expect(index.waitingTaskCount(in: workspace) == 1)
         #expect(index.reviewTasks(for: workspace).map(\.id) == [runningTask.id, waitingTask.id])
+    }
+
+    @Test("Activity index exposes live tasks across workspaces regardless of search or drawer context")
+    func activityIndexIsGlobalAndDurable() {
+        let workspaceA = makeWorkspace(name: "A")
+        let workspaceB = makeWorkspace(name: "B")
+        let workspaceC = makeWorkspace(name: "C")
+        let runningTask = makeTask(title: "Run A", status: .completed, workspace: workspaceA)
+        let waitingTask = makeTask(title: "Wait B", status: .completed, workspace: workspaceB)
+        let resourceTask = makeTask(title: "Blocked C", status: .completed, workspace: workspaceC)
+        waitingTask.isDone = true
+        let idleTask = makeTask(title: "Idle", status: .completed, workspace: workspaceA)
+        let running = request(for: runningTask, sequence: 1, state: .running)
+        let waiting = request(for: waitingTask, sequence: 1, state: .waitingForWorker)
+        let resourceWait = request(
+            for: resourceTask,
+            sequence: 1,
+            state: .waitingForResource,
+            blockerSummary: "Another task owns this workspace"
+        )
+        let tasks = [idleTask, waitingTask, resourceTask, runningTask]
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: tasks,
+            requests: [resourceWait, waiting, running]
+        )
+
+        let index = SidebarTaskIndex(
+            tasks: tasks,
+            searchText: "no task matches this",
+            taskActivities: activities
+        )
+
+        #expect(index.activeTasks.first?.id == runningTask.id)
+        #expect(Set(index.activeTasks.dropFirst().map(\.id)) == [waitingTask.id, resourceTask.id])
+        #expect(index.activityCounts == SidebarWorkspaceActivityCounts(running: 1, waiting: 2))
     }
 
     @Test("Waiting counts include tasks the user already marked done")

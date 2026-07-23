@@ -8,24 +8,32 @@ enum TaskDeliverableExpectation {
     static let artifactScanDepthLimit = 4
 
     static func requiresStandaloneArtifact(_ task: AgentTask) -> Bool {
+        let combinedIntent = deliverableIntentText(for: task)
+        if outputFilenames(in: combinedIntent) == transientOutputFilenames(in: combinedIntent),
+           !transientOutputFilenames(in: combinedIntent).isEmpty {
+            return false
+        }
+
         let text = [
-            deliverableRelevantText(from: task.title),
-            deliverableRelevantText(from: task.goal),
-            deliverableRelevantText(from: task.inputs.joined(separator: " ")),
-            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: " "))
+            persistentDeliverableText(from: task.title),
+            persistentDeliverableText(from: task.goal),
+            persistentDeliverableText(from: task.inputs.joined(separator: " ")),
+            persistentDeliverableText(from: task.acceptanceCriteria.joined(separator: " "))
         ]
             .joined(separator: " ")
             .lowercased()
 
-        let artifactActionWords = [
+        let artifactActionWords: Set<String> = [
             "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
         ]
         let artifactActionPhrases = [
             "put this in files", "write this in files"
         ]
-        guard containsAnyWholeWord(text, artifactActionWords)
-                || containsJoinedArticleAction(text, artifactActionWords)
-                || containsAny(text, artifactActionPhrases) else {
+        guard TaskIntentLanguagePolicy.containsAffirmativeAction(
+            in: text,
+            words: artifactActionWords,
+            phrases: artifactActionPhrases
+        ) || containsJoinedArticleAction(text, Array(artifactActionWords)) else {
             return false
         }
 
@@ -66,10 +74,10 @@ enum TaskDeliverableExpectation {
 
             if let listSegment = explicitDeliverableListSegment(from: line) {
                 if acceptsDeliverableListItems {
-                    filenames.formUnion(outputFilenames(in: listSegment))
+                    filenames.formUnion(persistentOutputFilenames(in: listSegment))
                 }
                 if lineStatesNamedOutput(line) {
-                    filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                    filenames.formUnion(persistentOutputFilenames(in: proseOutputSegment(from: line)))
                 }
                 continue
             }
@@ -81,10 +89,10 @@ enum TaskDeliverableExpectation {
             }
 
             if lineStatesNamedOutput(line) {
-                filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                filenames.formUnion(persistentOutputFilenames(in: proseOutputSegment(from: line)))
             }
         }
-        return filenames
+        return filenames.subtracting(transientOutputFilenames(in: text))
     }
 
     static func hasArtifact(
@@ -304,6 +312,89 @@ enum TaskDeliverableExpectation {
 
     private static func matches(_ text: String, pattern: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Removes an explicitly transient file lifecycle from final-deliverable
+    /// inference. A named file is transient only when one instruction names a
+    /// single file, marks it as temporary/scratch/probe state, and explicitly
+    /// requires removing it. Ambiguous or multi-file instructions remain
+    /// fail-closed so a cleanup aside cannot erase a real requested output.
+    private static func persistentDeliverableText(from rawText: String) -> String {
+        deliverableRelevantText(from: rawText)
+            .components(separatedBy: .newlines)
+            .filter { transientOutputFilenames(in: $0).isEmpty }
+            .joined(separator: "\n")
+    }
+
+    private static func deliverableIntentText(for task: AgentTask) -> String {
+        [
+            deliverableRelevantText(from: task.title),
+            deliverableRelevantText(from: task.goal),
+            deliverableRelevantText(from: task.inputs.joined(separator: "\n")),
+            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: "\n"))
+        ].joined(separator: "\n")
+    }
+
+    private static func persistentOutputFilenames(in text: String) -> Set<String> {
+        outputFilenames(in: text).subtracting(transientOutputFilenames(in: text))
+    }
+
+    private static func transientOutputFilenames(in text: String) -> Set<String> {
+        let filenames = outputFilenames(in: text)
+        guard !filenames.isEmpty else { return [] }
+
+        let clauses = text.lowercased()
+            .replacingOccurrences(
+                of: #"(?:\r?\n|;|\.\s+|,\s*(?:and\s+(?:then\s+)?)?|\s+and\s+(?:then\s+)?)"#,
+                with: "\n",
+                options: .regularExpression
+            )
+            .components(separatedBy: .newlines)
+        let transientWords: Set<String> = ["temporary", "temp", "scratch", "probe"]
+        let removalWords: Set<String> = ["delete", "discard", "remove"]
+        let containsRemovalAction: (String) -> Bool = { clause in
+            TaskIntentLanguagePolicy.containsAffirmativeAction(
+                in: clause,
+                words: removalWords,
+                phrases: ["clean up"]
+            )
+        }
+
+        return Set(filenames.filter { filename in
+            let needle = filename.lowercased()
+            for index in clauses.indices where clauses[index].contains(needle) {
+                let filenameClause = clauses[index]
+                let tokens = Set(filenameClause
+                    .split { !$0.isLetter && !$0.isNumber }
+                    .map(String.init))
+                let namedAsTransient = !tokens.isDisjoint(with: transientWords)
+                    || transientWords.contains(where: { needle.contains($0) })
+                guard namedAsTransient else { continue }
+
+                if containsRemovalAction(filenameClause) { return true }
+
+                // Creation, verification, and cleanup are commonly separate
+                // clauses or task fields. Look only forward from the named
+                // transient file, stopping before a different output is
+                // introduced, so an unrelated cleanup instruction cannot
+                // erase a later persistent deliverable.
+                for laterIndex in clauses.indices where laterIndex > index {
+                    let later = clauses[laterIndex]
+                    if filenames.contains(where: {
+                        $0.caseInsensitiveCompare(filename) != .orderedSame
+                            && later.contains($0.lowercased())
+                    }) {
+                        break
+                    }
+                    if containsRemovalAction(later)
+                        && (later.contains(needle)
+                            || later.range(of: #"\b(it|this file|the file)\b"#, options: .regularExpression) != nil) {
+                        return true
+                    }
+                }
+            }
+            return false
+        })
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {

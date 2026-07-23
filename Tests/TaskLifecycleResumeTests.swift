@@ -5,6 +5,8 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+private enum PermissionSubmissionTestError: Error { case forcedPersistenceFailure }
+
 /// Covers `TaskLifecycleCoordinator.resumeTask`, the UI "continue where you left
 /// off" path. The continuation is driven through a zero-size `TaskQueue` pool so
 /// no real provider process is launched: `TaskQueue.continueSession` finds no
@@ -35,6 +37,112 @@ struct TaskLifecycleResumeTests {
         let queue = TaskQueue(poolSize: 0)
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
         return Environment(coordinator: coordinator, queue: queue, context: context, container: container, root: url.path)
+    }
+
+    @Test("Permission submission rollback restores open requests, grants, and approval events")
+    func permissionSubmissionRollbackRestoresAllMutations() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let task = AgentTask(title: "Permission rollback", goal: "Use the requested tool")
+        task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = "[{\"open\":true}]"
+        task.runtimePermissionGrantsJSON = "[{\"grant\":\"before\"}]"
+        env.context.insert(task)
+        let snapshot = ExecutionMutationSnapshot(task)
+
+        task.runtimePermissionOpenRequestsJSON = "[]"
+        task.runtimePermissionGrantsJSON = "[{\"grant\":\"after\"}]"
+        let approval = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Transient approval mutation"
+        )
+        env.context.insert(approval)
+
+        snapshot.restore(task, in: env.context)
+
+        #expect(task.status == .pendingUser)
+        #expect(task.runtimePermissionOpenRequestsJSON == "[{\"open\":true}]")
+        #expect(task.runtimePermissionGrantsJSON == "[{\"grant\":\"before\"}]")
+        #expect(!task.events.contains { $0.id == approval.id && !$0.isDeleted })
+    }
+
+    @Test("Failed durable permission resume rolls back approval mutations")
+    func failedPermissionResumeRollsBackApprovalMutation() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let task = AgentTask(title: "Permission save failure", goal: "Use the requested tool")
+        task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = "[{\"open\":true}]"
+        env.context.insert(task)
+        let snapshot = ExecutionMutationSnapshot(task)
+
+        let result = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: "Continue with the approved permission.",
+            executionPolicy: .default,
+            for: task,
+            into: env.context,
+            persist: { throw PermissionSubmissionTestError.forcedPersistenceFailure },
+            prepare: {
+                task.runtimePermissionOpenRequestsJSON = "[]"
+                env.context.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Task.approved,
+                    payload: "Must roll back"
+                ))
+            },
+            rollback: { snapshot.restore(task, in: env.context) }
+        )
+
+        guard case .failure = result else {
+            Issue.record("Expected forced persistence failure")
+            return
+        }
+        #expect(task.runtimePermissionOpenRequestsJSON == "[{\"open\":true}]")
+        #expect(!task.events.contains {
+            $0.type == TaskEventTypes.Task.approved.rawValue && !$0.isDeleted
+        })
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: env.context).isEmpty)
+    }
+
+    @Test("A mutating follow-up persists an exclusive claim for an informational task")
+    func mutatingFollowUpPersistsStrengthenedClaim() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Follow-up claim", primaryPath: env.root)
+        let task = AgentTask(
+            title: "Research the scheduler",
+            goal: "Explain the current implementation.",
+            workspace: workspace
+        )
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let result = ExecutionRequestSubmissionService.submitFollowUp(
+            message: "Now fix the scheduler and update the tests.",
+            for: task,
+            into: env.context
+        )
+        let submission: ExecutionRequestSubmissionService.Submission?
+        if case .success(let value) = result { submission = value } else { submission = nil }
+        let accepted = try #require(submission)
+        let request = try #require(try TaskTurnRequestRepository.request(
+            id: accepted.requestID,
+            in: env.context
+        ))
+
+        #expect(request.resourceClaims.first?.access == .exclusive)
+    }
+
+    @Test("User message JSON is never decoded as an internal execution envelope")
+    func userMessageEnvelopeJSONIsRejected() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let task = AgentTask(title: "Conversation", goal: "Discuss a payload")
+        let envelope = "{\"version\":1,\"launchMode\":\"continuation\",\"executionPolicyOverride\":{\"permissionPolicyRawValue\":\"autonomous\"}}"
+        let event = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: envelope)
+
+        #expect(ExecutionRequestSubmissionService.decodeSourcePayload(event) == nil)
     }
 
     @Test("Resume without a session id does not start a continuation")
@@ -75,15 +183,24 @@ struct TaskLifecycleResumeTests {
         let resumeEvents = task.events.filter { $0.type == "task.resumed" }
         #expect(resumeEvents.count == 1)
         #expect(resumeEvents.first?.payload.contains("Resuming previous session") == true)
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+        let request = try #require(requests.first)
+        let sourceEvent = try #require(task.events.first { $0.id == request.sourceEventID })
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(requests.count == 1)
+        #expect(request.kind == .followUp)
+        #expect(sourceEvent.type == TaskEventTypes.ExecutionRequest.resume.rawValue)
+        #expect(source.launchMode == .continuation)
+        #expect(source.message == TaskLifecycleCoordinator.resumeContinuationMessage(for: task))
 
-        // Drain the continuation; with a zero-size pool `continueSession` cannot
-        // admit a worker, so the task must remain non-running.
+        await Task.yield()
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
         await continuation?.value
         #expect(task.status == .pendingUser)
         _ = env.container
     }
 
-    @Test("Resume remains at the prior status when no worker can continue")
+    @Test("Resume stays durably queued at the prior status when no worker is available")
     func resumeRemainsAtPriorStatusWhenNoWorkerCanContinue() async throws {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
@@ -95,12 +212,15 @@ struct TaskLifecycleResumeTests {
         env.context.insert(workspace)
         env.context.insert(task)
 
-        // Zero-size pool → `continueSession` finds no worker and returns false.
-        await env.coordinator.resumeTask(task)?.value
+        let continuation = env.coordinator.resumeTask(task)
+        await Task.yield()
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).first)
 
         #expect(task.status == .pendingUser)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
-        #expect(task.events.contains { $0.type == "error" })
+        #expect(request.state == .waitingForWorker)
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
     }
 
     @Test("TaskMainView-style continuation leaves task non-running when the queue rejects admission")
@@ -135,7 +255,7 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.contains { $0.type == "error" })
     }
 
-    @Test("Runtime permission approval reverts to pendingUser when no worker can continue")
+    @Test("Runtime permission approval persists a relaunch request when no worker is available")
     func runtimePermissionApprovalRevertsWhenNoWorkerCanContinue() async throws {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
@@ -163,13 +283,20 @@ struct TaskLifecycleResumeTests {
         ))
         try env.context.save()
 
-        // No live in-flight ask is registered, so approval takes the relaunch
-        // path; the zero-size pool then refuses admission and must roll back.
-        await env.coordinator.approveTask(task)?.value
+        // No live in-flight ask is registered, so approval takes the durable
+        // relaunch path and waits for a worker.
+        let continuation = env.coordinator.approveTask(task)
+        await Task.yield()
+        let permissionRequest = try #require(
+            try TaskTurnRequestRepository.requests(for: task, in: env.context).last
+        )
+        env.queue.cancelTurnRequest(id: permissionRequest.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
 
         #expect(task.status == .pendingUser)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
-        #expect(task.events.contains { $0.type == "error" })
+        #expect(permissionRequest.kind == .followUp)
+        #expect(task.events.contains { $0.type == "error" } == false)
     }
 
     @Test("Allow once credential approval does not persist task-scoped credential grants")
@@ -207,7 +334,11 @@ struct TaskLifecycleResumeTests {
         ))
         try env.context.save()
 
-        await env.coordinator.approveTask(task)?.value
+        let continuation = env.coordinator.approveTask(task)
+        await Task.yield()
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).last)
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
 
         #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task).isEmpty)
         #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType } == false)
@@ -375,14 +506,27 @@ struct TaskLifecycleResumeTests {
         ))
         try env.context.save()
 
-        // Drain the continuation deterministically (with a zero-size pool it
-        // returns immediately without launching a provider).
-        await env.coordinator.retryTask(task)?.value
+        let continuation = env.coordinator.retryTask(task)
+        await Task.yield()
+        let queuedRetry = try #require(
+            try TaskTurnRequestRepository.requests(for: task, in: env.context).last
+        )
+        env.queue.cancelTurnRequest(id: queuedRetry.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
         AppLogger.flushForTesting()
 
         #expect(task.status == .queued)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
         #expect(task.events.contains { $0.type == "task.retried" })
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+        let request = try #require(requests.first)
+        let sourceEvent = try #require(task.events.first { $0.id == request.sourceEventID })
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(requests.count == 1)
+        #expect(request.kind == .retry)
+        #expect(sourceEvent.type == TaskEventTypes.ExecutionRequest.retry.rawValue)
+        #expect(source.launchMode == .continuation)
+        #expect(source.message == "latest follow-up request")
         #expect(
             AppLogger.entries.contains {
                 $0.taskID == task.id && $0.message.contains("task.completed")
@@ -438,6 +582,8 @@ struct TaskLifecycleResumeTests {
         let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: env.context))
         let requestTerminalAt = Date()
         TaskTurnRequestStateMachine.transition(request, to: .failed, terminalReason: "runtime_not_started", at: requestTerminalAt)
+        let originalRequestID = request.id
+        let originalSourceEventID = request.sourceEventID
 
         // A later, non-durable run (e.g. an approved-plan or base-task
         // retry) fails AFTER the durable request terminalized, without
@@ -452,7 +598,14 @@ struct TaskLifecycleResumeTests {
         env.context.insert(laterRun)
         try env.context.save()
 
-        await env.coordinator.retryTask(task)?.value
+        let continuation = env.coordinator.retryTask(task)
+        await Task.yield()
+        let newQueuedRequest = try #require(
+            try TaskTurnRequestRepository.requests(for: task, in: env.context).last
+        )
+        env.queue.cancelTurnRequest(id: newQueuedRequest.id, workspace: workspace, modelContext: env.context)
+        env.queue.cancelAll()
+        await continuation?.value
 
         // The legacy fallback must not resurrect the stale durable message:
         // retry falls back to the original task seed, recorded via the
@@ -465,6 +618,19 @@ struct TaskLifecycleResumeTests {
         let retriedEvent = try #require(task.events.first { $0.type == "task.retried" })
         #expect(retriedEvent.payload == "Task re-queued for retry.")
         #expect(task.status == .queued)
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+        #expect(requests.count == 2)
+        let oldRequest = try #require(requests.first { $0.id == originalRequestID })
+        let newRequest = try #require(requests.first { $0.id != originalRequestID })
+        #expect(oldRequest.state == .failed)
+        #expect(oldRequest.sourceEventID == originalSourceEventID)
+        #expect(oldRequest.terminalAt == requestTerminalAt)
+        #expect(newRequest.kind == .retry)
+        #expect(newRequest.sequence == 2)
+        let newSourceEvent = try #require(task.events.first { $0.id == newRequest.sourceEventID })
+        let newSource = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(newSourceEvent))
+        #expect(newSource.launchMode == .initial)
+        #expect(newSource.message == nil)
     }
 
     @Test("Deleting a task cancels and removes its durable turn requests")

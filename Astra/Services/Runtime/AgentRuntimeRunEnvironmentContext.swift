@@ -14,11 +14,13 @@ struct AgentRuntimeRunEnvironmentContext: Sendable, Equatable {
         task: AgentTask,
         currentDirectory: String,
         providerLaunchContextText: String,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         approvedSandboxReadablePaths: [String] = []
     ) -> AgentRuntimeRunEnvironmentContext {
         let taskSnapshot = DockerExecutionPlanner.snapshotForRun(
             task: task,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            workspaceAccess: workspaceAccess
         )
         let attachmentPaths = AgentRuntimeAttachmentProjection.readablePaths(
             for: task,
@@ -44,6 +46,7 @@ struct AgentRuntimeRunEnvironmentContext: Sendable, Equatable {
         let runSnapshot = DockerExecutionPlanner.snapshotForRun(
             task: task,
             currentDirectory: currentDirectory,
+            workspaceAccess: workspaceAccess,
             additionalReadOnlyInputPaths: additionalReadOnlyInputPaths
         )
         return AgentRuntimeRunEnvironmentContext(

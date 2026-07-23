@@ -2481,6 +2481,7 @@ struct WorkspacePersistenceTests {
             workspace: workspace
         )
         scheduledTask.status = .completed
+        scheduledTask.originScheduleID = nil
         scheduledTask.tokensUsed = 321
         scheduledTask.costUSD = 0.42
         context.insert(scheduledTask)
@@ -2503,16 +2504,28 @@ struct WorkspacePersistenceTests {
         schedule.resultMode = .sameThread
         schedule.sourceTaskID = sourceTask.id
         context.insert(schedule)
+        scheduledTask.originScheduleID = schedule.id
+        let submissionResult = ExecutionRequestSubmissionService.submitScheduled(
+            scheduleID: schedule.id,
+            for: scheduledTask,
+            into: context
+        )
+        let optionalSubmission: ExecutionRequestSubmissionService.Submission?
+        if case .success(let value) = submissionResult {
+            optionalSubmission = value
+        } else {
+            optionalSubmission = nil
+        }
+        let submission = try #require(optionalSubmission)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .running, runID: run.id)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .completed)
+        let originalSourceEventID = request.sourceEventID
         try context.save()
 
         let queue = TaskQueue()
-        queue.mergeSameThreadScheduleResult(
-            from: scheduledTask,
-            into: sourceTask,
-            schedule: schedule,
-            latestRun: run,
-            modelContext: context
-        )
+        queue.routeScheduleResult(task: scheduledTask, scheduleID: schedule.id, modelContext: context)
 
         #expect(sourceTask.status == .completed)
         #expect(sourceTask.isDone == false)
@@ -2523,6 +2536,13 @@ struct WorkspacePersistenceTests {
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Routine run: Reply Monitor") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Watch reply activity") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("/tmp/reply-context") })
+        #expect(scheduledTask.isDone)
+        #expect(scheduledTask.runs.contains { $0.id == run.id })
+        #expect(request.taskID == scheduledTask.id)
+        #expect(request.runID == run.id)
+        #expect(request.sourceEventID == originalSourceEventID)
+        #expect(scheduledTask.events.contains { $0.id == originalSourceEventID })
+        #expect(schedule.runResults.last?.taskID == scheduledTask.id.uuidString)
     }
 }
 

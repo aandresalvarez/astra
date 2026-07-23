@@ -320,7 +320,48 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 ENTITLEMENTS="$ROOT_DIR/script/ASTRA.entitlements"
 
 stop_existing_app() {
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  local allow_takeover="${ASTRA_ALLOW_CROSS_BUNDLE_TAKEOVER:-0}"
+  if [[ "$allow_takeover" != "0" && "$allow_takeover" != "1" ]]; then
+    echo "Invalid ASTRA_ALLOW_CROSS_BUNDLE_TAKEOVER '$allow_takeover'. Use 0 or 1." >&2
+    exit 2
+  fi
+
+  local pids
+  pids="$(pgrep -x "$APP_NAME" || true)"
+  local owned_pids=""
+  local conflicting_pids=""
+  local conflicting_processes=""
+  local pid command
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    if ! command="$(ps -p "$pid" -o command= 2>/dev/null | sed -e 's/^[[:space:]]*//')"; then
+      continue
+    fi
+    if [[ "$command" == "$APP_BINARY"* ]]; then
+      owned_pids="${owned_pids}${pid}"$'\n'
+    else
+      conflicting_pids="${conflicting_pids}${pid}"$'\n'
+      conflicting_processes="${conflicting_processes}Running process ${pid}: ${command}"$'\n'
+    fi
+  done <<< "$pids"
+
+  if [[ -n "$conflicting_pids" && "$allow_takeover" != "1" ]]; then
+    echo "FAIL: refusing to replace $APP_NAME because another bundle owns its shared app identity." >&2
+    echo "Intended bundle: $APP_BUNDLE" >&2
+    printf '%s' "$conflicting_processes" >&2
+    echo "Quit that app first, or set ASTRA_ALLOW_CROSS_BUNDLE_TAKEOVER=1 for an explicit takeover." >&2
+    exit 4
+  fi
+
+  local pids_to_stop="$owned_pids"
+  if [[ "$allow_takeover" == "1" ]]; then
+    pids_to_stop="${pids_to_stop}${conflicting_pids}"
+  fi
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    kill "$pid" >/dev/null 2>&1 || true
+  done <<< "$pids_to_stop"
+
   local attempts=0
   while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
     attempts=$((attempts + 1))

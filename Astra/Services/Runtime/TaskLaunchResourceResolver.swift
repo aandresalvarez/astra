@@ -19,6 +19,7 @@ enum TaskLaunchResourceResolver {
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimePermissionGrants: [PermissionGrant] = [],
         permissionPolicy: PermissionPolicy = .autonomous,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -48,6 +49,7 @@ enum TaskLaunchResourceResolver {
 
         appendWorkspacePathGrants(
             task: task,
+            workspaceAccess: workspaceAccess,
             fileManager: fileManager,
             to: &hostPathGrants
         )
@@ -250,6 +252,7 @@ enum TaskLaunchResourceResolver {
 
     private static func appendWorkspacePathGrants(
         task: AgentTask,
+        workspaceAccess: TaskExecutionResourceAccess,
         fileManager: FileManager,
         to grants: inout [RuntimePathGrant]
     ) {
@@ -258,7 +261,7 @@ enum TaskLaunchResourceResolver {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
             grants.append(RuntimePathGrant(
                 path: normalized,
-                access: .readWrite,
+                access: workspaceAccess == .shared ? .read : .readWrite,
                 source: .workspace,
                 reason: "Workspace path selected by the user.",
                 sensitivity: .normal,

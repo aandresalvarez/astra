@@ -20,7 +20,17 @@ public enum TaskResourceLockEventTypes {
 }
 
 public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
-    public init(version: Int, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String, status: String, holderTaskID: UUID? = nil, reason: String? = nil) {
+    public init(
+        version: Int,
+        resourceKey: String,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        status: String,
+        holderTaskID: UUID? = nil,
+        reason: String? = nil,
+        resourceKind: TaskExecutionResourceKind? = nil,
+        requestID: UUID? = nil
+    ) {
         self.version = version
         self.resourceKey = resourceKey
         self.accessMode = accessMode
@@ -28,6 +38,8 @@ public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
         self.status = status
         self.holderTaskID = holderTaskID
         self.reason = reason
+        self.resourceKind = resourceKind
+        self.requestID = requestID
     }
 
     public var version: Int
@@ -37,6 +49,8 @@ public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
     public var status: String
     public var holderTaskID: UUID?
     public var reason: String?
+    public var resourceKind: TaskExecutionResourceKind?
+    public var requestID: UUID?
 
     public enum CodingKeys: String, CodingKey {
         case version = "v"
@@ -46,19 +60,32 @@ public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
         case status
         case holderTaskID
         case reason
+        case resourceKind
+        case requestID
     }
 }
 
 public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
-    public init(taskID: UUID, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String) {
+    public init(
+        taskID: UUID,
+        resourceKey: String,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        resourceKind: TaskExecutionResourceKind = .workspace,
+        requestID: UUID? = nil
+    ) {
         self.taskID = taskID
         self.resourceKey = resourceKey
         self.accessMode = accessMode
         self.runMode = runMode
+        self.resourceKind = resourceKind
+        self.requestID = requestID
     }
 
     public var taskID: UUID
     public var resourceKey: String
     public var accessMode: TaskResourceAccessMode
     public var runMode: String
+    public var resourceKind: TaskExecutionResourceKind
+    public var requestID: UUID?
 }

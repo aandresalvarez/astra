@@ -463,8 +463,8 @@ struct QueueLockTests {
         })
     }
 
-    @Test("queue does not dispatch a queued read-only Git fork")
-    func queueSkipsReadOnlyGitFork() async throws {
+    @Test("queue keeps a Git fork waiting while a sibling owns its shared worktree")
+    func queueWaitsForReadOnlyGitForkBlock() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeQueueLockContainer()
@@ -490,21 +490,35 @@ struct QueueLockTests {
         source.status = .running
         forked.status = .queued
         try context.save()
+        let submissionResult = ExecutionRequestSubmissionService.submitInitial(for: forked, into: context)
+        let optionalSubmission: ExecutionRequestSubmissionService.Submission?
+        if case let .success(value) = submissionResult {
+            optionalSubmission = value
+        } else {
+            optionalSubmission = nil
+        }
+        let submission = try #require(optionalSubmission)
+        let request = try #require(
+            try TaskTurnRequestRepository.request(id: submission.requestID, in: context)
+        )
 
         let queue = TaskQueue(poolSize: 1)
         let processing = Task { @MainActor in
             await queue.processQueue(modelContext: context)
         }
-        try await Task.sleep(for: .milliseconds(250))
+        while request.state != .waitingForResource {
+            await Task.yield()
+        }
 
         #expect(forked.status == .queued)
         #expect(forked.runs.count == 1)
-        #expect(!forked.events.contains {
-            $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("shared Git worktree")
-        })
         #expect(queue.activeTasks.isEmpty)
+        #expect(request.state.isActive)
+        #expect(request.blockingTaskID == source.id)
+        #expect(request.blockerSummary?.contains("shared Git worktree") == true)
+        #expect(request.terminalReason == nil)
 
-        queue.cancelAll()
+        await queue.cancelAllAndWait()
         await processing.value
     }
 }

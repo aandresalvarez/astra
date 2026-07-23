@@ -88,6 +88,7 @@ struct StoreStartupBlockedView: View {
 
     private func actionTitle(_ action: PersistentStoreRecoveryAction) -> String {
         switch action {
+        case .createFreshDevelopmentStore: "Start Fresh Dev Store"
         case .openCompatibleBuild: "Restart with Compatible Build"
         case .locateCompatibleBuild: "Locate Compatible Build…"
         case .checkForUpdates: "Update ASTRA"
@@ -99,6 +100,8 @@ struct StoreStartupBlockedView: View {
 
     private func perform(_ action: PersistentStoreRecoveryAction) {
         switch action {
+        case .createFreshDevelopmentStore:
+            createFreshDevelopmentStore()
         case .openCompatibleBuild(let bundlePath):
             relaunch(bundleURL: URL(fileURLWithPath: bundlePath), auditResult: "compatible_build_relaunch_scheduled")
         case .locateCompatibleBuild(let requiredSchemaVersion):
@@ -111,6 +114,15 @@ struct StoreStartupBlockedView: View {
             NSWorkspace.shared.activateFileViewerSelecting([WorkspaceRecoveryService.storeURL])
         case .quit:
             NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func createFreshDevelopmentStore() {
+        do {
+            _ = try DevelopmentStoreRecoveryService.createAndActivateFreshStore()
+            relaunch(bundleURL: Bundle.main.bundleURL, auditResult: "fresh_development_store_relaunch_scheduled")
+        } catch {
+            actionError = "ASTRA could not create a fresh development store: \(error.localizedDescription)"
         }
     }
 

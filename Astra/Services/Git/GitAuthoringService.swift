@@ -83,6 +83,31 @@ protocol GitPullRequestGenerating {
     ) async throws -> PRSuggestion
 }
 
+protocol GitAuthoringUtilityRunning: Sendable {
+    func runPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult
+}
+
+struct LiveGitAuthoringUtilityRunner: GitAuthoringUtilityRunning {
+    func runPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: workspacePath,
+            configuration: configuration,
+            toolMode: toolMode
+        )
+    }
+}
+
 struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGenerating {
     var utilityRuntime: AgentUtilityRuntimeConfiguration
     // Authoring runs a CLI agent (cold start + model inference). The provider
@@ -92,6 +117,19 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
     // is multi-section markdown over a wider context, so it needs more room.
     var timeoutSeconds: Int = 45
     var pullRequestTimeoutSeconds: Int = 90
+    var utilityRunner: any GitAuthoringUtilityRunning = LiveGitAuthoringUtilityRunner()
+
+    init(
+        utilityRuntime: AgentUtilityRuntimeConfiguration,
+        timeoutSeconds: Int = 45,
+        pullRequestTimeoutSeconds: Int = 90,
+        utilityRunner: any GitAuthoringUtilityRunning = LiveGitAuthoringUtilityRunner()
+    ) {
+        self.utilityRuntime = utilityRuntime
+        self.timeoutSeconds = timeoutSeconds
+        self.pullRequestTimeoutSeconds = pullRequestTimeoutSeconds
+        self.utilityRunner = utilityRunner
+    }
 
     private enum Operation: String {
         case commitMessage = "commit_message"
@@ -202,9 +240,13 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
         timeoutSeconds: Int
     ) async -> AgentUtilityRunResult {
         let effectiveTimeout = max(1, timeoutSeconds)
-        let timeoutNanos = UInt64(effectiveTimeout) * 1_000_000_000
-        let runtimeConfiguration = utilityRuntime
-        let startedAt = Date()
+        var runtimeConfiguration = utilityRuntime
+        // AgentRuntimeProcessRunner is the single watchdog owner: it owns the
+        // process, the absolute Dispatch deadline, process-tree termination,
+        // and final pipe draining. Git authoring supplies the operation budget
+        // instead of racing that runner with a second unstructured timeout.
+        runtimeConfiguration.timeoutSeconds = TimeInterval(effectiveTimeout)
+        let startedAt = ContinuousClock.now
         let repoName = URL(fileURLWithPath: repoPath).lastPathComponent
         AppLogger.audit(.gitAuthoringStarted, category: "Git", fields: [
             "operation": operation.rawValue,
@@ -215,67 +257,53 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             "prompt_bytes": "\(prompt.utf8.count)",
             "prompt_lines": "\(prompt.split(separator: "\n", omittingEmptySubsequences: false).count)"
         ], level: .info)
-        // Race the helper against the deadline: whichever finishes first wins, and
-        // the loser is cancelled. A nil element is the timeout sentinel.
-        let result: AgentUtilityRunResult = await withTaskGroup(
-            of: AgentUtilityRunResult?.self
-        ) { group in
-            group.addTask {
-                await AgentUtilityRuntimeRunner.runPrompt(
-                    prompt,
-                    workspacePath: repoPath,
-                    configuration: runtimeConfiguration,
-                    toolMode: .readOnly
-                )
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: timeoutNanos)
-                return nil
-            }
-            defer { group.cancelAll() }
-            for await first in group {
-                if let completed = first {
-                    self.logProviderCompletion(
-                        operation: operation,
-                        result: completed,
-                        elapsed: Date().timeIntervalSince(startedAt),
-                        repoName: repoName,
-                        timeoutSeconds: effectiveTimeout
-                    )
-                    return completed
-                }
-                AppLogger.warning("Git authoring timed out after \(effectiveTimeout)s", category: "Git")
-                let timeoutResult = AgentUtilityRunResult(
-                    exitCode: 124,
-                    output: "",
-                    error: "Timed out after \(effectiveTimeout)s"
-                )
-                self.logProviderCompletion(
-                    operation: operation,
-                    result: timeoutResult,
-                    elapsed: Date().timeIntervalSince(startedAt),
-                    repoName: repoName,
-                    timeoutSeconds: effectiveTimeout,
-                    timedOut: true
-                )
-                return timeoutResult
-            }
-            let timeoutResult = AgentUtilityRunResult(
+        let completed = await utilityRunner.runPrompt(
+            prompt,
+            workspacePath: repoPath,
+            configuration: runtimeConfiguration,
+            toolMode: .readOnly
+        )
+        let completedAt = ContinuousClock.now
+        // The process runner is the sole timeout authority. It starts its
+        // watchdog only after the child has launched and returns only after
+        // process-tree teardown and pipe draining. Reclassifying success from
+        // callback-delivery wall time here would charge unrelated scheduler
+        // starvation to the child and create a second, contradictory owner.
+        let timedOut = Self.isTimeoutResult(completed)
+        let result = timedOut
+            ? AgentUtilityRunResult(
                 exitCode: 124,
                 output: "",
                 error: "Timed out after \(effectiveTimeout)s"
             )
-            self.logProviderCompletion(
-                operation: operation,
-                result: timeoutResult,
-                elapsed: Date().timeIntervalSince(startedAt),
-                repoName: repoName,
-                timeoutSeconds: effectiveTimeout,
-                timedOut: true
-            )
-            return timeoutResult
+            : completed
+        if timedOut {
+            AppLogger.warning("Git authoring timed out after \(effectiveTimeout)s", category: "Git")
         }
+        logProviderCompletion(
+            operation: operation,
+            result: result,
+            elapsed: Self.elapsedSeconds(from: startedAt, to: completedAt),
+            repoName: repoName,
+            timeoutSeconds: effectiveTimeout,
+            timedOut: timedOut
+        )
         return result
+    }
+
+    private static func isTimeoutResult(_ result: AgentUtilityRunResult) -> Bool {
+        guard result.exitCode != 0 else { return false }
+        return result.error.localizedCaseInsensitiveContains("timed out")
+            || result.error.localizedCaseInsensitiveContains("timeout")
+    }
+
+    private static func elapsedSeconds(
+        from start: ContinuousClock.Instant,
+        to end: ContinuousClock.Instant
+    ) -> TimeInterval {
+        let components = start.duration(to: end).components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 
     private func logProviderCompletion(

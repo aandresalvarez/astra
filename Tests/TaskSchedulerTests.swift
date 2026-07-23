@@ -235,7 +235,7 @@ struct SchedulerLifecycleTests {
     }
 
     @Test("Firing a schedule wakes the queue instead of directly executing it")
-    func fireScheduleWakesQueue() throws {
+    func fireScheduleWakesQueue() async throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let scheduler = TaskScheduler()
@@ -255,11 +255,21 @@ struct SchedulerLifecycleTests {
         let scheduledTasks = workspace.tasks.filter { $0.originScheduleID == schedule.id }
         #expect(scheduledTasks.count == 1)
         #expect(scheduledTasks.first?.status == .queued)
+        let scheduledTask = try #require(scheduledTasks.first)
+        let requests = try TaskTurnRequestRepository.requests(for: scheduledTask, in: ctx)
+        let request = try #require(requests.first)
+        let sourceEvent = try #require(scheduledTask.events.first { $0.id == request.sourceEventID })
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(requests.count == 1)
+        #expect(request.kind == .scheduled)
+        #expect(sourceEvent.type == TaskEventTypes.ExecutionRequest.scheduled.rawValue)
+        #expect(source.scheduleID == schedule.id)
+        #expect(source.launchMode == .initial)
         #expect(queue.activeTasks.isEmpty)
         #expect(queue.hasProcessingLoop)
         #expect(queue.processQueueIfIdle(modelContext: ctx) == false)
 
-        queue.cancelAll()
+        await queue.cancelAllAndWait()
     }
 }
 

@@ -27,6 +27,35 @@ private final class SandboxApprovalFileManager: FileManager {
 
 @MainActor
 struct TaskLaunchResourcePlanTests {
+    @Test("Shared workspace claims are readable but not writable at launch")
+    func sharedWorkspaceGrantIsReadOnly() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-shared-workspace")
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+        let workspace = Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        let task = AgentTask(title: "Research", goal: "Summarize the repository.", workspace: workspace)
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.workspaceAccess == .shared)
+        #expect(plan.requiresSharedWorkspaceBoundary)
+        #expect(plan.hostReadablePaths.contains(workspaceRoot.standardizedFileURL.path))
+        #expect(!plan.hostWritablePaths.contains(workspaceRoot.standardizedFileURL.path))
+        // The workspace is enforced by the strict write allowlist. Keeping it
+        // out of the explicit deny overlay permits ASTRA's nested task output
+        // folder to remain writable.
+        #expect(!plan.hostProtectedWriteDenyPaths.contains(workspaceRoot.standardizedFileURL.path))
+    }
+
     @Test("Missing task inputs are launch-blocking read-only contract errors")
     func missingTaskInputIsLaunchBlocking() throws {
         let workspaceRoot = try makeTempDir("resource-plan-missing-input")
