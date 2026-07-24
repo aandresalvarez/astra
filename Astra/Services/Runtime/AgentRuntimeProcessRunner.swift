@@ -497,6 +497,8 @@ final class AgentRuntimeProcessRunner {
             let unavailableReason: String? = switch decision {
             case .applied:
                 nil
+            case .skipped where settings.enforcement == .off:
+                nil  // User disabled sandbox; bypass Seatbelt requirement for read-only inputs
             case .skipped(let reason), .fallback(let reason), .failClosed(let reason):
                 reason
             }
@@ -510,7 +512,9 @@ final class AgentRuntimeProcessRunner {
                 ], level: .error)
                 return .blocked(result)
             }
-            appliedBoundarySurfaces.insert(.hostSeatbelt)
+            if case .applied = decision {
+                appliedBoundarySurfaces.insert(.hostSeatbelt)
+            }
         }
 
         if case .applied(let wrappedPlan, _) = decision {

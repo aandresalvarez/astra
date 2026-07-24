@@ -380,13 +380,14 @@ struct ReadOnlyInputEnforcementBoundary: Sendable, Equatable {
         runtime: AgentRuntimeID
     ) -> ExecutionSandboxSettings {
         guard requiresHostSeatbelt else { return base }
+        guard base.enforcement != .off else { return base }
         var wrappedRuntimes = base.wrappedRuntimes
         wrappedRuntimes.insert(runtime)
         return ExecutionSandboxSettings(
             enforcement: .strict,
             wrappedRuntimes: wrappedRuntimes,
             allowNetwork: base.allowNetwork,
-            readScope: base.readScope
+            readScope: .enforce
         )
     }
 
@@ -395,6 +396,7 @@ struct ReadOnlyInputEnforcementBoundary: Sendable, Equatable {
         runtime: AgentRuntimeID
     ) -> ExecutionSandboxResolution {
         guard requiresHostSeatbelt else { return base }
+        guard base.storedEnforcement != .off else { return base }
         let effective = enforcingHostBoundary(in: base.effectiveSettings, runtime: runtime)
         let changed = effective != base.effectiveSettings
         return ExecutionSandboxResolution(

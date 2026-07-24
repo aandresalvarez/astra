@@ -567,13 +567,9 @@ enum CopilotCLIRuntime {
     }
 
     private static func shouldAddLocalToolPermissions(policy: PermissionPolicy, allowedTools: [String]) -> Bool {
-        if policy == .autonomous {
-            return true
-        }
-        return allowedTools.contains { tool in
-            tool.trimmingCharacters(in: .whitespacesAndNewlines)
-                .caseInsensitiveCompare("Bash") == .orderedSame
-        }
+        // Local tool commands generate scoped shell(gh:*) grants rather than broad Bash
+        // access, so they are safe to surface under any permission policy.
+        true
     }
 
     static func copilotShellPermissions(forLocalToolCommands commands: [String]) -> [String] {

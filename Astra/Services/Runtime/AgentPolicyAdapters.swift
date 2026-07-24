@@ -268,9 +268,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
-        let localToolCommands = PolicyLocalToolGrants.shouldGrantLocalToolCommands(allowedTools: allowedTools)
-            ? context.localToolCommands
-            : []
+        let localToolCommands = context.localToolCommands
         var diagnostics = diagnostics(for: policy, context: context)
         if !policy.deniedTools.isEmpty || !policy.deniedShellPatterns.isEmpty {
             diagnostics.append(PolicyDiagnostic(
@@ -390,6 +388,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
         diagnostics = diagnostics.map { diagnostic in
             guard diagnostic.id == "\(providerID.rawValue).secret-redaction-unsupported" else {
@@ -434,7 +433,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
-            allowedShellPatterns: policy.allowedShellPatterns,
+            allowedShellPatterns: policy.allowedShellPatterns + localShellPatterns,
             askFirstShellPatterns: policy.askFirstShellPatterns,
             deniedShellPatterns: policy.deniedShellPatterns,
             allowedURLPatterns: policy.allowedURLPatterns,
@@ -483,6 +482,7 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
@@ -514,7 +514,7 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
-            allowedShellPatterns: policy.allowedShellPatterns,
+            allowedShellPatterns: policy.allowedShellPatterns + localShellPatterns,
             askFirstShellPatterns: policy.askFirstShellPatterns,
             deniedShellPatterns: policy.deniedShellPatterns,
             allowedURLPatterns: policy.allowedURLPatterns,
@@ -565,6 +565,7 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
@@ -596,7 +597,7 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
-            allowedShellPatterns: policy.allowedShellPatterns,
+            allowedShellPatterns: policy.allowedShellPatterns + localShellPatterns,
             askFirstShellPatterns: policy.askFirstShellPatterns,
             deniedShellPatterns: policy.deniedShellPatterns,
             allowedURLPatterns: policy.allowedURLPatterns,
@@ -646,6 +647,7 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
@@ -677,7 +679,7 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
-            allowedShellPatterns: policy.allowedShellPatterns,
+            allowedShellPatterns: policy.allowedShellPatterns + localShellPatterns,
             askFirstShellPatterns: policy.askFirstShellPatterns,
             deniedShellPatterns: policy.deniedShellPatterns,
             allowedURLPatterns: policy.allowedURLPatterns,
@@ -761,10 +763,9 @@ private enum PolicyLocalToolGrants {
     }
 
     static func shouldGrantLocalToolCommands(allowedTools: [String]) -> Bool {
-        allowedTools.contains { tool in
-            tool.trimmingCharacters(in: .whitespacesAndNewlines)
-                .caseInsensitiveCompare("Bash") == .orderedSame
-        }
+        // Local tool commands generate scoped Bash(gh *) grants rather than broad Bash
+        // access, so they are safe to surface under any permission policy.
+        true
     }
 
     private static func claudeShellGrant(for command: String) -> String? {
@@ -784,6 +785,18 @@ private enum PolicyLocalToolGrants {
             return nil
         }
         return executable
+    }
+
+    static func shellAllowPatterns(for localToolCommands: [String]) -> [String] {
+        Array(Set(localToolCommands.compactMap { command -> String? in
+            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let token = trimmed.split(whereSeparator: { $0.isWhitespace }).first else { return nil }
+            let executable = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            guard !executable.isEmpty,
+                  executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil else { return nil }
+            return "\(executable) *"
+        })).sorted()
     }
 
     private static func unique(_ values: [String]) -> [String] {

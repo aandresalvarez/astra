@@ -1422,8 +1422,8 @@ struct CopilotCLICommandPlanningTests {
         #expect(!excludedEntries.contains("task"))
     }
 
-    @Test("Restricted permissions do not grant local tools without Bash")
-    func restrictedPermissionsDoNotGrantLocalToolsWithoutBash() {
+    @Test("Restricted permissions grant configured local tools with scoped shell entries")
+    func restrictedPermissionsGrantLocalToolsWithScopedEntries() {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
             allowedTools: ["Read", "Grep"],
@@ -1435,12 +1435,13 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("view"))
         #expect(joined.contains("grep"))
         #expect(joined.contains("glob"))
-        #expect(!joined.contains("shell(gh:*)"))
-        #expect(!joined.contains("shell(astra-browser:*)"))
+        // Local tools are always surfaced with scoped grants, regardless of Bash in allow-list
+        #expect(joined.contains("shell(gh:*)"))
+        #expect(joined.contains("shell(astra-browser:*)"))
     }
 
-    @Test("Restricted permissions translate scoped Bash grants")
-    func restrictedPermissionsTranslateScopedBashGrants() {
+    @Test("Restricted permissions translate scoped Bash grants and local tools")
+    func restrictedPermissionsTranslateScopedBashGrantsAndLocalTools() {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
             allowedTools: ["Read", "Bash(curl:*)"],
@@ -1453,12 +1454,13 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("grep"))
         #expect(joined.contains("glob"))
         #expect(joined.contains("shell(curl:*)"))
-        #expect(!joined.contains("shell(gh:*)"))
+        // Configured local tools are surfaced even when only a scoped Bash grant is in the allow-list
+        #expect(joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(git:*)"))
     }
 
-    @Test("Restricted permissions translate wrapper one-run Bash grants")
-    func restrictedPermissionsTranslateWrapperOneRunBashGrants() {
+    @Test("Restricted permissions translate wrapper one-run Bash grants and local tools")
+    func restrictedPermissionsTranslateWrapperOneRunBashGrantsAndLocalTools() {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
             allowedTools: ["Read", "Bash(set:*)"],
@@ -1471,7 +1473,8 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("grep"))
         #expect(joined.contains("glob"))
         #expect(joined.contains("shell(set:*)"))
-        #expect(!joined.contains("shell(gh:*)"))
+        // Configured local tools are surfaced even when only a scoped Bash grant is in the allow-list
+        #expect(joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(git:*)"))
     }
 

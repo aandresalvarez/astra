@@ -271,7 +271,7 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         #expect(decodedEvidence.resourceCount == 1)
     }
 
-    @Test("Host inputs force strict wrapping without changing the read scope")
+    @Test("Host inputs do not escalate when sandbox is explicitly Off")
     func hostInputsForceStrictWrapping() {
         let boundary = ReadOnlyInputEnforcementBoundary(
             paths: ["/tmp/attached.pdf"],
@@ -291,11 +291,45 @@ struct ReadOnlyInputEnforcementBoundaryTests {
         let resolved = boundary.enforcingHostBoundary(in: base, runtime: .cursorCLI)
 
         #expect(boundary.mode == .hostSeatbelt)
-        #expect(resolved.storedEnforcement == .off)
-        #expect(resolved.effectiveSettings.enforcement == .strict)
-        #expect(resolved.effectiveSettings.readScope == .open)
-        #expect(resolved.effectiveSettings.shouldWrap(runtime: .cursorCLI))
-        #expect(resolved.reason == .readOnlyInputBoundary)
+        #expect(resolved == base)
+
+        // Boundary DOES escalate when stored enforcement is not .off
+        let baseBestEffort = ExecutionSandboxResolution(
+            storedEnforcement: .bestEffort,
+            effectiveSettings: ExecutionSandboxSettings(
+                enforcement: .bestEffort,
+                wrappedRuntimes: [],
+                allowNetwork: true,
+                readScope: .audit
+            ),
+            reason: nil
+        )
+        let resolvedBestEffort = boundary.enforcingHostBoundary(in: baseBestEffort, runtime: .cursorCLI)
+        #expect(resolvedBestEffort.storedEnforcement == .bestEffort)
+        #expect(resolvedBestEffort.effectiveSettings.enforcement == .strict)
+        #expect(resolvedBestEffort.effectiveSettings.readScope == .enforce)
+        #expect(resolvedBestEffort.effectiveSettings.shouldWrap(runtime: .cursorCLI))
+        #expect(resolvedBestEffort.reason == .readOnlyInputBoundary)
+
+        // ExecutionSandboxSettings overload also respects enforcement=.off (used by AgentRuntimeProcessRunner)
+        let settingsOff = ExecutionSandboxSettings(
+            enforcement: .off,
+            wrappedRuntimes: [],
+            allowNetwork: true,
+            readScope: .open
+        )
+        let resolvedSettingsOff = boundary.enforcingHostBoundary(in: settingsOff, runtime: .cursorCLI)
+        #expect(resolvedSettingsOff == settingsOff)
+
+        let settingsBestEffort = ExecutionSandboxSettings(
+            enforcement: .bestEffort,
+            wrappedRuntimes: [],
+            allowNetwork: true,
+            readScope: .audit
+        )
+        let resolvedSettingsBestEffort = boundary.enforcingHostBoundary(in: settingsBestEffort, runtime: .cursorCLI)
+        #expect(resolvedSettingsBestEffort.enforcement == .strict)
+        #expect(resolvedSettingsBestEffort.readScope == .enforce)
 
         let container = ReadOnlyInputEnforcementBoundary(
             paths: ["/tmp/attached.pdf"],
