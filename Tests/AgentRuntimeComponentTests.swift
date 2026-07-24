@@ -24,11 +24,11 @@ private actor RuntimeComponentCompletionRecorder {
     }
 }
 
-private actor RecordingDockerImageAvailabilityChecker: DockerImageAvailabilityChecking {
-    private let result: Result<DockerImageAvailability, DockerImageAvailabilityError>
+private actor RecordingDockerImageReadinessChecker: DockerImageReadinessChecking {
+    private let result: DockerImageReadiness
     private var images: [String] = []
 
-    init(result: Result<DockerImageAvailability, DockerImageAvailabilityError>) {
+    init(result: DockerImageReadiness) {
         self.result = result
     }
 
@@ -36,7 +36,7 @@ private actor RecordingDockerImageAvailabilityChecker: DockerImageAvailabilityCh
         images
     }
 
-    func checkImageAvailability(_ image: String) async -> Result<DockerImageAvailability, DockerImageAvailabilityError> {
+    func checkImageReadiness(_ image: String) async -> DockerImageReadiness {
         images.append(image)
         return result
     }
@@ -733,14 +733,19 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
         context.insert(run)
-        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("unused:latest")))
+        let checker = RecordingDockerImageReadinessChecker(result: DockerImageReadiness(
+            image: "unused:latest",
+            state: .missing,
+            imageID: nil,
+            detail: "missing"
+        ))
 
         let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "run",
-            imageAvailabilityChecker: checker
+            imageReadinessChecker: checker
         )
 
         #expect(result.didPass)
@@ -769,14 +774,19 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
         context.insert(run)
-        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("astra/missing:latest")))
+        let checker = RecordingDockerImageReadinessChecker(result: DockerImageReadiness(
+            image: "astra/missing:latest",
+            state: .missing,
+            imageID: nil,
+            detail: "Docker image astra/missing:latest is not loaded on this Mac."
+        ))
 
         let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "run",
-            imageAvailabilityChecker: checker
+            imageReadinessChecker: checker
         )
 
         #expect(!result.didPass)
@@ -793,6 +803,58 @@ struct AgentRuntimeLaunchPreflightTests {
                 $0.payload.contains("astra/missing:latest") &&
                 $0.payload.contains("Build the workspace image")
         })
+        let launchBlockEvent = try #require(task.events.first {
+            $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue
+        })
+        let launchBlock = try #require(TaskRunLaunchBlockPayload.decode(from: launchBlockEvent.payload))
+        #expect(launchBlock.kind == .dockerImageUnavailable)
+        #expect(launchBlock.dockerImage == "astra/missing:latest")
+        #expect(launchBlock.dockerReadinessState == DockerImageReadinessState.missing.rawValue)
+    }
+
+    @Test("Docker image preflight classifies a listed but unresolvable tag for repair")
+    func dockerImagePreflightClassifiesBrokenTag() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: NSTemporaryDirectory())
+        let image = "astra-starr-data-lake:latest"
+        let imageID = "sha256:" + String(repeating: "a", count: 64)
+        let task = AgentTask(title: "Docker task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:\(image)",
+            kind: .dockerImage,
+            displayName: "STARR image",
+            image: image
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageReadinessChecker(result: DockerImageReadiness(
+            image: image,
+            state: .listedButUnresolvable,
+            imageID: imageID,
+            detail: "Docker lists \(image), but cannot resolve that tag."
+        ))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageReadinessChecker: checker
+        )
+
+        #expect(!result.didPass)
+        #expect(result.reason == TaskRunStopReason.dockerImageUnavailable.rawValue)
+        #expect(result.auditFields["result"] == "image_tag_unresolvable")
+        let blockEvent = try #require(task.events.first {
+            $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue
+        })
+        let block = try #require(TaskRunLaunchBlockPayload.decode(from: blockEvent.payload))
+        #expect(block.title == "Docker image tag needs repair")
+        #expect(block.dockerImageID == imageID)
     }
 
     @Test("Docker image preflight passes when selected image is loaded")
@@ -812,17 +874,19 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
         context.insert(run)
-        let checker = RecordingDockerImageAvailabilityChecker(result: .success(DockerImageAvailability(
+        let checker = RecordingDockerImageReadinessChecker(result: DockerImageReadiness(
             image: "astra/loaded:latest",
-            imageID: "sha256:abc"
-        )))
+            state: .ready,
+            imageID: "sha256:abc",
+            detail: "ready"
+        ))
 
         let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "run",
-            imageAvailabilityChecker: checker
+            imageReadinessChecker: checker
         )
 
         #expect(result.didPass)
