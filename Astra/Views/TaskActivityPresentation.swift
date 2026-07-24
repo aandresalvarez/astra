@@ -69,8 +69,8 @@ struct TaskActivityPresentation: Equatable, Sendable {
         case .waitingForWorker: return "Waiting for a worker"
         case .waitingForResource:
             return request?.blockerSummary?.isEmpty == false
-                ? "Waiting for workspace: \(request?.blockerSummary ?? "")"
-                : "Waiting for workspace"
+                ? "Waiting for resource: \(request?.blockerSummary ?? "")"
+                : "Waiting for resource"
         case .starting: return "Starting"
         }
     }
@@ -84,7 +84,7 @@ struct TaskActivityPresentation: Equatable, Sendable {
         case .waitingForResource:
             return request?.blockerSummary?.isEmpty == false
                 ? request?.blockerSummary
-                : "Waiting for workspace"
+                : "Waiting for resource"
         case .starting:
             return "Starting"
         case .idle, .running:
@@ -95,7 +95,7 @@ struct TaskActivityPresentation: Equatable, Sendable {
     var dockTitle: String? {
         switch kind {
         case .waitingForWorker: return "Waiting for a worker"
-        case .waitingForResource: return "Waiting for workspace"
+        case .waitingForResource: return "Waiting for resource"
         case .starting: return "Starting task"
         case .running: return waitingRequest == nil ? nil : "Message queued"
         case .idle: return nil
@@ -233,7 +233,7 @@ struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
                 requestID: request.id,
                 messageEventID: request.messageEventID,
                 state: request.state,
-                title: "Waiting for workspace",
+                title: "Waiting for resource",
                 detail: request.blockerSummary,
                 systemImage: "lock.clock"
             )

@@ -636,24 +636,6 @@ struct RuntimeExecutableCheckResult {
 /// see the field-by-field audit in the commit introducing this type). Captured
 /// once at context construction so adapters that only need these scalars don't
 /// hold a live SwiftData model reference.
-struct AgentTaskLaunchSnapshot: Sendable, Equatable {
-    let id: UUID
-    let model: String
-    let maxTurns: Int
-
-    init(task: AgentTask) {
-        self.id = task.id
-        self.model = task.model
-        self.maxTurns = task.maxTurns
-    }
-
-    init(id: UUID, model: String, maxTurns: Int) {
-        self.id = id
-        self.model = model
-        self.maxTurns = maxTurns
-    }
-}
-
 struct AgentRuntimeProcessLaunchContext {
     let prompt: String
     /// Live SwiftData model, retained for launch helpers that resolve

@@ -55,7 +55,7 @@ struct UpdateSafetyObserver: View {
 
     private var signature: String {
         [
-            String(taskQueue.isProcessing),
+            String(taskQueue.hasProcessingLoop || taskQueue.isStopping),
             String(taskQueue.activeCount),
             String(taskQueue.activeTasks.count),
             String(runningTaskCount)

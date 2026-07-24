@@ -6,6 +6,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     var allowedToolsOverride: [String]?
     var permissionGrantsOverride: [PermissionGrant]?
     var providerRenderOverride: ProviderPolicyRender?
+    /// Immutable request-time configuration. This is intentionally process
+    /// local: it is supplied by the durable request snapshot and is never
+    /// written back to the editable AgentTask model.
+    var launchSnapshot: AgentTaskLaunchSnapshot?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -13,12 +17,14 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         permissionPolicyOverride: PermissionPolicy? = nil,
         allowedToolsOverride: [String]? = nil,
         permissionGrantsOverride: [PermissionGrant]? = nil,
-        providerRenderOverride: ProviderPolicyRender? = nil
+        providerRenderOverride: ProviderPolicyRender? = nil,
+        launchSnapshot: AgentTaskLaunchSnapshot? = nil
     ) {
         self.permissionPolicyOverride = permissionPolicyOverride
         self.allowedToolsOverride = allowedToolsOverride
         self.permissionGrantsOverride = permissionGrantsOverride
         self.providerRenderOverride = providerRenderOverride
+        self.launchSnapshot = launchSnapshot
     }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
@@ -34,8 +40,15 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             permissionPolicyOverride: PermissionPolicy(providerMode: render.permissionMode),
             allowedToolsOverride: render.allowedTools,
             permissionGrantsOverride: permissionGrantsOverride,
-            providerRenderOverride: render
+            providerRenderOverride: render,
+            launchSnapshot: launchSnapshot
         )
+    }
+
+    func withLaunchSnapshot(_ snapshot: AgentTaskLaunchSnapshot?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.launchSnapshot = snapshot
+        return copy
     }
 
     static func approvedPlan(

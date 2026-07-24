@@ -48,10 +48,22 @@ final class SidebarPresentationModel: ObservableObject {
     private let defaults: UserDefaults
     private static let shownDefaultsKey = "sidebarUserVisible"
 
+    /// Authoritative end of the reveal guard. The watchdog below is only an
+    /// eager UI refresh; every event path that makes a decision based on
+    /// `isSettling` first reconciles this monotonic deadline. A delayed or
+    /// dropped timer therefore cannot leave collapse handling disabled.
+    private var settleDeadline: ContinuousClock.Instant?
+    private let monotonicNow: @MainActor () -> ContinuousClock.Instant
     private var settleTask: Task<Void, Never>?
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        monotonicNow: @escaping @MainActor () -> ContinuousClock.Instant = {
+            ContinuousClock().now
+        }
+    ) {
         self.defaults = defaults
+        self.monotonicNow = monotonicNow
         let shown = (defaults.object(forKey: Self.shownDefaultsKey) as? Bool) ?? true
         self.isSidebarShown = shown
         self.mode = PanelLayoutGeometry.sidebarMode(
@@ -105,6 +117,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// dock intent; on a too-narrow window it pops (or closes) the transient
     /// overlay drawer without touching the persisted intent.
     func toggle() {
+        reconcileSettleDeadline()
         if PanelLayoutGeometry.canDockSidebar(width: responsiveWidth, hasRightSidePanel: hasRightSidePanel) {
             setShown(!isSidebarShown)
         } else {
@@ -117,6 +130,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// docked (a real column stays put on selection). Only the transient overlay
     /// flag is touched; the durable dock intent is preserved.
     func handleSelectionCommitted() {
+        reconcileSettleDeadline()
         guard mode == .overlay else { return }
         setOverlayOpen(false)
     }
@@ -125,6 +139,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// Preserve/commit the user's visible-sidebar intent and start the same settle
     /// window as a normal docked reveal.
     func revealAfterClearingRightSidePanel() {
+        reconcileSettleDeadline()
         isOverlayOpen = false
         hasRightSidePanel = false
         if isSidebarShown {
@@ -137,6 +152,7 @@ final class SidebarPresentationModel: ObservableObject {
 
     /// Tap-outside / scrim dismissal of the overlay drawer.
     func dismissOverlay() {
+        reconcileSettleDeadline()
         guard mode == .overlay else { return }
         setOverlayOpen(false)
     }
@@ -158,12 +174,14 @@ final class SidebarPresentationModel: ObservableObject {
     // MARK: - Proposals from layout probes
 
     func setResponsiveWidth(_ width: CGFloat) {
+        reconcileSettleDeadline()
         guard width.isFinite, width != responsiveWidth else { return }
         responsiveWidth = width
         resolve()
     }
 
     func setHasRightSidePanel(_ value: Bool) {
+        reconcileSettleDeadline()
         guard value != hasRightSidePanel else { return }
         hasRightSidePanel = value
         resolve()
@@ -174,6 +192,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// (outside the settle window) collapses a column the user dragged below
     /// readable width.
     func noteColumnWidth(_ width: CGFloat) {
+        reconcileSettleDeadline()
         guard width.isFinite, width > 0 else { return }
         let clamped = min(
             max(width, SidebarColumnLayout.expandedMinimumWidth),
@@ -193,6 +212,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// SwiftUI content width, this reflects the actual split pane becoming
     /// readable, so it is safe to end the reveal-settle guard.
     func noteReadableSplitSubviewWidth(_ width: CGFloat) {
+        reconcileSettleDeadline()
         guard isSettling,
               SidebarColumnLayout.shouldCompleteSidebarReveal(width: width) else {
             return
@@ -204,6 +224,7 @@ final class SidebarPresentationModel: ObservableObject {
     /// Idempotent with the SwiftUI-side `noteColumnWidth` collapse — both just set
     /// the one intent flag, so the two probes can't race into different states.
     func proposeCompressedCollapse() {
+        reconcileSettleDeadline()
         guard !isSettling, mode == .docked else { return }
         setShown(false)
     }
@@ -211,6 +232,10 @@ final class SidebarPresentationModel: ObservableObject {
     // MARK: - Settle window
 
     private func beginSettle() {
+        let deadline = monotonicNow().advanced(
+            by: .nanoseconds(Int64(SidebarRevealSettlingPolicy.fallbackDelayNanoseconds))
+        )
+        settleDeadline = deadline
         isSettling = true
         settleTask?.cancel()
         settleTask = Task { @MainActor [weak self] in
@@ -218,20 +243,33 @@ final class SidebarPresentationModel: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let self else { return }
             // The AppKit probe normally ends settling earlier. This watchdog is
-            // the owning fallback when that observation never arrives; keeping
-            // the guard armed forever suppresses all later collapse proposals.
-            isSettling = false
-            settleTask = nil
+            // only an eager refresh. The deadline remains authoritative when
+            // timer delivery is delayed or missed.
+            reconcileSettleDeadline(expectedDeadline: deadline)
         }
     }
 
     private func endSettle() {
         settleTask?.cancel()
         settleTask = nil
+        settleDeadline = nil
         if isSettling { isSettling = false }
     }
 
+    /// Reconciles the deadline before any event path trusts `isSettling`.
+    /// `expectedDeadline` prevents an old cancelled watchdog from clearing a
+    /// newer reveal window if cancellation races with task delivery.
+    private func reconcileSettleDeadline(
+        expectedDeadline: ContinuousClock.Instant? = nil
+    ) {
+        guard isSettling, let deadline = settleDeadline else { return }
+        if let expectedDeadline, expectedDeadline != deadline { return }
+        guard monotonicNow() >= deadline else { return }
+        endSettle()
+    }
+
     private func applyExternalColumnVisibility(_ visibility: NavigationSplitViewVisibility) {
+        reconcileSettleDeadline()
         // NavigationSplitView drives this only when the user collapses/expands the
         // column itself (the native toggle is suppressed). Ignore echoes that match
         // the value we already derive — both `.overlay` and `.collapsed` map to

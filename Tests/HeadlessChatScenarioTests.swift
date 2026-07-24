@@ -298,11 +298,18 @@ final class HeadlessChatHarness {
         task: AgentTask,
         plan: TaskPlanPayload,
         worker: AgentRuntimeWorker,
-        mode: TaskPlanExecutionMode = .fullPlan
+        mode: TaskPlanExecutionMode = .fullPlan,
+        executionRequestID: UUID? = nil
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: context)
-        await worker.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: context) { event in
+        await worker.executeApprovedPlan(
+            task: task,
+            plan: plan,
+            mode: mode,
+            executionRequestID: executionRequestID,
+            modelContext: context
+        ) { event in
             events.append(event)
         }
         try? context.save()

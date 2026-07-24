@@ -5,9 +5,15 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum WorkspaceCommandService {
+    typealias InitialExecutionSubmitter = @MainActor (
+        AgentTask,
+        ModelContext
+    ) -> Result<ExecutionRequestSubmissionService.Submission, ExecutionRequestSubmissionService.SubmissionError>
+
     struct TemplateTaskCreation {
         let mainTask: AgentTask
         let beforeTask: AgentTask?
+        let initialRequestSubmitted: Bool
     }
 
     @discardableResult
@@ -120,7 +126,10 @@ enum WorkspaceCommandService {
         defaultRuntimeID: String,
         workspace: Workspace,
         modelContext: ModelContext,
-        source: String
+        source: String,
+        submitInitial: InitialExecutionSubmitter = { task, context in
+            ExecutionRequestSubmissionService.submitInitial(for: task, into: context)
+        }
     ) -> TemplateTaskCreation {
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
@@ -140,6 +149,9 @@ enum WorkspaceCommandService {
             model: mainModel,
             runtime: runtime
         )
+        let mainTaskInitialState = TaskStateMachine.snapshot(mainTask)
+        let mainTaskInitialUpdatedAt = mainTask.updatedAt
+        let mainTaskInitialUnreadAt = mainTask.unreadAt
         TaskStateMachine.enqueueFromWorkspaceCommand(mainTask, modelContext: modelContext)
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
@@ -154,6 +166,9 @@ enum WorkspaceCommandService {
         }
 
         var beforeTask: AgentTask?
+        var runnableInitialState = mainTaskInitialState
+        var runnableInitialUpdatedAt = mainTaskInitialUpdatedAt
+        var runnableInitialUnreadAt = mainTaskInitialUnreadAt
         if template.hasBeforePhase {
             let beforeGoal = template.resolveGoal(template.beforeGoal, with: variables)
             let beforeModel = RuntimeModelAvailability.normalizedModel(
@@ -168,6 +183,9 @@ enum WorkspaceCommandService {
                 model: beforeModel,
                 runtime: runtime
             )
+            runnableInitialState = TaskStateMachine.snapshot(task)
+            runnableInitialUpdatedAt = task.updatedAt
+            runnableInitialUnreadAt = task.unreadAt
             TaskStateMachine.enqueueFromWorkspaceCommand(task, modelContext: modelContext)
             task.templateID = template.id
             task.templateHooksJSON = template.hooksJSON
@@ -185,13 +203,35 @@ enum WorkspaceCommandService {
         }
 
         modelContext.insert(mainTask)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        let runnableTask = beforeTask ?? mainTask
+        guard case .success = submitInitial(runnableTask, modelContext) else {
+            TaskStateMachine.restoreExecutionSubmissionFailure(
+                runnableTask,
+                snapshot: runnableInitialState,
+                modelContext: modelContext,
+                at: runnableInitialUpdatedAt
+            )
+            runnableTask.updatedAt = runnableInitialUpdatedAt
+            runnableTask.unreadAt = runnableInitialUnreadAt
+            AppLogger.audit(.taskFailed, category: "UI", taskID: runnableTask.id, fields: [
+                "operation": "template_execution_submission"
+            ], level: .error)
+            return TemplateTaskCreation(
+                mainTask: mainTask,
+                beforeTask: beforeTask,
+                initialRequestSubmitted: false
+            )
+        }
         AppLogger.audit(.taskCreated, category: "UI", taskID: mainTask.id, fields: [
             "source": source,
             "workspace_id": workspace.id.uuidString,
             "template_id": template.id.uuidString
         ])
-        return TemplateTaskCreation(mainTask: mainTask, beforeTask: beforeTask)
+        return TemplateTaskCreation(
+            mainTask: mainTask,
+            beforeTask: beforeTask,
+            initialRequestSubmitted: true
+        )
     }
 
     static func connectorIcon(for serviceType: String) -> String {

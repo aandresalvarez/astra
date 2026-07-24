@@ -570,6 +570,11 @@ struct TaskSidebarView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
+                        SidebarActivitySection(
+                            tasks: taskIndex.activeTasks,
+                            counts: taskIndex.activityCounts,
+                            row: topLevelTaskRow
+                        )
                         pinnedSection(using: taskIndex)
                         unreadSection(using: taskIndex)
                         workspaceSection(using: taskIndex)
@@ -928,7 +933,7 @@ struct TaskSidebarView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(visibleUnreadTasks) { task in
-                        unreadTaskRow(for: task)
+                        topLevelTaskRow(for: task)
                     }
 
                     if taskIndex.unreadTasks.count > visibleUnreadTasks.count {
@@ -980,7 +985,7 @@ struct TaskSidebarView: View {
         .padding(.bottom, 4)
     }
 
-    private func unreadTaskRow(for task: AgentTask) -> some View {
+    private func topLevelTaskRow(for task: AgentTask) -> some View {
         let isHovered = hoveredTaskID == task.id
 
         return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
@@ -2398,7 +2403,7 @@ private struct NewTaskNudgePopover: View {
     }
 }
 
-private struct SidebarCountBadge: View {
+struct SidebarCountBadge: View {
     let count: Int
 
     var body: some View {

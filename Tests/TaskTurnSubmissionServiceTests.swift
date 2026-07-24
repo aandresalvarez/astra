@@ -68,4 +68,51 @@ struct TaskTurnSubmissionServiceTests {
         #expect(!illegal.changed)
         #expect(illegal.rejection == .illegalTransition(from: .admitted, to: .completed))
     }
+
+    @Test("Submission persists conservative immutable workspace access claims")
+    func submissionPersistsWorkspaceClaims() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Claims", primaryPath: "/tmp/astra-submission-claims")
+        let reader = AgentTask(
+            title: "Research release notes",
+            goal: "Summarize the latest changes.",
+            workspace: workspace
+        )
+        let writer = AgentTask(
+            title: "Implement release changes",
+            goal: "Update the project files.",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(reader)
+        context.insert(writer)
+        try context.save()
+
+        guard case .success(let readerSubmission) = TaskTurnSubmissionService.submit(
+            message: "Research this.",
+            for: reader,
+            into: context
+        ), case .success(let writerSubmission) = TaskTurnSubmissionService.submit(
+            message: "Implement this.",
+            for: writer,
+            into: context
+        ) else {
+            Issue.record("Expected both durable submissions")
+            return
+        }
+
+        let fetchedReader = try TaskTurnRequestRepository.request(
+            id: readerSubmission.requestID,
+            in: context
+        )
+        let fetchedWriter = try TaskTurnRequestRepository.request(
+            id: writerSubmission.requestID,
+            in: context
+        )
+        let readerRequest = try #require(fetchedReader)
+        let writerRequest = try #require(fetchedWriter)
+        #expect(readerRequest.resourceClaims.first?.access == .shared)
+        #expect(writerRequest.resourceClaims.first?.access == .exclusive)
+    }
 }

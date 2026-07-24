@@ -155,6 +155,98 @@ struct PersistentStoreRecoveryTests {
         #expect(blocker.actions.first == .locateCompatibleBuild(requiredSchemaVersion: 12))
     }
 
+    @Test("unknown open failures offer fresh-store recovery only in development")
+    func unknownOpenFailurePolicyIsDevelopmentOnly() {
+        let development = PersistentStoreRecoveryPolicy.unknownOpenFailureBlocker(channel: "dev")
+        let production = PersistentStoreRecoveryPolicy.unknownOpenFailureBlocker(channel: "prod")
+
+        #expect(development.actions.first == .createFreshDevelopmentStore)
+        #expect(development.actions.contains(.revealStore))
+        #expect(!production.actions.contains(.createFreshDevelopmentStore))
+        #expect(production.actions == [.revealStore, .quit])
+    }
+
+    @MainActor
+    @Test("fresh development recovery validates before atomically activating its new store")
+    func freshDevelopmentRecoveryValidatesBeforeActivation() throws {
+        let target = URL(fileURLWithPath: "/tmp/astra-fresh-dev-test.store")
+        var operations: [String] = []
+
+        let result = try DevelopmentStoreRecoveryService.createAndActivateFreshStore(
+            buildChannel: "dev",
+            effectiveChannel: .development,
+            makeRecoveryURL: {
+                operations.append("allocate")
+                return target
+            },
+            createContainer: { url in
+                #expect(url == target)
+                operations.append("create")
+            },
+            validateIntegrity: { url in
+                #expect(url == target)
+                operations.append("validate")
+                return true
+            },
+            activateStore: { url in
+                #expect(url == target)
+                operations.append("activate")
+            }
+        )
+
+        #expect(result == target)
+        #expect(operations == ["allocate", "create", "validate", "activate"])
+    }
+
+    @MainActor
+    @Test("fresh development recovery preserves the active store when validation fails")
+    func freshDevelopmentRecoveryDoesNotActivateInvalidStore() {
+        let target = URL(fileURLWithPath: "/tmp/astra-invalid-fresh-dev-test.store")
+        var operations: [String] = []
+
+        #expect(throws: DevelopmentStoreRecoveryService.RecoveryError.integrityValidationFailed) {
+            _ = try DevelopmentStoreRecoveryService.createAndActivateFreshStore(
+                buildChannel: "dev",
+                effectiveChannel: .development,
+                makeRecoveryURL: {
+                    operations.append("allocate")
+                    return target
+                },
+                createContainer: { _ in operations.append("create") },
+                validateIntegrity: { _ in
+                    operations.append("validate")
+                    return false
+                },
+                activateStore: { _ in operations.append("activate") }
+            )
+        }
+
+        #expect(operations == ["allocate", "create", "validate"])
+    }
+
+    @MainActor
+    @Test("fresh-store recovery rejects production before allocating or activating")
+    func freshStoreRecoveryRejectsProductionBeforeSideEffects() {
+        var didAllocate = false
+        var didActivate = false
+
+        #expect(throws: DevelopmentStoreRecoveryService.RecoveryError.unavailableOutsideDevelopment) {
+            _ = try DevelopmentStoreRecoveryService.createAndActivateFreshStore(
+                buildChannel: "prod",
+                effectiveChannel: .production,
+                makeRecoveryURL: {
+                    didAllocate = true
+                    return URL(fileURLWithPath: "/tmp/should-not-exist.store")
+                },
+                createContainer: { _ in },
+                validateIntegrity: { _ in true },
+                activateStore: { _ in didActivate = true }
+            )
+        }
+        #expect(!didAllocate)
+        #expect(!didActivate)
+    }
+
     @Test("post-open fallback preserves the actual required schema")
     func postOpenFallbackPreservesRequiredSchema() {
         #expect(PersistentStoreRecoveryPolicy.requiredSchemaVersion(

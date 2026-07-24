@@ -449,6 +449,36 @@ struct TaskCompletionPolicyTests {
         #expect(decision.userVisibleMessage?.contains("standalone file artifact") == false)
     }
 
+    @Test("temporary file cleanup does not trigger a missing deliverable gate")
+    func temporaryFileCleanupDoesNotTriggerMissingDeliverableGate() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(
+            title: "Workspace write-concurrency probe test",
+            goal: "Create a temporary file named astra-concurrency-probe.txt containing a timestamp, verify it, and then remove it."
+        )
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
+
+        #expect(!decision.shouldBlockCompletion)
+        #expect(decision.gate == .manualArtifactRequirement)
+        #expect(decision.auditFields["requires_artifact"] == "false")
+    }
+
+    @Test("Transient filename stays required when later prose only uses a pronoun")
+    func transientFilenameNeedsExplicitRemovalAction() {
+        let task = AgentTask(
+            title: "Workspace probe",
+            goal: "Create a temporary file named probe.txt. It is important to verify the workspace."
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["probe.txt"])
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)

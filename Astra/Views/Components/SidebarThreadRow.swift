@@ -163,7 +163,9 @@ struct SidebarThreadRow: View {
     }
 
     private var presentationSubtitle: String? {
-        activity?.sidebarSubtitle ?? subtitle
+        guard let activitySubtitle = activity?.sidebarSubtitle else { return subtitle }
+        guard let subtitle, !subtitle.isEmpty else { return activitySubtitle }
+        return "\(subtitle) · \(activitySubtitle)"
     }
 
     var body: some View {

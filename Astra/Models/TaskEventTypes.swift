@@ -66,6 +66,16 @@ public enum TaskEventTypes {
         public static let planAssistantMessage: TaskEventType = "plan.assistant.message"
     }
 
+    public enum ExecutionRequest {
+        public static let initial: TaskEventType = "execution.request.initial"
+        public static let retry: TaskEventType = "execution.request.retry"
+        public static let resume: TaskEventType = "execution.request.resume"
+        public static let scheduled: TaskEventType = "execution.request.scheduled"
+        public static let planStep: TaskEventType = "execution.request.plan_step"
+        public static let chained: TaskEventType = "execution.request.chained"
+        public static let permissionResume: TaskEventType = "execution.request.permission_resume"
+    }
+
     public enum Tool {
         public static let use: TaskEventType = "tool.use"
         public static let result: TaskEventType = "tool.result"
@@ -211,6 +221,13 @@ public enum TaskEventTypes {
         Task.approved,
         Task.dismissed,
         Task.checkpoint,
+        ExecutionRequest.initial,
+        ExecutionRequest.retry,
+        ExecutionRequest.resume,
+        ExecutionRequest.scheduled,
+        ExecutionRequest.planStep,
+        ExecutionRequest.chained,
+        ExecutionRequest.permissionResume,
         Activity.compacted,
         Plan.created,
         Plan.updated,

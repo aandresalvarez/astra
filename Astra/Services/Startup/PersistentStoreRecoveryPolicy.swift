@@ -2,6 +2,7 @@ import Foundation
 import ASTRAPersistence
 
 enum PersistentStoreRecoveryAction: Equatable, Sendable {
+    case createFreshDevelopmentStore
     case openCompatibleBuild(bundlePath: String)
     case locateCompatibleBuild(requiredSchemaVersion: Int)
     case checkForUpdates
@@ -45,6 +46,19 @@ enum PersistentStoreRetryPolicy {
 }
 
 enum PersistentStoreRecoveryPolicy {
+    static func unknownOpenFailureBlocker(channel: String) -> PersistentStoreRecoveryBlocker {
+        let isDevelopment = channel == "dev"
+        return PersistentStoreRecoveryBlocker(
+            title: "ASTRA could not safely open its store",
+            message: isDevelopment
+                ? "The failure was not proven recoverable. ASTRA left the current development store unchanged; you can start with a validated fresh development store while retaining this one for inspection."
+                : "The failure was not proven to be recoverable, so ASTRA left the store unchanged.",
+            actions: isDevelopment
+                ? [.createFreshDevelopmentStore, .revealStore, .quit]
+                : [.revealStore, .quit]
+        )
+    }
+
     static func requiredSchemaVersion(
         afterOpenFailure assessment: PersistentStoreCompatibilityAssessment,
         supportedSchemaVersion: Int

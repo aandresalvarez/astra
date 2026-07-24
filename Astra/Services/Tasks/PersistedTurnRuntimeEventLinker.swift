@@ -69,24 +69,33 @@ enum PersistedTurnRuntimeEventLinker {
 
     /// Terminalizes the request after every runtime exit path, including
     /// preflight failures before a provider process starts.
+    ///
+    /// `forcedOutcome` exists for launches whose real outcome is only decided
+    /// after the run has settled — an approved plan's post-run checkpoint and
+    /// contract validation can reject a run the provider reported as
+    /// successful. Terminal request state is irreversible, so those callers
+    /// must terminalize with the validated outcome rather than let the run's
+    /// raw status report a success the task never got.
     static func finishRuntime(
         request: TaskTurnRequest?,
         run: TaskRun,
         task: AgentTask,
+        forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
         guard let request else { return }
-        let terminalState: TaskTurnRequestState = switch run.status {
+        let runState: TaskTurnRequestState = switch run.status {
         case .completed: .completed
         case .cancelled: .cancelled
         case .running, .failed, .timeout, .budgetExceeded: .failed
         }
+        let terminalState = forcedOutcome?.state ?? runState
         let reason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
         let transition = TaskTurnRequestStateMachine.transition(
             request,
             to: terminalState,
             runID: run.id,
-            terminalReason: reason.isEmpty ? run.status.rawValue : reason
+            terminalReason: forcedOutcome?.reason ?? (reason.isEmpty ? run.status.rawValue : reason)
         )
         if transition.changed {
             WorkspacePersistenceCoordinator.saveAndAutoExport(

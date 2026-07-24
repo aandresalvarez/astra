@@ -1649,13 +1649,16 @@ struct ChatPanelView: View {
         recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
+        guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+            modelContext.delete(task)
+            return
+        }
         messageText = ""
         messages = []
         attachedFiles = []
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
         auditFields["trace_id"] = traceID
         auditFields["use_agent_team"] = String(useAgentTeam)
@@ -1765,8 +1768,6 @@ struct ChatPanelView: View {
         guard let task = draftTask,
               task.status != .running else { return }
 
-        // Admission precedes approval/enqueue mutations. If a sibling is
-        // running in this Git worktree, leave the plan and task state intact.
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             TaskForkPolicyService.recordReadOnlyBlock(
                 readOnlyReason,
@@ -1776,31 +1777,27 @@ struct ChatPanelView: View {
             return
         }
 
-        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
-        task.title = plan.title
-        task.goal = plan.goal.isEmpty ? plan.title : plan.goal
-        task.runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(
-            existing: task.runtimeExplicitlySelected,
-            composerFlagged: composerRuntimeExplicitlySelected
-        )
-        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+        let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
+        let runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(existing: task.runtimeExplicitlySelected,
+                                                                                          composerFlagged: composerRuntimeExplicitlySelected)
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPlan(
+            plan: plan,
+            mode: mode,
+            mutation: .newTask(
+                title: plan.title,
+                goal: plan.goal.isEmpty ? plan.title : plan.goal,
+                runtimeExplicitlySelected: runtimeExplicitlySelected
+            ),
+            for: task,
+            into: modelContext
+        ) else { return }
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
 
-        // Intentionally NOT tied to this view's lifecycle: this runs the approved task the user just
-        // navigated to, so it must outlive the composer's dismissal. Cancelling it on `.onDisappear`
-        // would terminate the agent subprocess for the very task they approved.
-        Task {
-            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
-            await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
-            await MainActor.run {
-                _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-            }
-        }
+        taskQueue?.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
     }
 
     private func showPlanCanvasIfNeeded(for task: AgentTask) {
@@ -1853,6 +1850,10 @@ struct ChatPanelView: View {
         saveConversationAsEvents(on: task)
 
         promoteDraft(to: task)
+        guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+            modelContext.delete(task)
+            return
+        }
 
         // Reset state
         messageText = ""
@@ -1864,7 +1865,6 @@ struct ChatPanelView: View {
         attachedFiles = []
         chainedGoal = ""
         isPlanMode = false
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
         auditFields["trace_id"] = traceID
         auditFields["inputs_count"] = String(task.inputs.count)
@@ -2034,7 +2034,7 @@ struct ChatPanelView: View {
                 summary += "\nVariables: " + values.map { "`\($0.key)` = `\($0.value)`" }.joined(separator: ", ")
             }
 
-            summary += "\n\nThe task is queued and ready to run."
+            summary += creation.initialRequestSubmitted ? "\n\nThe task is queued and ready to run." : "\n\nThe task was saved as a draft because ASTRA could not queue its initial run. You can retry from the task."
             messages.append(ChatMessage(role: "assistant", content: summary))
 
             onTaskCreated?(creation.mainTask)
@@ -2431,6 +2431,7 @@ struct ChatPanelView: View {
                 source: "template"
             )
             activeSlashContext = nil
+            if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
             onTaskCreated?(creation.mainTask)
 
         case "create_schedule":

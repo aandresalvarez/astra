@@ -13,13 +13,13 @@ public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case budgetExceeded = "budget_exceeded"
 }
 
-public enum IsolationStrategy: String, Codable, CaseIterable {
+public enum IsolationStrategy: String, Codable, CaseIterable, Sendable {
     case sameDirectory = "same_directory"
     case gitBranch = "git_branch"
     case copy
 }
 
-public enum ValidationStrategy: String, Codable, CaseIterable {
+public enum ValidationStrategy: String, Codable, CaseIterable, Sendable {
     case manual
     case runTests = "run_tests"
     case aiCheck = "ai_check"

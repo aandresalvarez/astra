@@ -309,6 +309,26 @@ enum TaskStateMachine {
     }
 
     @discardableResult
+    static func restoreExecutionSubmissionFailure(
+        _ task: AgentTask,
+        snapshot: Snapshot,
+        modelContext: ModelContext,
+        at date: Date = Date()
+    ) -> TransitionResult {
+        apply(
+            task,
+            to: snapshot.status,
+            intent: "execution_submission_persistence_failed",
+            allowedFrom: Set(TaskStatus.allCases),
+            completedAt: .restore(snapshot.completedAt),
+            readState: .preserve,
+            modelContext: modelContext,
+            at: date,
+            savePolicy: .none
+        )
+    }
+
+    @discardableResult
     static func completeFromRuntime(
         _ task: AgentTask,
         modelContext: ModelContext,

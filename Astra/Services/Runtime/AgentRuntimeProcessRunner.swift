@@ -19,13 +19,43 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
 private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = false
+    private var forcedResult: AgentUtilityRunResult?
+    private var cancelled = false
 
-    func complete() -> Bool {
+    /// Records a timeout or early-stream result that requires terminating the
+    /// process. The continuation must not resume yet: the process reaper still
+    /// owns final pipe drain and process-group cleanup.
+    func requestTermination(with result: AgentUtilityRunResult) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !completed else { return false }
-        completed = true
+        guard !completed, !cancelled, forcedResult == nil else { return false }
+        forcedResult = result
         return true
+    }
+
+    func markCancelled() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    /// Completes only after AgentExecutionScopedProcess has reaped the child.
+    /// A timeout/early-stream result wins over the child's signal exit status.
+    func completeAfterProcessExit(naturalResult: AgentUtilityRunResult) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+        completed = true
+        return forcedResult ?? naturalResult
+    }
+
+    /// Launch failures have no child to reap, so they can complete directly.
+    func completeWithoutProcess(_ result: AgentUtilityRunResult) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+        completed = true
+        return result
     }
 }
 
@@ -307,6 +337,7 @@ final class AgentRuntimeProcessRunner {
             environment: environment,
             task: context.task,
             runID: context.runID,
+            workspaceAccess: launchResourcePlan.workspaceAccess,
             additionalReadOnlyInputPaths: readOnlyInputBoundary.paths,
             dockerRuntime: dockerRuntime
         ) {
@@ -373,10 +404,20 @@ final class AgentRuntimeProcessRunner {
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
         let baseSettings = sandboxSettingsProvider(effectivePermissionPolicy)
-        let settings = readOnlyInputBoundary.enforcingHostBoundary(
+        var settings = readOnlyInputBoundary.enforcingHostBoundary(
             in: baseSettings,
             runtime: plan.runtime
         )
+        if launchResourcePlan.requiresSharedWorkspaceBoundary {
+            var wrappedRuntimes = settings.wrappedRuntimes
+            wrappedRuntimes.insert(plan.runtime)
+            settings = ExecutionSandboxSettings(
+                enforcement: .strict,
+                wrappedRuntimes: wrappedRuntimes,
+                allowNetwork: settings.allowNetwork,
+                readScope: settings.readScope
+            )
+        }
         if plan.executionEnvironment.providerRunsInsideContainer {
             AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
@@ -397,15 +438,20 @@ final class AgentRuntimeProcessRunner {
             }
             return .plan(plan)
         }
-        // Workspace roots are writable. Exact task-input and message-attachment
-        // roots are carved back out below, so the read-only contract still wins
-        // when an attached file happens to live inside the workspace.
-        let runtimeWritablePaths = Self.runtimeWritablePaths(for: context.task)
+        // Exclusive workspace roots are writable. Shared roots are omitted from
+        // this allowlist while their task output folder remains explicit below.
+        // Exact task-input and message-attachment roots are carved back out, so
+        // the read-only contract still wins inside either access mode.
+        let runtimeWritablePaths = Self.runtimeWritablePaths(
+            for: context.task,
+            workspaceAccess: launchResourcePlan.workspaceAccess
+        )
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
             additionalWritablePaths: runtimeWritablePaths + launchResourcePlan.hostWritablePaths,
             additionalReadablePaths: runtimeWritablePaths + launchResourcePlan.hostReadablePaths,
+            workspaceWritable: launchResourcePlan.workspaceAccess == .exclusive,
             settings: settings
         )
         let taskID = context.taskSnapshot.id
@@ -417,6 +463,9 @@ final class AgentRuntimeProcessRunner {
                 "read_scope": settings.readScope.rawValue,
                 "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
+                "shared_workspace_boundary_required": String(
+                    launchResourcePlan.requiresSharedWorkspaceBoundary
+                ),
                 "attachment_readable_path_count": plan.commandPlannedFields["attachment_readable_path_count"] ?? "0",
                 "launch_resource_host_readable_count": plan.commandPlannedFields["launch_resource_host_readable_count"] ?? "0",
                 "launch_resource_host_writable_count": plan.commandPlannedFields["launch_resource_host_writable_count"] ?? "0",
@@ -1000,12 +1049,21 @@ final class AgentRuntimeProcessRunner {
 
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let finish: @Sendable (AgentUtilityRunResult, Bool) -> Void = { result, shouldTerminate in
-                    guard runState.complete() else { return }
-                    process.stdoutFileHandle.readabilityHandler = nil
-                    process.stderrFileHandle.readabilityHandler = nil
-                    if shouldTerminate {
-                        process.terminate()
+                let requestTermination: @Sendable (AgentUtilityRunResult) -> Void = { result in
+                    guard runState.requestTermination(with: result) else { return }
+                    // Do not disable readability handlers or resume here. The
+                    // process's termination handler drains both pipes after
+                    // waitpid/process-group cleanup and is the only completion
+                    // path for a launched child.
+                    process.terminate()
+                }
+                let finishWithoutProcess: @Sendable (AgentUtilityRunResult) -> Void = { result in
+                    guard let result = runState.completeWithoutProcess(result) else { return }
+                    continuation.resume(returning: result)
+                }
+                let finishAfterProcessExit: @Sendable (AgentUtilityRunResult) -> Void = { result in
+                    guard let result = runState.completeAfterProcessExit(naturalResult: result) else {
+                        return
                     }
                     continuation.resume(returning: result)
                 }
@@ -1039,7 +1097,7 @@ final class AgentRuntimeProcessRunner {
                         return handleStdoutLocked(chunk)
                     }
                     if let result {
-                        finish(result, true)
+                        requestTermination(result)
                     }
                 }
 
@@ -1063,10 +1121,11 @@ final class AgentRuntimeProcessRunner {
                         }
                         return handleRemainingStdoutLineLocked()
                     }
-                    if let stdoutResult {
-                        finish(stdoutResult, false)
-                        return
-                    }
+                    // Drain stderr even when stdout already produced a logical
+                    // result. The child has been reaped, but unread pipe bytes
+                    // still belong to this run and stderrChunkHandler may own
+                    // provider diagnostics/state needed for deterministic
+                    // teardown.
                     stderrBuffer.synchronized {
                         let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
                         if !finalStderrChunk.isEmpty {
@@ -1074,27 +1133,38 @@ final class AgentRuntimeProcessRunner {
                             stderrChunkHandler?(finalStderrChunk)
                         }
                     }
+                    if let stdoutResult {
+                        finishAfterProcessExit(stdoutResult)
+                        return
+                    }
                     let result = completion(
                         Int(proc.terminationStatus),
                         stdoutBuffer.value.trimmingCharacters(in: .whitespacesAndNewlines),
                         stderrBuffer.value.trimmingCharacters(in: .whitespacesAndNewlines)
                     )
-                    finish(result, false)
+                    finishAfterProcessExit(result)
                 }
 
                 do {
                     try process.run()
+                    // Cancellation can race the interval between entering the
+                    // cancellation handler and publishing the spawned pid. If
+                    // the first terminate was a no-op, close that window now.
+                    if Task.isCancelled {
+                        process.terminate()
+                    }
                     scheduleUtilityTimeoutIfNeeded(
                         timeoutSeconds: timeoutSeconds,
                         process: process,
-                        finish: finish,
+                        requestTermination: requestTermination,
                         timeoutResult: timeoutResult
                     )
                 } catch {
-                    finish(launchError(error.localizedDescription), false)
+                    finishWithoutProcess(launchError(error.localizedDescription))
                 }
             }
         } onCancel: {
+            runState.markCancelled()
             process.terminate()
         }
     }
@@ -1102,13 +1172,13 @@ final class AgentRuntimeProcessRunner {
     private static func scheduleUtilityTimeoutIfNeeded(
         timeoutSeconds: TimeInterval,
         process: AgentExecutionScopedProcess,
-        finish: @escaping @Sendable (AgentUtilityRunResult, Bool) -> Void,
+        requestTermination: @escaping @Sendable (AgentUtilityRunResult) -> Void,
         timeoutResult: @escaping @Sendable (TimeInterval) -> AgentUtilityRunResult
     ) {
         guard timeoutSeconds > 0 else { return }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
             guard process.isRunning else { return }
-            finish(timeoutResult(timeoutSeconds), true)
+            requestTermination(timeoutResult(timeoutSeconds))
         }
     }
 
@@ -1173,13 +1243,17 @@ final class AgentRuntimeProcessRunner {
         runtimeWritablePaths(for: task) + TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths
     }
 
-    static func runtimeWritablePaths(for task: AgentTask) -> [String] {
-        var paths = TaskWorkspaceAccess(task: task).runtimeWritablePaths
-        if !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty {
-            paths.append(TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
+    static func runtimeWritablePaths(
+        for task: AgentTask,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive
+    ) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        var paths = workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
+        if workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
+            paths.append(access.effectiveWorkspacePath)
         }
-        if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
-            paths.append(TaskWorkspaceAccess(task: task).taskFolder)
+        if !access.taskFolder.isEmpty {
+            paths.append(access.taskFolder)
         }
         return Array(Set(paths.filter { !$0.isEmpty })).sorted()
     }
