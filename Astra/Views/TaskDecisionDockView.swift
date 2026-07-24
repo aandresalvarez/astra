@@ -387,8 +387,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
              .resume,
              .openArtifact,
              .reopenTask,
-             .switchRuntime,
-             .repairDockerImage:
+             .switchRuntime:
             false
         }
     }
@@ -448,8 +447,6 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "DismissCorrectionButton"
         case .switchRuntime:
             "SwitchRuntimeButton"
-        case .repairDockerImage:
-            "RepairDockerImageButton"
         }
     }
 }

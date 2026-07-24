@@ -194,10 +194,8 @@ private struct AgentGeneratedFilesListView: View {
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
-    let latestRunID: UUID?
     let onSnapshotChange: () -> Void
     let onGeneratedFilesChange: () -> Void
-    let onLatestRunChange: (UUID?) -> Void
     var body: some View {
         Color.clear
             .onChange(of: task.updatedAt) { _, _ in
@@ -211,7 +209,6 @@ private struct TaskThreadChangeObserver: View {
             .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
                 onGeneratedFilesChange()
             }
-            .onChange(of: latestRunID) { _, runID in onLatestRunChange(runID) }
     }
 }
 
@@ -220,7 +217,6 @@ struct TaskMainView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
 
     let task: AgentTask
-    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     var taskQueue: TaskQueue?
     var onRunTask: ((AgentTask) -> Void)?
@@ -558,10 +554,6 @@ struct TaskMainView: View {
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
-        .modifier(DockerImageRecoveryDialogModifier(
-            coordinator: dockerImageRecovery, taskID: task.id,
-            onConfirm: performDockerImageRecovery
-        ))
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
@@ -624,7 +616,6 @@ struct TaskMainView: View {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
-                latestRunID: currentThreadSnapshot.latestRun?.id,
                 onSnapshotChange: {
                     deferTaskViewMutation {
                         threadViewModel.requestSnapshotRefresh(for: task)
@@ -642,8 +633,7 @@ struct TaskMainView: View {
                         refreshTaskContextState()
                         refreshForkSourceAvailabilityWarning()
                     }
-                },
-                onLatestRunChange: { dockerImageRecovery.invalidateIfRunChanged(for: task.id, to: $0) }
+                }
             )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
@@ -3888,16 +3878,6 @@ struct TaskMainView: View {
             .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
     }
 
-    private var dockerRecoveryImage: String? {
-        DockerImageRecoveryPresentation.image(
-            stopReason: latestRun?.stopReason,
-            launchBlockImage: latestRunLaunchBlock?.dockerImage,
-            launchBlockReadinessState: latestRunLaunchBlock?.dockerReadinessState,
-            runID: latestRun?.id,
-            runs: task.runs
-        )
-    }
-
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3939,8 +3919,6 @@ struct TaskMainView: View {
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
             launchBlock: latestRunLaunchBlock,
-            dockerRecoveryImage: onRetryTask == nil ? nil : dockerRecoveryImage,
-            isDockerRecoveryBusy: dockerImageRecovery.isBusy(for: task.id), isDockerRecoveryOccupied: dockerImageRecovery.isRecoveryOccupiedByOtherTask(for: task.id),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -4354,9 +4332,9 @@ struct TaskMainView: View {
         case .runTask:
             onRunTask?(task)
         case .retry:
-            if !dockerImageRecovery.isBusy(for: task.id) { onRetryTask?(task) }
+            onRetryTask?(task)
         case .resume:
-            if !dockerImageRecovery.isBusy(for: task.id) { onResumeTask?(task) }
+            onResumeTask?(task)
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4367,17 +4345,6 @@ struct TaskMainView: View {
         case .switchRuntime:
             guard let runtime = action.payload else { return }
             TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
-            onRetryTask?(task)
-        case .repairDockerImage:
-            guard let image = action.payload else { return }
-            dockerImageRecovery.prepare(image: image, workspace: task.workspace, taskID: task.id, run: latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } }, taskEnvironment: ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON))
-        }
-    }
-
-    private func performDockerImageRecovery(_ plan: DockerImageRecoveryPlan) {
-        let run = latestRun.flatMap { snapshot in task.runs.first { $0.id == snapshot.id } }
-        dockerImageRecovery.perform(plan, task: task, run: run, modelContext: modelContext) {
-            threadViewModel.refreshSnapshot(for: task)
             onRetryTask?(task)
         }
     }
@@ -4989,7 +4956,7 @@ struct TaskMainView: View {
                         return .ignored
                     }
                     .onChange(of: messageText) { slashSelectedIndex = 0 }
-                    .disabled(task.status == .running || dockerImageRecovery.isBusy(for: task.id))
+                    .disabled(task.status == .running)
 
                 Color.clear
                     .frame(height: 2)
@@ -5005,7 +4972,7 @@ struct TaskMainView: View {
                     taskStatus: task.status,
                     taskStatusOverride: composerTaskStatusOverride,
                     showsTaskStatusPill: decisionDockPresentation == nil,
-                    isRunning: task.status == .running || isPlanning || dockerImageRecovery.isBusy(for: task.id),
+                    isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
@@ -5509,7 +5476,6 @@ struct TaskMainView: View {
             hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
-        if sendAction.launchesProviderWork && dockerImageRecovery.isBusy(for: task.id) { AppLogger.breadcrumb(action: "composer_blocked_docker_recovery", category: "UI", taskID: task.id); return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
            sendAction.launchesProviderWork {
             recordForkReadOnlyBlock(readOnlyReason)
@@ -5588,7 +5554,6 @@ struct TaskMainView: View {
     }
 
     private func sendConversationMessage(_ msg: String) {
-        guard !dockerImageRecovery.isBusy(for: task.id) else { AppLogger.breadcrumb(action: "conversation_blocked_docker_recovery", category: "UI", taskID: task.id); return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
             return

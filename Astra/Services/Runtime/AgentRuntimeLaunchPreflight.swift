@@ -1247,7 +1247,7 @@ enum AgentRuntimeLaunchPreflight {
                 .dockerImageUnavailable,
                 "image_tag_unresolvable",
                 readiness.detail,
-                "Use Repair image and retry to restore the tag, rebuild the workspace image, or choose another environment."
+                "Rebuild or retag the image from the Container panel, or choose another environment, then retry."
             )
         case .missing:
             return (

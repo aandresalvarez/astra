@@ -67,8 +67,6 @@ struct ContentView: View {
     // App Studio is a conversation (center) + a docked live preview (the .appPreview shelf);
     // both observe this one session, so a chat turn updates the preview.
     @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
-    /// App-scoped Docker recovery owner shared by every main window.
-    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
@@ -162,8 +160,8 @@ struct ContentView: View {
     /// (and vice versa).
 
     @MainActor
-    init(appUpdateController: AppUpdateController, runtime: AppRuntimeController, dockerImageRecovery: DockerImageRecoveryCoordinator) {
-        self.appUpdateController = appUpdateController; self.runtime = runtime; self.dockerImageRecovery = dockerImageRecovery
+    init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
+        self.appUpdateController = appUpdateController; self.runtime = runtime
     }
 
     var selectedTask: AgentTask? {
@@ -512,7 +510,6 @@ struct ContentView: View {
             onToggleDone: toggleDone,
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
-            isDockerRecoveryBusy: dockerImageRecovery.isBusy, dockerRecoveryTaskID: dockerImageRecovery.activeTaskID,
             onDeleteTask: requestDeleteTask,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
@@ -592,7 +589,6 @@ struct ContentView: View {
     private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
-            dockerImageRecovery: dockerImageRecovery,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
@@ -2301,7 +2297,6 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
-        for task in ws.tasks { dockerImageRecovery.invalidateIfTaskDeleted(task.id) } // Invalidate before the workspace task cascade.
         markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
@@ -2491,12 +2486,6 @@ struct ContentView: View {
     }
 
     private func retryTask(_ task: AgentTask) {
-        guard dockerImageRecovery.canStartTaskRetry(for: task.id) else {
-            AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
-                "retry_mode": "rejected_docker_recovery_busy"
-            ], level: .warning)
-            return
-        }
         coordinator.retryTask(task)
         refreshRunningTaskCount()
     }
@@ -2512,7 +2501,7 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
-        let deletedTaskID = task.id; dockerImageRecovery.invalidateIfTaskDeleted(deletedTaskID)
+        let deletedTaskID = task.id
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
@@ -2548,7 +2537,7 @@ struct ContentView: View {
 
         let linkedSchedules = coordinator.activeSameThreadSchedules(for: task)
         guard !linkedSchedules.isEmpty else {
-            dockerImageRecovery.invalidateIfTaskClosed(task.id); coordinator.setDoneState(task, to: true)
+            coordinator.setDoneState(task, to: true)
             refreshRunningTaskCount()
             return
         }
@@ -2561,7 +2550,7 @@ struct ContentView: View {
 
         switch warning.action {
         case .markDone:
-            dockerImageRecovery.invalidateIfTaskClosed(warning.task.id); coordinator.setDoneState(warning.task, to: true)
+            coordinator.setDoneState(warning.task, to: true)
             refreshRunningTaskCount()
         case .delete:
             deleteTask(warning.task)
@@ -2843,7 +2832,6 @@ private struct CollapsedSidebarUpdateToolbar: ToolbarContent {
 
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
-    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
@@ -3269,7 +3257,6 @@ private struct ContentDetailAreaView: View {
     private var detailContent: some View {
         ContentDetailContentView(
             selectedTask: selectedTask,
-            dockerImageRecovery: dockerImageRecovery,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
@@ -3371,7 +3358,6 @@ private struct ContentDetailAreaView: View {
 
 private struct ContentDetailContentView: View {
     let selectedTask: AgentTask?
-    @ObservedObject var dockerImageRecovery: DockerImageRecoveryCoordinator
     let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
@@ -3445,7 +3431,6 @@ private struct ContentDetailContentView: View {
             if let task = selectedTask {
                 TaskMainView(
                     task: task,
-                    dockerImageRecovery: dockerImageRecovery,
                     taskOpenResponsivenessScope: taskOpenResponsivenessScope,
                     taskQueue: taskQueue,
                     onRunTask: onRunTask,

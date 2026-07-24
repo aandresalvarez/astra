@@ -288,7 +288,6 @@ enum AgentEventCompactor {
              "permission.denied",
              "permission.approval.requested",
              "permission.request.resolved",
-             "runtime.docker_image_recovery",
              "error",
              "task.completed",
              "task.cancelled",
