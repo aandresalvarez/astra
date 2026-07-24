@@ -13,7 +13,12 @@ enum ExecutionRequestQueueSnapshot {
         let requests = projection.activeRequests
         let tasks = projection.ordered.map(\.task)
         let workspaceIDs = Set(tasks.compactMap { $0.workspace?.id })
+        // Only requests that are still queued count as waiting. Including
+        // `.admitted`/`.running` rows would make a healthy long provider run
+        // grow this value, which the architecture guide reads as the stalled
+        // scheduler signal. Zero means nothing is waiting, not "no data".
         let oldestWaitSeconds = requests
+            .filter { $0.state == .waitingForWorker || $0.state == .waitingForResource }
             .map { max(0, now.timeIntervalSince($0.submittedAt)) }
             .max() ?? 0
 

@@ -152,8 +152,10 @@ final class TaskLifecycleCoordinator {
         let durableMessageEventIDs = Set(
             (try? TaskTurnRequestRepository.requests(for: task, in: modelContext))?.map(\.messageEventID) ?? []
         )
-        let retryFollowUpMessage = retryTurn.flatMap { message(for: $0, task: task) }
+        let retrySource = retryTurn.flatMap { retryLaunchSource(for: $0, task: task) }
             ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
+                .map { RetryLaunchSource.userTurn($0) }
+        let retryFollowUpMessage = retrySource?.userTurnMessage
         let retryMode = retryFollowUpMessage == nil ? "initial_task" : "continuation"
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
             "retry_mode": retryMode
@@ -204,10 +206,41 @@ final class TaskLifecycleCoordinator {
         return candidate
     }
 
-    private func message(for request: TaskTurnRequest, task: AgentTask) -> String? {
+    /// What the retry candidate represents, which decides Retry's launch mode.
+    private enum RetryLaunchSource {
+        /// A user turn to replay — Retry re-sends it as a continuation.
+        case userTurn(String)
+        /// An internal launch (initial, scheduled, chained, or approved plan)
+        /// whose typed envelope carries no user turn. Retry must relaunch it in
+        /// initial mode instead of inventing a continuation.
+        case internalLaunch
+
+        var userTurnMessage: String? {
+            guard case .userTurn(let message) = self else { return nil }
+            return message
+        }
+    }
+
+    /// Resolves the retry candidate's source event into a launch mode.
+    ///
+    /// A typed source envelope only decodes for internal execution-request
+    /// events, and the internal *launch* kinds legitimately encode
+    /// `message == nil` — only a user follow-up (retry continuation, resume,
+    /// permission resume) carries one. Collapsing that nil into the raw
+    /// `event.payload` would hand the provider the JSON envelope itself as
+    /// conversation text AND flip `retryTask` into continuation mode, skipping
+    /// the initial-run budget reset the accepted launch is owed. Falling
+    /// through to the legacy chat fallback would be just as wrong: the newest
+    /// failure IS this internal launch, so an older user message must not
+    /// supersede it. Events with no envelope at all (legacy plain-text
+    /// `user.message` sources) keep replaying their payload as before.
+    private func retryLaunchSource(for request: TaskTurnRequest, task: AgentTask) -> RetryLaunchSource? {
         guard let event = task.events.first(where: { $0.id == request.messageEventID }) else { return nil }
-        return (ExecutionRequestSubmissionService.decodeSourcePayload(event)?.message ?? event.payload)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let source = ExecutionRequestSubmissionService.decodeSourcePayload(event) {
+            guard let message = source.message else { return .internalLaunch }
+            return .userTurn(message.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return .userTurn(event.payload.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     @discardableResult

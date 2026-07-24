@@ -237,4 +237,84 @@ extension HeadlessChatScenarioTests {
         })
         #expect(!task.events.contains { $0.type == "plan.execution.completed" })
     }
+
+    /// The durable turn must record the approved-plan verdict, not the
+    /// provider's raw exit status: terminal request state is irreversible, so
+    /// completing it on provider success hides a post-run rejection and takes
+    /// the accepted plan out of Retry's reach.
+    @Test("Approved-plan turn request terminalizes on the finalization verdict")
+    func approvedPlanTurnRequestFollowsFinalizationVerdict() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Durable checkpoint plan",
+            goal: "Produce the report",
+            steps: [
+                TaskPlanPayloadStep(
+                    id: "step-1",
+                    title: "Write report",
+                    likelyTools: ["Write"],
+                    outputs: [TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "report.md", required: true)]
+                )
+            ]
+        )
+        // Exits 0 and claims success on both runs; only the filesystem differs.
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All steps done."}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        let rejectedTask = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: rejectedTask, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: rejectedTask, modelContext: harness.context)
+        let rejectedRequest = admittedPlanRequest(task: rejectedTask, in: harness.context)
+        _ = await harness.executeApprovedPlan(
+            task: rejectedTask,
+            plan: plan,
+            worker: worker,
+            executionRequestID: rejectedRequest.id
+        )
+
+        // report.md never appeared, so the checkpoint rejected a run the
+        // provider reported as successful: the turn stays retryable.
+        #expect(rejectedTask.status == .pendingUser)
+        #expect(rejectedRequest.state == .failed)
+
+        let acceptedTask = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: acceptedTask, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: acceptedTask, modelContext: harness.context)
+        let acceptedFolder = try TaskWorkspaceAccess(task: acceptedTask).ensureTaskFolder()
+        try "report body".write(toFile: acceptedFolder + "/report.md", atomically: true, encoding: .utf8)
+        let acceptedRequest = admittedPlanRequest(task: acceptedTask, in: harness.context)
+        _ = await harness.executeApprovedPlan(
+            task: acceptedTask,
+            plan: plan,
+            worker: worker,
+            executionRequestID: acceptedRequest.id
+        )
+
+        // Deferring terminalization must not strand the accepted turn active.
+        #expect(acceptedRequest.state == .completed)
+        #expect(acceptedTask.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    private func admittedPlanRequest(task: AgentTask, in context: ModelContext) -> TaskTurnRequest {
+        let event = TaskEvent(task: task, type: "user.message", payload: "Run the approved plan")
+        context.insert(event)
+        let request = TaskTurnRequest(
+            task: task,
+            messageEventID: event.id,
+            sequence: 1,
+            kind: .planStep,
+            state: .admitted
+        )
+        context.insert(request)
+        return request
+    }
 }

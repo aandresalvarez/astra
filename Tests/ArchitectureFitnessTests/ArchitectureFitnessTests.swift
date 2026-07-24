@@ -1953,13 +1953,22 @@ struct ArchitectureFitnessTests {
             // classification and both isolation-cleanup call sites now read the
             // frozen launchTask snapshot instead of the live task, closing a
             // mid-run edit desync — each site needs a one-line note on why.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_100, .owner("Runtime worker execution")),
+            // 2_100 -> 2_150 on 2026-07-24 (PR #364 review follow-up): approved-plan
+            // runs must hold their durable turn request open until post-run
+            // checkpoint/contract validation decides the outcome, so the verdict
+            // has to be threaded from the session defer back to executeApprovedPlan.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_150, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
             // Keep a tight ceiling so new policy cannot drift back into the
             // queue orchestrator.
-            "Astra/Services/Tasks/TaskQueue.swift": .init(2_100, .owner("Durable request and worker orchestration")),
+            // 2_100 -> 2_125 on 2026-07-24 (PR #364 review follow-up): two
+            // stranded-request fixes that each need their "why" inline — a
+            // claimless request must lease nothing rather than redispatch, and
+            // an approved plan that completed without ever running has to step
+            // through `.running` because `.admitted` has no edge to `.completed`.
+            "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

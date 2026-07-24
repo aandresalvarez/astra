@@ -633,6 +633,73 @@ struct TaskLifecycleResumeTests {
         #expect(newSource.message == nil)
     }
 
+    @Test("Retry of a failed internal launch relaunches in initial mode, never as an envelope continuation")
+    func retryOfInternalLaunchStaysInInitialMode() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Retry Internal Launch", primaryPath: env.root)
+        let task = AgentTask(title: "Retry Internal Launch", goal: "Initial request", workspace: workspace)
+        task.status = .failed
+        task.tokensUsed = 4_200
+        task.costUSD = 1.25
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        // An accepted initial launch: its typed source envelope decodes cleanly
+        // but carries `message == nil`, because only a user follow-up has a
+        // turn to replay. Scheduled, chained, and approved-plan launches encode
+        // the same shape.
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitInitial(
+            for: task,
+            into: env.context
+        ) else {
+            Issue.record("Expected the initial launch submission to succeed")
+            return
+        }
+        let launchRequest = try #require(
+            try TaskTurnRequestRepository.request(id: submission.requestID, in: env.context)
+        )
+        TaskTurnRequestStateMachine.transition(
+            launchRequest,
+            to: .failed,
+            terminalReason: "runtime_not_started"
+        )
+        try env.context.save()
+
+        let continuation = env.coordinator.retryTask(task)
+        await Task.yield()
+        let queuedRetry = try #require(
+            try TaskTurnRequestRepository.requests(for: task, in: env.context).last
+        )
+        env.queue.cancelTurnRequest(id: queuedRetry.id, workspace: workspace, modelContext: env.context)
+        env.queue.cancelAll()
+        await continuation?.value
+
+        // Retry must relaunch the accepted launch instead of degrading into a
+        // continuation that replays the JSON envelope to the provider as
+        // conversation text. "Task re-queued for retry." is the initial-mode
+        // wording; "Latest follow-up re-queued for retry." would mean it took
+        // the continuation branch.
+        let retriedEvent = try #require(task.events.first { $0.type == "task.retried" })
+        #expect(retriedEvent.payload == "Task re-queued for retry.")
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+        #expect(requests.count == 2)
+        let retryRequest = try #require(requests.last)
+        #expect(retryRequest.kind == .retry)
+        let retrySourceEvent = try #require(task.events.first { $0.id == retryRequest.sourceEventID })
+        let retrySource = try #require(
+            ExecutionRequestSubmissionService.decodeSourcePayload(retrySourceEvent)
+        )
+        #expect(retrySource.launchMode == .initial)
+        #expect(retrySource.message == nil)
+        // Only the initial branch resets the run budget; the continuation
+        // branch deliberately preserves it, so a leaked continuation would
+        // leave these untouched.
+        #expect(task.tokensUsed == 0)
+        #expect(task.costUSD == 0)
+    }
+
     @Test("Deleting a task cancels and removes its durable turn requests")
     func deleteTaskCancelsAndRemovesTurnRequests() async throws {
         let env = try makeEnvironment()

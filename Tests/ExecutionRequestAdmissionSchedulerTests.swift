@@ -405,6 +405,59 @@ struct ExecutionRequestAdmissionSchedulerTests {
         #expect(!values.contains("/private/"))
     }
 
+    @Test("Oldest wait measures queued requests only, never admitted or running work")
+    func oldestWaitExcludesAdmittedAndRunningRequests() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Wait", primaryPath: "/tmp/astra-oldest-wait")
+        let longRun = AgentTask(title: "Long", goal: "Long", workspace: workspace)
+        let admitted = AgentTask(title: "Admitted", goal: "Admitted", workspace: workspace)
+        let queued = AgentTask(title: "Queued", goal: "Queued", workspace: workspace)
+        context.insert(workspace)
+        [longRun, admitted, queued].forEach(context.insert)
+        context.insert(TaskTurnRequest(
+            task: longRun,
+            messageEventID: UUID(),
+            sequence: 1,
+            state: .running,
+            submittedAt: Date(timeIntervalSince1970: 0)
+        ))
+        context.insert(TaskTurnRequest(
+            task: admitted,
+            messageEventID: UUID(),
+            sequence: 1,
+            state: .admitted,
+            submittedAt: Date(timeIntervalSince1970: 10)
+        ))
+        try context.save()
+
+        // A healthy long provider run must not mimic the stalled-scheduler signal.
+        let busyProjection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+        let busy = ExecutionRequestQueueSnapshot.fields(
+            projection: busyProjection,
+            now: Date(timeIntervalSince1970: 5_000)
+        )
+        #expect(busy["admitted_count"] == "1")
+        #expect(busy["running_request_count"] == "1")
+        #expect(busy["oldest_wait_seconds"] == "0")
+
+        context.insert(TaskTurnRequest(
+            task: queued,
+            messageEventID: UUID(),
+            sequence: 1,
+            state: .waitingForResource,
+            submittedAt: Date(timeIntervalSince1970: 4_900)
+        ))
+        try context.save()
+
+        let waitingProjection = try ExecutionRequestAdmissionScheduler.projection(in: context)
+        let waiting = ExecutionRequestQueueSnapshot.fields(
+            projection: waitingProjection,
+            now: Date(timeIntervalSince1970: 5_000)
+        )
+        #expect(waiting["oldest_wait_seconds"] == "100")
+    }
+
     @Test("Task-local sequence wins over an inverted submission timestamp")
     func taskLocalSequenceCannotBeOvertakenByTimestamp() throws {
         let container = try makeContainer()

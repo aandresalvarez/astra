@@ -12,9 +12,13 @@ enum TaskExecutionResourceClaimResolver {
         acceptedTurn: String? = nil
     ) -> [TaskExecutionResourceClaim] {
         let access = workspaceAccess(for: task, acceptedTurn: acceptedTurn)
-        return workspaceKeys(for: task).map {
-            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
-        }
+        let keys = workspaceKeys(for: task)
+        // Workspace claims stay first: `workspaceClaim(for:task:)` and the
+        // drift check both treat the leading claim as the canonical boundary.
+        return keys.map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access) }
+            + gitCommonDirectoryKeys(for: keys).map {
+                TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: $0, access: access)
+            }
     }
 
     static func workspaceClaim(
@@ -34,6 +38,12 @@ enum TaskExecutionResourceClaimResolver {
     /// Returns the immutable admission set. Empty, malformed, and legacy
     /// snapshots fail closed to one exclusive workspace claim; a broken JSON
     /// envelope must never make a request appear resource-free.
+    ///
+    /// The legacy fallback stays workspace-only on purpose. It is also the
+    /// direct/no-request path, whose access is supplied afterwards by
+    /// `TaskExecutionResourceAdmissionPolicy.lockClaims(fallbackAccess:)` — and
+    /// that override only reaches the workspace claim, so a synthesized Git
+    /// claim would stay exclusive for a caller that asked for read-only work.
     static func admissionClaims(
         for request: TaskTurnRequest?,
         task: AgentTask
@@ -78,6 +88,14 @@ enum TaskExecutionResourceClaimResolver {
         for task: AgentTask,
         acceptedTurn: String? = nil
     ) -> TaskExecutionResourceAccess {
+        // ASTRA itself — not the prompt — rewrites the workspace's
+        // `.claude/settings.local.json` before the provider starts and restores
+        // it afterwards (`TaskQueue.injectTemplateHooks`). That mutation happens
+        // whatever the task declares or reads as its intent, so a hook-injecting
+        // task must never resolve to a concurrently-admissible shared claim:
+        // two of them would overwrite each other's backup and strand or drop
+        // executable hooks while the sibling is still running.
+        if injectsTemplateHooks(task) { return .exclusive }
         let declarations = (task.constraints + task.inputs).map(normalizedDeclaration)
         if declarations.contains(where: { containsAccessMarker($0, access: "write") }) {
             return .exclusive
@@ -113,11 +131,73 @@ enum TaskExecutionResourceClaimResolver {
         let primary = access.codeWorkingDirectory.isEmpty
             ? access.effectiveWorkspacePath
             : access.codeWorkingDirectory
+        // Hook injection targets `effectiveWorkspacePath`, not the execution
+        // root, so a task pinned to a worktree still rewrites the *workspace*
+        // settings file. Claim that root too, or two pinned siblings of one
+        // workspace would hold disjoint claims and race on the same file.
+        let hookRoots = injectsTemplateHooks(task) ? [access.effectiveWorkspacePath] : []
         var seen = Set<String>()
-        return ([primary] + access.runtimeWritablePaths).compactMap { rawPath in
+        return ([primary] + access.runtimeWritablePaths + hookRoots).compactMap { rawPath in
             guard let key = standardizedPath(rawPath), seen.insert(key).inserted else { return nil }
             return key
         }
+    }
+
+    /// Mirrors `ClaudeSettingsStore.injectTemplateHooks`' own write guard: an
+    /// empty or `{}` payload never touches the settings file.
+    private static func injectsTemplateHooks(_ task: AgentTask) -> Bool {
+        !task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}"
+    }
+
+    /// Distinct Git common directories behind the task's writable roots.
+    ///
+    /// A linked worktree keeps its own root but shares one ref store, object
+    /// store, and config with its main checkout:
+    /// `GitCredentialContextResolver.externalWritableGitPaths` publishes that
+    /// common directory and `TaskLaunchResourceResolver
+    /// .appendGitCredentialGrants` grants it read-write. Workspace claims for
+    /// sibling worktrees never overlap, so without this claim the scheduler
+    /// admits concurrent runs onto the same Git metadata. Its own kind keeps
+    /// the claim from colliding with unrelated workspace roots that merely
+    /// contain the directory.
+    private static func gitCommonDirectoryKeys(for roots: [String]) -> [String] {
+        var seen = Set<String>()
+        return roots.compactMap { root in
+            guard let key = gitCommonDirectory(for: root), seen.insert(key).inserted else { return nil }
+            return key
+        }
+    }
+
+    private static func gitCommonDirectory(for root: String) -> String? {
+        let dotGit = (root as NSString).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) else { return nil }
+        let resolvedGitDirectory = isDirectory.boolValue
+            ? standardizedPath(dotGit)
+            : linkedWorktreeGitDirectory(at: dotGit, root: root)
+        guard let gitDirectory = resolvedGitDirectory else { return nil }
+        // `commondir` exists only inside a linked worktree's admin directory
+        // and normally holds a path relative to it (`../..`). A main checkout
+        // has no such file, so its own Git directory is the common one.
+        let commonDirFile = (gitDirectory as NSString).appendingPathComponent("commondir")
+        guard let raw = try? String(contentsOfFile: commonDirFile, encoding: .utf8) else {
+            return gitDirectory
+        }
+        return resolvedGitPath(raw, relativeTo: gitDirectory) ?? gitDirectory
+    }
+
+    private static func linkedWorktreeGitDirectory(at dotGitFile: String, root: String) -> String? {
+        guard let raw = try? String(contentsOfFile: dotGitFile, encoding: .utf8),
+              raw.lowercased().hasPrefix("gitdir:") else {
+            return nil
+        }
+        return resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: root)
+    }
+
+    private static func resolvedGitPath(_ rawValue: String, relativeTo base: String) -> String? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return standardizedPath(value.hasPrefix("/") ? value : (base as NSString).appendingPathComponent(value))
     }
 
     private static func workspaceKey(for task: AgentTask) -> String? {

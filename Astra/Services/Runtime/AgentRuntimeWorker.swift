@@ -84,6 +84,7 @@ final class AgentRuntimeWorker {
         existingStartEventID: UUID? = nil,
         executionRequestID: UUID? = nil,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun) -> Void)? = nil,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
@@ -105,7 +106,8 @@ final class AgentRuntimeWorker {
             turnRequestID: executionRequestID,
             auditPhase: "run",
             recordingMode: .initial,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            deferTurnTerminalization: deferTurnTerminalization
         )
     }
 
@@ -176,6 +178,11 @@ final class AgentRuntimeWorker {
             plan: currentPlan,
             step: approvedStep
         ).withLaunchSnapshot(executionPolicy.launchSnapshot)
+        // The provider finishing is a claim, not this turn's outcome: the
+        // finalization below can still send the task back for review. Terminal
+        // request state is irreversible, so hold the durable request open
+        // until that verdict exists instead of completing it on raw success.
+        var pendingTurn: (request: TaskTurnRequest?, run: TaskRun)?
         await execute(
             task: task,
             modelContext: modelContext,
@@ -185,22 +192,28 @@ final class AgentRuntimeWorker {
             existingStartEventID: existingStartEventID,
             executionRequestID: executionRequestID,
             executionPolicy: runExecutionPolicy,
+            deferTurnTerminalization: { pendingTurn = (request: $0, run: $1) },
             onEvent: onEvent
         )
+        var rejectedOutcome: (state: TaskTurnRequestState, reason: String)?
         if task.status == .completed {
+            let accepted: Bool
             if let approvedStep {
-                await finalizeApprovedPlanStep(
+                accepted = await finalizeApprovedPlanStep(
                     approvedStep,
                     plan: currentPlan,
                     task: task,
                     modelContext: modelContext
                 )
             } else {
-                await finalizeApprovedFullPlan(
+                accepted = await finalizeApprovedFullPlan(
                     currentPlan,
                     task: task,
                     modelContext: modelContext
                 )
+            }
+            if !accepted {
+                rejectedOutcome = (.failed, "approved_plan_finalization_rejected")
             }
         } else if task.isTerminal {
             TaskPlanService.recordExecutionFailed(
@@ -210,15 +223,33 @@ final class AgentRuntimeWorker {
                 reason: task.status.rawValue
             )
         }
+        // Reached on every path that started a runtime session, including the
+        // early provider-boundary aborts, so a held-open request is always
+        // terminalized exactly once. Rejections force `.failed` because the
+        // run object itself may still read `.completed`; every other outcome
+        // keeps the run's own status mapping (cancelled stays cancelled).
+        if let pendingTurn {
+            PersistedTurnRuntimeEventLinker.finishRuntime(
+                request: pendingTurn.request,
+                run: pendingTurn.run,
+                task: task,
+                forcedOutcome: rejectedOutcome,
+                in: modelContext
+            )
+        }
     }
 
+    /// Returns false when the run was rejected (checkpoint, provider blocker,
+    /// or contract) so the caller can terminalize the durable turn as failed
+    /// instead of completed. A pause that only awaits the NEXT step's approval
+    /// is an accepted outcome — that step's work really did land.
     @MainActor
     private func finalizeApprovedPlanStep(
         _ step: TaskPlanPayloadStep,
         plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) async {
+    ) async -> Bool {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
         let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
@@ -245,7 +276,7 @@ final class AgentRuntimeWorker {
                 modelContext: modelContext
             )
             pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
-            return
+            return false
         }
 
         let shouldFallbackComplete: Bool = {
@@ -297,7 +328,7 @@ final class AgentRuntimeWorker {
                     : "Plan step blocked: \(blockedStep.detail)",
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
-            return
+            return false
         }
 
         if TaskPlanService.hasRemainingExecutableSteps(in: refreshedPlan) {
@@ -313,18 +344,21 @@ final class AgentRuntimeWorker {
                 plan: refreshedPlan,
                 modelContext: modelContext
             ) else {
-                return
+                return false
             }
             TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
         }
+        return true
     }
 
+    /// Returns false when the plan was rejected after the run; see
+    /// `finalizeApprovedPlanStep`.
     @MainActor
     private func finalizeApprovedFullPlan(
         _ plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) async {
+    ) async -> Bool {
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
             pauseApprovedPlanForUser(
@@ -335,7 +369,7 @@ final class AgentRuntimeWorker {
                     : "Plan blocked at \(blockedStep.title): \(blockedStep.detail)",
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
-            return
+            return false
         }
 
         // Single-run plans have no intermediate run boundaries, so the output
@@ -348,7 +382,7 @@ final class AgentRuntimeWorker {
             modelContext: modelContext
         ) {
             pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
-            return
+            return false
         }
 
         guard await validateApprovedPlanContractForFinalCompletion(
@@ -356,9 +390,10 @@ final class AgentRuntimeWorker {
             plan: refreshedPlan,
             modelContext: modelContext
         ) else {
-            return
+            return false
         }
         TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
+        return true
     }
 
     @MainActor
@@ -466,7 +501,8 @@ final class AgentRuntimeWorker {
         sessionMessage: String? = nil,
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun) -> Void)? = nil
     ) async {
         var selectedRuntime = selectedRuntime
         var runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
@@ -575,7 +611,17 @@ final class AgentRuntimeWorker {
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: launchTask)
         PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
-        defer { PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext) }
+        // Hand the pair to the caller when it owns a later verdict (approved
+        // plans); otherwise provider completion IS the outcome, so terminalize
+        // here. Registered before the guard below so every exit past this
+        // point resolves the request through exactly one of the two.
+        defer {
+            if let deferTurnTerminalization {
+                deferTurnTerminalization(turnBegin.request, run)
+            } else {
+                PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task, in: modelContext)
+            }
+        }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { isRunning = false; return }
         let executionWorkspaceAccess = TaskExecutionResourceClaimResolver.workspaceAccess(
@@ -1206,7 +1252,12 @@ final class AgentRuntimeWorker {
                     case .runTests:
                         let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
-                        let testResult = await ValidationService.runTests(task: task)
+                        // Frozen on launchTask like the strategy switch above:
+                        // testCommand is part of AgentTaskLaunchSnapshot, so a
+                        // command edited after admission must not be what grades
+                        // this run. launchTask also carries the executionRootPath
+                        // the run actually used, so tests execute where it ran.
+                        let testResult = await ValidationService.runTests(task: launchTask)
                         switch testResult {
                         case .passed(let details):
                             _ = TaskSuccessfulCompletionService.apply(

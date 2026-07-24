@@ -1175,6 +1175,14 @@ final class TaskQueue {
         activeTasks.remove(task.id)
         if let executionRequest, executionRequest.state == .admitted {
             let terminalState: TaskTurnRequestState = task.status == .completed ? .completed : .failed
+            // `.admitted` has no direct edge to `.completed` — a request must run
+            // to complete. Without this step the transition is rejected and the
+            // request stays active, so the loop redispatches it forever. The
+            // worker did run (this is past `executeApprovedPlan`); it just
+            // returned before `beginRuntime`, e.g. no executable step remained.
+            if terminalState == .completed {
+                _ = transitionPersistedTurn(executionRequest, to: .running, modelContext: modelContext)
+            }
             _ = transitionPersistedTurn(
                 executionRequest,
                 to: terminalState,
@@ -1952,7 +1960,10 @@ final class TaskQueue {
         modelContext: ModelContext,
         shouldAbort: (() -> Bool)? = nil
     ) async -> [TaskResourceLockClaim]? {
-        guard !claims.isEmpty, !(shouldAbort?() ?? false) else { return nil }
+        guard !(shouldAbort?() ?? false) else { return nil }
+        // A claimless (no-workspace) request leases nothing and admission accepts
+        // it; only the worker's preflight can terminalize it. nil redispatches forever.
+        guard !claims.isEmpty else { return [] }
         for claim in claims {
             recordResourceLockEvent(
                 type: TaskResourceLockEventTypes.requested,
