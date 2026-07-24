@@ -23,15 +23,15 @@ enum TaskExecutionResourceClaimResolver {
         //
         // Emit this claim only when the task actually reaches external Git
         // metadata, mirroring the condition that grants it: the runtime gets a
-        // read-write grant for those paths only when this same resolver detects
-        // a Git operation (`TaskLaunchResourceResolver.appendGitCredentialGrants`
-        // is fed by `gitCredentialContextProvider`, which returns `.empty`
-        // otherwise). No detected Git intent means no grant, hence nothing to
+        // read-write grant for those paths only when Git intent is detected
+        // (`TaskLaunchResourceResolver.appendGitCredentialGrants` is fed by
+        // `gitCredentialContextProvider`, which returns `.empty` otherwise).
+        // No detected Git intent means no grant, hence nothing to
         // serialize against — and claiming it anyway would serialize every
         // writer across worktrees, removing the parallelism the fork flow is
         // built around. Access mirrors the workspace claim so Git readers still
         // share while writers exclude each other.
-        guard GitCredentialContextResolver.detectsRuntimeGitOperation(
+        guard GitOperationIntentDetector.detectsRuntimeGitOperation(
             prompt: acceptedTurn ?? "",
             task: task
         ) else {
