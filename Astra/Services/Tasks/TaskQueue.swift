@@ -672,6 +672,21 @@ final class TaskQueue {
                 )
                 continue
             }
+            // Launch from the request's immutable submission snapshots: the
+            // composer stays editable while a request waits, so the mutable
+            // task fields can no longer be trusted to match what this turn
+            // advertised at submission. Apply BEFORE folder prep (which reads
+            // executionRootPath) so the whole launch sees one configuration,
+            // and BEFORE the admitted transition so its durable save persists
+            // the applied fields together with the admission. Rows migrated
+            // from V15 carry nil snapshots and keep launch-from-task behavior.
+            if request.applyLaunchInputSnapshots(to: task) {
+                AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
+                    "event": "turn_launch_inputs_restored",
+                    "request_id": request.id.uuidString,
+                    "runtime": request.runtimeIDSnapshot ?? "none"
+                ])
+            }
             guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
                 releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
                 failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
