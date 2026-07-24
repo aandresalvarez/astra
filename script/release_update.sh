@@ -91,6 +91,11 @@ if ! command -v "$GENERATE_APPCAST" >/dev/null 2>&1; then
   echo "Missing Sparkle generate_appcast. Set SPARKLE_GENERATE_APPCAST to its absolute path." >&2
   exit 2
 fi
+SIGN_UPDATE="${SPARKLE_SIGN_UPDATE:-$(dirname "$GENERATE_APPCAST")/sign_update}"
+if [[ ! -x "$SIGN_UPDATE" ]]; then
+  echo "Missing Sparkle sign_update beside generate_appcast. Set SPARKLE_SIGN_UPDATE." >&2
+  exit 2
+fi
 
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
@@ -100,6 +105,7 @@ ASTRA_CHANNEL=prod \
 ASTRA_VERSION="$ASTRA_VERSION" \
 ASTRA_BUILD="$ASTRA_BUILD" \
 ASTRA_SPARKLE_PUBLIC_ED_KEY="$ASTRA_SPARKLE_PUBLIC_ED_KEY" \
+ASTRA_SPARKLE_SIGN_UPDATE="$SIGN_UPDATE" \
 ASTRA_SIGN_IDENTITY="$SIGN_IDENTITY" \
 "$ROOT_DIR/script/build_and_run.sh" bundle >/dev/null
 

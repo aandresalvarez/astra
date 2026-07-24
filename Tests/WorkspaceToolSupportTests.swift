@@ -1,11 +1,15 @@
 import Foundation
 import Testing
+import ASTRACore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
 @testable import WorkspaceToolSupport
+
+private let managedJobTestTaskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+private let managedJobTestRunID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 @Suite("Workspace Tool Support", .serialized)
 struct WorkspaceToolSupportTests {
@@ -27,6 +31,7 @@ struct WorkspaceToolSupportTests {
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON,
             "ASTRA_WORKSPACE_TASK_ID": "task-1",
             "ASTRA_WORKSPACE_RUN_ID": "run-1",
+            "ASTRA_WORKSPACE_JOB_TRUSTED_STATE_HOST": "/tmp/astra-trusted/task-1/run-1",
             "DOCKER_CONFIG": "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1",
             "ASTRA_WORKSPACE_DIAGNOSTICS_HOST": "/tmp/workspace/.astra/tasks/task-1/diagnostics",
             "ASTRA_WORKSPACE_SUBAGENT_PARENT_ID": "parent-task"
@@ -42,6 +47,7 @@ struct WorkspaceToolSupportTests {
         #expect(configuration.containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
         #expect(configuration.jobRootHostPath == "/tmp/workspace/.astra/tasks/task-1/jobs")
         #expect(configuration.jobRootContainerPath == "/workspace/.astra/tasks/task-1/jobs")
+        #expect(configuration.managedJobTrustedStateHostPath == "/tmp/astra-trusted/task-1/run-1")
         #expect(configuration.dockerClientConfigPath == "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1")
         #expect(configuration.diagnosticsHostPath == "/tmp/workspace/.astra/tasks/task-1/diagnostics")
         #expect(configuration.subagentParentID == "parent-task")
@@ -903,25 +909,28 @@ struct WorkspaceToolSupportTests {
         let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
 
         let start = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"dbt build --select +death","timeout_seconds":3600,"label":"dbt death","progress_probe":"dbt"}}}"#)))
-        let startText = try resultText(start)
-        #expect(startText.contains("job_id: job-1"))
-        #expect(startText.contains("status: running"))
+        let startResult = try structuredJobResult(start)
+        #expect(startResult.jobID == "job-1")
+        #expect(startResult.status == .running)
+        #expect(startResult.startReceipt?.invocationID.hasSuffix("|number:4") == true)
+        #expect(jobManager.startedInvocationIDs.count == 1)
+        #expect(jobManager.startedInvocationIDs.first?.hasSuffix("|number:4") == true)
         #expect(jobManager.startedCommands == ["dbt build --select +death"])
         #expect(jobManager.startedLabels == ["dbt death"])
         #expect(jobManager.startedProgressProbes == ["dbt"])
 
         let status = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workspace_job_status","arguments":{"job_id":"job-1"}}}"#)))
-        #expect(try resultText(status).contains("status: running"))
+        #expect(try structuredJobResult(status).status == .running)
 
         let tail = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workspace_job_tail","arguments":{"job_id":"job-1","stream":"stderr","lines":20}}}"#)))
         #expect(try resultText(tail).contains("stream: stderr"))
 
         let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":1}}}"#)))
-        #expect(try resultText(wait).contains("status: running"))
+        #expect(try structuredJobResult(wait).status == .running)
         #expect(jobManager.waitTimeouts == [1])
 
         let cancel = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workspace_job_cancel","arguments":{"job_id":"job-1"}}}"#)))
-        #expect(try resultText(cancel).contains("status: cancelled"))
+        #expect(try structuredJobResult(cancel).status == .cancelled)
     }
 
     @Test("Workspace job wait caps provider wait windows")
@@ -937,7 +946,7 @@ struct WorkspaceToolSupportTests {
 
         let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":3600}}}"#)))
 
-        #expect(try resultText(wait).contains("status: running"))
+        #expect(try structuredJobResult(wait).status == .running)
         #expect(jobManager.waitTimeouts == [30])
     }
 
@@ -973,8 +982,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-2",
-            runID: "run-2",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1009,7 +1018,9 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("kill_bin=\"$candidate\""))
         #expect(logLines.contains(#""exitCode":127"#))
         #expect(logLines.contains("process group isolation unavailable"))
-        #expect(logLines.contains("\"$setsid_bin\" sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains(
+            "\"$setsid_bin\" sh -c 'sh \"$1\"' astra-managed-job-guardian \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"
+        ))
         #expect(logLines.contains("pid_metadata=\"$job_dir/pid.meta\""))
         #expect(logLines.contains("rm -f \"$timeout_marker\" \"$pidfile\" \"$pid_metadata\""))
         #expect(logLines.contains("command_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
@@ -1081,8 +1092,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-cancel",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-cancel",
-            runID: "run-cancel",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1307,8 +1318,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-root",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-root",
-            runID: "run-root",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1624,8 +1635,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-cancel",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-cancel",
-            runID: "run-cancel",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1741,8 +1752,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-job-map",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-3",
-            runID: "run-3",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1809,8 +1820,8 @@ struct WorkspaceToolSupportTests {
             containerName: "astra-test-mixed",
             workdir: "/workspace",
             network: "bridge",
-            taskID: "task-4",
-            runID: "run-4",
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
             mounts: [
                 WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
             ],
@@ -1833,14 +1844,18 @@ struct WorkspaceToolSupportTests {
         {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"cd \(root.path) && dbt build --select +death","timeout_seconds":7200,"label":"dbt death","progress_probe":"dbt"}}}
         """
         let start = try parseJSON(try #require(server.handleLine(startLine)))
+        let startResult = try structuredJobResult(start)
+        #expect(startResult.status == .running)
+        #expect(startResult.startReceipt?.invocationID.hasSuffix("|number:2") == true)
         let startText = try resultText(start)
-        #expect(startText.contains("status: running"))
-        #expect(startText.contains("command: cd /workspace && dbt build --select +death"))
-        executor.cleanup()
+        #expect(!startText.contains("dbt build"))
+        #expect(!startText.contains(root.path))
+        server.cleanup()
 
         let logText = try String(contentsOf: log, encoding: .utf8)
         #expect(logText.contains("exec -i --workdir /workspace astra-test-mixed sh -c command -v sqlfmt && sqlfmt --version"))
         #expect(logText.contains("exec -d --workdir /workspace astra-test-mixed sh -c"))
+        #expect(!logText.contains("stop astra-test-mixed"))
 
         let activity = try String(
             contentsOf: diagnostics.appendingPathComponent("workspace_tool_activity.jsonl", isDirectory: false),
@@ -1852,10 +1867,10 @@ struct WorkspaceToolSupportTests {
                 try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
             }
         #expect(records.contains { $0["toolName"] as? String == "workspace_shell" })
-        #expect(records.contains {
-            $0["toolName"] as? String == "workspace_job_start" &&
-                $0["mappedCommand"] as? String == "cd /workspace && dbt build --select +death"
-        })
+        let startRecords = records.filter { $0["toolName"] as? String == "workspace_job_start" }
+        #expect(startRecords.count == 1)
+        #expect(startRecords.allSatisfy { $0["mappedCommand"] == nil && $0["command"] == nil })
+        #expect(!activity.contains("dbt build --select +death"))
     }
 
     @Test("Docker workspace executor revalidates a started container before each command")
@@ -1953,6 +1968,13 @@ struct WorkspaceToolSupportTests {
         return try #require(content.first?["text"] as? String)
     }
 
+    private func structuredJobResult(_ object: [String: Any]) throws -> WorkspaceManagedJobStructuredResult {
+        try JSONDecoder().decode(
+            WorkspaceManagedJobStructuredResult.self,
+            from: Data(try resultText(object).utf8)
+        )
+    }
+
     private func dockerConfiguration(docker: URL, root: URL) -> WorkspaceToolConfiguration {
         WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -1994,19 +2016,23 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
     private(set) var startedCommands: [String] = []
     private(set) var startedLabels: [String?] = []
     private(set) var startedProgressProbes: [String?] = []
+    private(set) var startedInvocationIDs: [String] = []
     private(set) var waitTimeouts: [TimeInterval] = []
     private var cancelled = false
+    var hasOwnedJob = false
 
     func start(
         command: String,
         timeoutSeconds _: TimeInterval?,
         label: String?,
-        progressProbe: String?
+        progressProbe: String?,
+        invocationID: String
     ) -> WorkspaceManagedJobRecord {
         startedCommands.append(command)
         startedLabels.append(label)
         startedProgressProbes.append(progressProbe)
-        return record(status: .running)
+        startedInvocationIDs.append(invocationID)
+        return record(status: .running, invocationID: invocationID)
     }
 
     func status(jobID _: String) -> WorkspaceManagedJobRecord {
@@ -2027,8 +2053,26 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
         return record(status: cancelled ? .cancelled : .running)
     }
 
-    private func record(status: WorkspaceManagedJobStatus) -> WorkspaceManagedJobRecord {
+    func hasTrustedNonterminalOwnedJob() -> Bool { hasOwnedJob }
+
+    private func record(
+        status: WorkspaceManagedJobStatus,
+        invocationID: String = "string-base64:d29ya3NwYWNlLXRlc3Q="
+    ) -> WorkspaceManagedJobRecord {
         let now = Date(timeIntervalSince1970: 1_782_300_000)
+        let receipt = try! WorkspaceManagedJobStartReceipt.make(
+            taskID: managedJobTestTaskID,
+            runID: managedJobTestRunID,
+            invocationID: invocationID,
+            requestFingerprint: try! WorkspaceManagedJobRequestFingerprint.make(
+                command: "dbt build --select +death",
+                timeoutSeconds: nil,
+                label: "dbt death",
+                progressProbe: "dbt"
+            ),
+            containerName: "astra-test-job",
+            jobID: "job-1"
+        )
         return WorkspaceManagedJobRecord(
             jobID: "job-1",
             command: "dbt build --select +death",
@@ -2042,7 +2086,8 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
             stdoutLogPath: "/tmp/job/stdout.log",
             stderrLogPath: "/tmp/job/stderr.log",
             heartbeatPath: "/tmp/job/heartbeat.json",
-            resultPath: "/tmp/job/result.json"
+            resultPath: "/tmp/job/result.json",
+            startReceipt: receipt
         )
     }
 }

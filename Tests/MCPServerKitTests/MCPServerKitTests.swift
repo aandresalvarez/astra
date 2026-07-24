@@ -11,6 +11,7 @@ struct MCPServerKitTests {
         let server = MCPServer(
             name: "astra-test",
             version: "9.9.9",
+            sessionID: "test-session",
             tools: {
                 [[
                     "name": "example.echo",
@@ -49,11 +50,88 @@ struct MCPServerKitTests {
         #expect(callResult["isError"] as? Bool == false)
         #expect(calls.map(\.name) == ["example.echo"])
         #expect(calls.first?.arguments["message"] as? String == "hello")
+        #expect(calls.first?.invocationID == "session-base64:dGVzdC1zZXNzaW9u|number:2")
 
         #expect(server.handleLine(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#) == nil)
         #expect(server.handleLine("   ") == nil)
         #expect(diagnostics.contains(.toolCall("example.echo")))
         #expect(diagnostics.contains(.notification("notifications/initialized")))
+    }
+
+    @Test("tools/call rejects missing null boolean and unsupported ids before delegation")
+    func toolCallsRequireSupportedRequestIDs() throws {
+        var calls: [MCPToolCall] = []
+        let server = MCPServer(
+            name: "astra-test",
+            sessionID: "domain-session",
+            tools: { [] },
+            handleToolCall: { call in
+                calls.append(call)
+                return .result(["content": []])
+            }
+        )
+        let lines = [
+            #"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"side.effect"}}"#,
+            #"{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"side.effect"}}"#,
+            #"{"jsonrpc":"2.0","id":true,"method":"tools/call","params":{"name":"side.effect"}}"#,
+            #"{"jsonrpc":"2.0","id":{"unsupported":1},"method":"tools/call","params":{"name":"side.effect"}}"#
+        ]
+
+        for line in lines {
+            let response = try parseJSON(try #require(server.handleLine(line)))
+            #expect(response["id"] is NSNull)
+            let error = try #require(response["error"] as? [String: Any])
+            #expect(error["code"] as? Int == -32600)
+        }
+        #expect(calls.isEmpty)
+    }
+
+    @Test("string and numeric request ids have separate invocation domains")
+    func requestIDDomainsAreSeparate() throws {
+        var invocationIDs: [String] = []
+        let server = MCPServer(
+            name: "astra-test",
+            sessionID: "domain-session",
+            tools: { [] },
+            handleToolCall: { call in
+                invocationIDs.append(call.invocationID)
+                return .result(["content": []])
+            }
+        )
+
+        _ = server.handleLine(#"{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"side.effect"}}"#)
+        _ = server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
+
+        #expect(invocationIDs == [
+            "session-base64:ZG9tYWluLXNlc3Npb24=|string-base64:MQ==",
+            "session-base64:ZG9tYWluLXNlc3Npb24=|number:1"
+        ])
+        #expect(Set(invocationIDs).count == 2)
+    }
+
+    @Test("reused JSON-RPC ids are distinct across MCP sessions")
+    func reusedRequestIDsAreSessionScoped() {
+        var invocationIDs: [String] = []
+        func makeServer(sessionID: String) -> MCPServer {
+            MCPServer(
+                name: "astra-test",
+                sessionID: sessionID,
+                tools: { [] },
+                handleToolCall: { call in
+                    invocationIDs.append(call.invocationID)
+                    return .result(["content": []])
+                }
+            )
+        }
+        let first = makeServer(sessionID: "connection-one")
+        let second = makeServer(sessionID: "connection-two")
+
+        _ = first.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
+        _ = second.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"side.effect"}}"#)
+
+        #expect(invocationIDs.count == 2)
+        #expect(Set(invocationIDs).count == 2)
+        #expect(invocationIDs.allSatisfy { $0.hasSuffix("|number:1") })
     }
 
     @Test("server encodes shared protocol errors and JSON-RPC ids consistently")
@@ -80,11 +158,11 @@ struct MCPServerKitTests {
         #expect(missingToolError["code"] as? Int == -32602)
         #expect(missingToolError["message"] as? String == "Unsupported tool")
 
-        let handlerError = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":{"bad":true},"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
-        #expect(handlerError["id"] is NSNull)
-        let error = try #require(handlerError["error"] as? [String: Any])
-        #expect(error["code"] as? Int == -32099)
-        #expect(error["message"] as? String == "handler failed")
+        let invalidID = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":{"bad":true},"method":"tools/call","params":{"name":"example.echo","arguments":{}}}"#)))
+        #expect(invalidID["id"] is NSNull)
+        let error = try #require(invalidID["error"] as? [String: Any])
+        #expect(error["code"] as? Int == -32600)
+        #expect(error["message"] as? String == "tools/call requires a string or numeric request id")
     }
 
     private func parseJSON(_ text: String) throws -> [String: Any] {
