@@ -1,7 +1,10 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
 
 struct WorkspaceDockerViewModelTests {
     @MainActor
