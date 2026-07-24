@@ -405,7 +405,10 @@ struct TaskDecisionDockPresentationTests {
         visibleThreadAffordances: Set<TaskThreadAffordance>? = nil,
         pendingReviewState: PendingTaskReviewState = .none,
         canRetry: Bool = true,
-        launchBlock: TaskRunLaunchBlockPayload? = nil
+        launchBlock: TaskRunLaunchBlockPayload? = nil,
+        executableApprovedPlan: TaskPlanPayload? = nil,
+        canResume: Bool = false,
+        hasProviderSession: Bool = false
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -425,9 +428,9 @@ struct TaskDecisionDockPresentationTests {
             runtimePermissionCommandPreview: nil,
             runtimePermissionAllowSimilarLabel: nil,
             canApproveSimilarRuntimePermission: false,
-            hasExecutableApprovedPlan: false,
-            planActionTitle: nil,
-            planActionDetail: nil,
+            hasExecutableApprovedPlan: executableApprovedPlan != nil,
+            planActionTitle: executableApprovedPlan?.title,
+            planActionDetail: executableApprovedPlan?.title,
             planModeLabel: nil,
             canOpenPlan: false,
             isPlanCanvasVisible: false,
@@ -438,10 +441,10 @@ struct TaskDecisionDockPresentationTests {
             canRun: true,
             canApprove: true,
             canRetry: canRetry,
-            canResume: false,
+            canResume: canResume,
             canReportProblem: canReportProblem,
             canToggleDone: true,
-            hasProviderSession: false,
+            hasProviderSession: hasProviderSession,
             failureReason: nil,
             launchBlock: launchBlock,
             artifactPaths: artifactPaths,

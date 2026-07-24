@@ -161,8 +161,7 @@ struct ContentView: View {
 
     @MainActor
     init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
-        self.appUpdateController = appUpdateController
-        self.runtime = runtime
+        self.appUpdateController = appUpdateController; self.runtime = runtime
     }
 
     var selectedTask: AgentTask? {

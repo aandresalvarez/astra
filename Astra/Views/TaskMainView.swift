@@ -4,34 +4,6 @@ import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
-enum TaskComposerPresentation {
-    static let usesCompactInputSpacing = true
-    static let usesForcedExpandedInputHeight = false
-    static let decisionRowUsesNestedChrome = false
-    static let decisionRowUsesNestedStroke = false
-    static let decisionDetailsUsePopover = true
-    static let decisionActionsUseOverflowMenu = false
-    static let decisionUtilitiesStayLeftAligned = true
-    static let decisionSummaryVisibleInCompactRow = false
-    static let decisionDockHorizontalPadding: CGFloat = 14
-    static let decisionDockTopPadding: CGFloat = 8
-    static let decisionDockBottomPadding: CGFloat = 6
-    static let decisionRowHorizontalPadding: CGFloat = 12
-    static let decisionRowVerticalPadding: CGFloat = 7
-    static let decisionRowSpacing: CGFloat = 12
-    static let decisionAccentWidth: CGFloat = 3
-    static let decisionAccentVerticalInset: CGFloat = 5
-    static let decisionIconFrame: CGFloat = 16
-    static let decisionIconFontSize: CGFloat = 12
-    static let decisionTitleFontSize: CGFloat = 13
-    static let decisionDetailFontSize: CGFloat = 12
-    static let decisionDetailsWidth: CGFloat = 540
-    static let decisionDetailsMaxHeight: CGFloat = 460
-    static let inputHorizontalPadding: CGFloat = 14
-    static let inputTopPadding: CGFloat = 12
-    static let inputTopPaddingWithAttachments: CGFloat = 8
-    static let inputBottomPadding: CGFloat = 9
-}
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
@@ -218,15 +190,12 @@ private struct AgentGeneratedFilesListView: View {
 /// audit (Cluster 1).
 ///
 /// Thread refresh is revision/event driven. `AgentTask.updatedAt` covers durable
-/// lifecycle and ordinary event mutations, while `taskThreadDidChange` covers
-/// coalesced streaming mutations that do not create a new relationship row.
-/// Neither path walks the complete event or run relationships.
+/// lifecycle and ordinary event mutations; `taskThreadDidChange` covers coalesced streaming mutations.
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
     let onSnapshotChange: () -> Void
     let onGeneratedFilesChange: () -> Void
-
     var body: some View {
         Color.clear
             .onChange(of: task.updatedAt) { _, _ in
@@ -241,7 +210,6 @@ private struct TaskThreadChangeObserver: View {
                 onGeneratedFilesChange()
             }
     }
-
 }
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
@@ -751,7 +719,6 @@ struct TaskMainView: View {
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
     }
-
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
         Task { @MainActor in
             guard await waitForViewUpdateBoundary() else { return }
@@ -5509,13 +5476,11 @@ struct TaskMainView: View {
             hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
-
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
            sendAction.launchesProviderWork {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-
         shouldScrollAfterUserMessage = true
 
         switch sendAction {

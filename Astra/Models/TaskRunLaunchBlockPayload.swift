@@ -14,6 +14,7 @@ public struct TaskRunLaunchBlockPayload: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case policyDiagnostic
         case runtimeIncompatible
+        case dockerImageUnavailable
     }
 
     public var kind: Kind
@@ -26,6 +27,12 @@ public struct TaskRunLaunchBlockPayload: Codable, Equatable, Sendable {
     /// crosses a persistence boundary — decoding stays possible even if the
     /// runtime ID it names is later removed.
     public var suggestedRuntimeID: String?
+    /// Exact image reference and immutable ID captured by Docker readiness.
+    /// Optional so payloads written before Docker recovery support continue to
+    /// decode without a migration.
+    public var dockerImage: String?
+    public var dockerImageID: String?
+    public var dockerReadinessState: String?
 
     public init(
         kind: Kind,
@@ -33,7 +40,10 @@ public struct TaskRunLaunchBlockPayload: Codable, Equatable, Sendable {
         message: String,
         remediation: String? = nil,
         missingCapabilities: [String] = [],
-        suggestedRuntimeID: String? = nil
+        suggestedRuntimeID: String? = nil,
+        dockerImage: String? = nil,
+        dockerImageID: String? = nil,
+        dockerReadinessState: String? = nil
     ) {
         self.kind = kind
         self.title = title
@@ -41,6 +51,9 @@ public struct TaskRunLaunchBlockPayload: Codable, Equatable, Sendable {
         self.remediation = remediation
         self.missingCapabilities = missingCapabilities
         self.suggestedRuntimeID = suggestedRuntimeID
+        self.dockerImage = dockerImage
+        self.dockerImageID = dockerImageID
+        self.dockerReadinessState = dockerReadinessState
     }
 
     /// Decodes a payload previously written via

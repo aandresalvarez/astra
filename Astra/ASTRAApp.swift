@@ -972,7 +972,10 @@ public struct ASTRAApp: App {
                     )
                 }
             case .main:
-                ContentView(appUpdateController: appUpdateController, runtime: runtime)
+                ContentView(
+                    appUpdateController: appUpdateController,
+                    runtime: runtime
+                )
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                     .environmentObject(appSettings)
                     .environmentObject(feedbackRouter)
