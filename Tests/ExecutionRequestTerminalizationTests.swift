@@ -449,4 +449,75 @@ struct ExecutionRequestTerminalizationTests {
         #expect(queue.activeTasks.isEmpty)
         #expect(queue.activeResourceLocks.isEmpty)
     }
+
+    /// Startup recovery mirrors a linked run's terminal status onto its
+    /// request, and its comment says that covers "BOTH running and admitted
+    /// requests". But `.admitted -> .completed` is not an edge, so for an
+    /// admitted request whose run completed, the transition was rejected,
+    /// `changed` stayed false, the `else if` / `else` recovery branches were
+    /// skipped (they belong to the same chain), and the request was left
+    /// `.admitted` and ACTIVE — re-fetched and re-skipped on every subsequent
+    /// restart, forever.
+    @Test("Recovery terminalizes an admitted request whose linked run completed")
+    func recoveryTerminalizesAdmittedRequestWithCompletedRun() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = makeTask(in: context)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        context.insert(run)
+
+        // The state this branch claims to handle: admitted, with a linked run
+        // that already reached a terminal status.
+        let request = makeRequest(.admitted, task: task, sequence: 1, in: context)
+        request.runID = run.id
+
+        let summary = TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+            modelContext: context,
+            at: Date(timeIntervalSince1970: 4_242),
+            autoExportWorkspaces: false
+        )
+
+        // Before the fix this was `.admitted` / `isActive` / terminalized == 0.
+        #expect(request.state == .completed)
+        #expect(!request.state.isActive)
+        #expect(request.terminalAt != nil)
+        #expect(summary.terminalized == 1)
+        #expect(summary.returnedToWaiting == 0)
+    }
+
+    /// The cancelled/failed mirrors were always legal from `.admitted`, so
+    /// they must keep terminalizing in one step rather than being routed
+    /// through the new `.running` recovery step.
+    @Test("Recovery still mirrors non-completed run outcomes straight from admitted")
+    func recoveryMirrorsNonCompletedOutcomesDirectly() throws {
+        for (runStatus, expected) in [
+            (RunStatus.cancelled, TaskTurnRequestState.cancelled),
+            (RunStatus.failed, TaskTurnRequestState.failed)
+        ] {
+            let container = try makeContainer()
+            let context = container.mainContext
+            let task = makeTask(in: context)
+
+            let run = TaskRun(task: task)
+            run.status = runStatus
+            run.stopReason = runStatus.rawValue
+            context.insert(run)
+
+            let request = makeRequest(.admitted, task: task, sequence: 1, in: context)
+            request.runID = run.id
+
+            let summary = TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+                modelContext: context,
+                at: Date(timeIntervalSince1970: 4_242),
+                autoExportWorkspaces: false
+            )
+
+            #expect(request.state == expected)
+            #expect(request.runID == run.id)
+            #expect(summary.terminalized == 1)
+        }
+    }
 }

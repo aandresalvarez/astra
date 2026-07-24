@@ -74,14 +74,52 @@ enum TaskTurnRequestRecoveryService {
                 case .cancelled: .cancelled
                 case .failed, .timeout, .budgetExceeded, .running: .failed
                 }
-                let transition = TaskTurnRequestStateMachine.transition(
+                let terminalReason = run.stopReason.isEmpty ? run.status.rawValue : run.stopReason
+                var transition = TaskTurnRequestStateMachine.transition(
                     request,
                     to: terminalState,
                     runID: run.id,
-                    terminalReason: run.stopReason.isEmpty ? run.status.rawValue : run.stopReason,
+                    terminalReason: terminalReason,
                     at: recoveredAt
                 )
-                if transition.changed { summary.terminalized += 1 }
+                // `.admitted` has no direct edge to `.completed` — a request
+                // must run to complete. Left unhandled the transition is
+                // rejected, `changed` stays false, the branches below are
+                // skipped because they belong to this same chain, and the
+                // request stays `.admitted` and active across every later
+                // restart. The linked run did execute, so passing through
+                // `.running` records what happened rather than inventing it.
+                // (`.admitted -> .cancelled` and `-> .failed` are already
+                // legal, so only the completed case needs this.)
+                if transition.rejection != nil {
+                    _ = TaskTurnRequestStateMachine.transition(
+                        request,
+                        to: .running,
+                        runID: run.id,
+                        at: recoveredAt
+                    )
+                    transition = TaskTurnRequestStateMachine.transition(
+                        request,
+                        to: terminalState,
+                        runID: run.id,
+                        terminalReason: terminalReason,
+                        at: recoveredAt
+                    )
+                }
+                if transition.changed {
+                    summary.terminalized += 1
+                } else if transition.rejection != nil {
+                    // Never leave a recovered request stuck in a non-terminal
+                    // state: return it to the admission queue instead, which is
+                    // legal from every active state.
+                    let requeued = TaskTurnRequestStateMachine.transition(
+                        request,
+                        to: .waitingForWorker,
+                        blockerSummary: "Recovered after ASTRA restarted; waiting for admission.",
+                        at: recoveredAt
+                    )
+                    if requeued.changed { summary.returnedToWaiting += 1 }
+                }
             } else if request.state == .running {
                 // No terminal run to mirror — the run (if any) never finished.
                 // Worker ownership is process-local, so a running turn cannot

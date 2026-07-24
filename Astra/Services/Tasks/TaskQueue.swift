@@ -941,6 +941,22 @@ final class TaskQueue {
             blockerSummary: blockerSummary,
             terminalReason: terminalReason
         )
+        // An illegal transition is otherwise invisible: `rejection` rides only
+        // on the returned value, and most callers here discard it with `_ =`.
+        // Every caller of THIS seam intends the transition to succeed, so a
+        // rejection is always a defect — it leaves the request in its old
+        // state, and if that state is non-terminal the queue redispatches it
+        // forever. `revertFailedCancellation` deliberately reads `rejection`
+        // as control flow, but it calls the state machine directly and so
+        // never reaches this log.
+        if result.rejection != nil {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: request.taskID, fields: [
+                "reason": "illegal_turn_request_transition",
+                "from": result.from.rawValue,
+                "to": result.to.rawValue,
+                "request_id": request.id.uuidString
+            ], level: .error)
+        }
         guard result.changed else {
             return PersistedTurnTransition(transition: result, persisted: true)
         }
