@@ -268,11 +268,21 @@ struct TaskExecutionResourceClaimResolverTests {
         defer { try? FileManager.default.removeItem(at: otherRepository.root) }
 
         let workspace = Workspace(name: "Worktrees", primaryPath: repository.root.path)
-        let first = AgentTask(title: "Ship feature A", goal: "Update the parser.", workspace: workspace)
-        let second = AgentTask(title: "Ship feature B", goal: "Update the renderer.", workspace: workspace)
+        // The Git claim is only emitted for tasks that reach external Git
+        // metadata, matching the condition that grants them write access to it.
+        let first = AgentTask(
+            title: "Ship feature A",
+            goal: "Update the parser, then git push the result.",
+            workspace: workspace
+        )
+        let second = AgentTask(
+            title: "Ship feature B",
+            goal: "Update the renderer, then git push the result.",
+            workspace: workspace
+        )
         let unrelated = AgentTask(
             title: "Ship other repository",
-            goal: "Update the other project.",
+            goal: "Update the other project, then git push the result.",
             workspace: Workspace(name: "Other", primaryPath: otherRepository.root.path)
         )
         first.executionRootPath = repository.worktrees["wt-a"]?.path
@@ -305,6 +315,32 @@ struct TaskExecutionResourceClaimResolverTests {
         ))
     }
 
+    @Test("Writers in sibling worktrees stay parallel when neither touches Git")
+    func nonGitWorktreeWritersDoNotSerialize() throws {
+        let repository = try makeWorktreeLayout(worktrees: ["wt-a", "wt-b"])
+        defer { try? FileManager.default.removeItem(at: repository.root) }
+
+        let workspace = Workspace(name: "Worktrees", primaryPath: repository.root.path)
+        let first = AgentTask(title: "Ship feature A", goal: "Update the parser.", workspace: workspace)
+        let second = AgentTask(title: "Ship feature B", goal: "Update the renderer.", workspace: workspace)
+        first.executionRootPath = repository.worktrees["wt-a"]?.path
+        second.executionRootPath = repository.worktrees["wt-b"]?.path
+
+        let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
+        let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
+
+        // Both mutate their own worktree, so both are exclusive on the
+        // workspace — but neither reaches external Git metadata, so neither
+        // receives the read-write grant that would make them race on it.
+        #expect(firstClaims.allSatisfy { $0.access == .exclusive })
+        #expect(!firstClaims.contains { $0.kind == .gitCommonDirectory })
+        #expect(!secondClaims.contains { $0.kind == .gitCommonDirectory })
+        #expect(TaskExecutionResourceBroker.canAcquire(
+            lease(for: secondClaims, taskID: second.id),
+            active: lease(for: firstClaims, taskID: first.id)
+        ))
+    }
+
     @Test("A main checkout claims the same common directory as its worktrees")
     func mainCheckoutSharesTheWorktreeCommonDirectoryClaim() throws {
         let repository = try makeWorktreeLayout(worktrees: ["wt-a"])
@@ -312,12 +348,12 @@ struct TaskExecutionResourceClaimResolverTests {
 
         let mainTask = AgentTask(
             title: "Ship from the main checkout",
-            goal: "Update the parser.",
+            goal: "Update the parser, then git push the result.",
             workspace: Workspace(name: "Main", primaryPath: repository.checkout.path)
         )
         let worktreeTask = AgentTask(
             title: "Ship from a worktree",
-            goal: "Update the renderer.",
+            goal: "Update the renderer, then git push the result.",
             workspace: Workspace(name: "Worktree", primaryPath: repository.worktrees["wt-a"]?.path ?? "")
         )
 

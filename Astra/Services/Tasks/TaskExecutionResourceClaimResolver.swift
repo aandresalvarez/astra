@@ -15,7 +15,29 @@ enum TaskExecutionResourceClaimResolver {
         let keys = workspaceKeys(for: task)
         // Workspace claims stay first: `workspaceClaim(for:task:)` and the
         // drift check both treat the leading claim as the canonical boundary.
-        return keys.map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access) }
+        let workspaceClaims = keys.map {
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
+        }
+        // Sibling linked worktrees share one Git common directory, so concurrent
+        // runs can otherwise race on the same refs, object store, and config.
+        //
+        // Emit this claim only when the task actually reaches external Git
+        // metadata, mirroring the condition that grants it: the runtime gets a
+        // read-write grant for those paths only when this same resolver detects
+        // a Git operation (`TaskLaunchResourceResolver.appendGitCredentialGrants`
+        // is fed by `gitCredentialContextProvider`, which returns `.empty`
+        // otherwise). No detected Git intent means no grant, hence nothing to
+        // serialize against — and claiming it anyway would serialize every
+        // writer across worktrees, removing the parallelism the fork flow is
+        // built around. Access mirrors the workspace claim so Git readers still
+        // share while writers exclude each other.
+        guard GitCredentialContextResolver.detectsRuntimeGitOperation(
+            prompt: acceptedTurn ?? "",
+            task: task
+        ) else {
+            return workspaceClaims
+        }
+        return workspaceClaims
             + gitCommonDirectoryKeys(for: keys).map {
                 TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: $0, access: access)
             }
