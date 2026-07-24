@@ -874,6 +874,14 @@ final class WorkspaceDockerViewModel: ObservableObject {
                         var validated = candidate
                         validated.isRunnable = report.isRunnable
                         validated.issue = report.isRunnable ? nil : report.detail
+                        // The candidate's digest came from the `docker image ls`
+                        // inventory pass; a mutable tag can be re-pointed between
+                        // that listing and this exact-reference check. Persist the
+                        // ID readiness actually verified so durable run metadata
+                        // identifies the image Docker will really launch.
+                        if let verifiedImageID = report.imageID {
+                            validated.environment.imageDigest = verifiedImageID
+                        }
                         return (index, validated)
                     }
                 }

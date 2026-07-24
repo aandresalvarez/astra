@@ -65,6 +65,33 @@ struct WorkspaceDockerViewModelTests {
     }
 
     @MainActor
+    @Test("Container view model persists the image ID readiness verified, not the stale inventory ID")
+    func viewModelPersistsVerifiedImageID() async throws {
+        let root = try makeTempDir("docker-viewmodel-verified-id")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repository = DockerWorkspaceDiscoveryService.generatedImageName(for: root)
+        let image = "\(repository):latest"
+        // The tag is re-pointed between the `docker image ls` inventory pass
+        // (sha256:stale) and the exact-reference readiness check (sha256:verified).
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: RecoveryImageInventory(result: .success([
+                DockerImageReference(repository: repository, tag: "latest", imageID: "sha256:stale")
+            ])),
+            imageReadiness: RecoveryFixedReadiness(readiness: DockerImageReadiness(
+                image: image,
+                state: .ready,
+                imageID: "sha256:verified",
+                detail: "ready"
+            ))
+        )
+        viewModel.setWorkspaceForTesting(Workspace(name: "Docker", primaryPath: root))
+
+        await viewModel.refresh()
+
+        #expect(viewModel.runnableCandidates.map(\.environment.imageDigest) == ["sha256:verified"])
+    }
+
+    @MainActor
     @Test("Container view model hides unrelated image failures when a runnable image exists")
     func viewModelHidesUnselectedImageFailure() {
         let broken = DockerWorkspaceCandidate(
