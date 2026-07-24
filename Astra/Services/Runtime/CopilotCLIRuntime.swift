@@ -521,7 +521,7 @@ enum CopilotCLIRuntime {
         allowedTools: [String],
         localToolCommands: [String]
     ) -> [String] {
-        shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
+        shouldAddLocalToolPermissions(policy, allowedTools)
             ? copilotShellPermissions(forLocalToolCommands: localToolCommands)
             : []
     }
@@ -566,7 +566,7 @@ enum CopilotCLIRuntime {
             .sorted()
     }
 
-    private static func shouldAddLocalToolPermissions(policy: PermissionPolicy, allowedTools: [String]) -> Bool {
+    private static func shouldAddLocalToolPermissions(_: PermissionPolicy, _: [String]) -> Bool {
         // Local tool commands generate scoped shell(gh:*) grants rather than broad Bash
         // access, so they are safe to surface under any permission policy.
         true
@@ -586,8 +586,11 @@ enum CopilotCLIRuntime {
         guard !trimmed.isEmpty else { return nil }
         guard let token = trimmed.split(whereSeparator: { $0.isWhitespace }).first else { return nil }
         let executable = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        // Reject empty tokens and characters that would corrupt or broaden the grant:
+        // control chars/parens break the grant format; colon is the shell(exe:*) delimiter;
+        // glob metacharacters (*?[]) would make the pattern match more than intended.
         guard !executable.isEmpty else { return nil }
-        guard executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil else { return nil }
+        guard executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r):*?[]")) == nil else { return nil }
         return executable
     }
 

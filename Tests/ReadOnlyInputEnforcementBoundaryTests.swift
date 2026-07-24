@@ -272,7 +272,7 @@ struct ReadOnlyInputEnforcementBoundaryTests {
     }
 
     @Test("Host inputs do not escalate when sandbox is explicitly Off")
-    func hostInputsForceStrictWrapping() {
+    func hostInputsDoNotEscalateWhenSandboxOff() {
         let boundary = ReadOnlyInputEnforcementBoundary(
             paths: ["/tmp/attached.pdf"],
             executionEnvironment: .host
