@@ -45,7 +45,7 @@ struct ExecutionEnvironmentSharedMountTests {
 
     private func makeTempDir(_ name: String) throws -> String {
         let path = FileManager.default.temporaryDirectory
-            .appendingPathComponent("astra-(name)-(UUID().uuidString)").path
+            .appendingPathComponent("astra-\(name)-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         return path
     }

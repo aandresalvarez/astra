@@ -55,7 +55,7 @@ struct TaskQueueStoreSessionTests {
         let container = try makeContainer()
         let context = container.mainContext
         let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("legacy-repair-file-(UUID().uuidString)")
+            .appendingPathComponent("legacy-repair-file-\(UUID().uuidString)")
         try Data("not a directory".utf8).write(to: fileURL)
         defer { try? FileManager.default.removeItem(at: fileURL) }
 

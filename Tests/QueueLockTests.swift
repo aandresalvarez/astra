@@ -506,9 +506,13 @@ struct QueueLockTests {
         let processing = Task { @MainActor in
             await queue.processQueue(modelContext: context)
         }
-        while request.state != .waitingForResource {
-            await Task.yield()
+        // Bounded: an admission regression must fail this test, not hang CI
+        // forever on an unsatisfiable condition.
+        let blockedDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while request.state != .waitingForResource, ContinuousClock.now < blockedDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
         }
+        #expect(request.state == .waitingForResource)
 
         #expect(forked.status == .queued)
         #expect(forked.runs.count == 1)
