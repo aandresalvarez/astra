@@ -92,7 +92,15 @@ final class AgentRuntimeWorker {
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
             task: launchTask, selectedRuntime: selectedRuntime, phase: "run")
         alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "run")
-        clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: selectedRuntime, phase: "run")
+        // Clear on the LIVE task, not the frozen copy: sessionId is durable
+        // state (`detachedTask` copies it from source, not from the snapshot),
+        // and both consumers read the live task — `TaskRun.init` captures
+        // `task.sessionId` into `run.providerSessionId`, and
+        // `nativeContinuationSessionID(for: task,)` decides continuation from
+        // it. Clearing the detached copy would let a rerouted run inherit the
+        // previous runtime's session, which is exactly what the ordering
+        // comment below this call site promises cannot happen.
+        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
         TaskCapabilitySnapshotter.refreshForFreshRun(task: launchTask)
         await executeRuntimeSession(
             task: task,
@@ -465,7 +473,8 @@ final class AgentRuntimeWorker {
             phase: "resume"
         )
         alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "resume")
-        clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: selectedRuntime, phase: "resume")
+        // Live task — see the note at the "run" phase call site.
+        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: message,
             task: launchTask,
@@ -589,7 +598,8 @@ final class AgentRuntimeWorker {
                 alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: runtime, phase: auditPhase)
             },
             clearMismatchedSession: { runtime in
-                clearMismatchedProviderSessionIfNeeded(for: launchTask, selectedRuntime: runtime, phase: auditPhase)
+                // Live task — see the note at the "run" phase call site.
+                clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: runtime, phase: auditPhase)
             }
         )
         if appliedRuntime.reroutedFrom != nil {

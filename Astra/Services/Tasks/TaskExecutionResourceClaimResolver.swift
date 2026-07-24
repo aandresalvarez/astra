@@ -21,16 +21,26 @@ enum TaskExecutionResourceClaimResolver {
         // Sibling linked worktrees share one Git common directory, so concurrent
         // runs can otherwise race on the same refs, object store, and config.
         //
-        // Emit this claim only when the task actually reaches external Git
-        // metadata, mirroring the condition that grants it: the runtime gets a
+        // Emit this claim only when the task reaches external Git metadata,
+        // approximating the condition that grants it: the runtime gets a
         // read-write grant for those paths only when Git intent is detected
         // (`TaskLaunchResourceResolver.appendGitCredentialGrants` is fed by
         // `gitCredentialContextProvider`, which returns `.empty` otherwise).
-        // No detected Git intent means no grant, hence nothing to
-        // serialize against — and claiming it anyway would serialize every
-        // writer across worktrees, removing the parallelism the fork flow is
-        // built around. Access mirrors the workspace claim so Git readers still
-        // share while writers exclude each other.
+        // Claiming unconditionally instead would serialize every writer across
+        // sibling worktrees, removing the parallelism the fork flow is built
+        // around. Access mirrors the workspace claim, so Git readers still
+        // share while Git writers exclude each other.
+        //
+        // KNOWN GAP — this is an approximation, not an exact mirror. Claims are
+        // frozen at submission, so this sees only `acceptedTurn + title + goal`,
+        // while the grant side also reads runtime `contextText` and suppresses
+        // itself for host-control-routed GitHub work. A Git operation evident
+        // only from runtime context therefore gets the grant with no claim
+        // (under-serialization); a host-control-routed task can get the claim
+        // with no grant (harmless over-serialization). Closing the first
+        // direction needs the claim decision to see the same inputs, which
+        // conflicts with freezing claims at submission — see
+        // Tests/TaskExecutionResourceClaimCoverageTests.swift.
         guard GitOperationIntentDetector.detectsRuntimeGitOperation(
             prompt: acceptedTurn ?? "",
             task: task
