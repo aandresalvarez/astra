@@ -268,7 +268,10 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
-        let localToolCommands = context.localToolCommands
+        // Review policy is read-only; scoped shell grants should not be surfaced there
+        // even though the underlying PermissionPolicy maps to .restricted for both review
+        // and non-review levels, which would otherwise be indistinguishable at that layer.
+        let localToolCommands = policy.level != .review ? context.localToolCommands : []
         var diagnostics = diagnostics(for: policy, context: context)
         if !policy.deniedTools.isEmpty || !policy.deniedShellPatterns.isEmpty {
             diagnostics.append(PolicyDiagnostic(
@@ -762,10 +765,14 @@ private enum PolicyLocalToolGrants {
         return unique(allowedTools + localToolCommands.compactMap(claudeShellGrant))
     }
 
-    static func shouldGrantLocalToolCommands(_: [String]) -> Bool {
-        // Local tool commands generate scoped Bash(gh *) grants rather than broad Bash
-        // access, so they are safe to surface under any permission policy.
-        true
+    static func shouldGrantLocalToolCommands(_ allowedTools: [String]) -> Bool {
+        // Surface Bash(exe *) grants only when Bash is already permitted — adding
+        // scoped shell grants when Bash is ask-first or absent from a custom allow-list
+        // would allow shell execution beyond what the policy explicitly grants.
+        allowedTools.contains { tool in
+            tool.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Bash") == .orderedSame
+        }
     }
 
     private static func claudeShellGrant(for command: String) -> String? {
