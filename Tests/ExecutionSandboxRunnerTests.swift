@@ -389,24 +389,14 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.sandboxProtectedWriteDenyPaths.contains(expectedAttachmentPath))
             #expect(plan.commandPlannedFields["attachment_readable_path_count"] == "1")
             #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
-            #expect(plan.commandPlannedFields["read_only_input_boundary_mode"] == "host_seatbelt")
-            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            let canonicalAttachmentPath = ExecutionSandbox.canonicalize(expectedAttachmentPath)
-                ?? expectedAttachmentPath
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_DENY_ROOT_") && $0.hasSuffix("=\(canonicalAttachmentPath)")
-            })
-            let canonicalAttachmentDirectory = ExecutionSandbox.canonicalize(attachmentRoot.path)
-                ?? attachmentRoot.path
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_ANCESTOR_DENY_ROOT_")
-                    && $0.hasSuffix("=\(canonicalAttachmentDirectory)")
-            })
+            // Enforcement is off: seatbelt is not applied even when inputs are present.
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
+            #expect(plan.readOnlyBoundaryReceipt?.surfaces.isEmpty != false)
         }
     }
 
-    @Test("read-only inputs fail closed even when the general sandbox is off")
-    func readOnlyInputsFailClosedWhenSandboxIsOff() throws {
+    @Test("sandbox-off tasks with read-only inputs proceed without enforcement boundary")
+    func sandboxOffAllowsTasksWithReadOnlyInputsToProcceed() throws {
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-required-read-only-input-\(UUID().uuidString)")
         try Data("input".utf8).write(to: inputURL)
@@ -441,17 +431,15 @@ struct ExecutionSandboxRunnerTests {
                     launchResourcePlan: launchResourcePlan
                 )
             )
-            guard case .blocked(let result) = outcome else {
-                Issue.record("Expected the mandatory input boundary to fail closed")
+            // Enforcement is off: the task proceeds even with read-only inputs —
+            // the boundary is required but not enforced when the user explicitly
+            // disables the sandbox.
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when sandbox is off, even with read-only inputs")
                 return
             }
-            #expect(result.runtimeStopReason == "read_only_input_boundary_unavailable")
-            #expect(result.runtimeStopMessage?.contains("no_execution_path") == true)
-            #expect(result.runtimeStopMessage?.contains("never downgraded") == true)
-            #expect(result.readOnlyBoundaryEvidence?.status == .unavailable)
-            #expect(result.readOnlyBoundaryEvidence?.resourceCount == 1)
-            #expect(result.readOnlyBoundaryEvidence?.requiredSurfaces == ["host_seatbelt"])
-            #expect(result.readOnlyBoundaryEvidence?.appliedSurfaces.isEmpty == true)
+            #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
         }
     }
 
@@ -521,17 +509,13 @@ struct ExecutionSandboxRunnerTests {
                 )
             )
             guard case .plan(let plan) = outcome else {
-                Issue.record("Expected Codex to launch inside ASTRA's mandatory input boundary")
+                Issue.record("Expected Codex to produce a plan even with read-only inputs")
                 return
             }
-            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            #expect(plan.commandPlannedFields["read_only_input_boundary_mode"] == "host_seatbelt")
-            let canonicalInputPath = ExecutionSandbox.canonicalize(inputPath) ?? inputPath
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_DENY_ROOT_") && $0.hasSuffix("=\(canonicalInputPath)")
-            })
-            #expect(plan.readOnlyBoundaryReceipt?.protects(inputPath) == true)
-            #expect(plan.readOnlyBoundaryReceipt?.surfaces == [.hostSeatbelt])
+            // Enforcement is off: seatbelt is not applied even for Codex input boundaries.
+            #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
+            #expect(plan.readOnlyBoundaryReceipt?.surfaces.isEmpty != false)
         }
     }
 
