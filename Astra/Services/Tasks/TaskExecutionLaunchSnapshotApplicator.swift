@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 /// Applies the immutable launch configuration captured by a durable request.
@@ -89,6 +90,21 @@ enum TaskExecutionLaunchSnapshotApplicator {
         task.runs = detachedRuns
         task.events = source.events.map { detachedEvent($0, task: task, runs: runByID) }
         task.artifacts = source.artifacts.map { detachedArtifact($0, task: task) }
+        // Global skills have workspace_fk=None in the DB, so they are absent from
+        // workspace.skills and can only be fetched via the live ModelContext. Copy
+        // the ones explicitly enabled for this workspace into the detached workspace
+        // so that capability preflight (globalSkills fallback) can resolve them
+        // without a live context.
+        if let workspace, let sourceWorkspace = source.workspace, let ctx = source.modelContext {
+            let enabledIDs = Set(sourceWorkspace.enabledGlobalSkillIDs)
+            if !enabledIDs.isEmpty {
+                let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
+                if let fetched = try? ctx.fetch(descriptor) {
+                    let toAdd = fetched.filter { enabledIDs.contains($0.id.uuidString) }
+                    workspace.skills += toAdd.map(detachedSkill)
+                }
+            }
+        }
         let workspaceSkills = Dictionary(uniqueKeysWithValues: (workspace?.skills ?? []).map { ($0.id, $0) })
         task.skills = source.skills.map { workspaceSkills[$0.id] ?? detachedSkill($0) }
         return task

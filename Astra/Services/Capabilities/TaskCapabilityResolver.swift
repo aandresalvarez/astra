@@ -263,7 +263,11 @@ struct TaskCapabilityResolver {
     }
 
     private func globalSkills() -> [Skill] {
-        guard let ctx = task.modelContext else { return [] }
+        guard let ctx = task.modelContext else {
+            // Detached tasks have no ModelContext; rely on the global skills that
+            // detachedTask() pre-populated into workspace.skills from the live context.
+            return task.workspace?.skills.filter { $0.isGlobal } ?? []
+        }
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
         return (try? ctx.fetch(descriptor)) ?? []
     }

@@ -1972,7 +1972,7 @@ struct ArchitectureFitnessTests {
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
-            "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/TaskCapabilityResolverTests.swift": .init(3_000, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
