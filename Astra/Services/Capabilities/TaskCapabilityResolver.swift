@@ -68,6 +68,12 @@ struct TaskCapabilityResolutionSnapshot {
 }
 
 struct TaskCapabilityResolver {
+    struct ResourceInventory {
+        let behaviorSkills: [Skill]
+        let connectors: [Connector]
+        let localTools: [LocalTool]
+    }
+
     private let task: AgentTask
     private let additionalCredentialGrants: [PermissionGrant]
     private let exposeAllConnectorCredentials: Bool
@@ -80,6 +86,15 @@ struct TaskCapabilityResolver {
         self.task = task
         self.additionalCredentialGrants = additionalCredentialGrants
         self.exposeAllConnectorCredentials = exposeAllConnectorCredentials
+    }
+
+    var resourceInventory: ResourceInventory {
+        let connectors = allConnectors
+        return ResourceInventory(
+            behaviorSkills: allBehaviorSkills(connectors: connectors),
+            connectors: connectors,
+            localTools: allLocalTools
+        )
     }
 
     var resolver: SkillResolver {
@@ -147,15 +162,12 @@ struct TaskCapabilityResolver {
             }
             return connector.workspace?.id == workspaceID
         }
-        let standalone = task.workspace?.connectors.filter { $0.skill == nil } ?? []
+        let standalone = task.workspace?.connectors.filter { $0.skill == nil && !$0.isGlobal } ?? []
         var all = fromSkills + standalone + enabledPackageConnectors()
 
-        if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty, let ctx = task.modelContext {
+        if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
-            let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
-            if let globals = try? ctx.fetch(descriptor) {
-                all += globals.filter { enabledIDs.contains($0.id.uuidString) }
-            }
+            all += globalConnectors().filter { enabledIDs.contains($0.id.uuidString) }
         }
 
         var seen = Set<UUID>()
@@ -171,15 +183,12 @@ struct TaskCapabilityResolver {
     var allLocalTools: [LocalTool] {
         let packageSkills = enabledPackageSkills()
         let fromSkills = (task.skills + packageSkills).flatMap(\.localTools)
-        let standalone = task.workspace?.localTools.filter { $0.skill == nil } ?? []
+        let standalone = task.workspace?.localTools.filter { $0.skill == nil && !$0.isGlobal } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
-        if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty, let ctx = task.modelContext {
+        if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalToolIDs)
-            let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
-            if let globals = try? ctx.fetch(descriptor) {
-                all += globals.filter { enabledIDs.contains($0.id.uuidString) }
-            }
+            all += globalLocalTools().filter { enabledIDs.contains($0.id.uuidString) }
         }
 
         var seen = Set<UUID>()
@@ -264,24 +273,53 @@ struct TaskCapabilityResolver {
 
     private func globalSkills() -> [Skill] {
         guard let ctx = task.modelContext else {
-            // Detached tasks have no ModelContext; rely on the global skills that
-            // detachedTask() pre-populated into workspace.skills from the live context.
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
-        return (try? ctx.fetch(descriptor)) ?? []
+        do {
+            return try ctx.fetch(descriptor)
+        } catch {
+            AppLogger.error(
+                "Failed to load global skills for capability resolution: \(error.localizedDescription)",
+                category: "Capabilities",
+                taskID: task.id
+            )
+            return task.workspace?.skills.filter { $0.isGlobal } ?? []
+        }
     }
 
     private func globalConnectors() -> [Connector] {
-        guard let ctx = task.modelContext else { return [] }
+        guard let ctx = task.modelContext else {
+            return task.workspace?.connectors.filter { $0.isGlobal } ?? []
+        }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
-        return (try? ctx.fetch(descriptor)) ?? []
+        do {
+            return try ctx.fetch(descriptor)
+        } catch {
+            AppLogger.error(
+                "Failed to load global connectors for capability resolution: \(error.localizedDescription)",
+                category: "Capabilities",
+                taskID: task.id
+            )
+            return task.workspace?.connectors.filter { $0.isGlobal } ?? []
+        }
     }
 
     private func globalLocalTools() -> [LocalTool] {
-        guard let ctx = task.modelContext else { return [] }
+        guard let ctx = task.modelContext else {
+            return task.workspace?.localTools.filter { $0.isGlobal } ?? []
+        }
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
-        return (try? ctx.fetch(descriptor)) ?? []
+        do {
+            return try ctx.fetch(descriptor)
+        } catch {
+            AppLogger.error(
+                "Failed to load global local tools for capability resolution: \(error.localizedDescription)",
+                category: "Capabilities",
+                taskID: task.id
+            )
+            return task.workspace?.localTools.filter { $0.isGlobal } ?? []
+        }
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
@@ -375,8 +413,9 @@ struct TaskCapabilityResolver {
 
     private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
         let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
-        let connectors = allConnectors
-        var tools = allLocalTools
+        let inventory = resourceInventory
+        let connectors = inventory.connectors
+        var tools = inventory.localTools
         let enabledPackageIDs = enabledCapabilityPackages().map(\.id)
         if Self.shouldExposeBrowserBridge(
             for: task,
@@ -386,7 +425,7 @@ struct TaskCapabilityResolver {
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
         }
-        let skills = allBehaviorSkills(connectors: connectors)
+        let skills = inventory.behaviorSkills
 
         let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(
             task: task,
@@ -464,14 +503,15 @@ struct TaskCapabilityResolver {
         switch scope {
         case .fullInventory:
             let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
-            let connectors = allConnectors
-            var tools = allLocalTools
+            let inventory = resourceInventory
+            let connectors = inventory.connectors
+            var tools = inventory.localTools
             if Self.shouldExposeBrowserBridge(for: task, contextText: "", shelfAvailabilityPolicy: shelfAvailabilityPolicy),
                !tools.contains(where: { $0.command == "astra-browser" }) {
                 tools.append(Self.browserBridgeTool())
             }
             return makePromptScope(
-                skills: allBehaviorSkills(connectors: connectors),
+                skills: inventory.behaviorSkills,
                 connectors: connectors,
                 localTools: tools,
                 prunedForBrowserTask: false,

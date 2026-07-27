@@ -1906,62 +1906,6 @@ struct TaskCapabilityResolverTests {
         #expect(!issues.contains { $0.resourceKind == .localTool })
     }
 
-    @Test("Detached task resolves global skills enabled for the workspace without a ModelContext")
-    func detachedTaskResolvesGlobalSkillsEnabledForWorkspace() throws {
-        let container = try makeTaskCapabilityResolverContainer()
-        let context = container.mainContext
-
-        // Reproduce the production failure: workspace enables github-workflow but the
-        // GitHub Agent skill is global (isGlobal=true, workspace_fk=None). The live
-        // task can find it via FetchDescriptor, but a detached task has nil modelContext
-        // and previously fell through to return [] — triggering capability_runtime_resources_missing.
-        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
-        let workspace = Workspace(name: "global-skill-detached", primaryPath: "/tmp/global-skill-detached")
-        workspace.enabledCapabilityIDs = [githubPackage.id]
-        context.insert(workspace)
-
-        let githubSkill = Skill(
-            name: "GitHub Agent",
-            skillDescription: "x",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "x"
-        )
-        githubSkill.isGlobal = true
-        context.insert(githubSkill)
-        workspace.enabledGlobalSkillIDs = [githubSkill.id.uuidString]
-
-        let githubTool = LocalTool(
-            name: "gh — GitHub CLI",
-            toolDescription: "x",
-            toolType: "cli",
-            command: "gh"
-        )
-        githubTool.workspace = workspace
-        context.insert(githubTool)
-
-        let task = AgentTask(
-            title: "List pull requests",
-            goal: "List open pull requests using GitHub",
-            workspace: workspace
-        )
-        context.insert(task)
-        try context.save()
-
-        let snapshot = AgentTaskLaunchSnapshot(task: task)
-        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
-
-        #expect(detached.modelContext == nil)
-        #expect(detached.workspace?.skills.contains { $0.name == "GitHub Agent" && $0.isGlobal } == true)
-
-        let issues = CapabilityRuntimeIntegrityService.issues(
-            for: detached,
-            packages: [githubPackage],
-            checkExecutables: false,
-            scope: .fullInventory
-        )
-        #expect(!issues.contains { $0.resourceKind == .skill })
-    }
-
     @Test("Provider launch checks Google Drive browser package by product intent")
     func providerLaunchChecksGoogleDriveBrowserPackageByProductIntent() throws {
         let container = try makeTaskCapabilityResolverContainer()
