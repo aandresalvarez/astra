@@ -791,7 +791,7 @@ private enum PolicyLocalToolGrants {
         // control chars/parens break the grant format; colon is the shell(exe:*) delimiter;
         // glob metacharacters (*?[]) would make the pattern match more than intended.
         guard !executable.isEmpty,
-              executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r):*?[]")) == nil else {
+              executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r():*?[]")) == nil else {
             return nil
         }
         return executable

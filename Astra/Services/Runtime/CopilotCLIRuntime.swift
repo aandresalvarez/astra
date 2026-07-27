@@ -590,7 +590,7 @@ enum CopilotCLIRuntime {
         // control chars/parens break the grant format; colon is the shell(exe:*) delimiter;
         // glob metacharacters (*?[]) would make the pattern match more than intended.
         guard !executable.isEmpty else { return nil }
-        guard executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r):*?[]")) == nil else { return nil }
+        guard executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r():*?[]")) == nil else { return nil }
         return executable
     }
 
