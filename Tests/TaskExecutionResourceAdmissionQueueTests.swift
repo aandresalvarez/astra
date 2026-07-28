@@ -61,4 +61,50 @@ struct TaskExecutionResourceAdmissionQueueTests {
         #expect(queue.worker(for: task) == nil)
         #expect(queue.activeResourceLocks.isEmpty)
     }
+
+    @Test("Sandbox Off upgrades a legacy shared request to an exclusive lease")
+    func sandboxOffSerializesLegacySharedRequest() throws {
+        let workspace = Workspace(name: "Legacy shared", primaryPath: "/tmp/astra-legacy-shared")
+        let task = AgentTask(title: "Explain", goal: "Summarize the task.", workspace: workspace)
+        let request = TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [
+                TaskExecutionResourceClaim(
+                    kind: .workspace,
+                    key: workspace.primaryPath,
+                    access: .shared
+                )
+            ]
+        )
+
+        let sandboxed = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: request,
+            task: task,
+            runMode: "test",
+            sandboxEnforcement: .bestEffort
+        )
+        let unconfined = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: request,
+            task: task,
+            runMode: "test",
+            sandboxEnforcement: .off
+        )
+
+        #expect(sandboxed.first?.accessMode == .readOnly)
+        #expect(unconfined.first?.accessMode == .write)
+        #expect(TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: unconfined) == .exclusive)
+
+        let queue = TaskQueue(
+            poolSize: 1,
+            sandboxEnforcementProvider: { .off }
+        )
+        #expect(queue.resourceAccess(for: request, task: task) == .write)
+        #expect(queue.resourceLockClaims(
+            for: request,
+            task: task,
+            runMode: "test"
+        ).first?.accessMode == .write)
+    }
 }

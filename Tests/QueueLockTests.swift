@@ -503,9 +503,7 @@ struct QueueLockTests {
         )
 
         let queue = TaskQueue(poolSize: 1)
-        let processing = Task { @MainActor in
-            await queue.processQueue(modelContext: context)
-        }
+        #expect(queue.processQueueIfIdle(modelContext: context))
         // Bounded: an admission regression must fail this test, not hang CI
         // forever on an unsatisfiable condition.
         let blockedDeadline = ContinuousClock.now.advanced(by: .seconds(10))
@@ -521,9 +519,8 @@ struct QueueLockTests {
         #expect(request.blockingTaskID == source.id)
         #expect(request.blockerSummary?.contains("shared Git worktree") == true)
         #expect(request.terminalReason == nil)
-
         await queue.cancelAllAndWait()
-        await processing.value
+        await queue.cancelAllAndWait()
     }
 }
 

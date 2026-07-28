@@ -1135,6 +1135,9 @@ enum AgentPolicyManifestService {
         let baseSandboxResolution = ExecutionSandboxSettings.resolve(
             permissionPolicy: effectiveSandboxPolicy,
             defaults: sandboxSettingsDefaults
+        ).applyingAdmissionSnapshot(
+            executionPolicy.sandboxEnforcementSnapshot,
+            permissionPolicy: effectiveSandboxPolicy
         )
         let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
             contract: launchResourcePlan?.readOnlyResourceContract
@@ -1143,6 +1146,9 @@ enum AgentPolicyManifestService {
         )
         let sandboxResolution = readOnlyInputBoundary.enforcingHostBoundary(
             in: baseSandboxResolution,
+            runtime: runtime
+        ).enforcingSharedWorkspaceBoundary(
+            required: launchResourcePlan?.requiresSharedWorkspaceBoundary == true,
             runtime: runtime
         )
         let sandboxSettings = sandboxResolution.effectiveSettings

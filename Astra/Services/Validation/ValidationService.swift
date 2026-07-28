@@ -31,6 +31,19 @@ protocol ValidationCommandRunning: Sendable {
 }
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
+    private let sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?
+    private let sandboxSettingsProvider: @Sendable () -> ExecutionSandboxSettings
+
+    init(
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        sandboxSettingsProvider: @escaping @Sendable () -> ExecutionSandboxSettings = {
+            ExecutionSandboxSettings.current(permissionPolicy: .restricted)
+        }
+    ) {
+        self.sandboxEnforcementSnapshot = sandboxEnforcementSnapshot
+        self.sandboxSettingsProvider = sandboxSettingsProvider
+    }
+
     /// `swift build`/`swift test` cannot be reliably wrapped in an OUTER
     /// Seatbelt profile: SwiftPM runs a separate `swift-package` helper that
     /// applies its OWN hardcoded internal Seatbelt profile, and nested
@@ -210,11 +223,14 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
             return await runShell(executablePath: "/bin/zsh", arguments: ["-c", command], environment: environment, workingDirectory: workingDirectory)
         }
 
-        // `.restricted` here only satisfies `current(...)`'s signature — a
-        // validation command has no analog to the autonomous-escalates-to-strict
-        // case, and `decideForCommand` floors enforcement on its own regardless
-        // of what's passed.
-        let settings = ExecutionSandboxSettings.current(permissionPolicy: .restricted)
+        // Queue admission owns this decision for the whole run. Applying its
+        // snapshot prevents a concurrent Settings change from introducing or
+        // removing confinement between provider execution and validation.
+        let settings = sandboxSettingsProvider()
+            .applyingAdmissionSnapshot(
+                sandboxEnforcementSnapshot,
+                permissionPolicy: .restricted
+            )
         let decision = ExecutionSandbox.decideForCommand(
             executablePath: "/bin/zsh",
             arguments: ["-c", command],
@@ -350,7 +366,7 @@ enum ValidationService {
         guard !command.isEmpty else {
             return .error("No test command configured")
         }
-        let workingDirectory = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let workingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workingDirectory) else {
             AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id, fields: [
                 "reason": "command_not_allowed",
@@ -391,7 +407,8 @@ enum ValidationService {
         task: AgentTask,
         claudePath: String,
         model: String = "claude-haiku-4-5-20251001",
-        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil,
+        workspacePath: String? = nil
     ) async -> ValidationResult {
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         guard let latestRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first else {
@@ -430,7 +447,7 @@ enum ValidationService {
 
         let result = await AgentUtilityRuntimeRunner.runPrompt(
             prompt,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            workspacePath: workspacePath ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
             configuration: utilityRuntime
         )
         guard result.exitCode == 0 else {
@@ -459,6 +476,7 @@ enum ValidationService {
         plan: TaskPlanPayload,
         run: TaskRun?,
         modelContext: ModelContext,
+        workspacePath: String? = nil,
         verifierRuntime: AgentUtilityRuntimeConfiguration? = nil,
         commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
@@ -494,6 +512,7 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
+                workspacePath: workspacePath ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
                 verifierRuntime: verifierRuntime,
                 commandRunner: commandRunner
             )
@@ -687,21 +706,38 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
+        workspacePath: String,
         verifierRuntime: AgentUtilityRuntimeConfiguration?,
         commandRunner: ValidationCommandRunning
     ) async -> ValidationAssertionExecutionResult {
         let payload: TaskValidationAssertionEventPayload
         switch assertion.method {
         case .command:
-            payload = await evaluateCommand(assertion: assertion, planID: plan.planID, task: task, commandRunner: commandRunner)
+            payload = await evaluateCommand(
+                assertion: assertion,
+                planID: plan.planID,
+                task: task,
+                workspacePath: workspacePath,
+                commandRunner: commandRunner
+            )
         case .artifact:
-            payload = evaluateArtifact(assertion: assertion, planID: plan.planID, task: task)
+            payload = evaluateArtifact(
+                assertion: assertion,
+                planID: plan.planID,
+                task: task,
+                workspacePath: workspacePath
+            )
         case .manual:
             payload = evaluateManual(assertion: assertion, planID: plan.planID, task: task)
         case .textEvidence:
             payload = evaluateTextEvidence(assertion: assertion, planID: plan.planID, task: task, run: run)
         case .textContains:
-            payload = evaluateTextContains(assertion: assertion, planID: plan.planID, task: task)
+            payload = evaluateTextContains(
+                assertion: assertion,
+                planID: plan.planID,
+                task: task,
+                workspacePath: workspacePath
+            )
         case .verifier:
             payload = await evaluateVerifier(
                 assertion: assertion,
@@ -709,6 +745,7 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
+                workspacePath: workspacePath,
                 verifierRuntime: verifierRuntime
             )
         case .browserBehavior:
@@ -717,7 +754,8 @@ enum ValidationService {
                 planID: plan.planID,
                 task: task,
                 run: run,
-                modelContext: modelContext
+                modelContext: modelContext,
+                workspacePath: workspacePath
             )
         }
         return ValidationAssertionExecutionResult(payload: payload)
@@ -727,6 +765,7 @@ enum ValidationService {
         assertion: TaskValidationAssertion,
         planID: UUID,
         task: AgentTask,
+        workspacePath: String,
         commandRunner: ValidationCommandRunning
     ) async -> TaskValidationAssertionEventPayload {
         guard let command = assertion.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
@@ -739,8 +778,7 @@ enum ValidationService {
                 reason: "missing_command"
             )
         }
-        let workingDirectory = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
-        guard ValidationCommandPolicy.isAssertionCommandAllowed(command, workspacePath: workingDirectory) else {
+        guard ValidationCommandPolicy.isAssertionCommandAllowed(command, workspacePath: workspacePath) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -753,7 +791,7 @@ enum ValidationService {
 
         let result = await commandRunner.run(
             command: command,
-            workingDirectory: workingDirectory,
+            workingDirectory: workspacePath,
             environment: validationCommandEnvironment(),
             additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         )
@@ -780,7 +818,8 @@ enum ValidationService {
     private static func evaluateArtifact(
         assertion: TaskValidationAssertion,
         planID: UUID,
-        task: AgentTask
+        task: AgentTask,
+        workspacePath: String
     ) -> TaskValidationAssertionEventPayload {
         guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
             return assertionPayload(
@@ -806,6 +845,7 @@ enum ValidationService {
         let scopedCandidate = scopedExistingArtifactPath(
             requestedPath,
             task: task,
+            workspacePath: workspacePath,
             allowDirectory: artifactAssertionAllowsDirectory(assertion)
         )
         let existingPath = scopedCandidate.path
@@ -917,7 +957,8 @@ enum ValidationService {
     private static func evaluateTextContains(
         assertion: TaskValidationAssertion,
         planID: UUID,
-        task: AgentTask
+        task: AgentTask,
+        workspacePath: String
     ) -> TaskValidationAssertionEventPayload {
         guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
             return assertionPayload(
@@ -952,7 +993,12 @@ enum ValidationService {
             )
         }
 
-        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task, allowDirectory: false)
+        let scopedCandidate = scopedExistingArtifactPath(
+            requestedPath,
+            task: task,
+            workspacePath: workspacePath,
+            allowDirectory: false
+        )
         guard let existingPath = scopedCandidate.path else {
             let reason: String
             let summary: String
@@ -998,7 +1044,11 @@ enum ValidationService {
             )
         }
 
-        guard let content = readScopedArtifactText(at: existingPath, task: task) else {
+        guard let content = readScopedArtifactText(
+            at: existingPath,
+            task: task,
+            workspacePath: workspacePath
+        ) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -1030,7 +1080,8 @@ enum ValidationService {
         planID: UUID,
         task: AgentTask,
         run: TaskRun?,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        workspacePath: String
     ) -> TaskValidationAssertionEventPayload {
         recordBehaviorEvent(
             type: TaskValidationBehaviorEventTypes.started,
@@ -1090,7 +1141,12 @@ enum ValidationService {
             )
         }
 
-        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task, allowDirectory: false)
+        let scopedCandidate = scopedExistingArtifactPath(
+            requestedPath,
+            task: task,
+            workspacePath: workspacePath,
+            allowDirectory: false
+        )
         guard let existingPath = scopedCandidate.path else {
             let reason: String
             let summary: String
@@ -1126,7 +1182,11 @@ enum ValidationService {
             )
         }
 
-        let content = readScopedArtifactText(at: existingPath, task: task) ?? ""
+        let content = readScopedArtifactText(
+            at: existingPath,
+            task: task,
+            workspacePath: workspacePath
+        ) ?? ""
         let renderedSummary = renderedTextSummary(from: content)
         let expected = firstNonEmpty(assertion.evidenceQuery, assertion.description)
         let matched = expected.isEmpty || renderedSummary.localizedCaseInsensitiveContains(expected)
@@ -1137,7 +1197,8 @@ enum ValidationService {
             expected: expected,
             matched: matched,
             renderedSummary: renderedSummary,
-            task: task
+            task: task,
+            workspacePath: workspacePath
         )
         if let evidencePath {
             recordBehaviorEvent(
@@ -1189,6 +1250,7 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
+        workspacePath: String,
         verifierRuntime: AgentUtilityRuntimeConfiguration?
     ) async -> TaskValidationAssertionEventPayload {
         let configuration = verifierRuntime ?? AgentUtilityRuntimeConfiguration(
@@ -1222,7 +1284,7 @@ enum ValidationService {
         let prompt = verifierPrompt(assertion: assertion, plan: plan, task: task, run: run)
         let result = await AgentUtilityRuntimeRunner.runPrompt(
             prompt,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            workspacePath: workspacePath,
             configuration: configuration,
             toolMode: .readOnly
         )
@@ -1497,10 +1559,11 @@ enum ValidationService {
         expected: String,
         matched: Bool,
         renderedSummary: String,
-        task: AgentTask
+        task: AgentTask,
+        workspacePath: String
     ) -> String? {
         let base = TaskWorkspaceAccess(task: task).taskFolder.isEmpty
-            ? TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+            ? workspacePath
             : TaskWorkspaceAccess(task: task).taskFolder
         guard !base.isEmpty else { return nil }
         let directory = (base as NSString).appendingPathComponent("validation-evidence")
@@ -1540,8 +1603,11 @@ enum ValidationService {
         return nil
     }
 
-    private static func artifactCandidatePaths(_ path: String, task: AgentTask) -> [String] {
-        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+    private static func artifactCandidatePaths(
+        _ path: String,
+        task: AgentTask,
+        workspacePath: String
+    ) -> [String] {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         var candidates: [String] = []
         if !taskFolder.isEmpty {
@@ -1556,15 +1622,20 @@ enum ValidationService {
     private static func scopedExistingArtifactPath(
         _ path: String,
         task: AgentTask,
+        workspacePath: String,
         allowDirectory: Bool
     ) -> (path: String?, rejectedOutOfScope: Bool, rejectedDirectory: Bool, checked: [String]) {
-        let candidates = artifactCandidatePaths(path, task: task)
+        let candidates = artifactCandidatePaths(path, task: task, workspacePath: workspacePath)
         var rejectedOutOfScope = false
         var rejectedDirectory = false
         for candidate in candidates {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory) else { continue }
-            guard resolvedArtifactCandidateIsInScope(candidate, task: task) else {
+            guard resolvedArtifactCandidateIsInScope(
+                candidate,
+                task: task,
+                workspacePath: workspacePath
+            ) else {
                 rejectedOutOfScope = true
                 continue
             }
@@ -1577,18 +1648,30 @@ enum ValidationService {
         return (nil, rejectedOutOfScope, rejectedDirectory, candidates)
     }
 
-    private static func resolvedArtifactCandidateIsInScope(_ candidate: String, task: AgentTask) -> Bool {
+    private static func resolvedArtifactCandidateIsInScope(
+        _ candidate: String,
+        task: AgentTask,
+        workspacePath: String
+    ) -> Bool {
         let resolvedCandidate = URL(fileURLWithPath: candidate)
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
-        return validationArtifactScopeRoots(task: task).contains { root in
+        return validationArtifactScopeRoots(task: task, workspacePath: workspacePath).contains { root in
             resolvedCandidate == root || resolvedCandidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
     }
 
-    private static func readScopedArtifactText(at path: String, task: AgentTask) -> String? {
-        guard let root = validationArtifactScopeRoot(containing: path, task: task) else {
+    private static func readScopedArtifactText(
+        at path: String,
+        task: AgentTask,
+        workspacePath: String
+    ) -> String? {
+        guard let root = validationArtifactScopeRoot(
+            containing: path,
+            task: task,
+            workspacePath: workspacePath
+        ) else {
             return nil
         }
         return try? HostFileAccessBroker().readString(
@@ -1598,19 +1681,26 @@ enum ValidationService {
         )
     }
 
-    private static func validationArtifactScopeRoot(containing path: String, task: AgentTask) -> String? {
+    private static func validationArtifactScopeRoot(
+        containing path: String,
+        task: AgentTask,
+        workspacePath: String
+    ) -> String? {
         let resolvedPath = URL(fileURLWithPath: path)
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
-        return validationArtifactScopeRoots(task: task).first { root in
+        return validationArtifactScopeRoots(task: task, workspacePath: workspacePath).first { root in
             resolvedPath == root || resolvedPath.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
     }
 
-    private static func validationArtifactScopeRoots(task: AgentTask) -> [String] {
+    private static func validationArtifactScopeRoots(
+        task: AgentTask,
+        workspacePath: String
+    ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        let roots = [access.taskFolder, access.effectiveWorkspacePath]
+        let roots = [access.taskFolder, workspacePath]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .map {

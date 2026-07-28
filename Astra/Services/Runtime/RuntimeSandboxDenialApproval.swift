@@ -31,7 +31,7 @@ enum RuntimeSandboxDenialApproval {
         if approvalWasApplied {
             return .terminal(
                 reason: "os_sandbox_denied_after_approval",
-                message: "ASTRA's sandbox still denied the approved path after the one-run grant was applied. The run was stopped instead of asking again."
+                message: "ASTRA's execution sandbox still denied the approved path after the one-run grant was applied. The run was stopped instead of asking again."
             )
         }
         let pathDecision = RuntimeSandboxPathGrantPolicy.evaluate(
@@ -47,7 +47,7 @@ enum RuntimeSandboxDenialApproval {
             }
             return .terminal(
                 reason: denial.stopReason,
-                message: "ASTRA's macOS sandbox denied \(toolName) \(denial.operation.rawValue) access to \(denial.path). This path cannot be approved interactively because it is outside ASTRA's bounded read-approval policy (\(reason)).\(requestText) Detail: \(denial.detail)"
+                message: "ASTRA's execution sandbox denied \(toolName) \(denial.operation.rawValue) access to \(denial.path). This path cannot be approved interactively because it is outside ASTRA's bounded read-approval policy (\(reason)).\(requestText) Detail: \(denial.detail)"
             )
         }
         let request = PermissionRequest.sandboxPath(path: path, access: access, toolName: toolName)

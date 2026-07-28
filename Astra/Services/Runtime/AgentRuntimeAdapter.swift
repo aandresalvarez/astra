@@ -776,6 +776,10 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
     /// enforcement surface has been applied and verified.
     var readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
+    /// Evidence from the exact Seatbelt profile applied to this launch. The
+    /// monitor uses it to distinguish a policy-denied path from an unrelated
+    /// host filesystem EPERM.
+    var executionSandboxBoundaryReceipt: ExecutionSandboxBoundaryReceipt?
 
     init(
         runtime: AgentRuntimeID,
@@ -814,6 +818,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.pathMapper = pathMapper
         self.executionEnvironment = executionEnvironment
         self.readOnlyBoundaryReceipt = nil
+        self.executionSandboxBoundaryReceipt = nil
     }
 
 }

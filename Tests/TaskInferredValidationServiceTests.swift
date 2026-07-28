@@ -84,6 +84,42 @@ struct TaskInferredValidationServiceTests {
         #expect(mission.statusTitle == "Verified")
     }
 
+    @Test("inferred validation discovers artifacts in the admitted execution root")
+    func inferredValidationUsesExecutionRootOverride() async throws {
+        let fixture = try makeFixture()
+        let executionRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-inferred-execution-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: fixture.root)
+            try? FileManager.default.removeItem(at: executionRoot)
+        }
+        try FileManager.default.createDirectory(at: executionRoot, withIntermediateDirectories: true)
+        let artifact = executionRoot.appendingPathComponent("index.html")
+        let content = "<html><body><h1>Masterball Solver</h1></body></html>"
+        try content.write(to: artifact, atomically: true, encoding: .utf8)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: artifact.path,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: content,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+
+        let result = await TaskInferredValidationService.run(
+            task: fixture.task,
+            modelContext: fixture.context,
+            workspacePath: executionRoot.path
+        )
+
+        #expect(result.didRun)
+        #expect(result.canComplete)
+        #expect(fixture.task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionPassed
+                && $0.payload.contains("index.html")
+        })
+    }
+
     @Test("inferred validation is unavailable without artifacts")
     func inferredValidationUnavailableWithoutArtifacts() throws {
         let fixture = try makeFixture()

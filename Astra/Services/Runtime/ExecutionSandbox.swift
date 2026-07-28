@@ -195,6 +195,37 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         enforcement != .off && wrappedRuntimes.contains(runtime)
     }
 
+    func applyingAdmissionSnapshot(
+        _ snapshot: ExecutionSandboxEnforcement?,
+        permissionPolicy: PermissionPolicy
+    ) -> ExecutionSandboxSettings {
+        guard let snapshot, snapshot != enforcement else { return self }
+        var runtimes = wrappedRuntimes
+        if permissionPolicy == .autonomous, snapshot != .off {
+            runtimes.formUnion(Self.autonomousForcedWrapRuntimes)
+        }
+        return ExecutionSandboxSettings(
+            enforcement: snapshot,
+            wrappedRuntimes: runtimes,
+            allowNetwork: snapshot == .off ? Self.defaultAllowNetwork : allowNetwork
+        )
+    }
+
+    func enforcingSharedWorkspaceBoundary(
+        required: Bool,
+        runtime: AgentRuntimeID
+    ) -> ExecutionSandboxSettings {
+        guard required, enforcement != .off else { return self }
+        var runtimes = wrappedRuntimes
+        runtimes.insert(runtime)
+        return ExecutionSandboxSettings(
+            enforcement: .strict,
+            wrappedRuntimes: runtimes,
+            allowNetwork: allowNetwork,
+            readScope: readScope
+        )
+    }
+
     /// Builds settings from persisted defaults.
     ///
     /// - Enforcement defaults to best-effort and remains independent from the
@@ -236,14 +267,9 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     ) -> ExecutionSandboxResolution {
         let enforcement = storedEnforcement
         // The "Allow Network In Sandbox" toggle is disabled (frozen at its last
-        // value) in Settings whenever the STORED enforcement is Off — capture
-        // that before any escalation below mutates `enforcement`, so a stale
-        // `false` left over from an earlier, unrelated Offline session can't
-        // silently deny network to a run that ends up escalated (autonomous
-        // here, or the validation floor's own Off->bestEffort escalation in
-        // `decideForCommand`, which uses this function's resolved `allowNetwork`
-        // as-is). With the toggle frozen, the user would have no reachable
-        // control to fix a stale `false` in that state.
+        // value) in Settings whenever the STORED enforcement is Off. A stale
+        // `false` left over from an earlier Offline session must not affect a
+        // future run after enforcement is enabled again.
         let storedEnforcementWasOff = storedEnforcement == .off
         let resolutionReason: ExecutionSandboxResolutionReason? = nil
 
@@ -300,6 +326,37 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     }
 }
 
+extension ExecutionSandboxResolution {
+    func applyingAdmissionSnapshot(
+        _ snapshot: ExecutionSandboxEnforcement?,
+        permissionPolicy: PermissionPolicy
+    ) -> ExecutionSandboxResolution {
+        guard let snapshot else { return self }
+        return ExecutionSandboxResolution(
+            storedEnforcement: snapshot,
+            effectiveSettings: effectiveSettings.applyingAdmissionSnapshot(
+                snapshot,
+                permissionPolicy: permissionPolicy
+            ),
+            reason: snapshot == storedEnforcement ? reason : nil
+        )
+    }
+
+    func enforcingSharedWorkspaceBoundary(
+        required: Bool,
+        runtime: AgentRuntimeID
+    ) -> ExecutionSandboxResolution {
+        ExecutionSandboxResolution(
+            storedEnforcement: storedEnforcement,
+            effectiveSettings: effectiveSettings.enforcingSharedWorkspaceBoundary(
+                required: required,
+                runtime: runtime
+            ),
+            reason: reason
+        )
+    }
+}
+
 /// Outcome of a sandbox-wrapping decision. The caller (the process runner) owns
 /// the side effects — auditing and turning `failClosed` into a process result —
 /// while this type stays pure and testable.
@@ -317,6 +374,60 @@ enum ExecutionSandboxDecision: Equatable {
     /// Sandbox wanted but could not be applied under strict enforcement. The
     /// run must not proceed unconfined.
     case failClosed(reason: String)
+}
+
+struct ExecutionSandboxBoundaryReceipt: Equatable, Sendable {
+    let writableRoots: [String]
+    let writeDeniedRoots: [String]
+    let readScope: ExecutionSandboxReadScope
+    let readableRoots: [String]
+    let readDeniedRoots: [String]
+    let readAllowedRoots: [String]
+
+    init(
+        writableRoots: [String],
+        writeDeniedRoots: [String],
+        readScope: ExecutionSandboxReadScope = .open,
+        readableRoots: [String] = [],
+        readDeniedRoots: [String] = [],
+        readAllowedRoots: [String] = []
+    ) {
+        self.writableRoots = writableRoots
+        self.writeDeniedRoots = writeDeniedRoots
+        self.readScope = readScope
+        self.readableRoots = readableRoots
+        self.readDeniedRoots = readDeniedRoots
+        self.readAllowedRoots = readAllowedRoots
+    }
+
+    func explains(_ denial: RuntimeSandboxFileDenial) -> Bool {
+        guard let path = ExecutionSandbox.canonicalize(denial.path) else { return false }
+        switch denial.operation {
+        case .read:
+            if isWithin(path, roots: readDeniedRoots),
+               !isWithin(path, roots: readAllowedRoots) {
+                return true
+            }
+            return readScope == .enforce
+                && !isWithin(path, roots: readableRoots + readAllowedRoots)
+        case .write:
+            if writeDeniedRoots.contains(where: { contains(path, root: $0) }) {
+                return true
+            }
+            return !writableRoots.contains(where: { contains(path, root: $0) })
+        case .access:
+            return false
+        }
+    }
+
+    private func isWithin(_ path: String, roots: [String]) -> Bool {
+        roots.contains { contains(path, root: $0) }
+    }
+
+    private func contains(_ path: String, root: String) -> Bool {
+        guard let canonicalRoot = ExecutionSandbox.canonicalize(root) else { return false }
+        return path == canonicalRoot || path.hasPrefix(canonicalRoot + "/")
+    }
 }
 
 /// Outcome of `ExecutionSandbox.decideForCommand`, the non-agent counterpart to
@@ -602,11 +713,19 @@ enum ExecutionSandbox: Sendable {
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
-        let wrapped = rewrite(
+        var wrapped = rewrite(
             plan,
             executablePath: sandboxExecPath,
             arguments: arguments,
             extraEnvironment: developerDirectoryEnvironment(plan: plan, fileManager: fileManager)
+        )
+        wrapped.executionSandboxBoundaryReceipt = ExecutionSandboxBoundaryReceipt(
+            writableRoots: roots + ["/dev"],
+            writeDeniedRoots: protectedWriteDenyRoots,
+            readScope: settings.readScope,
+            readableRoots: readableRoots + ["/dev"],
+            readDeniedRoots: protectedReadRoots,
+            readAllowedRoots: explicitProtectedReadAllowRoots
         )
         return .applied(plan: wrapped, writableRoots: roots)
     }
@@ -620,11 +739,9 @@ enum ExecutionSandbox: Sendable {
     /// for agent runtimes, without requiring an `AgentRuntimeID` or a full
     /// `AgentRuntimeProcessLaunchPlan`.
     ///
-    /// Unlike `decide(...)`, this always applies at least a best-effort floor:
-    /// `enforcement == .off` is escalated to `.bestEffort` before anything else
-    /// runs, so a user disabling the *agent* sandbox does not also leave an
-    /// arbitrary, possibly agent-authored test/build harness completely
-    /// unconfined (the same principle as the autonomous-always-strict floor).
+    /// The persisted execution-sandbox setting remains authoritative here just
+    /// as it does for provider launches. When enforcement is Off, validation
+    /// runs unchanged rather than silently recreating a Seatbelt boundary.
     /// Read scope is always write-only (`.open` — broad reads, scoped writes):
     /// restricting reads for arbitrary project tooling is a much larger
     /// breakage surface than restricting writes, and the privacy-root deny
@@ -641,8 +758,10 @@ enum ExecutionSandbox: Sendable {
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxCommandDecision {
-        // Off is not a valid outcome for this floor — see doc comment above.
-        let enforcement = settings.enforcement == .off ? .bestEffort : settings.enforcement
+        guard settings.enforcement != .off else {
+            return .skipped(reason: "sandbox_disabled")
+        }
+        let enforcement = settings.enforcement
 
         let unavailable: (String) -> ExecutionSandboxCommandDecision = { reason in
             enforcement == .strict ? .failClosed(reason: reason) : .fallback(reason: reason)

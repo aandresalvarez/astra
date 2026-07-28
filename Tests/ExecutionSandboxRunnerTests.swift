@@ -209,8 +209,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("Shared workspace forces a strict host boundary even when sandboxing is off")
-    func sharedWorkspaceForcesStrictBoundary() throws {
+    @Test("Shared workspace cannot override an explicitly disabled sandbox")
+    func sharedWorkspaceHonorsSandboxOff() throws {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
         let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-runner-\(UUID().uuidString)")
@@ -244,11 +244,147 @@ struct ExecutionSandboxRunnerTests {
                 )
             )
             guard case .plan(let plan) = outcome else {
-                Issue.record("Expected shared workspace launch to apply a strict sandbox")
+                Issue.record("Expected sandbox-off shared workspace launch to proceed")
+                return
+            }
+            #expect(plan.executablePath == "/bin/sh")
+            #expect(plan.commandPlannedFields["astra_sandbox_applied"] != "true")
+        }
+    }
+
+    @Test("Shared workspace launch uses the queue admission sandbox snapshot")
+    func sharedWorkspaceUsesAdmissionSandboxSnapshot() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-snapshot-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        )
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    executionPolicy: AgentRuntimeExecutionPolicy(sandboxEnforcementSnapshot: .off),
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admission-time Off setting to remain authoritative")
+                return
+            }
+            #expect(plan.executablePath == "/bin/sh")
+            #expect(plan.commandPlannedFields["astra_sandbox_applied"] != "true")
+        }
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    executionPolicy: AgentRuntimeExecutionPolicy(sandboxEnforcementSnapshot: .bestEffort),
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admitted shared lease to retain its execution boundary")
                 return
             }
             #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            #expect(plan.arguments.contains("/bin/sh"))
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
+        }
+    }
+
+    @Test("Enabled admission snapshot retains autonomous native-provider wrapping")
+    func admissionSnapshotRetainsAutonomousForcedWrapping() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-autonomous-snapshot-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    permissionPolicy: .autonomous,
+                    executionPolicy: AgentRuntimeExecutionPolicy(
+                        sandboxEnforcementSnapshot: .bestEffort
+                    )
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admitted enabled sandbox to wrap autonomous Codex")
+                return
+            }
+            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
+        }
+    }
+
+    @Test("Shared workspace keeps a strict boundary when sandboxing is enabled")
+    func sharedWorkspaceForcesStrictBoundaryWhenEnabled() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-enabled-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        )
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected enabled shared workspace launch to apply a strict sandbox")
+                return
+            }
+            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
         }
     }
 

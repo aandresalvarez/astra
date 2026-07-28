@@ -11,7 +11,7 @@ enum RuntimeSandboxDenialAudit {
             "reason": reason,
             "source": reason == "read_only_resource_write_denied"
                 ? "read_only_resource_boundary"
-                : "os_sandbox_denial",
+                : "execution_sandbox_denial",
             "operation": denial.operation.rawValue,
             "path": denial.path,
             "tool": toolName,

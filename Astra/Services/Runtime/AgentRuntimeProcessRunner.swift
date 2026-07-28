@@ -399,25 +399,20 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
             return .blocked(block)
         }
-        // Use the run's effective permission policy (an execution-policy override
-        // wins over the base policy) so best-effort correctly escalates to strict
-        // for override-autonomous runs — matching how the preflight manifest
-        // resolves the sandbox tier.
+        // Launch and preflight evidence resolve the same admission-time setting,
+        // including autonomous runtimes that bypass their provider sandbox.
         let baseSettings = sandboxSettingsProvider(effectivePermissionPolicy)
-        var settings = readOnlyInputBoundary.enforcingHostBoundary(
+            .applyingAdmissionSnapshot(
+                context.executionPolicy.sandboxEnforcementSnapshot,
+                permissionPolicy: effectivePermissionPolicy
+            )
+        let settings = readOnlyInputBoundary.enforcingHostBoundary(
             in: baseSettings,
             runtime: plan.runtime
+        ).enforcingSharedWorkspaceBoundary(
+            required: launchResourcePlan.requiresSharedWorkspaceBoundary,
+            runtime: plan.runtime
         )
-        if launchResourcePlan.requiresSharedWorkspaceBoundary {
-            var wrappedRuntimes = settings.wrappedRuntimes
-            wrappedRuntimes.insert(plan.runtime)
-            settings = ExecutionSandboxSettings(
-                enforcement: .strict,
-                wrappedRuntimes: wrappedRuntimes,
-                allowNetwork: settings.allowNetwork,
-                readScope: settings.readScope
-            )
-        }
         if plan.executionEnvironment.providerRunsInsideContainer {
             AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
@@ -827,7 +822,11 @@ final class AgentRuntimeProcessRunner {
                     AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
                 },
                 liveApprovalsActive: plan.interactiveAsk != nil,
-                astraSandboxApplied: plan.commandPlannedFields["astra_sandbox_applied"] == "true",
+                sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext(
+                    boundaryApplied: plan.commandPlannedFields["astra_sandbox_applied"] == "true",
+                    workingDirectory: plan.currentDirectory,
+                    boundaryReceipt: plan.executionSandboxBoundaryReceipt
+                ),
                 readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt
             )
 

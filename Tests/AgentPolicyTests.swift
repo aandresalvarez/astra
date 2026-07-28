@@ -1465,49 +1465,6 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
-    @Test("Autonomous override honors a disabled sandbox")
-    func preflightManifestTierHonorsDisabledEnforcementUnderAutonomousOverride() throws {
-        // Provider permission mode and OS sandbox enforcement are independent.
-        // The execution-policy override may select Auto, but an explicit Off
-        // remains Off and the manifest must not claim an OS sandbox tier.
-        //
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
-        // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
-
-        let container = try makeAgentPolicyContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Override Tier", primaryPath: "/tmp/override-tier-workspace")
-        context.insert(workspace)
-        let task = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
-        let run = TaskRun(task: task)
-        context.insert(task)
-        context.insert(run)
-
-        let overridePolicy = AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: .autonomous,
-            allowedToolsOverride: nil,
-            permissionGrantsOverride: nil
-        )
-        let manifest = AgentPolicyManifestService.recordPreflightManifest(
-            task: task,
-            run: run,
-            runtime: .claudeCode,
-            model: "claude-sonnet-4-6",
-            workspacePath: workspace.primaryPath,
-            phase: "test",
-            permissionPolicy: .restricted,
-            executionPolicy: overridePolicy,
-            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
-            sandboxSettingsDefaults: defaults,
-            modelContext: context
-        )
-        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
-    }
-
     @Test("Preflight manifest sandbox tier follows task-selected Auto render")
     func preflightManifestTierFollowsTaskSelectedAutoRender() throws {
         // The worker may pass a restricted fallback policy while the task itself
@@ -2150,7 +2107,7 @@ struct RunPermissionManifestTests {
         context.insert(TaskEvent(
             task: task,
             type: "tool.result",
-            payload: "Exit code 128\nfatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted",
+            payload: "Exit code 128\nfatal: cannot read '/Users/alvaro1/.gitconfig': Operation not permitted",
             run: run
         ))
         try context.save()

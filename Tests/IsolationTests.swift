@@ -94,6 +94,46 @@ struct IsolationTests {
         #expect(!fm.fileExists(atPath: copyPath))
     }
 
+    @Test("Execution context cleanup owns a detached task and preserves durable execution state")
+    @MainActor
+    func executionContextCleanupPreservesDurableTask() throws {
+        let fm = FileManager.default
+        let workspaceRoot = fm.temporaryDirectory
+            .appendingPathComponent("astra-context-workspace-\(UUID().uuidString)", isDirectory: true)
+        let copyRoot = fm.temporaryDirectory
+            .appendingPathComponent("astra-context-copy-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: copyRoot, withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: workspaceRoot)
+            try? fm.removeItem(at: copyRoot)
+        }
+
+        let durableRoot = workspaceRoot.appendingPathComponent("durable-root", isDirectory: true).path
+        let task = AgentTask(
+            title: "Detached cleanup",
+            goal: "Validate cleanup ownership",
+            workspace: Workspace(name: "Detached cleanup", primaryPath: workspaceRoot.path),
+            isolationStrategy: .copy
+        )
+        task.executionRootPath = durableRoot
+
+        let context = AgentRuntimeExecutionContext.make(
+            launchTask: task,
+            executionPath: copyRoot.path,
+            shouldCleanupIsolation: true
+        )
+
+        #expect(context.task !== task)
+        #expect(context.task.executionRootPath == copyRoot.path)
+        #expect(task.executionRootPath == durableRoot)
+
+        context.cleanup()
+
+        #expect(!fm.fileExists(atPath: copyRoot.path))
+        #expect(task.executionRootPath == durableRoot)
+    }
+
     @Test("Non-git directory detected")
     func notAGitRepo() {
         let dir = "/tmp/astra-nogit-\(UUID().uuidString.prefix(8))"

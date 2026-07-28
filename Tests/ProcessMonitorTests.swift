@@ -2180,7 +2180,7 @@ struct RuntimePolicyGuardTests {
             tokenBudget: Int.max,
             taskID: manifest.taskID,
             policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
-            astraSandboxApplied: true
+            sandboxDiagnosticContext: processMonitorAppliedSandboxContext
         )
 
         let toolUseShouldKill = monitor.processEvent(
@@ -2190,7 +2190,7 @@ struct RuntimePolicyGuardTests {
         let resultShouldKill = monitor.processEvent(
             .toolResult(
                 toolId: "t1",
-                content: "fatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted"
+                content: "fatal: cannot read '/Users/alvaro1/.gitconfig': Operation not permitted"
             ),
             process: nil
         )
@@ -2233,19 +2233,19 @@ struct RuntimePolicyGuardTests {
             .path
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
-            astraSandboxApplied: true
+            sandboxDiagnosticContext: processMonitorAppliedSandboxContext
         )
         let shouldKill = monitor.processEvent(
             .toolResult(
                 toolId: "t1",
-                content: "/bin/sh: \(privatePhoto): Operation not permitted"
+                content: "cat: \(privatePhoto): Operation not permitted"
             ),
             process: nil
         )
 
         #expect(shouldKill == true)
         #expect(monitor.policyApprovalRequired == false)
-        #expect(monitor.runtimeStopReason == "os_sandbox_file_access_denied")
+        #expect(monitor.runtimeStopReason == "os_sandbox_file_read_denied")
         #expect(monitor.runtimeStopMessage?.contains("sandbox_path_privacy_protected") == true)
     }
 
@@ -2261,12 +2261,12 @@ struct RuntimePolicyGuardTests {
             tokenBudget: Int.max,
             taskID: manifest.taskID,
             policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
-            astraSandboxApplied: true
+            sandboxDiagnosticContext: processMonitorAppliedSandboxContext
         )
         let shouldKill = monitor.processEvent(
             .toolResult(
                 toolId: "t1",
-                content: "/bin/sh: \(path): Operation not permitted"
+                content: "cat: \(path): Operation not permitted"
             ),
             process: nil
         )

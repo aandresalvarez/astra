@@ -35,6 +35,8 @@ struct RuntimeSandboxDenialDiagnosticsTests {
         }
         #expect(reason == "os_sandbox_file_write_denied")
         #expect(message.contains("sandbox_write_approval_not_supported"))
+        #expect(message.contains("ASTRA's execution sandbox"))
+        #expect(!message.contains("ASTRA's macOS sandbox"))
     }
 
     @Test("Shell-prefixed denial reports the denied executable")
@@ -53,6 +55,73 @@ struct RuntimeSandboxDenialDiagnosticsTests {
     func parserUsesNearestPrecedingPath() {
         let output = "/bin/sh: /Users/example/bin/tool: Operation not permitted; report /tmp/unrelated"
         #expect(RuntimeSandboxDenialDiagnostics.fileDenial(in: output)?.path == "/Users/example/bin/tool")
+    }
+
+    @Test("Relative Bash denial resolves against the launch directory")
+    func relativeBashDenialUsesLaunchDirectory() throws {
+        let workspace = "/Users/example/Code/starr-data-lake"
+        let output = "touch: dbt/omop_cdm54/macros/test_write.txt: Operation not permitted"
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: output,
+            currentDirectory: workspace,
+            operationContext: "touch dbt/omop_cdm54/macros/test_write.txt"
+        ))
+
+        #expect(denial.path == "\(workspace)/dbt/omop_cdm54/macros/test_write.txt")
+        #expect(denial.operation == .write)
+    }
+
+    @Test("A filename containing write does not determine the operation")
+    func filenameDoesNotDetermineOperation() throws {
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: "/bin/sh: /tmp/test_write.txt: Operation not permitted"
+        ))
+
+        #expect(denial.path == "/tmp/test_write.txt")
+        #expect(denial.operation == .access)
+    }
+
+    @Test("A write word in a command path argument does not imply a write")
+    func commandPathArgumentDoesNotDetermineOperation() throws {
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: "cat: /tmp/test_write.txt: Operation not permitted",
+            operationContext: "cat /tmp/test_write.txt"
+        ))
+
+        #expect(denial.path == "/tmp/test_write.txt")
+        #expect(denial.operation == .read)
+    }
+
+    @Test("A denied relative basename resolves against the launch directory")
+    func relativeBasenameUsesLaunchDirectory() throws {
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: "touch: test_write.txt: Operation not permitted",
+            currentDirectory: "/Users/example/Code/project",
+            operationContext: "touch test_write.txt"
+        ))
+
+        #expect(denial.path == "/Users/example/Code/project/test_write.txt")
+        #expect(denial.operation == .write)
+    }
+
+    @Test("An ambiguous copy source denial is not treated as a write")
+    func copySourceDenialRemainsAmbiguous() throws {
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: "cp: /outside/source.txt: Operation not permitted",
+            operationContext: "cp /outside/source.txt ./destination.txt"
+        ))
+
+        #expect(denial.operation == .access)
+    }
+
+    @Test("A compound command uses the failing diagnostic command")
+    func compoundCommandUsesFailingDiagnosticCommand() throws {
+        let denial = try #require(RuntimeSandboxDenialDiagnostics.fileDenial(
+            in: "cat: /outside/source.txt: Operation not permitted",
+            operationContext: "touch output.txt && cat /outside/source.txt"
+        ))
+
+        #expect(denial.operation == .read)
     }
 
     @Test("Ambiguous access denial does not request an ineffective read approval")

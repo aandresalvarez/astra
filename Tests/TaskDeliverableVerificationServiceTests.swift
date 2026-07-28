@@ -252,6 +252,38 @@ struct TaskDeliverableVerificationServiceTests {
         })
     }
 
+    @Test("verification discovers deliverables in the admitted execution root")
+    func verificationUsesExecutionRootOverride() async throws {
+        let fixture = try makeFixture(goal: "create a json file named config.json")
+        let executionRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-deliverable-execution-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: fixture.root)
+            try? FileManager.default.removeItem(at: executionRoot)
+        }
+        try FileManager.default.createDirectory(at: executionRoot, withIntermediateDirectories: true)
+        let config = executionRoot.appendingPathComponent("config.json")
+        try #"{"ready":true}"#.write(to: config, atomically: true, encoding: .utf8)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: config.path,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: #"{"ready":true}"#,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            workspacePath: executionRoot.path
+        )
+
+        #expect(result.canComplete)
+        #expect(result.status == "passed")
+        #expect(result.evidencePaths.contains(config.path))
+    }
+
     @Test("missing explicitly requested deliverable file hard blocks completion")
     func missingExplicitlyRequestedDeliverableFileHardBlocksCompletion() async throws {
         let fixture = try makeFixture(goal: """

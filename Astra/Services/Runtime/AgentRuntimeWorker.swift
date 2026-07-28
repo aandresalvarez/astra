@@ -75,6 +75,7 @@ final class AgentRuntimeWorker {
     }
 
     /// Execute a task with its configured agent runtime.
+    @discardableResult
     @MainActor
     func execute(
         task: AgentTask,
@@ -85,8 +86,9 @@ final class AgentRuntimeWorker {
         executionRequestID: UUID? = nil,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         deferTurnTerminalization: ((TaskTurnRequest?, TaskRun) -> Void)? = nil,
+        retainIsolationAfterExecution: Bool = false,
         onEvent: @escaping (ParsedEvent) -> Void
-    ) async {
+    ) async -> AgentRuntimeExecutionContext? {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
@@ -102,6 +104,7 @@ final class AgentRuntimeWorker {
         // comment below this call site promises cannot happen.
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
         TaskCapabilitySnapshotter.refreshForFreshRun(task: launchTask)
+        var executionContext: AgentRuntimeExecutionContext?
         await executeRuntimeSession(
             task: task,
             launchTask: launchTask,
@@ -115,8 +118,11 @@ final class AgentRuntimeWorker {
             auditPhase: "run",
             recordingMode: .initial,
             executionPolicy: executionPolicy,
-            deferTurnTerminalization: deferTurnTerminalization
+            deferTurnTerminalization: deferTurnTerminalization,
+            retainIsolationAfterExecution: retainIsolationAfterExecution,
+            onExecutionContext: { executionContext = $0 }
         )
+        return executionContext
     }
 
     @MainActor
@@ -185,13 +191,15 @@ final class AgentRuntimeWorker {
             task: launchTask,
             plan: currentPlan,
             step: approvedStep
-        ).withLaunchSnapshot(executionPolicy.launchSnapshot)
+        )
+        .withLaunchSnapshot(executionPolicy.launchSnapshot)
+        .withResourceAdmission(from: executionPolicy)
         // The provider finishing is a claim, not this turn's outcome: the
         // finalization below can still send the task back for review. Terminal
         // request state is irreversible, so hold the durable request open
         // until that verdict exists instead of completing it on raw success.
         var pendingTurn: (request: TaskTurnRequest?, run: TaskRun)?
-        await execute(
+        let executionContext = await execute(
             task: task,
             modelContext: modelContext,
             promptOverride: prompt,
@@ -201,8 +209,11 @@ final class AgentRuntimeWorker {
             executionRequestID: executionRequestID,
             executionPolicy: runExecutionPolicy,
             deferTurnTerminalization: { pendingTurn = (request: $0, run: $1) },
+            retainIsolationAfterExecution: true,
             onEvent: onEvent
         )
+        defer { executionContext?.cleanup() }
+        let validationWorkspacePath = executionContext?.executionPath
         var rejectedOutcome: (state: TaskTurnRequestState, reason: String)?
         if task.status == .completed {
             let accepted: Bool
@@ -211,12 +222,16 @@ final class AgentRuntimeWorker {
                     approvedStep,
                     plan: currentPlan,
                     task: task,
+                    workspacePath: validationWorkspacePath,
+                    sandboxEnforcementSnapshot: runExecutionPolicy.sandboxEnforcementSnapshot,
                     modelContext: modelContext
                 )
             } else {
                 accepted = await finalizeApprovedFullPlan(
                     currentPlan,
                     task: task,
+                    workspacePath: validationWorkspacePath,
+                    sandboxEnforcementSnapshot: runExecutionPolicy.sandboxEnforcementSnapshot,
                     modelContext: modelContext
                 )
             }
@@ -256,6 +271,8 @@ final class AgentRuntimeWorker {
         _ step: TaskPlanPayloadStep,
         plan: TaskPlanPayload,
         task: AgentTask,
+        workspacePath: String? = nil,
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
         modelContext: ModelContext
     ) async -> Bool {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
@@ -268,7 +285,12 @@ final class AgentRuntimeWorker {
         // Provider-skipped steps are exempt (their outputs legitimately don't
         // exist), and a provider-reported blocker takes priority below so its
         // actionable detail isn't shadowed by a generic checkpoint message.
-        let checkpoint = PlanStepCheckpointVerifier.verify(step: step, plan: plan, task: task)
+        let checkpoint = PlanStepCheckpointVerifier.verify(
+            step: step,
+            plan: plan,
+            task: task,
+            workspacePath: workspacePath
+        )
         let latestBlockIsCheckpointImposed = PlanStepCheckpointVerifier.latestBlockIsCheckpointImposed(
             task: task,
             stepID: step.id
@@ -350,6 +372,8 @@ final class AgentRuntimeWorker {
             guard await validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: refreshedPlan,
+                workspacePath: workspacePath,
+                sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
                 modelContext: modelContext
             ) else {
                 return false
@@ -365,6 +389,8 @@ final class AgentRuntimeWorker {
     private func finalizeApprovedFullPlan(
         _ plan: TaskPlanPayload,
         task: AgentTask,
+        workspacePath: String? = nil,
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
         modelContext: ModelContext
     ) async -> Bool {
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
@@ -387,6 +413,7 @@ final class AgentRuntimeWorker {
             plan: refreshedPlan,
             task: task,
             run: lastRun,
+            workspacePath: workspacePath,
             modelContext: modelContext
         ) {
             pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
@@ -396,6 +423,8 @@ final class AgentRuntimeWorker {
         guard await validateApprovedPlanContractForFinalCompletion(
             task: task,
             plan: refreshedPlan,
+            workspacePath: workspacePath,
+            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
             modelContext: modelContext
         ) else {
             return false
@@ -408,6 +437,8 @@ final class AgentRuntimeWorker {
     private func validateApprovedPlanContractForFinalCompletion(
         task: AgentTask,
         plan: TaskPlanPayload,
+        workspacePath: String? = nil,
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
         modelContext: ModelContext
     ) async -> Bool {
         let contractEvaluation = await ValidationService.runContract(
@@ -415,12 +446,16 @@ final class AgentRuntimeWorker {
             plan: plan,
             run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
             modelContext: modelContext,
+            workspacePath: workspacePath,
             verifierRuntime: utilityRuntimeConfiguration(
                 for: .verifier,
                 task: task,
                 fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
                 preferredModel: validationModel,
                 modelContext: modelContext
+            ),
+            commandRunner: ShellValidationCommandRunner(
+                sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
             )
         )
         let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
@@ -511,7 +546,9 @@ final class AgentRuntimeWorker {
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun) -> Void)? = nil
+        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun) -> Void)? = nil,
+        retainIsolationAfterExecution: Bool = false,
+        onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
         var selectedRuntime = selectedRuntime
         var runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
@@ -634,9 +671,8 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { isRunning = false; return }
-        let executionWorkspaceAccess = TaskExecutionResourceClaimResolver.workspaceAccess(
-            for: turnBegin.request
-        )
+        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
@@ -819,28 +855,40 @@ final class AgentRuntimeWorker {
             executionPath = codeDir
             shouldCleanupIsolation = false
         }
+        let executionContext = AgentRuntimeExecutionContext.make(
+            launchTask: launchTask,
+            executionPath: executionPath,
+            shouldCleanupIsolation: shouldCleanupIsolation
+        )
+        let executionTask = executionContext.task
+        onExecutionContext?(executionContext)
+        defer {
+            if !retainIsolationAfterExecution {
+                executionContext.cleanup()
+            }
+        }
 
         let approvedSandboxPaths = TaskLaunchResourceResolver.approvedSandboxReadablePaths(
             from: executionPolicy.permissionGrantsOverride ?? [],
             homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
         let runEnvironment = AgentRuntimeRunEnvironmentContext.prepare(
-            task: launchTask, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
+            task: executionTask, currentDirectory: executionPath, providerLaunchContextText: providerLaunchContextText,
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
         let basePrompt = promptOverride ?? buildPrompt(
-            for: launchTask,
+            for: executionTask,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
             to: basePrompt,
-            task: launchTask,
+            task: executionTask,
             permissionPolicy: launchPermissionPolicy,
             contextText: providerLaunchContextText
         ))
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
-            task: launchTask,
+            task: executionTask,
             runID: run.id,
             runtime: selectedRuntime,
             phase: auditPhase,
@@ -895,7 +943,7 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             runtime: selectedRuntime,
-            model: launchTask.model,
+            model: executionTask.model,
             workspacePath: executionPath,
             phase: auditPhase,
             permissionPolicy: runPermissionPolicy,
@@ -910,10 +958,6 @@ final class AgentRuntimeWorker {
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
-            if shouldCleanupIsolation {
-                // Match prepare(task: launchTask) above, not the live task.
-                IsolationService.cleanup(task: launchTask, executionPath: executionPath)
-            }
             return
         }
         let launchSignature = ProviderLaunchSignatureService.make(
@@ -986,14 +1030,14 @@ final class AgentRuntimeWorker {
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
-            task: launchTask,
+            task: executionTask,
             phase: auditPhase,
             idleTimeoutSeconds: timeoutSeconds
         )
         let result = await processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: prompt,
-            task: launchTask,
+            task: executionTask,
             workspacePath: executionPath,
             executablePath: launchSettings.executablePath,
             homeDirectory: launchSettings.homeDirectory,
@@ -1201,7 +1245,7 @@ final class AgentRuntimeWorker {
             result: result,
             // Limit frozen on launchTask; usage is live on task.
             budget: AgentRuntimeBudgetSnapshot(
-                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: launchTask),
+                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
                 tokensUsed: task.tokensUsed
             ),
             budgetEnforcementMode: budgetEnforcementMode
@@ -1235,15 +1279,16 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            let blockedByDeliverableVerification = await Self.applyDeliverableVerificationFailureIfNeeded(
+            let blockedByDeliverableVerification = await AgentRuntimeCompletionValidation.applyDeliverableVerificationFailureIfNeeded(
                 task: task,
                 run: run,
-                modelContext: modelContext
+                modelContext: modelContext,
+                workspacePath: executionPath
             )
             if !blockedByDeliverableVerification {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
-                    switch launchTask.validationStrategy {
+                    switch executionTask.validationStrategy {
                     case .manual:
                         let completed = TaskSuccessfulCompletionService.apply(
                             task: task,
@@ -1253,21 +1298,28 @@ final class AgentRuntimeWorker {
                             permissionPolicy: launchPermissionPolicy
                         )
                         if completed {
-                            await Self.applyAutomaticBaselineVerificationIfNeeded(
+                            await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(
                                 task: task,
                                 run: run,
-                                modelContext: modelContext
+                                modelContext: modelContext,
+                                workspacePath: executionPath,
+                                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
                             )
                         }
                     case .runTests:
                         let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
-                        // Frozen on launchTask like the strategy switch above:
+                        // Frozen on executionTask like the strategy switch above:
                         // testCommand is part of AgentTaskLaunchSnapshot, so a
                         // command edited after admission must not be what grades
-                        // this run. launchTask also carries the executionRootPath
+                        // this run. executionTask also carries the executionRootPath
                         // the run actually used, so tests execute where it ran.
-                        let testResult = await ValidationService.runTests(task: launchTask)
+                        let testResult = await ValidationService.runTests(
+                            task: executionTask,
+                            commandRunner: ShellValidationCommandRunner(
+                                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
+                            )
+                        )
                         switch testResult {
                         case .passed(let details):
                             _ = TaskSuccessfulCompletionService.apply(
@@ -1299,7 +1351,8 @@ final class AgentRuntimeWorker {
                                 fallbackRuntime: selectedRuntime,
                                 preferredModel: validationModel,
                                 modelContext: modelContext
-                            )
+                            ),
+                            workspacePath: executionPath
                         )
                         switch aiResult {
                         case .passed(let details):
@@ -1329,10 +1382,12 @@ final class AgentRuntimeWorker {
                         permissionPolicy: launchPermissionPolicy
                     )
                     if completed {
-                        await Self.applyAutomaticBaselineVerificationIfNeeded(
+                        await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(
                             task: task,
                             run: run,
-                            modelContext: modelContext
+                            modelContext: modelContext,
+                            workspacePath: executionPath,
+                            sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
                         )
                     }
                 }
@@ -1402,10 +1457,6 @@ final class AgentRuntimeWorker {
             scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)
         }
 
-        if shouldCleanupIsolation {
-            // Same rationale as the early-return cleanup above.
-            IsolationService.cleanup(task: launchTask, executionPath: executionPath)
-        }
         let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let handoffDiscoveredFiles = await TaskOutputDiscovery.filesAsync(in: handoffTaskFolder)
         await AgentRuntimeRunPersistence.finalizeAndPersist(
@@ -1496,95 +1547,6 @@ final class AgentRuntimeWorker {
         }
         AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: auditFields, level: .warning)
         return true
-    }
-
-    @MainActor
-    private static func applyDeliverableVerificationFailureIfNeeded(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) async -> Bool {
-        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run, modelContext: modelContext)
-        guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
-            return false
-        }
-
-        let event = TaskEvent(
-            task: task,
-            type: eventType,
-            payload: TaskDeliverableVerificationService.encode(result),
-            run: run
-        )
-        modelContext.insert(event)
-
-        let auditEvent: AuditEvent = switch result.status {
-        case "passed":
-            .deliverableVerificationPassed
-        case "review_needed":
-            .deliverableVerificationReviewNeeded
-        default:
-            .deliverableVerificationFailed
-        }
-        AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
-            "run_id": run.id.uuidString,
-            "profile": result.profile.rawValue,
-            "level": result.level.rawValue,
-            "status": result.status,
-            "can_complete": String(result.canComplete),
-            "requires_human_review": String(result.requiresHumanReview),
-            "check_count": String(result.checks.count),
-            "evidence_count": String(result.evidencePaths.count)
-        ], level: result.shouldBlockCompletion ? .warning : .info)
-
-        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
-        guard decision.shouldBlockCompletion else {
-            return false
-        }
-
-        TaskRuntimeOutcomeTransition.applyCompletionBlock(
-            decision,
-            task: task,
-            run: run,
-            modelContext: modelContext
-        )
-        return true
-    }
-
-    @MainActor
-    private static func applyAutomaticBaselineVerificationIfNeeded(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) async {
-        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
-            task: task,
-            modelContext: modelContext
-        )
-        guard result.didRun else { return }
-
-        AppLogger.audit(
-            result.canComplete ? .validationContractPassed : .validationContractFailed,
-            category: "Validation",
-            taskID: task.id,
-            fields: [
-                "run_id": run.id.uuidString,
-                "source": "automatic_inferred_baseline",
-                "can_complete": String(result.canComplete),
-                "failed_required_assertion_count": String(result.failedRequiredAssertionIDs.count)
-            ],
-            level: result.canComplete ? .info : .warning
-        )
-
-        let decision = TaskCompletionPolicy.decide(inferredValidation: result)
-        guard decision.canComplete else {
-            TaskRuntimeOutcomeTransition.applyCompletionBlock(
-                decision,
-                task: task,
-                run: run,
-                modelContext: modelContext
-            )
-            return
-        }
     }
 
     @MainActor

@@ -17,7 +17,7 @@ extension AgentRuntimeProcessLaunchPlan {
             plannedFields["git_credential_diagnostics"] = context.diagnostics.joined(separator: ",")
         }
 
-        return AgentRuntimeProcessLaunchPlan(
+        var plan = AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
             executablePath: executablePath,
             arguments: arguments,
@@ -36,6 +36,9 @@ extension AgentRuntimeProcessLaunchPlan {
             pathMapper: pathMapper,
             executionEnvironment: executionEnvironment
         )
+        plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
+        plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        return plan
     }
 
     func unsupportedProviderNativeCredentialReadBlock(

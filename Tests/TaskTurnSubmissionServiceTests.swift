@@ -79,6 +79,7 @@ struct TaskTurnSubmissionServiceTests {
             goal: "Summarize the latest changes.",
             workspace: workspace
         )
+        reader.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
         let writer = AgentTask(
             title: "Implement release changes",
             goal: "Update the project files.",
