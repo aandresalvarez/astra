@@ -695,6 +695,59 @@ final class AgentRuntimeProcessRunner {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeRequirements: runtimeRequirements
         )
+        let effectiveRequirements = runtimeRequirements ?? TaskRuntimeRequirementSet.derive(
+            task: task,
+            capabilityResolutionSnapshot: launchContext.capabilityResolutionSnapshot,
+            executionEnvironment: DockerExecutionPlanner.resolveEnvironment(for: task),
+            browserBridgeAttached: launchContext.capabilityResolutionSnapshot.providerLaunch.exposesBrowserBridge
+        )
+        let requiresHostControlBroker = !effectiveRequirements.hostControlTools.isEmpty
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+            for: adapter.id,
+            executablePath: executablePath
+        )
+        let supportsHostControlBroker = runtimeCapabilityProfile.canDeliverHostControlPlane
+        if requiresHostControlBroker, !supportsHostControlBroker {
+            let message = "\(adapter.id.displayName) cannot attach ASTRA host tools required by this turn."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "runtime": adapter.id.rawValue,
+                "reason": "host_control_transport_unavailable",
+                "required_tools": effectiveRequirements.hostControlTools.joined(separator: ",")
+            ], level: .error)
+            return AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "host_control_transport_unavailable",
+                runtimeStopMessage: message
+            )
+        }
+        let brokerPrepared = requiresHostControlBroker
+            && HostControlBrokerSessionRegistry.shared.prepare(
+            task: task,
+            runID: runID,
+            capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
+            requiredTools: effectiveRequirements.hostControlTools,
+            currentDirectory: workspacePath
+        )
+        if requiresHostControlBroker, !brokerPrepared {
+            let message = "ASTRA could not establish the run-scoped host-control broker."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "runtime": adapter.id.rawValue,
+                "reason": "host_control_broker_unavailable",
+                "required_tools": effectiveRequirements.hostControlTools.joined(separator: ",")
+            ], level: .error)
+            return AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "host_control_broker_unavailable",
+                runtimeStopMessage: message
+            )
+        }
+        defer {
+            if brokerPrepared {
+                HostControlBrokerSessionRegistry.shared.stop(taskID: task.id, runID: runID)
+            }
+        }
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
                 try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
@@ -720,6 +773,7 @@ final class AgentRuntimeProcessRunner {
                 adapter: adapter,
                 plan: plan,
                 task: task,
+                runID: runID,
                 permissionManifest: permissionManifest,
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
@@ -742,6 +796,7 @@ final class AgentRuntimeProcessRunner {
             adapter: adapter,
             plan: plan,
             task: task,
+            runID: runID,
             permissionManifest: permissionManifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
@@ -756,6 +811,7 @@ final class AgentRuntimeProcessRunner {
         adapter: any AgentRuntimeProcessEventParsing,
         plan: AgentRuntimeProcessLaunchPlan,
         task: AgentTask,
+        runID: UUID?,
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
@@ -986,6 +1042,11 @@ final class AgentRuntimeProcessRunner {
 
             do {
                 try process.run()
+                HostControlBrokerSessionRegistry.shared.registerProviderProcess(
+                    taskID: taskID,
+                    runID: runID,
+                    processID: process.processIdentifier
+                )
             } catch {
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
@@ -1635,18 +1696,23 @@ final class AgentRuntimeProcessRunner {
     static func scopedEnvironmentVariables(
         for task: AgentTask,
         contextText: String = "",
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            turnIntentSnapshot: executionPolicy.turnIntentSnapshot,
+            runtime: executionPolicy.launchSnapshot?.runtimeID
+                .flatMap(AgentRuntimeID.init(rawValue:))
         ).providerLaunch
         return scopedEnvironmentVariables(
             for: task,
             capabilityScope: capabilityScope,
             contextText: contextText,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            runtimeRequirements: runtimeRequirements
         )
     }
 
@@ -1655,9 +1721,15 @@ final class AgentRuntimeProcessRunner {
         for task: AgentTask,
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String = "",
-        executionPolicy _: AgentRuntimeExecutionPolicy = .default
+        executionPolicy _: AgentRuntimeExecutionPolicy = .default,
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
+        stripBrokeredConnectorEnvironment(
+            from: &taskEnv,
+            capabilityScope: capabilityScope,
+            runtimeRequirements: runtimeRequirements
+        )
         if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
@@ -1680,6 +1752,93 @@ final class AgentRuntimeProcessRunner {
             }
         }
         return taskEnv
+    }
+
+    @MainActor
+    static func hostControlCLIRelayEnvironment(
+        context: AgentRuntimeProcessLaunchContext,
+        runtime: AgentRuntimeID
+    ) -> [String: String] {
+        let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+        guard profile.usesHostControlCLIRelay,
+              context.runtimeRequirements?.requiresHostControlPlane == true else {
+            return [:]
+        }
+        let environment = HostControlPlaneMCPProjection.environmentVariables(
+            task: context.task,
+            environment: DockerExecutionPlanner.resolveEnvironment(for: context.task),
+            currentDirectory: context.workspacePath,
+            runID: context.runID,
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
+        )
+        guard environment[HostControlBrokerIPC.endpointEnvironmentKey]?.isEmpty == false else {
+            return [:]
+        }
+        return environment
+    }
+
+    @MainActor
+    private static func stripBrokeredConnectorEnvironment(
+        from environment: inout [String: String],
+        capabilityScope: TaskCapabilityPromptScope,
+        runtimeRequirements: TaskRuntimeRequirementSet?
+    ) {
+        guard let runtimeRequirements, !runtimeRequirements.hostControlTools.isEmpty else {
+            return
+        }
+        let brokeredTools = Set(runtimeRequirements.hostControlTools)
+        let brokeredConnectors = capabilityScope.connectors.filter {
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                    .map(brokeredTools.contains) == true
+        }
+        let brokeredSnapshotConfigKeys = Set(
+            capabilityScope.resolver.detachedSnapshots
+                    .flatMap { $0.connectorSnapshots ?? [] }
+                    .filter {
+                        HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                            && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                                .map(brokeredTools.contains) == true
+                    }
+                    .flatMap(\.configKeys)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+        )
+        guard !brokeredConnectors.isEmpty || !brokeredSnapshotConfigKeys.isEmpty else { return }
+
+        let brokeredProjection = ConnectorRuntimeProjection(connectors: brokeredConnectors)
+        for key in brokeredProjection.declaredEnvironmentBindingKeys()
+            .union(brokeredSnapshotConfigKeys) {
+            environment.removeValue(forKey: key)
+        }
+
+        guard let manifestJSON = environment["ASTRA_CONNECTORS"],
+              let manifestData = manifestJSON.data(using: .utf8),
+              var manifest = try? JSONDecoder().decode(
+                  ConnectorRuntimeProjection.Manifest.self,
+                  from: manifestData
+              ) else {
+            environment.removeValue(forKey: "ASTRA_CONNECTORS")
+            return
+        }
+        let brokeredConnectorIDs = Set(brokeredConnectors.map { $0.id.uuidString.lowercased() })
+        manifest.connectors.removeAll {
+            brokeredConnectorIDs.contains($0.id.lowercased())
+        }
+        guard !manifest.connectors.isEmpty else {
+            environment.removeValue(forKey: "ASTRA_CONNECTORS")
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let filteredData = try? encoder.encode(manifest),
+           let filteredJSON = String(data: filteredData, encoding: .utf8) {
+            environment["ASTRA_CONNECTORS"] = filteredJSON
+        } else {
+            environment.removeValue(forKey: "ASTRA_CONNECTORS")
+        }
     }
 
     @MainActor

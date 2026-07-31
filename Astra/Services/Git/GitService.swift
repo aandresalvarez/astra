@@ -208,24 +208,6 @@ enum GitHubPullRequestCheckLookupResult: Equatable, Sendable {
     }
 }
 
-/// Failure modes for GitHub operations performed through the `gh` CLI.
-enum GitHubCLIError: LocalizedError {
-    case notInstalled
-    case notAuthenticated(String)
-    case commandFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .notInstalled:
-            return "GitHub CLI (gh) is not installed."
-        case let .notAuthenticated(detail):
-            return "GitHub CLI is not authenticated. Run `gh auth login`. (\(detail))"
-        case let .commandFailed(detail):
-            return detail.isEmpty ? "gh pr create failed." : detail
-        }
-    }
-}
-
 private struct GitHubPullRequestCommentsGraphQLResponse: Decodable {
     struct GraphQLError: Decodable {
         let message: String
@@ -633,14 +615,27 @@ class GitService: GitRepositoryOperating {
         guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
             throw GitHubCLIError.notInstalled
         }
-        return try await runProcess(
-            executableURL: URL(fileURLWithPath: ghPath),
-            arguments: arguments,
-            environment: RuntimeProcessEnvironment.enriched(),
-            timeout: Self.networkGitTimeout,
-            label: label,
-            currentDirectory: repoPath
-        )
+        do {
+            return try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: Self.networkGitTimeout,
+                label: label,
+                currentDirectory: repoPath
+            )
+        } catch let error as GitHubCLIError {
+            throw error
+        } catch {
+            let repository: String?
+            if let repoFlag = arguments.firstIndex(of: "--repo"),
+               arguments.indices.contains(repoFlag + 1) {
+                repository = arguments[repoFlag + 1]
+            } else {
+                repository = nil
+            }
+            throw GitHubCLIError.classify(error.localizedDescription, repository: repository)
+        }
     }
 
     /// Runs an external process and returns standard output, or throws on a
@@ -1009,15 +1004,23 @@ class GitService: GitRepositoryOperating {
                 ], level: .info, fieldMaxLength: 240)
                 return existing
             }
-            if message.localizedCaseInsensitiveContains("auth")
-                || message.localizedCaseInsensitiveContains("logged") {
+            let classified = GitHubCLIError.classify(message)
+            if case .notAuthenticated = classified {
                 AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
                     "base": normalizedBase,
                     "head": head,
                     "result": "auth_failed",
                     "detail": message
                 ], level: .warning, fieldMaxLength: 240)
-                throw GitHubCLIError.notAuthenticated(message)
+                throw classified
+            }
+            if case .authorizationRequired = classified {
+                AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                    "base": normalizedBase,
+                    "head": head,
+                    "result": "authorization_required"
+                ], level: .warning)
+                throw classified
             }
             AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
                 "base": normalizedBase,
@@ -1165,11 +1168,7 @@ class GitService: GitRepositoryOperating {
                 label: "gh workspace-app pr read"
             )
         } catch {
-            let detail = error.localizedDescription.lowercased()
-            if detail.contains("auth") || detail.contains("logged in") {
-                throw GitHubCLIError.notAuthenticated(error.localizedDescription)
-            }
-            throw GitHubCLIError.commandFailed(error.localizedDescription)
+            throw GitHubCLIError.classify(error.localizedDescription, repository: repo)
         }
     }
 

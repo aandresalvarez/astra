@@ -171,6 +171,9 @@ enum AgentPromptBuilder {
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
+                runtime: executionPolicy.launchSnapshot?.runtimeID
+                    .flatMap(AgentRuntimeID.init(rawValue:))
+                    ?? task.resolvedRuntimeID,
                 capabilityScope: capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolver(
                     task: task,
                     additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
@@ -555,12 +558,14 @@ enum AgentPromptBuilder {
     private static func appendConnectorContext(
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
+        runtime: AgentRuntimeID,
         credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?,
         to sections: inout [PromptContextSection]
     ) {
         if let section = AgentPromptConnectorContextBuilder.section(
             from: capabilityScope,
             task: task,
+            runtime: runtime,
             credentialExposurePolicy: credentialExposurePolicy
         ) {
             sections.append(section)
@@ -692,21 +697,21 @@ enum AgentPromptBuilder {
         ioSnapshot: PromptContextIOSnapshot,
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> [PromptContextSection] {
-        buildPromptSections(
+        let capabilityContext = AgentPromptCapabilityContextResolver.followUp(
+            task: task,
+            message: message,
+            executionPolicy: executionPolicy
+        )
+        return buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
             context: PromptContextSectionProviderContext(
                 mode: .followUp,
                 task: task,
                 followUpMessage: message,
-                capabilityScope: TaskCapabilityResolver(
-                    task: task,
-                    additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
-                ).promptScope(contextText: message),
+                runtime: capabilityContext.runtime,
+                capabilityScope: capabilityContext.snapshot.providerLaunch,
                 ioSnapshot: ioSnapshot,
-                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
-                    for: task,
-                    executionPolicy: executionPolicy
-                )
+                connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy
             )
         )
     }
@@ -717,6 +722,8 @@ enum AgentPromptBuilder {
     ) -> ConnectorRuntimeProjection.CredentialExposurePolicy {
         .approvedLabels(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
             for: task,
+            runtime: executionPolicy.launchSnapshot?.runtimeID
+                .flatMap(AgentRuntimeID.init(rawValue:)),
             additionalGrants: executionPolicy.permissionGrantsOverride ?? []
         )))
     }
@@ -1230,6 +1237,7 @@ enum AgentPromptBuilder {
             appendConnectorContext(
                 from: context.capabilityScope,
                 task: context.task,
+                runtime: context.runtime,
                 credentialExposurePolicy: context.connectorCredentialExposurePolicy,
                 to: &sections
             )

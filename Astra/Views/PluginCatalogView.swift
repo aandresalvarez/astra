@@ -1243,6 +1243,7 @@ struct PluginCatalogView: View {
                     PluginCatalogPrereqBadge(
                         prerequisite: prereq,
                         cache: preflightCache,
+                        workingDirectory: workspace.resolvedWorkingPath,
                         onStatusChange: { _ in }
                     )
                 }
@@ -2484,7 +2485,10 @@ struct PluginInstallSheet: View {
         var results: [PluginInstallValidationResult] = []
 
         for prerequisite in package.prerequisites {
-            let status = await validationPreflightCache.status(for: prerequisite)
+            let status = await validationPreflightCache.status(
+                for: prerequisite,
+                workingDirectory: workspace.resolvedWorkingPath
+            )
             results.append(validationResult(for: prerequisite, status: status))
         }
 
@@ -2619,6 +2623,12 @@ struct PluginInstallSheet: View {
                 detail: "\(path) \(version.trimmingCharacters(in: .whitespacesAndNewlines))".trimmingCharacters(in: .whitespacesAndNewlines),
                 passed: true
             )
+        case .unverified(let path, let detail):
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "\(path) — \(detail)",
+                passed: true
+            )
         case .missingBinary:
             PluginInstallValidationResult(
                 title: prerequisite.displayName,
@@ -2629,6 +2639,12 @@ struct PluginInstallSheet: View {
             PluginInstallValidationResult(
                 title: prerequisite.displayName,
                 detail: "Needs login: \(detail). \(prerequisite.authHint ?? "")",
+                passed: false
+            )
+        case .authorizationRequired(let detail, _):
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "Authorization required: \(detail)",
                 passed: false
             )
         case .unresponsive(let detail):

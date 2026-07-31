@@ -382,7 +382,7 @@ struct ChatPanelView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var messageText = ""
+    @State var messageText = ""
     @State private var messages: [ChatMessage] = []
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
@@ -393,8 +393,8 @@ struct ChatPanelView: View {
     @State private var pasteMonitor: Any?
     @State private var isDragOver = false
     @State private var sshConnections: [SSHConnection] = []
-    @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
-    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.defaultModel) var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultRuntimeID) var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
@@ -408,21 +408,21 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
+    @AppStorage(AppStorageKeys.defaultTokenBudget) var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
-    @State private var draftTask: AgentTask?
+    @State var draftTask: AgentTask?
     // True only when the user genuinely touched ComposerToolbar's runtime picker
     // (never from a stored default) — mirrors TaskComposerCoordinator.applyRuntimeSwitch
     // / NewTaskView.runtimeIDSelection so the launch resolver blocks instead of
     // silently rerouting a runtime picked here. Reset per composer session below.
-    @State private var composerRuntimeExplicitlySelected = false
-    @State private var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    @State var composerRuntimeExplicitlySelected = false
+    @State var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     // Composer-scoped skip-permissions: seeded from the global default but never
     // written back, so picking Auto for one draft does not flip the user's
     // global default or the workspace Auto/Ask pill (mirrors TaskMainView).
-    @State private var composerSkipPermissions = false
+    @State var composerSkipPermissions = false
     @State private var useAgentTeam = false
     @State private var teamSize = 3
     @State private var activeWizard: SlashWizard?
@@ -438,7 +438,8 @@ struct ChatPanelView: View {
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
-    @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    @State var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
     // Random per session; a live-cycling prompt mutated while the user was reading it.
     @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
@@ -447,11 +448,11 @@ struct ChatPanelView: View {
         capabilitySnapshot.availableSkills
     }
 
-    private var selectedSkills: [Skill] {
+    var selectedSkills: [Skill] {
         capabilitySnapshot.selectedSkills(excluding: excludedSkillIDs)
     }
 
-    private var hasInput: Bool {
+    var hasInput: Bool {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -530,12 +531,10 @@ struct ChatPanelView: View {
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
         providerSettingsSnapshot.availabilityConfiguration
     }
-
     private var runtimeAvailabilitySignature: String {
         providerSettingsSnapshot.signature
     }
-
-    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+    var providerSettingsSnapshot: ProviderSettingsSnapshot {
         RuntimeSettingsSnapshotStore.providerSnapshot(
             claudePath: claudePath,
             copilotPath: copilotPath,
@@ -767,6 +766,7 @@ struct ChatPanelView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
+        .runtimeEligibilityPreview(runtimeEligibilityPreviewRequest, state: $runtimeEligibilityPreviewState)
         .onAppear {
             alignDefaultModelWithRuntime()
             initializeComposerPolicyFromDefaults()
@@ -1248,6 +1248,7 @@ struct ChatPanelView: View {
                     availableSkills: availableSkills,
                     workspace: workspace,
                     runtimeReadinessStates: runtimeReadinessStates,
+                    runtimeEligibilityPreviewState: runtimeEligibilityPreviewState, runtimeEligibilityPreviewSignature: runtimeEligibilityPreviewRequest.signature,
                     isRunning: isThinking,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
@@ -1379,7 +1380,7 @@ struct ChatPanelView: View {
 
     private func alignDefaultRuntimeWithAvailability() {
         let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
-        if !readyRuntimes.isEmpty {
+        if !composerRuntimeExplicitlySelected, !readyRuntimes.isEmpty {
             let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
             if !readyRuntimes.contains(runtime), let replacement = readyRuntimes.first {
                 defaultRuntimeID = replacement.rawValue
@@ -1526,6 +1527,7 @@ struct ChatPanelView: View {
             guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }
             onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt); return
         }
+        guard selectedComposerRuntimeCanExecuteRequest else { return }
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
         // for this message only; does not use activeSlashContext (no ongoing wizard).
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
@@ -1609,11 +1611,10 @@ struct ChatPanelView: View {
             }
         }
     }
-
     /// Quick run: create task directly from input text and run immediately
     private func quickRun() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty else { return }
+        guard !input.isEmpty, selectedComposerRuntimeCanExecuteRequest else { return }
         let traceID = AuditTrace.make("quick-run")
         let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime

@@ -491,6 +491,8 @@ enum CapabilityRuntimeIntegrityService {
             return .executable
         case .unauthenticated:
             return .credential
+        case .authorizationRequired:
+            return .credential
         case .unresponsive:
             return .localTool
         }
@@ -503,7 +505,13 @@ enum CapabilityRuntimeIntegrityService {
         resolvedConnectors: [Connector],
         resolvedTools: [LocalTool]
     ) -> Bool {
-        if resolvedSkills.contains(where: { CapabilityRuntimeResourceMatcher.skillMatches(pluginSkill, skill: $0) }) {
+        if resolvedSkills.contains(where: {
+            CapabilityRuntimeResourceMatcher.packageSkillMatches(
+                pluginSkill,
+                package: package,
+                skill: $0
+            )
+        }) {
             return true
         }
 

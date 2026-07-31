@@ -42,17 +42,25 @@ struct TaskCapabilityResolutionSnapshot {
         for task: AgentTask,
         providerLaunchContextText: String,
         additionalCredentialGrants: [PermissionGrant] = [],
-        exposeAllConnectorCredentials: Bool = false
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        runtime: AgentRuntimeID? = nil,
+        secretStore: SecretStore = KeychainSecretStore(),
+        // Kept temporarily as a source-compatible migration seam. Automatic
+        // permission mode no longer broadens credential delivery.
+        exposeAllConnectorCredentials _: Bool = false
     ) -> TaskCapabilityResolutionSnapshot {
+        let activationText = turnIntentSnapshot?.activationText
+            ?? providerLaunchContextText.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolver = TaskCapabilityResolver(
             task: task,
             additionalCredentialGrants: additionalCredentialGrants,
-            exposeAllConnectorCredentials: exposeAllConnectorCredentials
+            runtime: runtime,
+            secretStore: secretStore
         )
         return TaskCapabilityResolutionSnapshot(
             fullInventory: resolver.resolvedScope(.fullInventory),
-            providerLaunch: resolver.resolvedScope(.providerLaunch(contextText: providerLaunchContextText)),
-            providerLaunchContextText: providerLaunchContextText,
+            providerLaunch: resolver.activationScope(contextText: activationText),
+            providerLaunchContextText: activationText,
             connectorCredentialExposurePolicy: resolver.connectorCredentialExposurePolicy
         )
     }
@@ -76,16 +84,19 @@ struct TaskCapabilityResolver {
 
     private let task: AgentTask
     private let additionalCredentialGrants: [PermissionGrant]
-    private let exposeAllConnectorCredentials: Bool
+    private let runtime: AgentRuntimeID?
+    private let secretStore: SecretStore
 
     init(
         task: AgentTask,
         additionalCredentialGrants: [PermissionGrant] = [],
-        exposeAllConnectorCredentials: Bool = false
+        runtime: AgentRuntimeID? = nil,
+        secretStore: SecretStore = KeychainSecretStore()
     ) {
         self.task = task
         self.additionalCredentialGrants = additionalCredentialGrants
-        self.exposeAllConnectorCredentials = exposeAllConnectorCredentials
+        self.runtime = runtime
+        self.secretStore = secretStore
     }
 
     var resourceInventory: ResourceInventory {
@@ -122,6 +133,7 @@ struct TaskCapabilityResolver {
 
         let connEnvVars = ConnectorRuntimeProjection(
             connectors: liveConnectors,
+            secretStore: secretStore,
             credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
@@ -141,14 +153,14 @@ struct TaskCapabilityResolver {
     }
 
     private func allBehaviorSkills(connectors: [Connector]) -> [Skill] {
-        var combined = task.skills + enabledPackageSkills()
+        // Enabled package definitions are authoritative over stale live task
+        // references with the same package/component identity.
+        var combined = enabledPackageSkills() + task.skills
         for connector in connectors {
             guard let skill = connector.skill else { continue }
             combined.append(skill)
         }
-
-        var seen = Set<UUID>()
-        return combined.filter { seen.insert($0.id).inserted }
+        return uniqueSkills(combined)
     }
 
     var allConnectors: [Connector] {
@@ -174,9 +186,11 @@ struct TaskCapabilityResolver {
         let unique = all
             .filter { seen.insert($0.id).inserted }
             .filter(ConnectorSecurityPolicy.isRuntimeSafe)
+        // Inventory ranking may use configuration/readiness, but never task
+        // prose. Turn evidence is applied only after activation below.
         return ConnectorPreflightService.preferredRuntimeConnectors(
             from: unique,
-            contextText: TaskContextStateManager.capabilitySearchText(for: task, contextText: "")
+            contextText: ""
         )
     }
 
@@ -216,11 +230,15 @@ struct TaskCapabilityResolver {
 
     private func enabledPackageSkills() -> [Skill] {
         let packages = enabledCapabilityPackages()
-        let pluginSkills = packages.flatMap(\.skills)
-
         let candidates = workspaceSkills() + globalSkills()
-        let directlyMatched = pluginSkills.isEmpty ? [] : candidates.filter { skill in
-            pluginSkills.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
+        let directlyMatched = packages.flatMap { package in
+            package.skills.compactMap { pluginSkill in
+                CapabilityRuntimeResourceMatcher.preferredPackageSkill(
+                    pluginSkill,
+                    package: package,
+                    candidates: candidates
+                )
+            }
         }
         let resourceOwners = (enabledPackageConnectors().compactMap(\.skill) + enabledPackageLocalTools().compactMap(\.skill))
             .filter { skill in
@@ -323,8 +341,41 @@ struct TaskCapabilityResolver {
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
-        var seen = Set<UUID>()
-        return skills.filter { seen.insert($0.id).inserted }
+        var order: [String] = []
+        var selected: [String: Skill] = [:]
+        for skill in skills {
+            let key = logicalSkillKey(skill)
+            guard let existing = selected[key] else {
+                selected[key] = skill
+                order.append(key)
+                continue
+            }
+            if prefersNewerOwnedSkill(skill, over: existing) {
+                selected[key] = skill
+            }
+        }
+        return order.compactMap { selected[$0] }
+    }
+
+    private func logicalSkillKey(_ skill: Skill) -> String {
+        let packageID = skill.originPackageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let componentID = skill.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !packageID.isEmpty, !componentID.isEmpty else {
+            return "skill:\(skill.id.uuidString)"
+        }
+        return "package:\(packageID):\(componentID)"
+    }
+
+    private func prefersNewerOwnedSkill(_ candidate: Skill, over existing: Skill) -> Bool {
+        if let candidateVersion = candidate.originPackageVersion.flatMap(SemanticVersion.init(string:)),
+           let existingVersion = existing.originPackageVersion.flatMap(SemanticVersion.init(string:)),
+           candidateVersion != existingVersion {
+            return candidateVersion > existingVersion
+        }
+        if candidate.updatedAt != existing.updatedAt {
+            return candidate.updatedAt > existing.updatedAt
+        }
+        return candidate.id.uuidString < existing.id.uuidString
     }
 
     private func uniqueConnectors(_ connectors: [Connector]) -> [Connector] {
@@ -459,9 +510,13 @@ struct TaskCapabilityResolver {
             includeSkill(skill)
         }
 
-        let relevantConnectors = connectors.filter { connector in
+        let matchedConnectors = connectors.filter { connector in
             Self.matchesConnector(connector, taskText: searchableText)
         }
+        let relevantConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
+            from: matchedConnectors,
+            contextText: searchableText
+        )
         for connector in relevantConnectors {
             includeSkill(connector.skill)
         }
@@ -525,12 +580,10 @@ struct TaskCapabilityResolver {
     }
 
     var connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy {
-        if exposeAllConnectorCredentials {
-            return .allowAllCredentials
-        }
         return ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
                 for: task,
+                runtime: runtime,
                 additionalGrants: additionalCredentialGrants
             ))
         )
@@ -622,6 +675,7 @@ struct TaskCapabilityResolver {
 
         let connectorEnvVars = ConnectorRuntimeProjection(
             connectors: connectors,
+            secretStore: secretStore,
             credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
@@ -784,28 +838,60 @@ struct TaskCapabilityResolver {
     }
 
     private static func matchesSkill(_ skill: Skill, taskText: String) -> Bool {
+        if skill.connectors.contains(where: { matchesConnector($0, taskText: taskText) }) {
+            return true
+        }
+        if skill.localTools.contains(where: { matchesLocalTool($0, taskText: taskText) }) {
+            return true
+        }
         return matchesCapabilityText(
             [
                 skill.name,
-                skill.skillDescription,
-                skill.behaviorInstructions,
-                skill.environmentKeys.joined(separator: " "),
-                skill.localTools.map { "\($0.name) \($0.command) \($0.toolDescription)" }.joined(separator: " "),
-                skill.connectors.map { "\($0.name) \($0.serviceType) \($0.connectorDescription) \($0.baseURL)" }.joined(separator: " ")
+                skill.skillDescription
             ].joined(separator: " "),
             taskText: taskText
         )
     }
 
     private static func matchesConnector(_ connector: Connector, taskText: String) -> Bool {
-        matchesCapabilityText(
+        let normalizedTask = normalizedSearchText(taskText)
+        guard !normalizedTask.isEmpty else { return false }
+        let serviceType = normalizedSearchText(connector.serviceType)
+        let aliases = serviceAliases[serviceType] ?? [serviceType]
+        if aliases.contains(where: { containsTokenPhrase(normalizedTask, phrase: $0) }) {
+            return true
+        }
+
+        if serviceType == "jira" {
+            if taskText.range(
+                of: #"\b[A-Z][A-Z0-9]{1,15}-[0-9]+\b"#,
+                options: .regularExpression
+            ) != nil {
+                return true
+            }
+            let configuredProjects = jiraProjectKeys(
+                connector.config["JIRA_PROJECTS"] ?? ""
+            )
+            if jiraProjectKeyMentioned(
+                in: taskText,
+                configuredProjects: configuredProjects
+            ) {
+                return true
+            }
+        }
+
+        if let host = URL(string: connector.baseURL)?.host,
+           !host.isEmpty,
+           containsTokenPhrase(normalizedTask, phrase: normalizedSearchText(host)) {
+            return true
+        }
+
+        return matchesCapabilityText(
             [
                 connector.name,
                 connector.serviceType,
                 connector.connectorDescription,
-                connector.baseURL,
-                connector.configKeys.joined(separator: " "),
-                connector.credentialKeys.joined(separator: " ")
+                connector.baseURL
             ].joined(separator: " "),
             taskText: taskText
         )
@@ -848,8 +934,6 @@ struct TaskCapabilityResolver {
             [
                 snapshot.name,
                 snapshot.description,
-                snapshot.behaviorInstructions,
-                snapshot.environmentKeys.joined(separator: " "),
                 connectorText,
                 localToolText
             ].joined(separator: " "),
@@ -867,7 +951,36 @@ struct TaskCapabilityResolver {
     }
 
     private static func searchableTaskText(task: AgentTask, contextText: String) -> String {
-        normalizedSearchText(TaskContextStateManager.capabilitySearchText(for: task, contextText: contextText))
+        let currentTurn = contextText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !currentTurn.isEmpty {
+            return normalizedSearchText(currentTurn)
+        }
+        return normalizedSearchText(TaskContextStateManager.activeObjectiveText(for: task))
+    }
+
+    private static func containsTokenPhrase(_ normalizedText: String, phrase: String) -> Bool {
+        let normalizedPhrase = normalizedSearchText(phrase)
+        guard !normalizedPhrase.isEmpty else { return false }
+        return " \(normalizedText) ".contains(" \(normalizedPhrase) ")
+    }
+
+    private static func jiraProjectKeys(_ raw: String) -> Set<String> {
+        Set(
+            raw.split { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "-" }
+                .map { $0.uppercased() }
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    private static func jiraProjectKeyMentioned(
+        in text: String,
+        configuredProjects: Set<String>
+    ) -> Bool {
+        guard !configuredProjects.isEmpty else { return false }
+        let tokens = text
+            .split { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "-" }
+            .map { $0.uppercased() }
+        return tokens.contains(where: configuredProjects.contains)
     }
 
     private static func normalizedSearchText(_ text: String) -> String {
@@ -1055,6 +1168,15 @@ struct TaskCapabilityResolver {
         "workflow",
         "workspace",
         "write"
+    ]
+
+    private static let serviceAliases: [String: [String]] = [
+        "jira": ["jira", "atlassian"],
+        "github": ["github", "gh"],
+        "gcp": ["gcp", "google cloud", "bigquery"],
+        "slack": ["slack"],
+        "outlook": ["outlook", "microsoft 365"],
+        "graph": ["microsoft graph", "graph mail"]
     ]
 }
 

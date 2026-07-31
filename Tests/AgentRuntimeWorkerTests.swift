@@ -41,6 +41,11 @@ struct ProviderLaunchCapabilityScopeTests {
 
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logResolution("))
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
+        #expect(sourceContains(workerSource, "let capabilityPreflightCache = PreflightCache("))
+        #expect(sourceContains(workerSource, "let githubRepositoryStatus = await capabilityPreflightCache.cachedStatus("))
+        #expect(sourceContains(workerSource, "capabilityWorkingDirectory: capabilityWorkingDirectory"))
+        #expect(sourceContains(workerSource, "GitHubCapabilityLaunchContext.appendingProviderGuidance("))
+        #expect(sourceContains(workerSource, "repositoryStatus: githubRepositoryStatus"))
         #expect(sourceContains(workerSource, "contextText: providerLaunchContextText"))
         #expect(sourceContains(
             workerSource,
@@ -55,6 +60,7 @@ struct ProviderLaunchCapabilityScopeTests {
         ))
         #expect(sourceContains(signatureSource, "capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))"))
         #expect(auditSource.contains("TaskCapabilityResolutionSnapshot.capture"))
+        #expect(!auditSource.contains("GitHubRepositoryAccessProbe("))
         #expect(!auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
         #expect(!auditSource.contains("promptScope()"))
     }
@@ -98,15 +104,9 @@ struct ProviderLaunchCapabilityScopeTests {
         )
         #expect(sourceContains(
             workerSource,
-            """
-            let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
-                for: launchTask,
-                providerLaunchContextText: providerLaunchContextText,
-                additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
-                exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
-            )
-            """
+            "let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot"
         ))
+        #expect(!workerSource.contains("exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous"))
         #expect(sourceContains(
             workerSource,
             "capabilityResolutionSnapshot: capabilityResolutionSnapshot"

@@ -47,6 +47,7 @@ extension HeadlessChatScenarioTests {
 
         let missingPath = harness.rootURL.appendingPathComponent("missing-codex").path
         let task = harness.makeTask(runtime: .codexCLI, goal: "Task that needs Codex", model: "gpt-5")
+        task.runtimeExplicitlySelected = true
         let worker = harness.makeWorker(runtime: .codexCLI, executablePath: missingPath)
 
         _ = await harness.execute(task: task, worker: worker)

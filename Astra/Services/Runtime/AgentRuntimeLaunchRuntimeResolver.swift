@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum AgentRuntimeLaunchRuntimeResolver {
     struct LaunchRuntimeResolution {
@@ -11,6 +12,8 @@ enum AgentRuntimeLaunchRuntimeResolver {
         let incompatibilities: [AgentRuntimeID: [TaskRuntimeIncompatibility]]
         let launchBlock: TaskRuntimeCompatibilityLaunchBlock?
         let selectedRuntimeEvidence: [String]
+        let capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
+        let contractDigest: String
 
         var rerouted: Bool {
             runtime != requestedRuntime
@@ -24,6 +27,8 @@ enum AgentRuntimeLaunchRuntimeResolver {
         let missingCapabilities: [String]
         let selectedRuntimeEvidence: [String]
         let launchBlock: TaskRuntimeCompatibilityLaunchBlock?
+        let capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
+        let contractDigest: String
     }
 
     /// Persisted tasks can outlive the runtime provider that created them.
@@ -63,7 +68,9 @@ enum AgentRuntimeLaunchRuntimeResolver {
         startEventPayload: String?,
         sessionMessage: String?,
         phase: RunPhase,
-        executionPolicy: AgentRuntimeExecutionPolicy
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        fallbackPermissionPolicy: PermissionPolicy = .restricted,
+        defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
     ) -> LaunchRuntimeResolution {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: requestedRuntime)
         let startPayload = startEventPayload ?? adapter.defaultStartEventPayload(task: task)
@@ -74,44 +81,42 @@ enum AgentRuntimeLaunchRuntimeResolver {
             sessionMessage: sessionMessage,
             phase: phase
         )
-        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+        let intent = executionPolicy.turnIntentSnapshot ?? TaskTurnIntentResolver.capture(
             for: task,
-            providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            sourceEventID: nil,
+            acceptedTurn: sessionMessage ?? contextText,
+            includeTaskInputs: phase == .run
         )
-        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
-        let taskEnvironment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
-            for: task,
-            capabilityScope: snapshot.providerLaunch,
-            contextText: contextText,
-            executionPolicy: executionPolicy
-        )
-        let requirements = TaskRuntimeRequirementSet.derive(
+        let admission = TaskLaunchAdmissionService.evaluate(
             task: task,
-            capabilityResolutionSnapshot: snapshot,
-            executionEnvironment: executionEnvironment,
-            browserBridgeAttached: BrowserBridgeRuntimeLaunchGuard.isBrowserBridgeAttached(environment: taskEnvironment)
-        )
-        let profiles = RuntimeProfileCache(configuration: runtimeConfiguration)
-        let resolution = TaskRuntimeCompatibilityService.resolve(
+            intent: intent,
             requestedRuntime: requestedRuntime,
-            defaultRuntime: runtimeConfiguration.defaultRuntimeID,
-            requirements: requirements,
-            respectExplicitRuntimeChoice: task.runtimeExplicitlySelected,
-            profile: { runtime in
-                profiles.profile(for: runtime)
+            runtimeConfiguration: runtimeConfiguration,
+            executionPolicy: executionPolicy.withTurnIntentSnapshot(intent),
+            fallbackPermissionPolicy: fallbackPermissionPolicy,
+            defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+            phase: phase,
+            secretStore: KeychainSecretStore(),
+            profile: { runtime, settings in
+                AgentRuntimeCapabilityProfileService.profile(
+                    for: runtime,
+                    executablePath: settings.executablePath
+                )
             },
-            isRuntimeUsable: { runtime in
+            isRuntimeUsable: { runtime, _ in
                 runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
             }
         )
+        let selectedCandidate = admission.selectedCandidate
         return LaunchRuntimeResolution(
-            requestedRuntime: resolution.requestedRuntime,
-            runtime: resolution.selectedRuntime,
-            requirements: resolution.requirements,
-            incompatibilities: resolution.incompatibilities,
-            launchBlock: resolution.launchBlock,
-            selectedRuntimeEvidence: profiles.profile(for: resolution.selectedRuntime).observedEvidence
+            requestedRuntime: admission.requestedRuntime,
+            runtime: admission.selectedRuntime,
+            requirements: selectedCandidate.requirements,
+            incompatibilities: admission.candidates.mapValues { $0.incompatibilities },
+            launchBlock: admission.launchBlock,
+            selectedRuntimeEvidence: selectedCandidate.runtimeEvidence,
+            capabilityResolutionSnapshot: selectedCandidate.capabilityResolutionSnapshot,
+            contractDigest: selectedCandidate.contractDigest
         )
     }
 
@@ -131,7 +136,9 @@ enum AgentRuntimeLaunchRuntimeResolver {
                 requirements: resolution.requirements,
                 missingCapabilities: missingCapabilities,
                 selectedRuntimeEvidence: resolution.selectedRuntimeEvidence,
-                launchBlock: resolution.launchBlock
+                launchBlock: resolution.launchBlock,
+                capabilityResolutionSnapshot: resolution.capabilityResolutionSnapshot,
+                contractDigest: resolution.contractDigest
             )
         }
 
@@ -154,7 +161,9 @@ enum AgentRuntimeLaunchRuntimeResolver {
             requirements: resolution.requirements,
             missingCapabilities: missingCapabilities,
             selectedRuntimeEvidence: resolution.selectedRuntimeEvidence,
-            launchBlock: resolution.launchBlock
+            launchBlock: resolution.launchBlock,
+            capabilityResolutionSnapshot: resolution.capabilityResolutionSnapshot,
+            contractDigest: resolution.contractDigest
         )
     }
 

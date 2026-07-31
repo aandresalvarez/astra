@@ -1,13 +1,11 @@
 import Darwin
 import Foundation
 import ASTRACore
-
 protocol AgentRuntimeProcessControl: AnyObject {
     var isRunning: Bool { get }
     var terminationStatus: Int32 { get }
     func terminate()
 }
-
 extension Process: AgentRuntimeProcessControl {}
 
 final class AgentRuntimeProcessControlBox: @unchecked Sendable {
@@ -81,6 +79,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         defer { lock.unlock() }
         return status
     }
+
+    var processIdentifier: Int32 { lock.withLock { processID } }
 
     init(
         executablePath: String,

@@ -1261,7 +1261,8 @@ struct WorkspaceRightRailView: View {
             for package in packages {
                 let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
                     for: package,
-                    cache: cache
+                    cache: cache,
+                    workingDirectory: workspace.resolvedWorkingPath
                 )
                 statuses.merge(packageStatuses) { _, new in new }
             }

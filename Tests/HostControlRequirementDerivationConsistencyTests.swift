@@ -52,7 +52,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         context.insert(workspace)
         context.insert(task)
 
-        func blockedHostControlDiagnostic(precomputed: TaskRuntimeRequirementSet?) throws -> PolicyDiagnostic? {
+        func hostControlRoutingDiagnostic(precomputed: TaskRuntimeRequirementSet?) throws -> PolicyDiagnostic? {
             let run = TaskRun(task: task)
             context.insert(run)
             let manifest = AgentPolicyManifestService.recordPreflightManifest(
@@ -70,20 +70,22 @@ struct HostControlRequirementDerivationConsistencyTests {
                 precomputedRuntimeRequirements: precomputed,
                 modelContext: context
             )
-            return manifest.providerRender.diagnostics.first { $0.id == "cursor_cli.host-control-plane-unsupported" }
+            return manifest.providerRender.diagnostics.first {
+                $0.id == "container.host-control-plane-routing"
+            }
         }
 
         // Baseline: without an override, the render independently derives the
-        // requirement from the task's own capability scope and blocks — same
-        // as the always-live cursorPreflightNamesHostControlIncompatibilityForGitHubMetadata.
-        let baseline = try blockedHostControlDiagnostic(precomputed: nil)
+        // requirement from the task's own capability scope and records the
+        // CLI-relay route.
+        let baseline = try hostControlRoutingDiagnostic(precomputed: nil)
         #expect(baseline != nil)
 
         // With an explicit (deliberately empty) precomputed requirement set —
         // as if the launch resolver had already determined no host-control
         // MCP is needed — the render must defer to it instead of re-deriving
         // its own, contradicting answer.
-        let overridden = try blockedHostControlDiagnostic(precomputed: TaskRuntimeRequirementSet(
+        let overridden = try hostControlRoutingDiagnostic(precomputed: TaskRuntimeRequirementSet(
             hostControlTools: [],
             requiresDockerWorkspaceShell: false,
             requiresBrowserControl: false
@@ -146,6 +148,12 @@ struct HostControlRequirementDerivationConsistencyTests {
 
         let executionPolicy = AgentRuntimeExecutionPolicy.default
         let followUpMessage = "please go ahead and merge it"
+        let turnIntentSnapshot = TaskTurnIntentResolver.capture(
+            for: task,
+            sourceEventID: nil,
+            acceptedTurn: followUpMessage,
+            includeTaskInputs: false
+        )
 
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
         let promptOverride = AgentPromptBuilder.buildFreshFollowUpPrompt(
@@ -168,7 +176,9 @@ struct HostControlRequirementDerivationConsistencyTests {
         let resolverSnapshot = TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            turnIntentSnapshot: turnIntentSnapshot,
+            runtime: .cursorCLI
         )
         let resolverRequirements = TaskRuntimeRequirementSet.derive(
             task: task,
@@ -184,7 +194,8 @@ struct HostControlRequirementDerivationConsistencyTests {
             for: task,
             providerLaunchContextText: contextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
-            exposeAllConnectorCredentials: true
+            turnIntentSnapshot: turnIntentSnapshot,
+            runtime: .cursorCLI
         )
         let renderHostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
@@ -265,6 +276,12 @@ struct HostControlRequirementDerivationConsistencyTests {
 
         let executionPolicy = AgentRuntimeExecutionPolicy.default
         let followUpMessage = "please go ahead and merge it"
+        let turnIntentSnapshot = TaskTurnIntentResolver.capture(
+            for: task,
+            sourceEventID: nil,
+            acceptedTurn: followUpMessage,
+            includeTaskInputs: false
+        )
 
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let promptOverride = AgentPromptBuilder.buildFreshFollowUpPrompt(
@@ -288,7 +305,9 @@ struct HostControlRequirementDerivationConsistencyTests {
         let resolverSnapshot = TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            turnIntentSnapshot: turnIntentSnapshot,
+            runtime: .copilotCLI
         )
         let resolverRequirements = TaskRuntimeRequirementSet.derive(
             task: task,
@@ -503,25 +522,19 @@ struct HostControlRequirementDerivationConsistencyTests {
         #expect(overridden.plan.credentialGrants.contains { $0.source == .gitCredential })
     }
 
-    /// Phase 2 (D1): when the user explicitly pinned Cursor for this task
-    /// (`runtimeExplicitlySelected`), an incompatible requirement must not be
-    /// silently overridden by rerouting to Codex — it must block up front
-    /// with the real remediation, before any provider process launches. This
-    /// is the explicit-pick counterpart to
-    /// `githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime`
-    /// in HeadlessChatContinuationScenarioTests.swift, which covers the
-    /// default (non-explicit) case and must keep silently rerouting.
-    @Test("explicitly-selected incompatible runtime blocks before launch instead of rerouting")
+    /// An explicit Cursor selection remains authoritative now that Cursor can
+    /// attach ASTRA's process-bound host-control CLI relay.
+    @Test("explicitly-selected Cursor host-control task runs without rerouting")
     @MainActor
-    func explicitlySelectedIncompatibleRuntimeBlocksBeforeLaunch() async throws {
+    func explicitlySelectedCursorHostControlTaskRunsWithoutRerouting() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
-            exit 1
+            printf '%s\\n' 'Cursor GitHub answer'
+            exit 0
             """
         )
         let codexPath = try harness.writeExecutable(
@@ -551,8 +564,6 @@ struct HostControlRequirementDerivationConsistencyTests {
         task.skills = [githubSkill]
         harness.context.insert(githubSkill)
 
-        // The critical setup difference from the default-reroute test: the
-        // user explicitly picked Cursor via the composer's runtime switcher.
         task.runtimeExplicitlySelected = true
 
         let worker = harness.makeWorker(
@@ -574,52 +585,29 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
-        // Must stay on Cursor (not silently rerouted to Codex) and must not
-        // have launched the Cursor process at all (block happens pre-launch).
         #expect(task.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
         #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.status == .completed)
+        #expect(run.output == "Cursor GitHub answer")
         #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
-        #expect(run.typedStopReason == .runtimeCapabilityIncompatible)
-        // A compatible fallback (Codex) exists in this harness, so the block
-        // names it specifically instead of the generic multi-option text —
-        // both in the human-readable audit event and the structured sibling
-        // event the decision dock actually reads.
-        #expect(task.events.contains { $0.payload.contains("Switch to Codex CLI.") })
-        #expect(task.events.contains { $0.payload.contains("Suggested runtime: codex_cli") })
-        let structuredBlock = try #require(
-            task.events
-                .first { $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
-                .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
-        )
-        #expect(structuredBlock.kind == .runtimeIncompatible)
-        #expect(structuredBlock.suggestedRuntimeID == "codex_cli")
-        #expect(structuredBlock.remediation == "Switch to Codex CLI.")
-
-        // The actual reachability bug this scenario guards against: before
-        // the typed isPolicyBlocked fix, runtime_capability_incompatible
-        // never satisfied the substring heuristic, so this dismissal reason
-        // was always nil and the whole truthful-UI + switch-runtime dock
-        // feature was unreachable for the exact case it was built for.
-        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == .policyBlocked)
+        #expect(!task.events.contains {
+            $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue
+        })
     }
 
-    /// End-to-end companion: drives the same scenario through the real
-    /// worker resume path (continueSession) and asserts the task never ends
-    /// up `pending_user`/`policy_blocked` on Cursor without either a visible
-    /// reroute event or a pre-launch compatibility block event — i.e. it
-    /// must not go silent. This is the outward-observable shape of the
-    /// 9FA6AF3D incident.
-    @Test("resumed autonomous GitHub task never reaches a silent policy_blocked failure on an incompatible runtime")
+    /// End-to-end companion for the original resumed-task incident: Cursor
+    /// must execute through the CLI relay rather than fail late in policy.
+    @Test("resumed autonomous GitHub task executes on Cursor through the CLI relay")
     @MainActor
-    func resumedTaskDoesNotReachSilentPolicyBlock() async throws {
+    func resumedTaskExecutesThroughCursorCLIRelay() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
-            exit 1
+            printf '%s\\n' 'Cursor resumed GitHub work'
+            exit 0
             """
         )
         let codexPath = try harness.writeExecutable(
@@ -688,24 +676,10 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
-        let rerouted = task.events.contains { event in
-            event.type == TaskEventTypes.System.info.rawValue
-                && event.payload.contains("Runtime changed from Cursor CLI")
-        }
-        let blockedUpFront = run.status == .failed
-            && (run.typedStopReason?.rawValue == "runtime_capability_incompatible"
-                || run.typedStopReason?.rawValue == HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason)
-
-        #expect(
-            rerouted || blockedUpFront || run.runtimeID != AgentRuntimeID.cursorCLI.rawValue,
-            """
-            Task resumed on an explicitly-pinned but host-control-incompatible runtime \
-            (Cursor CLI) with neither a visible reroute nor a pre-launch compatibility block \
-            (run.status=\(run.status), run.runtimeID=\(run.runtimeID ?? "nil"), \
-            stopReason=\(run.typedStopReason?.rawValue ?? "nil")). This reproduces the \
-            9FA6AF3D shape: the run silently proceeded past the compatibility resolver and \
-            only failed later as an opaque policy_blocked run.
-            """
-        )
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.output == "Cursor resumed GitHub work")
+        #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
+        #expect(!task.events.contains { $0.payload.contains("Provider policy blocked this run") })
     }
 }

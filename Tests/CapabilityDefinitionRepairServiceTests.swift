@@ -50,11 +50,11 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(library.installedVersion(of: "jira-workflow") == "2.0.7")
+        #expect(library.installedVersion(of: "jira-workflow") == "2.2.0")
         #expect(skill.allowedTools == package.skills[0].allowedTools)
         #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
+        #expect(skill.behaviorInstructions.contains("Never fall back to direct REST credential use"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 
@@ -94,7 +94,7 @@ struct CapabilityDefinitionRepairServiceTests {
 
         #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
+        #expect(skill.behaviorInstructions.contains("Never fall back to direct REST credential use"))
     }
 
     @Test("Startup repair refreshes stale local package-created Jira skill")
@@ -134,7 +134,7 @@ struct CapabilityDefinitionRepairServiceTests {
 
         #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
+        #expect(skill.behaviorInstructions.contains("Never fall back to direct REST credential use"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 
@@ -236,6 +236,66 @@ struct CapabilityDefinitionRepairServiceTests {
                 "Enabled package \(package.id) connectors must be visible to runtime capability selection."
             )
         }
+    }
+
+    @Test("Startup repair activates only the current package-owned skill")
+    func removesStaleDuplicateSkillActivation() throws {
+        let container = try makeCapabilityDefinitionRepairContainer()
+        let context = container.mainContext
+        let (library, root) = makeCapabilityDefinitionRepairLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = try #require(
+            PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
+        )
+        let pluginSkill = try #require(package.skills.first)
+        try library.syncApprovedPackages([package])
+
+        let workspace = Workspace(name: "GitHub Repair", primaryPath: "/tmp/github-repair")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let current = Skill(
+            name: pluginSkill.name,
+            icon: pluginSkill.icon,
+            skillDescription: pluginSkill.description,
+            allowedTools: ["Read"],
+            behaviorInstructions: "Old current instructions"
+        )
+        current.isGlobal = true
+        current.originPackageID = package.id
+        current.originPackageVersion = package.version
+        current.originComponentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+        current.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        context.insert(current)
+
+        let stale = Skill(
+            name: pluginSkill.name,
+            icon: pluginSkill.icon,
+            skillDescription: pluginSkill.description,
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Stale duplicate instructions"
+        )
+        stale.isGlobal = true
+        stale.originPackageID = package.id
+        stale.originPackageVersion = "2.1.2"
+        stale.originComponentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+        stale.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        context.insert(stale)
+
+        workspace.enabledGlobalSkillIDs = [stale.id.uuidString, current.id.uuidString]
+        try context.save()
+
+        CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
+            modelContext: context,
+            library: library,
+            approvedPackages: [package]
+        )
+
+        #expect(workspace.enabledGlobalSkillIDs == [current.id.uuidString])
+        #expect(current.behaviorInstructions == pluginSkill.behaviorInstructions)
+        #expect(current.originPackageVersion == package.version)
+        #expect(stale.behaviorInstructions == "Stale duplicate instructions")
     }
 
     @Test("Startup repair leaves disabled approved package connector disabled")

@@ -1063,8 +1063,12 @@ struct CapabilityCreationWizardView: View {
         switch status {
         case .some(.healthy):
             return "Ready"
+        case .some(.unverified):
+            return "Unverified"
         case .some(.unauthenticated):
             return "Needs auth"
+        case .some(.authorizationRequired):
+            return "Authorize"
         case .some(.unresponsive):
             return "Issue"
         case .some(.missingBinary):
@@ -1078,7 +1082,11 @@ struct CapabilityCreationWizardView: View {
         switch status {
         case .some(.healthy):
             return Stanford.paloAltoGreen
+        case .some(.unverified):
+            return Stanford.poppy
         case .some(.unauthenticated):
+            return Stanford.poppy
+        case .some(.authorizationRequired):
             return Stanford.poppy
         case .some(.unresponsive), .some(.missingBinary):
             return Stanford.cardinalRed

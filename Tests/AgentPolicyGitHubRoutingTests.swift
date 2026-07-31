@@ -144,8 +144,8 @@ struct AgentPolicyGitHubRoutingTests {
     }
 
     @MainActor
-    @Test("Cursor preflight names host-control incompatibility for GitHub metadata")
-    func cursorPreflightNamesHostControlIncompatibilityForGitHubMetadata() throws {
+    @Test("Cursor preflight routes GitHub metadata through the CLI relay")
+    func cursorPreflightRoutesGitHubMetadataThroughCLIRelay() throws {
         let container = try makeAgentPolicyGitHubRoutingContainer()
         let context = container.mainContext
         let package = try #require(PluginCatalog.builtInPackages.first {
@@ -179,14 +179,32 @@ struct AgentPolicyGitHubRoutingTests {
             modelContext: context
         )
 
-        let diagnostic = try #require(manifest.providerRender.diagnostics.first {
+        #expect(!manifest.providerRender.diagnostics.contains {
             $0.id == "cursor_cli.host-control-plane-unsupported"
         })
-        #expect(diagnostic.severity == .blocked)
-        #expect(diagnostic.message.contains("GitHub metadata/API"))
-        #expect(diagnostic.remediation?.contains("Codex CLI") == true)
-        #expect(diagnostic.remediation?.contains("Copilot CLI") == true)
-        #expect(!diagnostic.message.lowercased().contains("secret"))
+        let diagnostic = try #require(manifest.providerRender.diagnostics.first {
+            $0.id == "container.host-control-plane-routing"
+        })
+        #expect(diagnostic.severity == .info)
+        #expect(diagnostic.title.contains("CLI relay"))
+        #expect(diagnostic.message.contains("typed astra-host-control relay"))
+        #expect(manifest.providerRender.askFirstTools.contains("Bash"))
+        #expect(manifest.providerRender.allowedShellPatterns.contains(
+            HostControlCLIRelayPolicy.manifestMarker
+        ))
+        let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest)
+        #expect(guardUnderTest.disposition(
+            toolName: "Bash",
+            command: "astra-host-control github -- pr list --state open --limit 30"
+        ) == .allowed)
+        #expect(guardUnderTest.disposition(
+            toolName: "Bash",
+            command: "astra-host-control github -- pr list; env"
+        ) == .denied)
+        #expect(guardUnderTest.disposition(
+            toolName: "Bash",
+            command: "astra-host-control github -- $(env)"
+        ) == .denied)
         #expect(!manifest.credentialLabels.contains("git:credential-context:read-only"))
     }
 }

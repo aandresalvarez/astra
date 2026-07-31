@@ -12,12 +12,14 @@ enum HostControlPlaneMCPProjection {
         let enabledPackageIDs: Set<String>
         let behaviorSkills: [BehaviorSkill]
         let effectiveBehaviorInstructions: [String]
+        let connectorServiceTypes: [String]
         let resolutionIsComplete: Bool
 
         init(capabilityScope: TaskCapabilityPromptScope) {
             enabledPackageIDs = Set(capabilityScope.enabledPackageIDs)
             behaviorSkills = capabilityScope.behaviorSkills.map { BehaviorSkill(originPackageID: $0.originPackageID) }
             effectiveBehaviorInstructions = capabilityScope.resolver.effectiveSnapshots.map(\.behaviorInstructions)
+            connectorServiceTypes = capabilityScope.connectors.map(\.serviceType)
             resolutionIsComplete = true
         }
 
@@ -25,11 +27,13 @@ enum HostControlPlaneMCPProjection {
             enabledPackageIDs: Set<String>,
             behaviorSkillOriginPackageIDs: [String?],
             effectiveBehaviorInstructions: [String],
+            connectorServiceTypes: [String] = [],
             resolutionIsComplete: Bool = true
         ) {
             self.enabledPackageIDs = enabledPackageIDs
             behaviorSkills = behaviorSkillOriginPackageIDs.map { BehaviorSkill(originPackageID: $0) }
             self.effectiveBehaviorInstructions = effectiveBehaviorInstructions
+            self.connectorServiceTypes = connectorServiceTypes
             self.resolutionIsComplete = resolutionIsComplete
         }
     }
@@ -79,10 +83,33 @@ enum HostControlPlaneMCPProjection {
         if githubCapabilityIsInScope(capabilitySnapshot) {
             required.insert("github")
         }
+        for serviceType in capabilitySnapshot.connectorServiceTypes {
+            if brokerOwnsConnectorConfiguration(serviceType),
+               let tool = connectorToolName(serviceType) {
+                required.insert(tool)
+            }
+        }
         for instructions in capabilitySnapshot.effectiveBehaviorInstructions {
             required.formUnion(requiredToolNames(inBehaviorText: instructions))
         }
         return orderedToolNames(required)
+    }
+
+    static func connectorToolName(_ serviceType: String) -> String? {
+        switch serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "jira":
+            return "jira"
+        case "github", "gh":
+            return "github"
+        case "gcloud", "google_cloud", "googlecloud", "gcp":
+            return "gcloud"
+        default:
+            return nil
+        }
+    }
+
+    static func brokerOwnsConnectorConfiguration(_ serviceType: String) -> Bool {
+        connectorToolName(serviceType) == "jira"
     }
 
     static func githubIsEnabled(
@@ -206,7 +233,7 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:],
+        taskEnvironment _: [String: String] = [:],
         contextText: String = "",
         capabilityScope: TaskCapabilityPromptScope? = nil,
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
@@ -219,7 +246,7 @@ enum HostControlPlaneMCPProjection {
             precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         guard !allowedTools.isEmpty else { return nil }
-        let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
+        let envKeys = environmentKeys()
         return MCPRuntimeProjection.ResolvedServer(
             packageID: "astra-builtin",
             server: PluginMCPServer(
@@ -241,7 +268,7 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:],
+        taskEnvironment _: [String: String] = [:],
         contextText: String = "",
         capabilityScope: TaskCapabilityPromptScope? = nil,
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
@@ -266,8 +293,11 @@ enum HostControlPlaneMCPProjection {
             "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST": diagnosticsHostPath(task: task),
             "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES": allowedSSHAliases(task: task).joined(separator: ",")
         ]
-        for (key, value) in taskEnvironment where connectorEnvironmentKey(key) {
-            output[key] = value
+        if let brokerSocketPath = HostControlBrokerSessionRegistry.shared.endpoint(
+            taskID: task.id,
+            runID: runID
+        ) {
+            output[HostControlBrokerIPC.endpointEnvironmentKey] = brokerSocketPath
         }
         return output
     }
@@ -317,17 +347,11 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",
-        "ASTRA_CONNECTORS"
+        HostControlBrokerIPC.endpointEnvironmentKey
     ]
 
-    private static func environmentKeys(taskEnvironment: [String: String]) -> [String] {
-        let connectorKeys = taskEnvironment.keys.filter(connectorEnvironmentKey)
-        return Array(Set(baseEnvironmentKeys + connectorKeys)).sorted()
-    }
-
-    private static func connectorEnvironmentKey(_ key: String) -> Bool {
-        key == "ASTRA_CONNECTORS"
-            || key.range(of: #"^[A-Z][A-Z0-9_]*_[A-Z0-9_]+$"#, options: .regularExpression) != nil
+    private static func environmentKeys() -> [String] {
+        baseEnvironmentKeys.sorted()
     }
 
     private static func runtimeSupportPurpose(for tool: String) -> String {

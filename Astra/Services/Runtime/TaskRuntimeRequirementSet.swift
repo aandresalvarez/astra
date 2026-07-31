@@ -28,7 +28,7 @@ struct TaskRuntimeRequirementSet: Equatable, Sendable {
     var missingCapabilityNames: [String] {
         var names: [String] = []
         if requiresHostControlPlane {
-            names.append("host-control MCP server for \(hostControlTools.joined(separator: ", "))")
+            names.append("ASTRA host tools for \(hostControlTools.joined(separator: ", "))")
         }
         if requiresDockerWorkspaceShell {
             names.append("Docker workspace shell MCP")

@@ -172,6 +172,15 @@ struct ConnectorRuntimeProjection {
         environmentBindings(aliases: aliasesByConnectorID)
     }
 
+    func declaredEnvironmentBindingKeys() -> Set<String> {
+        let bindings = ConnectorRuntimeProjection(
+            connectors: connectors,
+            secretStore: DeclaredConnectorSecretStore(),
+            credentialExposurePolicy: .allowAllCredentials
+        ).environmentBindings()
+        return Set(bindings.flatMap { [$0.envKey, $0.originalKey] })
+    }
+
     func configuredCredentialLabels() -> [String] {
         Self.uniquedSorted(configuredCredentialBindings().map(\.label))
     }
@@ -588,6 +597,26 @@ struct ConnectorRuntimeProjection {
             guard let first = value.first else { return "" }
             return first.uppercased() + String(value.dropFirst())
         }
+    }
+}
+
+private struct DeclaredConnectorSecretStore: SecretStore {
+    func load(key: String, entityID _: String) -> String? {
+        key
+    }
+
+    func save(key _: String, value _: String, entityID _: String, label _: String?) -> Bool {
+        false
+    }
+
+    func delete(key _: String, entityID _: String) -> Bool {
+        false
+    }
+
+    func deleteAll(entityID _: String) {}
+
+    func exists(key _: String, entityID _: String) -> Bool {
+        true
     }
 }
 

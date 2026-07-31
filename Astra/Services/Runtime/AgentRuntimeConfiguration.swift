@@ -10,7 +10,7 @@ struct AgentRuntimeProviderSettings: Equatable, Sendable {
         executablePaths: [AgentRuntimeID: String] = [:],
         homeDirectories: [AgentRuntimeID: String] = [:]
     ) {
-        self.executablePaths = executablePaths
+        self.executablePaths = executablePaths.mapValues(Self.normalizedExecutablePath)
         self.homeDirectories = homeDirectories
     }
 
@@ -23,7 +23,7 @@ struct AgentRuntimeProviderSettings: Equatable, Sendable {
     }
 
     mutating func setExecutablePath(_ path: String, for runtime: AgentRuntimeID) {
-        executablePaths[runtime] = path
+        executablePaths[runtime] = Self.normalizedExecutablePath(path)
     }
 
     func homeDirectory(for runtime: AgentRuntimeID) -> String {
@@ -36,6 +36,10 @@ struct AgentRuntimeProviderSettings: Equatable, Sendable {
 
     mutating func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
         homeDirectories[runtime] = path
+    }
+
+    private static func normalizedExecutablePath(_ path: String) -> String {
+        path.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

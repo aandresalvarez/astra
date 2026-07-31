@@ -83,7 +83,9 @@ enum TaskRuntimePermissionGrants {
         runtime: AgentRuntimeID? = nil,
         additionalGrants: [PermissionGrant] = []
     ) -> [String] {
-        let taskGrants = approvedGrants(for: task, runtime: runtime)
+        // Durable grants are provider-native and must never be replayed when
+        // the caller has not identified the runtime being launched.
+        let taskGrants = runtime.map { approvedGrants(for: task, runtime: $0) } ?? []
         let oneRunGrants = PermissionBroker.sanitizeApprovedGrants(additionalGrants)
         return Array(Set((taskGrants + oneRunGrants).compactMap { grant in
             guard case .credential(let label) = grant else { return nil }

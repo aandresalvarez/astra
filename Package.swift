@@ -74,7 +74,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "AstraHostControlTool",
-            dependencies: ["HostControlToolSupport"],
+            dependencies: ["ASTRACore", "HostControlToolSupport"],
             path: "Tools/AstraHostControlTool"
         ),
         .executableTarget(
@@ -120,6 +120,7 @@ let package = Package(
                 "ASTRALogging",
                 "ASTRAModels",
                 "ASTRAPersistence",
+                "HostControlToolSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")

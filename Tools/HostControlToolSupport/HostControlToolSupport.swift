@@ -367,7 +367,6 @@ public protocol HostControlProcessRunning: AnyObject {
         currentDirectory: String?
     ) -> HostControlCommandResult
 }
-
 private struct HostControlScopedProcessError: LocalizedError {
     let operation: String
     let code: Int32
@@ -635,12 +634,22 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
 public final class HostControlProcessRunner: HostControlProcessRunning {
     private let limits: HostControlProcessLimits
+    private let cancellationRegistry: HostControlOperationCancellationRegistry?
     private let outputLimitGraceSeconds: TimeInterval = 0.5
     private let timeoutGraceSeconds: TimeInterval = 0.5
     private let drainNoDataGraceSeconds: TimeInterval = 2
 
     public init(limits: HostControlProcessLimits = .standard) {
         self.limits = limits
+        self.cancellationRegistry = nil
+    }
+
+    init(
+        limits: HostControlProcessLimits,
+        cancellationRegistry: HostControlOperationCancellationRegistry
+    ) {
+        self.limits = limits
+        self.cancellationRegistry = cancellationRegistry
     }
 
     public func run(
@@ -714,10 +723,21 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             )
         }
 
+        let cancelled = LockedFlag()
+        let cancellationRegistration = cancellationRegistry?.register {
+            _ = cancelled.setIfUnset()
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        defer {
+            cancellationRegistry?.unregister(cancellationRegistration)
+        }
         let waitOutcome = waitForProcess(
             semaphore: semaphore,
             timeoutSeconds: limits.clampedTimeout(timeoutSeconds),
-            outputLimitExceeded: outputLimitExceeded
+            outputLimitExceeded: outputLimitExceeded,
+            cancelled: cancelled
         )
         let timedOut = waitOutcome == .timedOut
         switch waitOutcome {
@@ -726,6 +746,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         case .outputLimited:
             stopProcess(process, semaphore: semaphore, graceSeconds: outputLimitGraceSeconds)
         case .timedOut:
+            stopProcess(process, semaphore: semaphore, graceSeconds: timeoutGraceSeconds)
+        case .cancelled:
             stopProcess(process, semaphore: semaphore, graceSeconds: timeoutGraceSeconds)
         }
 
@@ -741,9 +763,11 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         return HostControlCommandResult(
             command: executablePath,
             arguments: arguments,
-            exitCode: timedOut ? 124 : outputTruncated ? 125 : process.terminationStatus,
+            exitCode: cancelled.isSet ? 130 : timedOut ? 124 : outputTruncated ? 125 : process.terminationStatus,
             stdout: stdoutOutput.value,
-            stderr: stderrOutput.value,
+            stderr: cancelled.isSet && stderrOutput.value.isEmpty
+                ? "Cancelled by ASTRA."
+                : stderrOutput.value,
             timedOut: timedOut,
             stdoutTruncated: stdoutTruncated,
             stderrTruncated: stderrTruncated
@@ -754,15 +778,20 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         case exited
         case outputLimited
         case timedOut
+        case cancelled
     }
 
     private func waitForProcess(
         semaphore: DispatchSemaphore,
         timeoutSeconds: TimeInterval,
-        outputLimitExceeded: LockedFlag
+        outputLimitExceeded: LockedFlag,
+        cancelled: LockedFlag
     ) -> ProcessWaitOutcome {
         let deadline = DispatchTime.now() + dispatchInterval(seconds: timeoutSeconds)
         while true {
+            if cancelled.isSet {
+                return .cancelled
+            }
             if semaphore.wait(timeout: .now() + 0.05) == .success {
                 return .exited
             }
@@ -942,6 +971,7 @@ private struct HostControlDiagnosticRecord: Codable {
 public final class HostControlMCPServer {
     private let configuration: HostControlToolConfiguration
     private let processRunner: HostControlProcessRunning
+    private let cancellationRegistry: HostControlOperationCancellationRegistry
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
@@ -960,14 +990,23 @@ public final class HostControlMCPServer {
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
         processLimits: HostControlProcessLimits = .standard
     ) {
+        let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
-        self.processRunner = processRunner ?? HostControlProcessRunner(limits: processLimits)
+        self.cancellationRegistry = cancellationRegistry
+        self.processRunner = processRunner ?? HostControlProcessRunner(
+            limits: processLimits,
+            cancellationRegistry: cancellationRegistry
+        )
         self.diagnosticsRecorder = diagnosticsRecorder
         self.processLimits = processLimits
     }
 
     public func handleLine(_ line: String) -> String? {
         server.handleLine(line)
+    }
+
+    public func cancelActiveOperations() {
+        cancellationRegistry.cancelAll()
     }
 
     private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
@@ -1152,7 +1191,10 @@ public final class HostControlMCPServer {
             return .error(code: -32602, message: error.localizedDescription)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
-        let response = JiraHTTPClient(configuration: configuration).request(
+        let response = JiraHTTPClient(
+            configuration: configuration,
+            cancellationRegistry: cancellationRegistry
+        ).request(
             connector: connector,
             request: request,
             timeoutSeconds: timeout,
@@ -1981,9 +2023,14 @@ enum HostControlURLSessionConfiguration {
 
 private final class JiraHTTPClient {
     private let configuration: HostControlToolConfiguration
+    private let cancellationRegistry: HostControlOperationCancellationRegistry
 
-    init(configuration: HostControlToolConfiguration) {
+    init(
+        configuration: HostControlToolConfiguration,
+        cancellationRegistry: HostControlOperationCancellationRegistry
+    ) {
         self.configuration = configuration
+        self.cancellationRegistry = cancellationRegistry
     }
 
     func request(
@@ -2012,10 +2059,23 @@ private final class JiraHTTPClient {
         let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
         let task = session.dataTask(with: request)
         task.resume()
+        let cancelled = LockedFlag()
+        let cancellationRegistration = cancellationRegistry.register {
+            _ = cancelled.setIfUnset()
+            task.cancel()
+            session.invalidateAndCancel()
+            semaphore.signal()
+        }
+        defer {
+            cancellationRegistry.unregister(cancellationRegistration)
+        }
         if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
             task.cancel()
             session.invalidateAndCancel()
             return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Timed out after \(Int(timeoutSeconds))s")
+        }
+        if cancelled.isSet {
+            return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Cancelled by ASTRA.")
         }
         session.finishTasksAndInvalidate()
         return delegate.response
@@ -2062,26 +2122,6 @@ public enum AstraHostControlToolMain {
                 FileHandle.standardOutput.write(Data((response + "\n").utf8))
             }
         }
-    }
-}
-
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    func setIfUnset() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !value else { return false }
-        value = true
-        return true
-    }
-
-    var isSet: Bool {
-        lock.lock()
-        let snapshot = value
-        lock.unlock()
-        return snapshot
     }
 }
 

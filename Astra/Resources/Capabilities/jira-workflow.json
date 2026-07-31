@@ -29,7 +29,7 @@
       "serviceType" : "jira"
     }
   ],
-  "description" : "Docker host-control searches and reads Jira; non-Docker credential runs can still mutate tickets",
+  "description" : "Search and read Jira through ASTRA's credential broker",
   "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
@@ -46,14 +46,12 @@
       "network"
     ],
     "externalEffects" : [
-      "readOnly",
-      "externalAPIWrite",
-      "ticketMutation"
+      "readOnly"
     ],
-    "policyNotes" : "Jira API access uses Keychain-backed connector credentials. Docker host-control routes are typed and read-only, but non-Docker runs can still access Jira credentials from Bash; governance must report ticket mutation effects until that path is also enforced.",
+    "policyNotes" : "Jira access is limited to typed read-only ASTRA host-control operations. Keychain-backed credentials remain inside ASTRA's broker and are not projected into provider environments.",
     "requiresAdminApproval" : false,
     "requiresExplicitUserConsent" : false,
-    "riskLevel" : "high",
+    "riskLevel" : "medium",
     "visibility" : "everyone"
   },
   "icon" : "list.bullet.clipboard",
@@ -72,16 +70,16 @@
   "prerequisites" : [
 
   ],
-  "setupGuide" : "Connect your workspace to Jira. The agent uses the REST API to read ticket metadata from your Jira instance. Docker host-control runs are typed and read-only; non-Docker runs can still receive Jira credentials alongside Bash, so governance reports ticket mutation risk until that path is enforced.\n\nWhat you can do:\n• Search tickets by project, sprint, status, or assignee\n• Read ticket summaries, status, assignee, priority, project, and issue type\n• Summarize sprint progress and blockers\n\nSetup:\n• Base URL — your Jira instance (e.g. https:\/\/company.atlassian.net)\n• Email — your Jira account email\n• API Token — generate at id.atlassian.com > Security > API tokens\n• Projects — the project keys you work with (e.g. ENG, OPS)",
+  "setupGuide" : "Connect your workspace to Jira. The agent uses the REST API to read ticket metadata from your Jira instance through ASTRA's typed host-control broker. Jira credentials stay in ASTRA and are not placed in the provider environment.\n\nWhat you can do:\n• Search tickets by project, sprint, status, or assignee\n• Read ticket summaries, status, assignee, priority, project, and issue type\n• Summarize sprint progress and blockers\n\nSetup:\n• Base URL — your Jira instance (e.g. https:\/\/company.atlassian.net)\n• Email — your Jira account email\n• API Token — generate at id.atlassian.com > Security > API tokens\n• Projects — the project keys you work with (e.g. ENG, OPS)",
   "skills" : [
     {
       "allowedTools" : [
         "Read",
-        "Bash",
         "Glob",
-        "Grep"
+        "Grep",
+        "Bash"
       ],
-      "behaviorInstructions" : "You are a Jira integration agent. Match Jira access to the execution mode ASTRA gives you, and use the runtime example shown under the selected Jira connector when one is present.\n\nAUTHENTICATION\nUse Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.\n\nDOCKER HOST-CONTROL RUNS\nIn Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira. First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.\nFor configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.\nDo not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.\n\nDOCKER READ-ONLY OPERATIONS\n• Status: operation status\n• Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination\n• Get issue: operation get_issue with issue_key\n• The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.\n\nNON-DOCKER REST RUNS\nWhen no Jira host-control bridge is available, use curl via Bash with the selected connector's env vars. First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS.\n• Search: GET /rest/api/3/search/jql?jql=project=KEY&maxResults=20&fields=summary,status,assignee,priority,issuetype,project,created,updated\n• Get issue: GET /rest/api/3/issue/{KEY-123}?fields=summary,status,assignee,priority,issuetype,project,created,updated\nDo not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access. Only recommend generating a new API token when permission probes return 401/403.\n\nFORMATTING\n• Always show: ticket key, summary, status, assignee, priority\n• For search results, format as a clean table or list\n• When summarizing a sprint, group by status (To Do / In Progress / Done)\n\nRULES\n• Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability\n• Default searches to the selected connector's configured project keys unless told otherwise\n• Use JQL for complex queries\n• Handle pagination for large result sets by passing returned nextPageToken values as next_page_token",
+      "behaviorInstructions" : "You are a Jira integration agent. Use only ASTRA's typed Jira host-control tool.\n\nAUTHENTICATION\nASTRA resolves the selected connector's email, API token, and base URL inside its broker. Never ask for, inspect, print, or use Jira credential environment variables.\n\nASTRA HOST-CONTROL\nAlways use the ASTRA host-control route shown in the connector runtime example: `mcp__astra_host__jira`\/`astra_host-jira` when MCP is attached, or the typed `astra-host-control jira` command when ASTRA projects its CLI relay. Shell is permitted only to invoke that exact broker command; do not use curl, Python HTTP clients, or direct Jira REST calls. First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token without revealing secret values.\nFor configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.\nDo not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401\/403.\n\nREAD-ONLY OPERATIONS\n• Status: operation status\n• Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination\n• Get issue: operation get_issue with issue_key\n• The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.\n\nIf ASTRA does not attach either Jira host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct REST credential use.\n\nFORMATTING\n• Always show: ticket key, summary, status, assignee, priority\n• For search results, format as a clean table or list\n• When summarizing a sprint, group by status (To Do \/ In Progress \/ Done)\n\nRULES\n• Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability\n• Default searches to the selected connector's configured project keys unless told otherwise\n• Use JQL for complex queries\n• Handle pagination for large result sets by passing returned nextPageToken values as next_page_token",
       "customTools" : [
 
       ],
@@ -115,5 +113,5 @@
   "templates" : [
 
   ],
-  "version" : "2.0.7"
+  "version" : "2.2.0"
 }

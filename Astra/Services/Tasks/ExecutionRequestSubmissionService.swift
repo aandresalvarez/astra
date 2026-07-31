@@ -363,6 +363,12 @@ enum ExecutionRequestSubmissionService {
         prepare()
         let event = TaskEvent(task: task, type: sourceEventType, payload: sourcePayload)
         event.timestamp = date
+        let turnIntentSnapshot = TaskTurnIntentResolver.capture(
+            for: task,
+            sourceEventID: event.id,
+            acceptedTurn: acceptedTurn,
+            includeTaskInputs: kind == .initial || kind == .scheduled
+        )
         let request = TaskTurnRequest(
             task: task,
             messageEventID: event.id,
@@ -372,6 +378,7 @@ enum ExecutionRequestSubmissionService {
                 for: task,
                 acceptedTurn: acceptedTurn
             ),
+            turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
         modelContext.insert(event)

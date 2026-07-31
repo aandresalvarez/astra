@@ -176,6 +176,7 @@ enum AgentRuntimeLaunchPreflight {
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
         preflightCache: PreflightCache = PreflightCache(),
+        capabilityWorkingDirectory: String? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) async -> AgentRuntimeLaunchPreflightResult {
@@ -204,7 +205,8 @@ enum AgentRuntimeLaunchPreflight {
             for: task,
             providerLaunchContextText: contextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
-            exposeAllConnectorCredentials: effectivePermissionPolicy == .autonomous
+            turnIntentSnapshot: executionPolicy.turnIntentSnapshot,
+            runtime: run.runtimeID.flatMap(AgentRuntimeID.init(rawValue:))
         )
         let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
@@ -213,6 +215,7 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             contextText: contextText,
             preflightCache: preflightCache,
+            capabilityWorkingDirectory: capabilityWorkingDirectory,
             capabilityResolutionSnapshot: resolutionSnapshot,
             precomputedRuntimeRequirements: precomputedRuntimeRequirements,
             mcpDetectExecutable: mcpDetectExecutable,
@@ -232,14 +235,13 @@ enum AgentRuntimeLaunchPreflight {
         // Service-agnostic credential presence check. Non-blocking — the
         // agent may not need every projected connector — but a connector
         // with declared, unloadable credentials must not fail silently.
-        let exposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy = effectivePermissionPolicy == .autonomous
-            ? .allowAllCredentials
-            : .approvedLabels(
-                Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
-                    for: task,
-                    additionalGrants: executionPolicy.permissionGrantsOverride ?? []
-                ))
-            )
+        let exposurePolicy = ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
+            Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: run.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
+                additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+            ))
+        )
         let credentialProjection = ConnectorRuntimeProjection(
             connectors: scopedConnectors,
             secretStore: secretStore,
@@ -410,6 +412,7 @@ enum AgentRuntimeLaunchPreflight {
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
         preflightCache: PreflightCache = PreflightCache(),
+        capabilityWorkingDirectory: String? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) async -> Bool {
@@ -426,6 +429,7 @@ enum AgentRuntimeLaunchPreflight {
             runtimeConfiguration: runtimeConfiguration,
             secretStore: secretStore,
             preflightCache: preflightCache,
+            capabilityWorkingDirectory: capabilityWorkingDirectory,
             mcpDetectExecutable: mcpDetectExecutable,
             mcpIsExecutableFile: mcpIsExecutableFile
         ).didPass
@@ -951,7 +955,8 @@ enum AgentRuntimeLaunchPreflight {
             let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: task,
                 capabilityScope: resolutionSnapshot.providerLaunch,
-                contextText: contextText
+                contextText: contextText,
+                runtimeRequirements: precomputedRuntimeRequirements
             )
             var mcpServers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
@@ -1055,6 +1060,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: RunPhase,
         contextText: String = "",
         preflightCache: PreflightCache = PreflightCache(),
+        capabilityWorkingDirectory: String? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
@@ -1071,6 +1077,8 @@ enum AgentRuntimeLaunchPreflight {
             task: task,
             contextText: contextText,
             preflightCache: preflightCache,
+            workingDirectory: capabilityWorkingDirectory
+                ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
             capabilityResolutionSnapshot: resolutionSnapshot
         )
         return preflightCapabilitiesBeforeLaunchResult(
@@ -1092,6 +1100,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         contextText: String,
         preflightCache: PreflightCache,
+        workingDirectory: String,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) async -> [String: HealthStatus] {
         let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
@@ -1110,7 +1119,8 @@ enum AgentRuntimeLaunchPreflight {
         ) {
             let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
                 for: package,
-                cache: preflightCache
+                cache: preflightCache,
+                workingDirectory: workingDirectory
             )
             statuses.merge(packageStatuses) { _, new in new }
         }

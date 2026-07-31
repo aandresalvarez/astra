@@ -44,7 +44,24 @@ struct TaskTurnSubmissionServiceTests {
         #expect(requests[0].sequence == 1)
         #expect(events[0].id == submission.eventID)
         #expect(events[0].payload == "Please continue safely.")
+        let intent = try #require(requests[0].executionPolicySnapshot?.turnIntentSnapshot)
+        #expect(intent.taskID == task.id)
+        #expect(intent.sourceEventID == submission.eventID)
+        #expect(intent.acceptedTurn == "Please continue safely.")
+        #expect(intent.activationText == "Please continue safely.")
         #expect(try TaskTurnRequestRepository.requests(for: task, in: context).map(\.id) == [submission.requestID])
+    }
+
+    @Test("Legacy policy snapshot JSON without turn intent remains decodable")
+    func legacyPolicySnapshotRemainsDecodable() throws {
+        let task = AgentTask(title: "Legacy", goal: "Preserve historical requests")
+        let encoded = try JSONEncoder().encode(TaskExecutionPolicySnapshotV1(task: task))
+        let json = try #require(String(data: encoded, encoding: .utf8))
+
+        #expect(!json.contains("turnIntentSnapshot"))
+        let decoded = try JSONDecoder().decode(TaskExecutionPolicySnapshotV1.self, from: encoded)
+        #expect(decoded.turnIntentSnapshot == nil)
+        #expect(decoded.maxTurns == task.maxTurns)
     }
 
     @Test("Requests retain FIFO order and only allow guarded transitions")

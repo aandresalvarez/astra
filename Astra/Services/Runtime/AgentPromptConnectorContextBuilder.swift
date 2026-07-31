@@ -1,10 +1,12 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 enum AgentPromptConnectorContextBuilder {
     static func section(
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
+        runtime: AgentRuntimeID? = nil,
         credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
     ) -> PromptContextSection? {
         let exposurePolicy = credentialExposurePolicy ?? .approvedLabels(
@@ -17,13 +19,29 @@ enum AgentPromptConnectorContextBuilder {
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
         let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
+        let hostControlTools = Set(
+            dockerRouted
+                ? HostControlPlaneMCPProjection.toolNames
+                : HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: capabilityScope)
+        )
+        let usesHostControlCLIRelay = AgentRuntimeCapabilityProfile.defaultProfile(
+            for: runtime ?? task.resolvedRuntimeID
+        ).usesHostControlCLIRelay
 
         let connectorDescriptions = capabilityScope.connectors.map { conn in
-            connectorDescription(
+            let serviceType = conn.serviceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let hostControlTool = HostControlPlaneMCPProjection.connectorToolName(serviceType)
+            let hostControlRouted = hostControlTool.map(hostControlTools.contains) == true
+            return connectorDescription(
                 connector: conn,
                 alias: aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn),
                 bindings: bindingsByConnectorID[conn.id] ?? [],
-                dockerRouted: dockerRouted
+                hostControlRouted: hostControlRouted,
+                brokerOwnsConnectorConfiguration: hostControlRouted
+                    && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(serviceType),
+                usesHostControlCLIRelay: usesHostControlCLIRelay
             )
         }
         guard !connectorDescriptions.isEmpty else { return nil }
@@ -31,12 +49,15 @@ enum AgentPromptConnectorContextBuilder {
         return PromptContextSection(
             kind: .tools,
             text: """
-            Available Connectors (ASTRA lists only env vars available to this run; use listed credentials directly and never ask the user to repeat them):
+            Available Connectors (ASTRA lists only provider-visible env vars; brokered connector credentials remain inside ASTRA):
             \(connectorDescriptions.joined(separator: "\n\n"))
 
-            The connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative for this run. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If behavioral instructions mention bare legacy env names, use those names only when they are explicitly listed above or in ASTRA_CONNECTORS. If the user request is ambiguous, ask which connector to use before calling external APIs.
+            The connector details and runtime routes above are authoritative for this run. Use env vars only when they are explicitly listed. When more than one connector of the same service is available, use its name or alias. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
-            \(connectorAPIGuidance(dockerRouted: dockerRouted))
+            \(connectorAPIGuidance(
+                dockerRouted: dockerRouted,
+                usesHostControlCLIRelay: usesHostControlCLIRelay
+            ))
             """,
             sourcePointers: connectorSourcePointers(capabilityScope.connectors)
         )
@@ -46,12 +67,15 @@ enum AgentPromptConnectorContextBuilder {
         connector: Connector,
         alias: String,
         bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        dockerRouted: Bool
+        hostControlRouted: Bool,
+        brokerOwnsConnectorConfiguration: Bool,
+        usesHostControlCLIRelay: Bool
     ) -> String {
-        let credentialBindings = bindings.filter {
+        let providerBindings = brokerOwnsConnectorConfiguration ? [] : bindings
+        let credentialBindings = providerBindings.filter {
             $0.kind == .credential && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        let configBindings = bindings.filter { $0.kind == .config }
+        let configBindings = providerBindings.filter { $0.kind == .config }
         let configuredCredentialKeys = Set(credentialBindings.map(\.originalKey))
         let missingCredentialKeys = connector.credentialKeys.filter { !configuredCredentialKeys.contains($0) }
 
@@ -65,8 +89,8 @@ enum AgentPromptConnectorContextBuilder {
                 .joined(separator: ", ")
             desc += "\n  Config: \(configs)"
         }
-        if !bindings.isEmpty {
-            let rendered = bindings
+        if !providerBindings.isEmpty {
+            let rendered = providerBindings
                 .sorted { $0.envKey < $1.envKey }
                 .map { "\($0.logicalName): $\($0.envKey)" }
                 .joined(separator: ", ")
@@ -79,7 +103,7 @@ enum AgentPromptConnectorContextBuilder {
                 .joined(separator: ", ")
             desc += "\n  Credentials ALREADY SET in your environment: \(rendered) - use os.environ[\"KEY\"] directly, do NOT ask the user for these"
         }
-        if !missingCredentialKeys.isEmpty {
+        if !brokerOwnsConnectorConfiguration, !missingCredentialKeys.isEmpty {
             desc += "\n  Credentials NOT configured (ask user to fill them in workspace settings): \(missingCredentialKeys.joined(separator: ", "))"
         }
         if !configBindings.isEmpty {
@@ -89,7 +113,13 @@ enum AgentPromptConnectorContextBuilder {
                 .joined(separator: ", ")
             desc += "\n  Config env vars: \(rendered)"
         }
-        if let example = connectorRuntimeExample(for: connector, alias: alias, bindings: bindings, dockerRouted: dockerRouted) {
+        if let example = connectorRuntimeExample(
+            for: connector,
+            alias: alias,
+            bindings: providerBindings,
+            hostControlRouted: hostControlRouted,
+            usesHostControlCLIRelay: usesHostControlCLIRelay
+        ) {
             desc += "\n  Runtime example: \(example)"
         }
         desc += "\n  Auth: \(connector.authMethod)"
@@ -97,13 +127,21 @@ enum AgentPromptConnectorContextBuilder {
         return desc
     }
 
-    private static func connectorAPIGuidance(dockerRouted: Bool) -> String {
+    private static func connectorAPIGuidance(
+        dockerRouted: Bool,
+        usesHostControlCLIRelay: Bool
+    ) -> String {
         if dockerRouted {
             return HostControlPlanePromptGuidance.dockerConnectorAPIGuidance
         }
+        if usesHostControlCLIRelay {
+            return """
+            IMPORTANT: When a connector has an `astra-host-control` runtime example, invoke exactly that typed broker command through the shell. Do not use curl, raw REST, or connector credential env vars. The command is process-bound to this run and returns only broker-approved operation results.
+            """
+        }
         return """
-        IMPORTANT: To call authenticated APIs, use Bash with curl/python and the listed env var tokens - NOT WebFetch. \
-        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] only for credential env vars listed in this section.
+        IMPORTANT: When a connector has an ASTRA host-control runtime example, use that typed broker route and do not use Bash for the connector. For other authenticated APIs, use Bash with curl/python and the listed env var tokens - NOT WebFetch. \
+        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Follow the per-connector runtime examples above and use only credential env vars explicitly listed in this section.
         """
     }
 
@@ -111,16 +149,27 @@ enum AgentPromptConnectorContextBuilder {
         for connector: Connector,
         alias: String,
         bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        dockerRouted: Bool
+        hostControlRouted: Bool,
+        usesHostControlCLIRelay: Bool
     ) -> String? {
         let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch serviceType {
         case "jira":
-            return jiraRuntimeExample(for: connector, alias: alias, bindings: bindings, dockerRouted: dockerRouted)
+            return jiraRuntimeExample(
+                for: connector,
+                alias: alias,
+                bindings: bindings,
+                hostControlRouted: hostControlRouted,
+                usesHostControlCLIRelay: usesHostControlCLIRelay
+            )
         case "redcap":
             return redcapRuntimeExample(bindings: bindings)
         case "gcloud", "google_cloud", "googlecloud", "gcp":
-            return gcloudRuntimeExample(bindings: bindings)
+            return gcloudRuntimeExample(
+                bindings: bindings,
+                hostControlRouted: hostControlRouted,
+                usesHostControlCLIRelay: usesHostControlCLIRelay
+            )
         default:
             return nil
         }
@@ -130,9 +179,13 @@ enum AgentPromptConnectorContextBuilder {
         for connector: Connector,
         alias: String,
         bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        dockerRouted: Bool
+        hostControlRouted: Bool,
+        usesHostControlCLIRelay: Bool
     ) -> String? {
-        if dockerRouted {
+        if hostControlRouted {
+            if usesHostControlCLIRelay {
+                return #"astra-host-control jira --operation status --alias "\#(alias)"; for reads use astra-host-control jira --operation search-jql --alias "\#(alias)" --jql "project = KEY" --max-results 1"#
+            }
             return #"mcp__astra_host__jira with {"operation":"status","alias":"\#(alias)"}; for reads use {"operation":"search_jql","alias":"\#(alias)","jql":"project = KEY","max_results":1}"#
         }
         guard let baseURL = runtimeURLBase(
@@ -188,7 +241,9 @@ enum AgentPromptConnectorContextBuilder {
     }
 
     private static func gcloudRuntimeExample(
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        hostControlRouted: Bool,
+        usesHostControlCLIRelay: Bool
     ) -> String? {
         let project = runtimeEnvValue(
             bindings: bindings,
@@ -205,14 +260,23 @@ enum AgentPromptConnectorContextBuilder {
             preferredKind: .config
         )
 
+        let arguments: String
         if let project, let region {
-            return #"gcloud run services list --project "\#(project)" --region "\#(region)" --format=json"#
+            arguments = #"run services list --project "\#(project)" --region "\#(region)" --format=json"#
         } else if let project {
-            return #"gcloud projects describe "\#(project)" --format=json"#
+            arguments = #"projects describe "\#(project)" --format=json"#
         } else if let region {
-            return #"gcloud run services list --region "\#(region)" --format=json"#
+            arguments = #"run services list --region "\#(region)" --format=json"#
+        } else {
+            return nil
         }
-        return nil
+        if hostControlRouted {
+            if usesHostControlCLIRelay {
+                return "astra-host-control gcloud -- \(arguments)"
+            }
+            return "mcp__astra_host__gcloud with an arguments array equivalent to: \(arguments)"
+        }
+        return "gcloud \(arguments)"
     }
 
     private static func runtimeEnvValue(

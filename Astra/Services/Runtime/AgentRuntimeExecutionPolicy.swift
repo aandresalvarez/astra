@@ -11,6 +11,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// local: it is supplied by the durable request snapshot and is never
     /// written back to the editable AgentTask model.
     var launchSnapshot: AgentTaskLaunchSnapshot?
+    /// Immutable current-turn intent captured by the durable request.
+    var turnIntentSnapshot: TaskTurnIntentSnapshot?
     /// The workspace access actually admitted by the queue. This process-local
     /// value keeps runtime mounts and grants aligned with the acquired lease
     /// when an explicitly disabled sandbox upgrades a legacy shared claim to
@@ -30,6 +32,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         permissionGrantsOverride: [PermissionGrant]? = nil,
         providerRenderOverride: ProviderPolicyRender? = nil,
         launchSnapshot: AgentTaskLaunchSnapshot? = nil,
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         workspaceAccessOverride: TaskExecutionResourceAccess? = nil,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil
     ) {
@@ -38,6 +41,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         self.permissionGrantsOverride = permissionGrantsOverride
         self.providerRenderOverride = providerRenderOverride
         self.launchSnapshot = launchSnapshot
+        self.turnIntentSnapshot = turnIntentSnapshot
         self.workspaceAccessOverride = workspaceAccessOverride
         self.sandboxEnforcementSnapshot = sandboxEnforcementSnapshot
     }
@@ -57,6 +61,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             permissionGrantsOverride: permissionGrantsOverride,
             providerRenderOverride: render,
             launchSnapshot: launchSnapshot,
+            turnIntentSnapshot: turnIntentSnapshot,
             workspaceAccessOverride: workspaceAccessOverride,
             sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
         )
@@ -65,6 +70,12 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     func withLaunchSnapshot(_ snapshot: AgentTaskLaunchSnapshot?) -> AgentRuntimeExecutionPolicy {
         var copy = self
         copy.launchSnapshot = snapshot
+        return copy
+    }
+
+    func withTurnIntentSnapshot(_ snapshot: TaskTurnIntentSnapshot?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.turnIntentSnapshot = snapshot
         return copy
     }
 

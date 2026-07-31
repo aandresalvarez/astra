@@ -399,8 +399,17 @@ struct RuntimeSetupSection: View {
 
     private var githubSummary: String {
         if model.isGitHubReady { return "Optional: GitHub CLI for repo workflows — ready" }
+        if case .unverified(_, let detail) = model.githubAuthStatus {
+            return "Optional: \(detail)"
+        }
+        if case .authorizationRequired(let detail, _) = model.githubAuthStatus {
+            return "Optional: \(detail) — use Repair access in the GitHub capability"
+        }
+        if case .unauthenticated(let detail) = model.githubAuthStatus {
+            return "Optional: GitHub CLI needs sign-in — \(detail)"
+        }
         if case .healthy = model.githubStatus {
-            return "Optional: GitHub CLI installed — run `gh auth login` for repo workflows"
+            return "Optional: GitHub CLI installed — repository access is not ready"
         }
         return "Optional: GitHub CLI for repo workflows — not installed"
     }
@@ -441,7 +450,7 @@ struct RuntimeSetupSection: View {
 
     @ViewBuilder
     private func pathRow(_ title: String, status: HealthStatus?) -> some View {
-        if case .healthy(let path, _) = status {
+        if let path = status?.executablePath {
             HStack(spacing: 8) {
                 Text(title)
                     .font(Stanford.caption(10).weight(.semibold))

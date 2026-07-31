@@ -550,6 +550,14 @@ final class AgentRuntimeWorker {
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
+        let executionPolicy = executionPolicy.turnIntentSnapshot == nil
+            ? executionPolicy.withTurnIntentSnapshot(TaskTurnIntentResolver.capture(
+                for: launchTask,
+                sourceEventID: existingStartEventID,
+                acceptedTurn: sessionMessage ?? startEventPayload ?? launchTask.goal,
+                includeTaskInputs: auditPhase == .run
+            ))
+            : executionPolicy
         var selectedRuntime = selectedRuntime
         var runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         var launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
@@ -625,7 +633,9 @@ final class AgentRuntimeWorker {
             startEventPayload: startEventPayload,
             sessionMessage: sessionMessage,
             phase: auditPhase,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            fallbackPermissionPolicy: skipPermissions ? .autonomous : permissionPolicy,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw
         )
         let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
             runtimeResolution,
@@ -692,12 +702,7 @@ final class AgentRuntimeWorker {
             selectedRuntime: selectedRuntime,
             executionPolicy: executionPolicy
         )
-        let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
-            for: launchTask,
-            providerLaunchContextText: providerLaunchContextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
-            exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
-        )
+        let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot
         if let block = appliedRuntime.launchBlock {
             AgentRuntimeCapabilityBlockRecorder.apply(
                 block,
@@ -732,6 +737,8 @@ final class AgentRuntimeWorker {
             return
         }
 
+        let capabilityPreflightCache = PreflightCache(checker: environmentHealthChecker)
+        let capabilityWorkingDirectory = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
         guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
@@ -743,13 +750,18 @@ final class AgentRuntimeWorker {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             precomputedRuntimeRequirements: appliedRuntime.requirements,
             runtimeConfiguration: runtimeConfiguration,
-            preflightCache: PreflightCache(checker: environmentHealthChecker),
+            preflightCache: capabilityPreflightCache,
+            capabilityWorkingDirectory: capabilityWorkingDirectory,
             mcpDetectExecutable: mcpServerExecutableDetector,
             mcpIsExecutableFile: mcpServerExecutableIsResolvable
         ) else {
             isRunning = false
             return
         }
+        let githubRepositoryStatus = await capabilityPreflightCache.cachedStatus(
+            for: CommonCLIPrerequisites.githubAuth,
+            workingDirectory: capabilityWorkingDirectory
+        )
 
         _ = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunch(
             task: task,
@@ -881,12 +893,17 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
-        let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+        let policyPrompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
             to: basePrompt,
             task: executionTask,
             permissionPolicy: launchPermissionPolicy,
             contextText: providerLaunchContextText
-        ))
+        )
+        let readinessPrompt = GitHubCapabilityLaunchContext.appendingProviderGuidance(
+            to: policyPrompt,
+            repositoryStatus: githubRepositoryStatus
+        )
+        let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
@@ -933,7 +950,8 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime,
             phase: auditPhase,
             contextText: providerLaunchContextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            repositoryStatus: githubRepositoryStatus
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)

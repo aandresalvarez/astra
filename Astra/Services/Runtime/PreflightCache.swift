@@ -13,6 +13,12 @@ import ASTRACore
 /// Using a real `actor` would force every call site to `await`, which is
 /// noisy in SwiftUI bodies. The lock holds for O(1) dictionary ops only.
 public actor PreflightCache {
+    public typealias ContextualHealthProbe = @Sendable (
+        _ check: CLIContextualCheck,
+        _ executablePath: String,
+        _ workingDirectory: String
+    ) async -> HealthStatus
+
     /// How long a result is considered fresh. Conservative; users will
     /// trigger a re-check on demand when they care.
     public static let defaultTTL: TimeInterval = 30
@@ -23,6 +29,7 @@ public actor PreflightCache {
     }
 
     private let checker: EnvironmentHealthChecker
+    private let contextualProbe: ContextualHealthProbe
     private let ttl: TimeInterval
     private let now: @Sendable () -> Date
     private var entries: [String: Entry] = [:]
@@ -30,18 +37,32 @@ public actor PreflightCache {
     public init(
         checker: EnvironmentHealthChecker = EnvironmentHealthChecker(),
         ttl: TimeInterval = PreflightCache.defaultTTL,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        contextualProbe: ContextualHealthProbe? = nil
     ) {
         self.checker = checker
         self.ttl = ttl
         self.now = now
+        self.contextualProbe = contextualProbe ?? { check, executablePath, workingDirectory in
+            switch check {
+            case .githubRepositoryAccess:
+                return await GitHubRepositoryAccessProbe().check(
+                    ghPath: executablePath,
+                    workingDirectory: workingDirectory
+                ).healthStatus(executablePath: executablePath)
+            }
+        }
     }
 
     /// Returns the status for `prereq`. If the cached entry is within TTL,
     /// returns it without running any subprocess. Otherwise, probes and
     /// stores the result.
-    public func status(for prereq: CLIPrerequisite) async -> HealthStatus {
-        if let cached = entries[prereq.id],
+    public func status(
+        for prereq: CLIPrerequisite,
+        workingDirectory: String? = nil
+    ) async -> HealthStatus {
+        let key = cacheKey(for: prereq, workingDirectory: workingDirectory)
+        if let cached = entries[key],
            now().timeIntervalSince(cached.checkedAt) < ttl {
             return cached.status
         }
@@ -50,15 +71,35 @@ public actor PreflightCache {
             livenessArgs: prereq.livenessArgs,
             semantic: prereq.semantic
         )
-        let fresh = normalizedStatus(checked, for: prereq)
+        var fresh = normalizedStatus(checked, for: prereq)
+        if case .healthy(let executablePath, _) = fresh,
+           let contextualCheck = prereq.contextualCheck,
+           let workingDirectory = normalizedWorkingDirectory(workingDirectory) {
+            fresh = await contextualProbe(contextualCheck, executablePath, workingDirectory)
+        }
         // A probe interrupted by caller cancellation is not a real result —
         // caching it would publish "unresponsive: cancelled" for 30s and
         // make an installed runtime look broken to every other consumer.
         guard !Task.isCancelled else {
-            return entries[prereq.id]?.status ?? fresh
+            return entries[key]?.status ?? fresh
         }
-        entries[prereq.id] = Entry(status: fresh, checkedAt: now())
+        entries[key] = Entry(status: fresh, checkedAt: now())
         return fresh
+    }
+
+    private func cacheKey(
+        for prereq: CLIPrerequisite,
+        workingDirectory: String?
+    ) -> String {
+        guard prereq.contextualCheck != nil else { return prereq.id }
+        return "\(prereq.id):workspace=\(normalizedWorkingDirectory(workingDirectory) ?? "host")"
+    }
+
+    private func normalizedWorkingDirectory(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return (trimmed as NSString).standardizingPath
     }
 
     private func normalizedStatus(_ status: HealthStatus, for prereq: CLIPrerequisite) -> HealthStatus {
@@ -86,8 +127,11 @@ public actor PreflightCache {
     }
 
     /// For tests / debugging. Not part of the public UI contract.
-    public func cachedStatus(for prereq: CLIPrerequisite) -> HealthStatus? {
-        entries[prereq.id]?.status
+    public func cachedStatus(
+        for prereq: CLIPrerequisite,
+        workingDirectory: String? = nil
+    ) -> HealthStatus? {
+        entries[cacheKey(for: prereq, workingDirectory: workingDirectory)]?.status
     }
 
     public func cachedCount() -> Int { entries.count }

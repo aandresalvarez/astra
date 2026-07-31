@@ -157,11 +157,7 @@ extension GitService {
                 head: head,
                 message: message
             )
-            if message.localizedCaseInsensitiveContains("auth")
-                || message.localizedCaseInsensitiveContains("logged") {
-                throw GitHubCLIError.notAuthenticated(message)
-            }
-            throw GitHubCLIError.commandFailed(message)
+            throw GitHubCLIError.classify(message, repository: repository)
         }
     }
 

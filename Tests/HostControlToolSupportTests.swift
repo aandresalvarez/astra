@@ -1248,11 +1248,40 @@ struct HostControlToolSupportTests {
         #expect(!result.stdout.contains("finished"))
     }
 
+    @Test("Cancelling host-control operations terminates a synchronous process")
+    func cancellingHostControlOperationsTerminatesProcess() async {
+        let cancellationRegistry = HostControlOperationCancellationRegistry()
+        let runner = HostControlProcessRunner(
+            limits: HostControlProcessLimits(
+                maximumTimeoutSeconds: 30,
+                outputByteLimit: 1_024
+            ),
+            cancellationRegistry: cancellationRegistry
+        )
+        let operation = Task.detached {
+            runner.run(
+                executablePath: "/bin/sleep",
+                arguments: ["30"],
+                timeoutSeconds: 30,
+                environment: [:],
+                currentDirectory: nil
+            )
+        }
+
+        try? await Task.sleep(for: .milliseconds(100))
+        cancellationRegistry.cancelAll()
+        let result = await operation.value
+
+        #expect(result.exitCode == 130)
+        #expect(result.stderr.contains("Cancelled by ASTRA"))
+        #expect(!result.timedOut)
+    }
+
     @Test("Host control process runner uses monotonic deadlines and fail-closed pipe drain")
     func hostControlProcessRunnerUsesMonotonicDeadlinesAndFailClosedPipeDrain() throws {
         let source = try hostControlToolSource()
         let wait = try sourceSnippet(startingWith: "    private func waitForProcess(", endingBefore: "    private func dispatchInterval", in: source)
-        let drain = try sourceSnippet(startingWith: "    private func drainPipe(", endingBefore: "private final class LockedFlag", in: source)
+        let drain = try sourceSnippet(startingWith: "    private func drainPipe(", endingBefore: "private final class ProcessOutputReadHandle", in: source)
         let jira = try sourceSnippet(startingWith: "private final class BoundedJiraHTTPDelegate", endingBefore: "private final class JiraHTTPClient", in: source)
 
         #expect(wait.contains("DispatchTime.now()"))

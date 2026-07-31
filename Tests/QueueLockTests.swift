@@ -128,6 +128,28 @@ struct QueueLockTests {
         }
     }
 
+    @Test("applySettings normalizes persisted executable paths for every worker")
+    func applySettingsNormalizesExecutablePaths() {
+        let persistedPath = "   /Users/test/.local/bin/claude\n"
+        var settings = AgentRuntimeProviderSettings(
+            executablePaths: [.claudeCode: persistedPath]
+        )
+        #expect(settings.executablePath(for: .claudeCode) == "/Users/test/.local/bin/claude")
+
+        settings.setExecutablePath(persistedPath, for: .claudeCode)
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: persistedPath,
+            providerSettings: settings,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.claudePath == "/Users/test/.local/bin/claude")
+        }
+    }
+
     @Test("applySettings defaults to restricted permissions")
     func applySettingsDefaultsRestricted() {
         let queue = TaskQueue(poolSize: 2)

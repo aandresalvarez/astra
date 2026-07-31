@@ -690,6 +690,7 @@ enum ExecutionSandbox: Sendable {
             plan: plan,
             writableRoots: roots
         )
+        let hostControlBrokerSockets = hostControlBrokerSockets(plan: plan)
         let profile = makeProfile(
             writableRootCount: roots.count,
             readableRootCount: readableRoots.count,
@@ -698,6 +699,7 @@ enum ExecutionSandbox: Sendable {
             explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
             protectedWriteDenyRootCount: protectedWriteDenyRoots.count,
             protectedWriteAncestorDenyRootCount: protectedWriteAncestorDenyRoots.count,
+            hostControlBrokerSocketCount: hostControlBrokerSockets.count,
             allowNetwork: settings.allowNetwork,
             readScope: settings.readScope
         )
@@ -710,6 +712,7 @@ enum ExecutionSandbox: Sendable {
             explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
             protectedWriteDenyRoots: protectedWriteDenyRoots,
             protectedWriteAncestorDenyRoots: protectedWriteAncestorDenyRoots,
+            hostControlBrokerSockets: hostControlBrokerSockets,
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
@@ -1260,6 +1263,7 @@ enum ExecutionSandbox: Sendable {
         explicitProtectedReadAllowRootCount: Int = 0,
         protectedWriteDenyRootCount: Int = 0,
         protectedWriteAncestorDenyRootCount: Int = 0,
+        hostControlBrokerSocketCount: Int = 0,
         allowNetwork: Bool,
         readScope: ExecutionSandboxReadScope = .open
     ) -> String {
@@ -1289,6 +1293,11 @@ enum ExecutionSandbox: Sendable {
         ))
         if !allowNetwork {
             lines.append("(deny network*)")
+        }
+        for index in 0..<hostControlBrokerSocketCount {
+            lines.append(
+                "(allow network-outbound (literal (param \"\(hostControlBrokerSocketParameterName(index))\")))"
+            )
         }
         // Deny all writes, then re-allow the scoped roots. Last match wins in
         // SBPL, so the scoped allow below overrides this blanket deny.
@@ -1412,6 +1421,21 @@ enum ExecutionSandbox: Sendable {
         "PROTECTED_WRITE_ANCESTOR_DENY_ROOT_\(index)"
     }
 
+    static func hostControlBrokerSocketParameterName(_ index: Int) -> String {
+        "HOST_CONTROL_BROKER_SOCKET_\(index)"
+    }
+
+    private static func hostControlBrokerSockets(
+        plan: AgentRuntimeProcessLaunchPlan
+    ) -> [String] {
+        guard let rawPath = plan.environment[HostControlBrokerIPC.endpointEnvironmentKey],
+              let validatedPath = try? HostControlBrokerIPC.validatedSocketPath(rawPath),
+              let canonicalPath = canonicalize(validatedPath) else {
+            return []
+        }
+        return [canonicalPath]
+    }
+
     /// Assembles the full `sandbox-exec` argument vector:
     /// `-p <profile> -D ROOT_0=<path> -D READ_ROOT_0=<path> ... <realExecutable> <realArgs...>`.
     static func makeArguments(
@@ -1423,6 +1447,7 @@ enum ExecutionSandbox: Sendable {
         explicitProtectedReadAllowRoots: [String] = [],
         protectedWriteDenyRoots: [String] = [],
         protectedWriteAncestorDenyRoots: [String] = [],
+        hostControlBrokerSockets: [String] = [],
         executablePath: String,
         arguments: [String]
     ) -> [String] {
@@ -1454,6 +1479,10 @@ enum ExecutionSandbox: Sendable {
         for (index, root) in protectedWriteAncestorDenyRoots.enumerated() {
             result.append("-D")
             result.append("\(protectedWriteAncestorDenyRootParameterName(index))=\(root)")
+        }
+        for (index, path) in hostControlBrokerSockets.enumerated() {
+            result.append("-D")
+            result.append("\(hostControlBrokerSocketParameterName(index))=\(path)")
         }
         result.append(canonicalize(executablePath) ?? executablePath)
         result.append(contentsOf: arguments)

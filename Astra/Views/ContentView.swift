@@ -4670,6 +4670,14 @@ struct WorkspaceSetupForm: View {
                         .font(Stanford.caption(11))
                         .foregroundStyle(Stanford.coolGrey)
                     Spacer(minLength: 8)
+                    if let (prerequisite, status) = firstBlockingPrerequisite(for: packageID), GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) {
+                        GitHubRepositoryAccessRepairButton(workingDirectory: rootPath) {
+                            await probeCapabilityPrerequisites(for: packageID, forceRefresh: true)
+                        }
+                    } else if let authorizationURL = capabilityAuthorizationURL(for: packageID) {
+                        Link("Authorize", destination: authorizationURL)
+                            .font(Stanford.caption(11).weight(.semibold))
+                    }
                     Button {
                         Task { await probeCapabilityPrerequisites(for: packageID, forceRefresh: true) }
                     } label: {
@@ -4687,7 +4695,7 @@ struct WorkspaceSetupForm: View {
 
                 ForEach(prerequisites, id: \.id) { prerequisite in
                     if let status = prerequisiteStatus(for: prerequisite, packageID: packageID),
-                       case .healthy(let path, _) = status {
+                       let path = status.executablePath {
                         Text("\(prerequisite.displayName): \(path)")
                             .font(Stanford.mono(10))
                             .foregroundStyle(Stanford.coolGrey)
@@ -4699,7 +4707,6 @@ struct WorkspaceSetupForm: View {
             }
         }
     }
-
     private func probeCapabilityPrerequisites(forceRefresh: Bool) async {
         for option in OnboardingCapabilitySetup.configurableOptions {
             guard let packageID = option.packageID else { continue }
@@ -4721,7 +4728,7 @@ struct WorkspaceSetupForm: View {
 
         var statuses = capabilityPreflightStatuses[packageID] ?? [:]
         for prerequisite in prerequisites {
-            statuses[prerequisite.id] = await preflightCache.status(for: prerequisite)
+            statuses[prerequisite.id] = await preflightCache.status(for: prerequisite, workingDirectory: rootPath)
         }
         capabilityPreflightStatuses[packageID] = statuses
         refreshValidationIssues()
@@ -4734,30 +4741,26 @@ struct WorkspaceSetupForm: View {
     private func isProbingCapability(_ packageID: String) -> Bool {
         probingCapabilityPackageIDs.contains(packageID)
     }
+    private func capabilityAuthorizationURL(for packageID: String) -> URL? {
+        guard let (prerequisite, status) = firstBlockingPrerequisite(for: packageID) else { return nil }
+        guard !GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) else { return nil }
+        if case .authorizationRequired(_, let authorizationURL) = status { return authorizationURL }
+        return nil
+    }
 
     private func capabilityPrerequisitesReady(for packageID: String) -> Bool {
-        let prerequisites = prerequisites(for: packageID)
-        guard !prerequisites.isEmpty else { return true }
-        return prerequisites.allSatisfy { prerequisite in
-            guard let status = prerequisiteStatus(for: prerequisite, packageID: packageID),
-                  case .healthy = status else {
-                return false
-            }
-            return true
-        }
+        CapabilityPrerequisiteStatusSelection.allVerified(
+            prerequisites(for: packageID),
+            statuses: capabilityPreflightStatuses[packageID] ?? [:]
+        )
     }
 
     private func firstUnreadyPrerequisite(for packageID: String) -> (CLIPrerequisite, HealthStatus?)? {
-        for prerequisite in prerequisites(for: packageID) {
-            guard let status = prerequisiteStatus(for: prerequisite, packageID: packageID) else {
-                return (prerequisite, nil)
-            }
-            if case .healthy = status {
-                continue
-            }
-            return (prerequisite, status)
-        }
-        return nil
+        CapabilityPrerequisiteStatusSelection.firstUnready(prerequisites(for: packageID), statuses: capabilityPreflightStatuses[packageID] ?? [:])
+    }
+
+    private func firstBlockingPrerequisite(for packageID: String) -> (CLIPrerequisite, HealthStatus?)? {
+        CapabilityPrerequisiteStatusSelection.firstBlocking(prerequisites(for: packageID), statuses: capabilityPreflightStatuses[packageID] ?? [:])
     }
 
     private func prerequisiteStatus(
@@ -4768,16 +4771,20 @@ struct WorkspaceSetupForm: View {
     }
 
     private func capabilityPrerequisiteIssue(for packageID: String) -> String? {
-        guard let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) else {
+        guard let (prerequisite, status) = firstBlockingPrerequisite(for: packageID) else {
             return nil
         }
         switch status {
         case .healthy:
             return nil
+        case .unverified:
+            return nil
         case .missingBinary:
             return "\(prerequisite.displayName) is not installed"
         case .unauthenticated(let detail):
             return "\(prerequisite.displayName) needs login (\(detail))"
+        case .authorizationRequired(let detail, _):
+            return "\(prerequisite.displayName) needs authorization (\(detail))"
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) failed (\(detail))"
         case .none:
@@ -4794,10 +4801,14 @@ struct WorkspaceSetupForm: View {
         switch status {
         case .healthy:
             return "Ready"
+        case .unverified:
+            return "Repository unverified"
         case .missingBinary:
             return "Needs \(prerequisite.binary)"
         case .unauthenticated:
             return "Needs login"
+        case .authorizationRequired:
+            return "Authorize"
         case .unresponsive:
             return "Check CLI"
         case .none:
@@ -4815,10 +4826,14 @@ struct WorkspaceSetupForm: View {
         switch status {
         case .healthy:
             return readyMessage
+        case .unverified(_, let detail):
+            return detail
         case .missingBinary:
             return "\(prerequisite.displayName) is not installed. \(prerequisite.installHint)"
         case .unauthenticated(let detail):
             return "\(prerequisite.displayName) needs authentication: \(detail). \(prerequisite.authHint ?? "")"
+        case .authorizationRequired(let detail, _):
+            return "\(prerequisite.displayName) needs authorization: \(detail). Open Manage Capabilities to approve access."
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) did not respond: \(detail)"
         case .none:

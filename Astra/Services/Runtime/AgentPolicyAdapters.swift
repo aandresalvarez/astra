@@ -953,10 +953,9 @@ enum AgentPolicyManifestService {
     static let summaryEventType = "astra.permission_summary"
 
     @MainActor
-    @discardableResult
-    static func recordPreflightManifest(
+    static func compilePreflightManifest(
         task: AgentTask,
-        run: TaskRun,
+        runID: UUID,
         runtime: AgentRuntimeID,
         model: String,
         workspacePath: String,
@@ -979,8 +978,7 @@ enum AgentPolicyManifestService {
         // determination reuses that single derivation instead of independently
         // re-deriving it from a second capability scope. The two derivations must
         // agree — see Tests/HostControlRequirementDerivationConsistencyTests.swift.
-        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
-        modelContext: ModelContext
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
             forStored: AgentPolicyLevel.normalized(defaultPolicyLevelRaw),
@@ -993,16 +991,22 @@ enum AgentPolicyManifestService {
             executionPolicy: executionPolicy
         )
         let basePolicy = resolution.policy
-        let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
+        let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(
+            for: task,
+            runtime: runtime
+        )
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
         let taskCapabilityResolver = TaskCapabilityResolver(
             task: task,
-            additionalCredentialGrants: executionGrants
+            additionalCredentialGrants: executionGrants,
+            runtime: runtime
         )
         let capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionGrants
+            additionalCredentialGrants: executionGrants,
+            turnIntentSnapshot: executionPolicy.turnIntentSnapshot,
+            runtime: runtime
         )
         let taskCapabilityScope = capabilityResolutionSnapshot.providerLaunch
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
@@ -1019,7 +1023,11 @@ enum AgentPolicyManifestService {
         let manifestExecutionPolicy = AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: executionPolicy.permissionPolicyOverride,
             allowedToolsOverride: policyApprovedTools.isEmpty ? executionPolicy.allowedToolsOverride : policyApprovedTools,
-            permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
+            permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants,
+            launchSnapshot: executionPolicy.launchSnapshot,
+            turnIntentSnapshot: executionPolicy.turnIntentSnapshot,
+            workspaceAccessOverride: executionPolicy.workspaceAccessOverride,
+            sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         // Single source of truth for "which host-control tools does this run
@@ -1181,7 +1189,7 @@ enum AgentPolicyManifestService {
         }
         let manifest = RunPermissionManifest(
             taskID: task.id,
-            runID: run.id,
+            runID: runID,
             phase: phase,
             providerID: runtime,
             providerVersion: providerVersion,
@@ -1216,25 +1224,76 @@ enum AgentPolicyManifestService {
                 resolutionReason: sandboxResolution.reason?.rawValue
             )
         )
-        insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
+        return manifest
+    }
+
+    @MainActor
+    @discardableResult
+    static func recordPreflightManifest(
+        task: AgentTask,
+        run: TaskRun,
+        runtime: AgentRuntimeID,
+        model: String,
+        workspacePath: String,
+        phase: RunPhase,
+        permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        defaultPolicyLevelRaw: String,
+        providerVersion: String? = nil,
+        providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
+        capabilityPackages: [PluginPackage]? = nil,
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        contextText: String = "",
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
+        sandboxSettingsDefaults: UserDefaults = .standard,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
+        modelContext: ModelContext
+    ) -> RunPermissionManifest {
+        let manifest = compilePreflightManifest(
+            task: task,
+            runID: run.id,
+            runtime: runtime,
+            model: model,
+            workspacePath: workspacePath,
+            phase: phase,
+            permissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+            providerVersion: providerVersion,
+            providerCapabilities: providerCapabilities,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
+            capabilityPackages: capabilityPackages,
+            approvalRecords: approvalRecords,
+            contextText: contextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            launchResourcePlan: launchResourcePlan,
+            sandboxSettingsDefaults: sandboxSettingsDefaults,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
+        )
+        insertManifestEvent(
+            manifest,
+            type: preflightEventType,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
         AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
             "phase": phase.rawValue,
             "runtime": runtime.rawValue,
-            "policy_level": resolution.level.rawValue,
+            "policy_level": manifest.policyLevel.rawValue,
             "policy_scope": manifest.policyScope.rawValue,
-            "provider_adapter_version": String(render.adapterVersion),
-            "enforcement": render.enforcementTiers.map(\.rawValue).joined(separator: ","),
-            "sandbox_stored_enforcement": sandboxResolution.storedEnforcement.rawValue,
-            "sandbox_effective_enforcement": sandboxSettings.enforcement.rawValue,
-            "sandbox_resolution_reason": sandboxResolution.reason?.rawValue ?? "none",
-            "brokered_read_only_path_count": String(additionalReadOnlyPaths.count),
-            "read_only_input_boundary_required": String(readOnlyInputBoundary.isRequired),
-            "read_only_input_boundary_mode": readOnlyInputBoundary.mode.rawValue,
-            "read_only_input_boundary_path_count": String(readOnlyInputBoundary.paths.count),
-            "diagnostics_blocked": String(render.diagnostics.filter { $0.severity == .blocked }.count),
-            "diagnostics_warning": String(render.diagnostics.filter { $0.severity == .warning }.count),
-            "uses_broad_provider_permissions": String(render.usesBroadProviderPermissions)
-        ], level: render.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
+            "provider_adapter_version": String(manifest.providerRender.adapterVersion),
+            "enforcement": manifest.providerRender.enforcementTiers.map(\.rawValue).joined(separator: ","),
+            "sandbox_stored_enforcement": manifest.sandboxEvidence?.storedEnforcement ?? "unknown",
+            "sandbox_effective_enforcement": manifest.sandboxEvidence?.effectiveEnforcement ?? "unknown",
+            "sandbox_resolution_reason": manifest.sandboxEvidence?.resolutionReason ?? "none",
+            "brokered_read_only_path_count": String(manifest.additionalReadOnlyPaths.count),
+            "diagnostics_blocked": String(manifest.providerRender.diagnostics.filter { $0.severity == .blocked }.count),
+            "diagnostics_warning": String(manifest.providerRender.diagnostics.filter { $0.severity == .warning }.count),
+            "uses_broad_provider_permissions": String(manifest.providerRender.usesBroadProviderPermissions)
+        ], level: manifest.providerRender.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
         return manifest
     }
 
@@ -1289,15 +1348,16 @@ enum AgentPolicyManifestService {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
         let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
+        let usesHostControlCLIRelay = !hostControlTools.isEmpty
+            && runtimeCapabilityProfile.usesHostControlCLIRelay
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: permissionPolicy,
             requiredTools: hostControlTools
-        )
+        ) && !usesHostControlCLIRelay
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
         }
-
         var updated = render
         if deniesNativeShellForHostControl {
             updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
@@ -1311,12 +1371,20 @@ enum AgentPolicyManifestService {
             )
         }
         if !hostControlTools.isEmpty {
-            updated.allowedTools = uniqueStrings(
-                updated.allowedTools + hostControlTools.map {
-                    HostControlPlaneMCPProjection.providerToolPermission(for: $0)
+            if runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
+                updated.allowedTools = uniqueStrings(
+                    updated.allowedTools + hostControlTools.map {
+                        HostControlPlaneMCPProjection.providerToolPermission(for: $0)
+                    }
+                )
+            } else if usesHostControlCLIRelay {
+                updated.allowedShellPatterns = uniqueStrings(updated.allowedShellPatterns + [HostControlCLIRelayPolicy.manifestMarker])
+                if permissionPolicy == .autonomous {
+                    updated.allowedTools = uniqueStrings(updated.allowedTools + ["Bash"])
+                } else {
+                    updated.askFirstTools = uniqueStrings(updated.askFirstTools + ["Bash"])
                 }
-            )
-            if !runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
+            } else {
                 updated.diagnostics.append(PolicyDiagnostic(
                     id: "\(runtime.rawValue).host-control-plane-unsupported",
                     severity: .blocked,
@@ -1340,9 +1408,13 @@ enum AgentPolicyManifestService {
             severity: .info,
             title: deniesNativeShellForHostControl
                 ? "Host control plane routed through ASTRA"
+                : usesHostControlCLIRelay
+                    ? "Host control plane routed through ASTRA's CLI relay"
                 : "Host inspection available alongside Auto developer tools",
             message: deniesNativeShellForHostControl
                 ? "Project shell commands run in Docker through ASTRA's workspace MCP tools. Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain access must use enabled ASTRA capabilities rather than native provider Bash or Docker workspace shell."
+                : usesHostControlCLIRelay
+                    ? "The provider can invoke only the typed astra-host-control relay. Connector credentials remain inside ASTRA and the broker validates the helper's provider ancestry."
                 : "ASTRA's host-control tools remain constrained to their declared operations. Auto keeps provider-native developer tools available for explicit user-requested host work.",
             affectedCapability: "control_plane",
             remediation: deniesNativeShellForHostControl

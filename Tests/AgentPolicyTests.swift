@@ -2180,8 +2180,8 @@ struct RunPermissionManifestTests {
         #expect(deniedActions.isEmpty)
     }
 
-    @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
-    func preflightManifestReplaysTaskScopedBrokerGrantsThroughActiveProviderAdapter() throws {
+    @Test("Preflight manifest does not replay grants approved for another provider")
+    func preflightManifestDoesNotReplayCrossProviderGrants() throws {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Task Grants", primaryPath: "/tmp/task-grants-workspace")
@@ -2219,11 +2219,9 @@ struct RunPermissionManifestTests {
         )
 
         #expect(recorded == [.shellCommand(executable: "gh", pattern: "search prs *")])
-        #expect(manifest.policyScope == .taskApproval)
-        #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
-        #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
-        #expect(manifest.providerRender.allowedTools.contains("shell(gh:auth status *)"))
-        #expect(manifest.providerRender.allowedTools.contains("shell(mkdir:-p *)"))
+        #expect(manifest.policyScope == .globalDefault)
+        #expect(manifest.approvalGrants.isEmpty)
+        #expect(!manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
         #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
     }
 

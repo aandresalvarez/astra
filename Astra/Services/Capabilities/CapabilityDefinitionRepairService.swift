@@ -33,21 +33,36 @@ enum CapabilityDefinitionRepairService {
         var updated = 0
         for package in approvedPackages where installedIDs.contains(package.id) {
             let serviceTypes = Set(package.connectors.map { normalizedServiceType($0.serviceType) })
+            var canonicalGlobalSkills: [Skill] = []
             for pluginSkill in package.skills {
-                for skill in skills where shouldRefresh(
-                    skill,
-                    pluginSkill: pluginSkill,
+                let candidates = skills.filter {
+                    shouldRefresh(
+                        $0,
+                        pluginSkill: pluginSkill,
+                        package: package,
+                        serviceTypes: serviceTypes,
+                        connectors: connectors
+                    )
+                }
+                if let canonical = CapabilityRuntimeResourceMatcher.preferredPackageSkill(
+                    pluginSkill,
                     package: package,
-                    serviceTypes: serviceTypes,
-                    connectors: connectors
+                    candidates: candidates.filter(\.isGlobal)
                 ) {
-                    if apply(pluginSkill, to: skill) {
+                    canonicalGlobalSkills.append(canonical)
+                    if apply(pluginSkill, package: package, to: canonical) {
+                        updated += 1
+                    }
+                }
+                for skill in candidates where !skill.isGlobal {
+                    if apply(pluginSkill, package: package, to: skill) {
                         updated += 1
                     }
                 }
             }
             updated += repairEnabledPackageActivations(
                 package,
+                canonicalGlobalSkills: canonicalGlobalSkills,
                 skills: skills,
                 connectors: connectors,
                 workspaces: workspaces
@@ -79,17 +94,24 @@ enum CapabilityDefinitionRepairService {
 
     private static func repairEnabledPackageActivations(
         _ package: PluginPackage,
+        canonicalGlobalSkills: [Skill],
         skills: [Skill],
         connectors: [Connector],
         workspaces: [Workspace]
     ) -> Int {
-        let packageSkillNames = Set(package.skills.map { normalizedName($0.name) })
-        let packageSkills = skills.filter { skill in
-            skill.isGlobal && packageSkillNames.contains(normalizedName(skill.name))
-        }
+        let packageSkills = canonicalGlobalSkills
         guard !packageSkills.isEmpty else { return 0 }
 
         let packageSkillIDs = Set(packageSkills.map(\.id.uuidString))
+        let staleOwnedSkillIDs = Set(skills.compactMap { skill -> String? in
+            guard skill.isGlobal,
+                  skill.originPackageID == package.id,
+                  skill.originComponentKind == CapabilityResourceComponentKind.skill.rawValue,
+                  !packageSkillIDs.contains(skill.id.uuidString) else {
+                return nil
+            }
+            return skill.id.uuidString
+        })
         let linkedGlobalConnectors = connectors.filter { connector in
             guard connector.isGlobal else { return false }
             guard let skill = connector.skill else { return false }
@@ -99,6 +121,13 @@ enum CapabilityDefinitionRepairService {
         var updated = 0
         for workspace in workspaces where workspace.enabledCapabilityIDs.contains(package.id) {
             var changed = false
+            let retainedSkillIDs = workspace.enabledGlobalSkillIDs.filter {
+                !staleOwnedSkillIDs.contains($0)
+            }
+            if retainedSkillIDs != workspace.enabledGlobalSkillIDs {
+                workspace.enabledGlobalSkillIDs = retainedSkillIDs
+                changed = true
+            }
             for skill in packageSkills {
                 let id = skill.id.uuidString
                 if !workspace.enabledGlobalSkillIDs.contains(id) {
@@ -129,6 +158,15 @@ enum CapabilityDefinitionRepairService {
         connectors: [Connector]
     ) -> Bool {
         guard normalizedName(skill.name) == normalizedName(pluginSkill.name) else { return false }
+        let originPackageID = skill.originPackageID?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !originPackageID.isEmpty {
+            guard originPackageID == package.id else { return false }
+            let componentID = skill.originComponentID?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return componentID.isEmpty
+                || componentID == CapabilityResourceOrigin.componentID(for: pluginSkill)
+        }
         guard isLikelyApprovedPackageCopy(skill, pluginSkill: pluginSkill) else { return false }
         if skill.isGlobal { return true }
 
@@ -170,7 +208,11 @@ enum CapabilityDefinitionRepairService {
             .first { !$0.isEmpty } ?? ""
     }
 
-    private static func apply(_ pluginSkill: PluginSkill, to skill: Skill) -> Bool {
+    private static func apply(
+        _ pluginSkill: PluginSkill,
+        package: PluginPackage,
+        to skill: Skill
+    ) -> Bool {
         var changed = false
 
         if skill.icon != pluginSkill.icon {
@@ -195,6 +237,29 @@ enum CapabilityDefinitionRepairService {
         }
 
         if updateEnvironmentKeys(pluginSkill, on: skill) {
+            changed = true
+        }
+
+        let previousOrigin = [
+            skill.originPackageID,
+            skill.originPackageVersion,
+            skill.originComponentID,
+            skill.originComponentKind,
+            skill.originSourceKind
+        ]
+        CapabilityResourceOrigin.stamp(
+            skill,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginSkill)
+        )
+        let currentOrigin = [
+            skill.originPackageID,
+            skill.originPackageVersion,
+            skill.originComponentID,
+            skill.originComponentKind,
+            skill.originSourceKind
+        ]
+        if previousOrigin != currentOrigin {
             changed = true
         }
 

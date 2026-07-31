@@ -1539,8 +1539,19 @@ final class TaskQueue {
             return
         }
         let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)
+        let turnIntentSnapshot = request.executionPolicySnapshot?.turnIntentSnapshot
+            ?? TaskTurnIntentResolver.capture(
+                for: task,
+                sourceEventID: sourceEvent.id,
+                acceptedTurn: source?.message
+                    ?? (sourceEvent.type == TaskEventTypes.Conversation.userMessage.rawValue
+                        ? sourceEvent.payload
+                        : nil),
+                includeTaskInputs: request.kind == .initial || request.kind == .scheduled
+            )
         let requestExecutionPolicy = (source?.executionPolicyOverride?.executionPolicy ?? .default)
             .withLaunchSnapshot(launchSnapshot)
+            .withTurnIntentSnapshot(turnIntentSnapshot)
         if source?.launchMode == .continuation || request.kind == .followUp {
             _ = await continuePersistedTurn(
                 task: task,

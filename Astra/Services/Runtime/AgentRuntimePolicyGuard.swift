@@ -240,6 +240,20 @@ struct AgentRuntimePolicyGuard: Sendable {
             return validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName)
         }
 
+        if isShellTool(toolName),
+           let command = observed.command,
+           HostControlCLIRelayPolicy.isEnabled(in: manifest.providerRender),
+           HostControlCLIRelayPolicy.mentionsRelay(command) {
+            guard HostControlCLIRelayPolicy.allows(command) else {
+                return AgentRuntimePolicyViolation(
+                    reason: "Only an exact typed astra-host-control relay command is allowed",
+                    toolName: toolName,
+                    detail: observed.summary
+                )
+            }
+            return nil
+        }
+
         if toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.deniedTools) {
             return AgentRuntimePolicyViolation(
                 reason: "The tool is explicitly denied by the effective ASTRA policy",

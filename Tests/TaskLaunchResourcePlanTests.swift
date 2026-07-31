@@ -235,7 +235,7 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.gitCredential == nil)
         #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
         #expect(plan.controlPlaneResources.contains {
-            $0.capability == "github" && $0.placement == "host_capability"
+            $0.capability == "github" && $0.placement == "host_control_mcp_broker"
         })
     }
 
@@ -988,6 +988,13 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.credentialGrants.contains {
             $0.source == .connector && $0.label == "Google Cloud local gcloud config"
         })
+        let projectedConfigKeys = Set(
+            ConnectorRuntimeProjection(connectors: [gcloudConnector])
+                .environmentBindings()
+                .filter { $0.kind == .config }
+                .map(\.envKey)
+        )
+        #expect(projectedConfigKeys.isSubset(of: Set(plan.environmentGrants.map(\.key))))
         #expect(plan.commandPlannedFields["connector_readable_path_count"] == "4")
     }
 
@@ -1132,12 +1139,16 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.controlPlaneToolPlacement == "host_capabilities")
         #expect(plan.providerRequirements.contains { $0.capability == "connector:jira" })
         let jiraResource = try #require(plan.controlPlaneResources.first { $0.capability == "jira" })
-        #expect(jiraResource.placement == "host_capability")
+        #expect(jiraResource.placement == "host_control_mcp_broker")
         #expect(jiraResource.readiness == .configured)
         #expect(jiraResource.repairAction?.contains("JIRA_EMAIL") == true)
         #expect(jiraResource.repairAction?.contains("JIRA_API_TOKEN") == true)
-        #expect(plan.credentialGrants.contains { $0.label == "Jira:JIRA_EMAIL" })
-        #expect(plan.credentialGrants.contains { $0.label == "Jira:JIRA_API_TOKEN" })
+        #expect(plan.credentialGrants.allSatisfy { $0.source != .connector })
+        let contract = LaunchResourceContract(plan: plan)
+        #expect(contract.providerEnvironmentSecretResources.isEmpty)
+        #expect(contract.resources.contains {
+            $0.capability == "jira" && $0.visibility == .hostControlPlaneOnly
+        })
     }
 
     @Test("Resource manifest store persists latest and run-scoped manifests")

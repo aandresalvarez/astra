@@ -583,7 +583,9 @@ struct OnboardingWizardView: View {
     private var selectedRuntimeStatusSummary: String {
         switch runtimeSetup.status(for: runtimeSetup.selectedRuntime) {
         case .healthy(_, let version): "Ready — \(version)"
+        case .unverified(_, let detail): detail
         case .unauthenticated(let detail): detail
+        case .authorizationRequired(let detail, _): detail
         case .unresponsive(let detail): detail
         case .missingBinary: "Not installed on this Mac"
         case .none: "Not yet checked"

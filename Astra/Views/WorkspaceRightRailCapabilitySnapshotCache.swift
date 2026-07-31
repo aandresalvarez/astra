@@ -308,8 +308,12 @@ struct CapabilityRailPrerequisiteStatusSignature: Hashable, Comparable {
         switch status {
         case .healthy(let path, let version):
             "healthy:\(path):\(version)"
+        case .unverified(let path, let detail):
+            "unverified:\(path):\(detail)"
         case .unauthenticated(let detail):
             "unauthenticated:\(detail)"
+        case .authorizationRequired(let detail, _):
+            "authorizationRequired:\(detail)"
         case .unresponsive(let detail):
             "unresponsive:\(detail)"
         case .missingBinary:
