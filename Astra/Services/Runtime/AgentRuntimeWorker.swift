@@ -635,7 +635,10 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             executionPolicy: executionPolicy,
             fallbackPermissionPolicy: skipPermissions ? .autonomous : permissionPolicy,
-            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            isHostControlBrokerAvailable: {
+                processRunner.isHostControlBrokerAvailable()
+            }
         )
         let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
             runtimeResolution,

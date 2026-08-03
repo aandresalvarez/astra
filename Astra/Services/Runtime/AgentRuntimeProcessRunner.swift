@@ -61,6 +61,7 @@ private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
 
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
+    func isHostControlBrokerAvailable() -> Bool
 
     @MainActor
     func runRuntimeProcess(
@@ -98,27 +99,38 @@ final class AgentRuntimeProcessRunner {
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
     private let dockerRuntimeProvider: DockerRuntimeProvider
+    private let hostControlBrokerSessionManager: any HostControlBrokerSessionManaging
 
-    init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
-        ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
-    }, gitCredentialContextProvider: @escaping GitCredentialContextProvider = { context in
-        GitCredentialContextResolver.runtimeSandboxContext(
-            prompt: context.prompt,
-            task: context.task,
-            contextText: context.contextText,
-            repositoryPath: context.workspacePath,
-        )
-    }, dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
-        DockerRuntimeResolver.resolve()
-    }) {
+    init(
+        sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
+            ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+        },
+        gitCredentialContextProvider: @escaping GitCredentialContextProvider = { context in
+            GitCredentialContextResolver.runtimeSandboxContext(
+                prompt: context.prompt,
+                task: context.task,
+                contextText: context.contextText,
+                repositoryPath: context.workspacePath,
+            )
+        },
+        dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
+            DockerRuntimeResolver.resolve()
+        },
+        hostControlBrokerSessionManager: any HostControlBrokerSessionManaging = HostControlBrokerSessionManager()
+    ) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider
         self.dockerRuntimeProvider = dockerRuntimeProvider
+        self.hostControlBrokerSessionManager = hostControlBrokerSessionManager
     }
 
     func cancel() {
         currentProcess?.terminate()
         currentProcess = nil
+    }
+
+    func isHostControlBrokerAvailable() -> Bool {
+        hostControlBrokerSessionManager.isAvailable()
     }
 
     /// Either a launch plan ready to run, or a fail-closed result that blocks the
@@ -722,7 +734,7 @@ final class AgentRuntimeProcessRunner {
             )
         }
         let brokerPrepared = requiresHostControlBroker
-            && HostControlBrokerSessionRegistry.shared.prepare(
+            && hostControlBrokerSessionManager.prepare(
             task: task,
             runID: runID,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
@@ -745,7 +757,7 @@ final class AgentRuntimeProcessRunner {
         }
         defer {
             if brokerPrepared {
-                HostControlBrokerSessionRegistry.shared.stop(taskID: task.id, runID: runID)
+                hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
@@ -1042,7 +1054,7 @@ final class AgentRuntimeProcessRunner {
 
             do {
                 try process.run()
-                HostControlBrokerSessionRegistry.shared.registerProviderProcess(
+                hostControlBrokerSessionManager.registerProviderProcess(
                     taskID: taskID,
                     runID: runID,
                     processID: process.processIdentifier

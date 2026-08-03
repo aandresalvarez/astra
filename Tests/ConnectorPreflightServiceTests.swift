@@ -235,7 +235,9 @@ struct ConnectorPreflightServiceTests {
             modelContext: context,
             phase: "test",
             contextText: "Check Jira permissions",
-            secretStore: store
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
         )
 
         let approvalEvent = try #require(task.events.first {
@@ -291,7 +293,9 @@ struct ConnectorPreflightServiceTests {
             modelContext: context,
             phase: "test",
             contextText: "Check Jira permissions",
-            secretStore: store
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
         )
 
         let approvalEvent = try #require(task.events.first {

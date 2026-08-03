@@ -5,6 +5,64 @@ import ASTRAModels
 import ASTRAPersistence
 import HostControlToolSupport
 
+protocol HostControlBrokerSessionManaging: AnyObject {
+    func isAvailable() -> Bool
+
+    @MainActor
+    func prepare(
+        task: AgentTask,
+        runID: UUID?,
+        capabilityScope: TaskCapabilityPromptScope,
+        requiredTools: [String],
+        currentDirectory: String
+    ) -> Bool
+
+    func registerProviderProcess(taskID: UUID, runID: UUID?, processID: Int32)
+    func stop(taskID: UUID, runID: UUID?)
+}
+
+final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
+    private let expectedHelperPath: String
+
+    init(expectedHelperPath: String = HostControlBrokerReadiness.helperPath) {
+        self.expectedHelperPath = expectedHelperPath
+    }
+
+    func isAvailable() -> Bool {
+        HostControlBrokerReadiness.isAvailable(expectedHelperPath: expectedHelperPath)
+    }
+
+    @MainActor
+    func prepare(
+        task: AgentTask,
+        runID: UUID?,
+        capabilityScope: TaskCapabilityPromptScope,
+        requiredTools: [String],
+        currentDirectory: String
+    ) -> Bool {
+        HostControlBrokerSessionRegistry.shared.prepare(
+            task: task,
+            runID: runID,
+            capabilityScope: capabilityScope,
+            requiredTools: requiredTools,
+            currentDirectory: currentDirectory,
+            expectedHelperPath: expectedHelperPath
+        )
+    }
+
+    func registerProviderProcess(taskID: UUID, runID: UUID?, processID: Int32) {
+        HostControlBrokerSessionRegistry.shared.registerProviderProcess(
+            taskID: taskID,
+            runID: runID,
+            processID: processID
+        )
+    }
+
+    func stop(taskID: UUID, runID: UUID?) {
+        HostControlBrokerSessionRegistry.shared.stop(taskID: taskID, runID: runID)
+    }
+}
+
 final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     static let shared = HostControlBrokerSessionRegistry()
 

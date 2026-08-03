@@ -70,7 +70,10 @@ enum AgentRuntimeLaunchRuntimeResolver {
         phase: RunPhase,
         executionPolicy: AgentRuntimeExecutionPolicy,
         fallbackPermissionPolicy: PermissionPolicy = .restricted,
-        defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
+        defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue,
+        isHostControlBrokerAvailable: TaskLaunchAdmissionService.HostControlBrokerAvailabilityProvider = {
+            HostControlBrokerReadiness.isAvailable()
+        }
     ) -> LaunchRuntimeResolution {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: requestedRuntime)
         let startPayload = startEventPayload ?? adapter.defaultStartEventPayload(task: task)
@@ -105,7 +108,8 @@ enum AgentRuntimeLaunchRuntimeResolver {
             },
             isRuntimeUsable: { runtime, _ in
                 runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
-            }
+            },
+            isHostControlBrokerAvailable: isHostControlBrokerAvailable
         )
         let selectedCandidate = admission.selectedCandidate
         return LaunchRuntimeResolution(

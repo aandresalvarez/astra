@@ -2434,9 +2434,14 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
     private(set) var receivedWorkspacePaths: [String] = []
     private(set) var receivedPrompts: [String] = []
     var cancelCallCount = 0
+    var hostControlBrokerAvailable = true
 
     func cancel() {
         cancelCallCount += 1
+    }
+
+    func isHostControlBrokerAvailable() -> Bool {
+        hostControlBrokerAvailable
     }
 
     @MainActor

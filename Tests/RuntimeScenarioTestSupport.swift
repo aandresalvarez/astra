@@ -42,11 +42,22 @@ extension AgentRuntimeWorker {
     static func scenarioWorker(
         sandboxEnforcementOverride: ExecutionSandboxEnforcement? = nil
     ) -> AgentRuntimeWorker {
-        let runner = AgentRuntimeProcessRunner { permissionPolicy in
-            let enforcement = sandboxEnforcementOverride
-                ?? (permissionPolicy == .autonomous ? .strict : .bestEffort)
-            return ExecutionSandboxSettings(enforcement: enforcement)
-        }
+        // Exercise real broker setup with SwiftPM's built helper instead of
+        // depending on a locally installed ASTRA.app tool.
+        let hostControlHelperPath = Bundle.module.bundleURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("astra-host-control", isDirectory: false)
+            .path
+        let runner = AgentRuntimeProcessRunner(
+            sandboxSettingsProvider: { permissionPolicy in
+                let enforcement = sandboxEnforcementOverride
+                    ?? (permissionPolicy == .autonomous ? .strict : .bestEffort)
+                return ExecutionSandboxSettings(enforcement: enforcement)
+            },
+            hostControlBrokerSessionManager: HostControlBrokerSessionManager(
+                expectedHelperPath: hostControlHelperPath
+            )
+        )
         let worker = AgentRuntimeWorker(
             processRunner: runner,
             providerSettingsSnapshotProvider: { .headlessScenario }
