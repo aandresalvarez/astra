@@ -612,6 +612,76 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains(#"{"operation":"search_jql","alias":"ops_jira","jql":"project = KEY","max_results":1}"#))
     }
 
+    @Test("CLI-relay runtime examples are accepted by the relay tokenizer")
+    func cliRelayRuntimeExamplesAreRunnable() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Relay Example Workspace", primaryPath: "/tmp/relay-example-workspace")
+        context.insert(workspace)
+
+        let skill = Skill(
+            name: "Cloud Ops",
+            skillDescription: "Jira and Cloud Run operations",
+            behaviorInstructions: "Always use the ASTRA host-control MCP tool mcp__astra_host__gcloud; never call the gcloud binary directly."
+        )
+        context.insert(skill)
+
+        let jira = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.workspace = workspace
+        jira.configKeys = ["JIRA_BASE_URL"]
+        jira.configValues = ["https://eng.example.atlassian.net"]
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jira)
+
+        let gcloud = Connector(
+            name: "Cloud Run",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud project",
+            baseURL: "https://console.cloud.google.com",
+            authMethod: "adc"
+        )
+        gcloud.workspace = workspace
+        gcloud.configKeys = ["GCP_PROJECT", "GCP_REGION"]
+        gcloud.configValues = ["astra-example", "us-central1"]
+        context.insert(gcloud)
+
+        let task = AgentTask(
+            title: "Relay",
+            goal: "Check Jira and list Cloud Run services with gcloud",
+            workspace: workspace,
+            runtime: .cursorCLI
+        )
+        task.skills = [skill]
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        let relayCommands = prompt
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                guard let range = line.range(of: "astra-host-control ") else { return nil }
+                return String(line[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+            }
+
+        // Every printed example is copied verbatim into a relay call, so each one has to
+        // survive the tokenizer that gates the relay - one command per line, no `;`, no `$VAR`.
+        #expect(relayCommands.count >= 3)
+        for command in relayCommands {
+            #expect(HostControlCLIRelayPolicy.allows(command), "Relay rejects: \(command)")
+        }
+        #expect(relayCommands.contains { $0.hasPrefix("astra-host-control jira --operation status") })
+        #expect(relayCommands.contains { $0.hasPrefix("astra-host-control jira --operation search-jql") })
+        #expect(relayCommands.contains { $0.contains("astra-example") && $0.contains("us-central1") })
+        #expect(!relayCommands.contains { $0.contains("$") })
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()

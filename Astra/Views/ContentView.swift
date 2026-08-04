@@ -4188,7 +4188,10 @@ struct WorkspaceSetupForm: View {
 
     private func configurationIssue(for packageID: String) -> String? {
         guard draft.selectedCapabilityIDs.contains(packageID) else { return nil }
-        let githubReady = capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.githubPackageID)
+        // Usable, not verified: an authenticated `gh` in a folder with no GitHub remote
+        // probes as `.unverified`, which is the normal state during workspace setup and
+        // must not be reported back as "Authenticated gh CLI" still missing.
+        let githubReady = capabilityPrerequisitesUsable(for: OnboardingCapabilitySetup.githubPackageID)
         return draft.capabilityConfiguration
             .missingRequirements(for: packageID, githubCLIReady: githubReady)
             .first
@@ -4212,7 +4215,7 @@ struct WorkspaceSetupForm: View {
     }
 
     private var isGitHubHealthy: Bool {
-        capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.githubPackageID)
+        capabilityPrerequisitesUsable(for: OnboardingCapabilitySetup.githubPackageID)
     }
 
     private var hasVertexDefaults: Bool {
@@ -4750,6 +4753,13 @@ struct WorkspaceSetupForm: View {
 
     private func capabilityPrerequisitesReady(for packageID: String) -> Bool {
         CapabilityPrerequisiteStatusSelection.allVerified(
+            prerequisites(for: packageID),
+            statuses: capabilityPreflightStatuses[packageID] ?? [:]
+        )
+    }
+
+    private func capabilityPrerequisitesUsable(for packageID: String) -> Bool {
+        CapabilityPrerequisiteStatusSelection.allUsable(
             prerequisites(for: packageID),
             statuses: capabilityPreflightStatuses[packageID] ?? [:]
         )

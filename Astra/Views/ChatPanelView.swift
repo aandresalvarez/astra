@@ -389,7 +389,8 @@ struct ChatPanelView: View {
     @State private var isThinking = false
     @State private var extractedSpec: TaskSpec?
     @State private var showSpecCard = false
-    @State private var attachedFiles: [String] = []
+    // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
+    @State var attachedFiles: [String] = []
     @State private var pasteMonitor: Any?
     @State private var isDragOver = false
     @State private var sshConnections: [SSHConnection] = []

@@ -4,8 +4,10 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum TaskTurnIntentResolver {
-    private static let maxTurnCharacters = 4_000
+    private static let maxTurnCharacters = 8_000
     private static let maxObjectiveCharacters = 1_000
+    /// Punctuation only, so eliding can never introduce a token that activates a capability.
+    private static let elisionMarker = " \u{2026} "
 
     @MainActor
     static func capture(
@@ -152,7 +154,15 @@ enum TaskTurnIntentResolver {
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard collapsed.count > limit else { return collapsed }
-        return String(collapsed.prefix(limit))
+        // Keep both ends: activation text is matched against the whole turn, and a long
+        // request usually names the tool it needs in its closing sentence ("...then file
+        // it in Jira"). A head-only truncation silently drops that capability signal.
+        let markerCount = elisionMarker.count
+        guard limit > markerCount else { return String(collapsed.prefix(limit)) }
+        let budget = limit - markerCount
+        let headCount = budget - budget / 2
+        let tailCount = budget - headCount
+        return String(collapsed.prefix(headCount)) + elisionMarker + String(collapsed.suffix(tailCount))
     }
 
     private static func unique<T: Hashable>(_ values: [T]) -> [T] {

@@ -2286,3 +2286,135 @@ struct CopilotWorkerExecutionTests {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 }
+
+@Suite("Copilot CLI capability probe", .serialized)
+struct CopilotCLICapabilityProbeTests {
+    @Test("Repeated probes reuse the memoised result until the binary changes")
+    func repeatedProbesReuseCachedCapabilities() throws {
+        let root = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let copilot = root.appendingPathComponent("copilot")
+        let counter = root.appendingPathComponent("probe-count")
+        CopilotCLIRuntime.invalidateCapabilitiesCache()
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache() }
+
+        try Self.writeCountingCopilot(
+            at: copilot,
+            counter: counter,
+            helpBody: #"echo "--output-format=FORMAT --stream=MODE --no-ask-user""#
+        )
+
+        // Admission evaluation probes twice per runtime on every debounced keystroke, so an
+        // unchanged binary has to be spawned exactly once.
+        for _ in 0..<5 {
+            let capabilities = CopilotCLIRuntime.capabilities(executablePath: copilot.path)
+            #expect(capabilities.supportsOutputFormatJSON)
+            #expect(capabilities.supportsStreamingFlag)
+            #expect(!capabilities.supportsReasoningEffort)
+        }
+        #expect(try Self.probeCount(at: counter) == 1)
+
+        // An in-place upgrade changes the binary's identity, so the memoised answer expires.
+        try Self.writeCountingCopilot(
+            at: copilot,
+            counter: counter,
+            helpBody: #"echo "--output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL""#
+        )
+        let upgraded = CopilotCLIRuntime.capabilities(executablePath: copilot.path)
+        #expect(upgraded.supportsReasoningEffort)
+        #expect(try Self.probeCount(at: counter) == 2)
+
+        // And an explicit invalidation forces a fresh probe.
+        CopilotCLIRuntime.invalidateCapabilitiesCache()
+        _ = CopilotCLIRuntime.capabilities(executablePath: copilot.path)
+        #expect(try Self.probeCount(at: counter) == 3)
+    }
+
+    @Test("Help output larger than the pipe buffer is drained instead of deadlocking")
+    func largeHelpOutputIsDrained() throws {
+        let root = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let copilot = root.appendingPathComponent("copilot")
+        let counter = root.appendingPathComponent("probe-count")
+        CopilotCLIRuntime.invalidateCapabilitiesCache()
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache() }
+
+        // Well past the 64 KB pipe buffer: reading only after the child exits would wedge
+        // both processes forever.
+        try Self.writeCountingCopilot(
+            at: copilot,
+            counter: counter,
+            helpBody: """
+            echo "--output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL"
+              i=0
+              while [ $i -lt 4000 ]; do
+                echo "  --filler-option-$i   Padding so the help text exceeds the pipe buffer size."
+                i=$((i+1))
+              done
+            """
+        )
+
+        let capabilities = CopilotCLIRuntime.capabilities(executablePath: copilot.path)
+
+        #expect(capabilities.supportsOutputFormatJSON)
+        #expect(capabilities.supportsStreamingFlag)
+        #expect(capabilities.supportsReasoningEffort)
+    }
+
+    @Test("A hung CLI falls back to conservative capabilities instead of stalling the composer")
+    func hungProbeFallsBackToConservative() throws {
+        let root = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let copilot = root.appendingPathComponent("copilot")
+        CopilotCLIRuntime.invalidateCapabilitiesCache()
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache() }
+
+        // `exec` so the probe's terminate() reaches the sleeping process directly.
+        try Self.writeExecutable(at: copilot, script: """
+        #!/bin/sh
+        exec sleep 600
+        """)
+
+        let started = Date()
+        let capabilities = CopilotCLIRuntime.capabilities(executablePath: copilot.path)
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(capabilities == .conservative)
+        #expect(elapsed < 20)
+    }
+
+    private static func makeTemporaryDirectory() throws -> URL {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-probe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private static func writeCountingCopilot(at url: URL, counter: URL, helpBody: String) throws {
+        try writeExecutable(at: url, script: """
+        #!/bin/sh
+        echo probe >> \(shQuote(counter.path))
+        if [ "$1" = "help" ]; then
+        \(helpBody)
+          exit 0
+        fi
+        exit 0
+        """)
+    }
+
+    private static func writeExecutable(at url: URL, script: String) throws {
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private static func probeCount(at counter: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: counter.path) else { return 0 }
+        return try String(contentsOf: counter, encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .count
+    }
+
+    private static func shQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+}

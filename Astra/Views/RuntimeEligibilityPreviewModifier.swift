@@ -143,6 +143,7 @@ struct RuntimeEligibilityPreviewRequest {
         draftTask: AgentTask?,
         workspace: Workspace?,
         selectedSkills: [Skill],
+        attachedFiles: [String],
         acceptedTurn: String,
         requestedRuntime: AgentRuntimeID,
         runtimeExplicitlySelected: Bool,
@@ -162,26 +163,52 @@ struct RuntimeEligibilityPreviewRequest {
             String(skipPermissions),
             acceptedTurn,
             providerSettings.signature
-        ] + selectedSkills.map(\.id.uuidString).sorted() + readiness).joined(separator: "|")
+        ]
+            + attachedFiles
+            + selectedSkills.map(\.id.uuidString).sorted()
+            + readiness).joined(separator: "|")
 
         return RuntimeEligibilityPreviewRequest(
             signature: signature,
             hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         ) {
             guard await debounce(acceptedTurn) else { return nil }
-            let previewTask = draftTask ?? AgentTask(
-                title: "New Task",
-                goal: acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines),
-                workspace: workspace,
+            let goal = acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Preview the task the composer will actually submit, never the managed
+            // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the
+            // live attachment and skill selection, which the draft only learns about on
+            // the next `saveDraft()`. Evaluating an unmanaged projection also keeps this
+            // read-only preview from becoming a second writer of durable state.
+            let previewTask = AgentTask(
+                title: goal.isEmpty ? "New Task" : String(goal.prefix(60)),
+                goal: goal,
+                workspace: draftTask?.workspace ?? workspace,
                 tokenBudget: defaultBudget,
                 model: defaultModel,
                 runtime: requestedRuntime
             )
-            if draftTask == nil {
-                previewTask.skills = selectedSkills
-                previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected
-            }
-            let intent = TaskTurnIntentResolver.preview(for: previewTask, acceptedTurn: acceptedTurn)
+            previewTask.inputs = attachedFiles
+            previewTask.skills = selectedSkills
+            previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected
+            // Mirror the policy selection `quickRun` records, otherwise a workspace-level
+            // default would outrank the composer's current pick (TaskPolicyStore.resolve
+            // consults task events before workspace and global defaults).
+            let composerLevel = skipPermissions
+                ? AgentPolicyLevel.autonomous
+                : AgentPolicyLevel.normalized(selectedPolicyLevelRaw)
+            previewTask.events = [
+                TaskEvent(
+                    task: previewTask,
+                    type: TaskPolicyStore.selectedPolicyEventType,
+                    payload: composerLevel.rawValue
+                )
+            ]
+            // The draft still owns the planning conversation, so a referential turn
+            // ("continue") inherits exactly what the submitted task will inherit.
+            let intent = TaskTurnIntentResolver.preview(
+                for: draftTask ?? previewTask,
+                acceptedTurn: acceptedTurn
+            )
             return evaluate(
                 task: previewTask,
                 intent: intent,
@@ -284,6 +311,7 @@ extension ChatPanelView {
             draftTask: draftTask,
             workspace: workspace,
             selectedSkills: selectedSkills,
+            attachedFiles: attachedFiles,
             acceptedTurn: messageText,
             requestedRuntime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID),
             runtimeExplicitlySelected: composerRuntimeExplicitlySelected,

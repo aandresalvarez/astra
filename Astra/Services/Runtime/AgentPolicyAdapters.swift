@@ -268,10 +268,10 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
-        // Review policy is read-only; scoped shell grants should not be surfaced there
-        // even though the underlying PermissionPolicy maps to .restricted for both review
-        // and non-review levels, which would otherwise be indistinguishable at that layer.
-        let localToolCommands = policy.level != .review ? context.localToolCommands : []
+        let localToolCommands = PolicyLocalToolGrants.levelScoped(
+            context.localToolCommands,
+            for: policy.level
+        )
         var diagnostics = diagnostics(for: policy, context: context)
         if !policy.deniedTools.isEmpty || !policy.deniedShellPatterns.isEmpty {
             diagnostics.append(PolicyDiagnostic(
@@ -755,6 +755,20 @@ private enum ProviderRuntimeGrantCompanions {
 }
 
 private enum PolicyLocalToolGrants {
+    /// Local CLI commands must never become provider grants at a read-only level.
+    /// `review` puts Bash behind ask-first and `locked` denies it outright, but both
+    /// collapse to `PermissionPolicy.restricted`, so the policy level is the only
+    /// place this distinction survives — every renderer that turns local tool
+    /// commands into grants has to filter here first.
+    static func levelScoped(_ localToolCommands: [String], for level: AgentPolicyLevel) -> [String] {
+        switch level {
+        case .review, .locked:
+            return []
+        case .build, .network, .autonomous, .custom:
+            return localToolCommands
+        }
+    }
+
     static func addClaudeShellGrants(
         to allowedTools: [String],
         localToolCommands: [String]
@@ -1470,10 +1484,18 @@ enum AgentPolicyManifestService {
         hostControlTools: [String]
     ) -> ProviderPolicyRender {
         guard render.providerID == .copilotCLI else { return render }
+        // This refresher recomputes the launch flags and overwrites cliArgumentsSummary /
+        // generatedConfigPreview / allowedTools, so it has to re-apply the read-only level
+        // gate the adapter already applied. Without it, a review or locked run would ship
+        // `--allow-tool shell(gh:*)` on the real process command line.
+        let levelScopedLocalToolCommands = PolicyLocalToolGrants.levelScoped(
+            localToolCommands,
+            for: render.policyLevel
+        )
         let scopedLocalToolCommands = hostControlTools.isEmpty
-            ? localToolCommands
+            ? levelScopedLocalToolCommands
             : HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
-                localToolCommands,
+                levelScopedLocalToolCommands,
                 requiredTools: hostControlTools
             )
         let shouldAllowAllPaths = shouldProjectGitCredentials(

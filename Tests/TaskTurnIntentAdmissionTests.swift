@@ -773,6 +773,137 @@ struct TaskTurnIntentAdmissionTests {
         )
     }
 
+    @Test("Composer preview signature tracks the live attachment list")
+    func previewSignatureTracksAttachments() throws {
+        let container = try makeContainer()
+        let workspace = Workspace(name: "Attachments", primaryPath: "/tmp")
+        container.mainContext.insert(workspace)
+        try container.mainContext.save()
+
+        func request(attachedFiles: [String]) -> RuntimeEligibilityPreviewRequest {
+            .newTask(
+                draftTask: nil,
+                workspace: workspace,
+                selectedSkills: [],
+                attachedFiles: attachedFiles,
+                acceptedTurn: "Summarize the attached file",
+                requestedRuntime: .claudeCode,
+                runtimeExplicitlySelected: true,
+                selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                skipPermissions: false,
+                defaultModel: TaskExecutionDefaults.model,
+                defaultBudget: TaskExecutionDefaults.tokenBudget,
+                providerSettings: .headlessScenario,
+                readinessStates: [.claudeCode: .ready]
+            )
+        }
+
+        // Attaching a file changes the task that will be submitted, so it must also
+        // re-trigger the debounced preview instead of reusing the previous verdict.
+        #expect(request(attachedFiles: []).signature != request(attachedFiles: ["/tmp/a.txt"]).signature)
+        #expect(request(attachedFiles: ["/tmp/a.txt"]).signature
+            != request(attachedFiles: ["/tmp/b.txt"]).signature)
+    }
+
+    @Test("Composer preview rejects a missing attachment before the task is enqueued")
+    func previewRejectsMissingComposerAttachment() async throws {
+        let container = try makeContainer()
+        let workspace = Workspace(name: "Attachments", primaryPath: "/tmp")
+        container.mainContext.insert(workspace)
+        try container.mainContext.save()
+        let missing = "/tmp/astra-missing-attachment-\(UUID().uuidString).txt"
+
+        func candidate(attachedFiles: [String]) async throws -> TaskRuntimeAdmissionCandidate {
+            let request = RuntimeEligibilityPreviewRequest.newTask(
+                draftTask: nil,
+                workspace: workspace,
+                selectedSkills: [],
+                attachedFiles: attachedFiles,
+                acceptedTurn: "Summarize the attached file",
+                requestedRuntime: .claudeCode,
+                runtimeExplicitlySelected: true,
+                selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                skipPermissions: false,
+                defaultModel: TaskExecutionDefaults.model,
+                defaultBudget: TaskExecutionDefaults.tokenBudget,
+                providerSettings: .headlessScenario,
+                readinessStates: [.claudeCode: .ready]
+            )
+            let snapshot = try #require(await request.evaluate())
+            return try #require(snapshot.candidates[.claudeCode])
+        }
+
+        let withAttachment = try await candidate(attachedFiles: [missing])
+        #expect(withAttachment.launchResourcePlan.diagnostics.contains { $0.code == "input_path_missing" })
+        #expect(!withAttachment.isEligible)
+
+        let withoutAttachment = try await candidate(attachedFiles: [])
+        #expect(!withoutAttachment.launchResourcePlan.diagnostics.contains { $0.code == "input_path_missing" })
+    }
+
+    @Test("Composer preview projects the live skill selection over a persisted draft")
+    func previewProjectsLiveSkillSelectionOverDraft() async throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let draft = fixture.task
+        let skill = try #require(draft.skills.first)
+
+        func behaviorSkillNames(selectedSkills: [Skill]) async throws -> [String] {
+            let request = RuntimeEligibilityPreviewRequest.newTask(
+                draftTask: draft,
+                workspace: draft.workspace,
+                selectedSkills: selectedSkills,
+                attachedFiles: [],
+                acceptedTurn: "Read ASTRA-123 in Jira",
+                requestedRuntime: .claudeCode,
+                runtimeExplicitlySelected: true,
+                selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                skipPermissions: false,
+                defaultModel: TaskExecutionDefaults.model,
+                defaultBudget: TaskExecutionDefaults.tokenBudget,
+                providerSettings: .headlessScenario,
+                readinessStates: [.claudeCode: .ready]
+            )
+            let snapshot = try #require(await request.evaluate())
+            let candidate = try #require(snapshot.candidates[.claudeCode])
+            return candidate.capabilityResolutionSnapshot.providerLaunch.behaviorSkills.map(\.name)
+        }
+
+        // The composer toggles skills without writing the draft, so the preview must
+        // follow the live selection rather than the draft's last saved set.
+        #expect(try await behaviorSkillNames(selectedSkills: []).isEmpty)
+        #expect(try await behaviorSkillNames(selectedSkills: [skill]).contains(skill.name))
+
+        // Previewing must stay read-only: the draft is durable state the composer owns.
+        #expect(draft.skills.map(\.name) == [skill.name])
+        #expect(draft.inputs.isEmpty)
+        #expect(draft.events.allSatisfy { $0.type != TaskPolicyStore.selectedPolicyEventType })
+    }
+
+    @Test("A long turn keeps the capability signal in its closing sentence")
+    func boundedTurnPreservesTrailingActivationSignal() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let filler = String(repeating: "Summarize the release notes for the platform team. ", count: 400)
+        let turn = filler + "When the summary is ready, file it as a ticket in Jira."
+        #expect(turn.count > 8_000)
+
+        let intent = TaskTurnIntentResolver.preview(for: fixture.task, acceptedTurn: turn)
+
+        // Head-only truncation would drop the trailing "Jira" and silently deactivate the
+        // capability the turn actually asks for.
+        #expect(intent.acceptedTurn.count <= 8_000)
+        #expect(intent.acceptedTurn.hasSuffix("file it as a ticket in Jira."))
+        #expect(intent.acceptedTurn.hasPrefix("Summarize the release notes"))
+        #expect(intent.acceptedTurn.contains("\u{2026}"))
+
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: intent.activationText,
+            turnIntentSnapshot: intent,
+            runtime: .claudeCode
+        )
+        #expect(snapshot.providerLaunch.connectors.map(\.id) == [fixture.connector.id])
+    }
+
     private func makeJiraAdmissionFixture() throws -> (
         container: ModelContainer,
         task: AgentTask,

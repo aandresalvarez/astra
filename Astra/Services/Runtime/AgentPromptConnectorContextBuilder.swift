@@ -184,7 +184,12 @@ enum AgentPromptConnectorContextBuilder {
     ) -> String? {
         if hostControlRouted {
             if usesHostControlCLIRelay {
-                return #"astra-host-control jira --operation status --alias "\#(alias)"; for reads use astra-host-control jira --operation search-jql --alias "\#(alias)" --jql "project = KEY" --max-results 1"#
+                // Each line must be independently runnable: the relay tokenizer rejects
+                // `;` and every other shell metacharacter, so joining the two commands
+                // into one line would make the copied example unrunnable.
+                return #"astra-host-control jira --operation status --alias "\#(alias)""#
+                    + "\n  Runtime example (reads): "
+                    + #"astra-host-control jira --operation search-jql --alias "\#(alias)" --jql "project = KEY" --max-results 1"#
             }
             return #"mcp__astra_host__jira with {"operation":"status","alias":"\#(alias)"}; for reads use {"operation":"search_jql","alias":"\#(alias)","jql":"project = KEY","max_results":1}"#
         }
@@ -245,19 +250,29 @@ enum AgentPromptConnectorContextBuilder {
         hostControlRouted: Bool,
         usesHostControlCLIRelay: Bool
     ) -> String? {
-        let project = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["project", "gcpProject", "projectID"],
-            originalKeys: ["GCP_PROJECT", "PROJECT", "PROJECT_ID"],
-            keyFragments: ["PROJECT"],
-            preferredKind: .config
+        // Broker routes execute a literal argv - no shell, no `$VAR` expansion - and the
+        // CLI relay tokenizer rejects `$` outright, so a routed example must carry the
+        // resolved config value. These are the same values this section already prints
+        // on the `Config:` line, so nothing extra is disclosed.
+        let project = gcloudArgumentValue(
+            matchingBinding(
+                in: bindings,
+                logicalNames: ["project", "gcpProject", "projectID"],
+                originalKeys: ["GCP_PROJECT", "PROJECT", "PROJECT_ID"],
+                keyFragments: ["PROJECT"],
+                preferredKind: .config
+            ),
+            hostControlRouted: hostControlRouted
         )
-        let region = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["region", "gcpRegion"],
-            originalKeys: ["GCP_REGION", "REGION"],
-            keyFragments: ["REGION"],
-            preferredKind: .config
+        let region = gcloudArgumentValue(
+            matchingBinding(
+                in: bindings,
+                logicalNames: ["region", "gcpRegion"],
+                originalKeys: ["GCP_REGION", "REGION"],
+                keyFragments: ["REGION"],
+                preferredKind: .config
+            ),
+            hostControlRouted: hostControlRouted
         )
 
         let arguments: String
@@ -278,6 +293,27 @@ enum AgentPromptConnectorContextBuilder {
         }
         return "gcloud \(arguments)"
     }
+
+    /// Env-var token for direct shell use, resolved literal for broker-routed examples.
+    private static func gcloudArgumentValue(
+        _ binding: ConnectorRuntimeProjection.EnvironmentBinding?,
+        hostControlRouted: Bool
+    ) -> String? {
+        guard let binding else { return nil }
+        guard hostControlRouted else { return "$\(binding.envKey)" }
+        let literal = binding.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A value carrying shell metacharacters would be rejected by the relay tokenizer,
+        // so drop it rather than emit an example the agent cannot run.
+        guard !literal.isEmpty,
+              literal.rangeOfCharacter(from: hostControlRelayUnsafeCharacters) == nil else {
+            return nil
+        }
+        return literal
+    }
+
+    private static let hostControlRelayUnsafeCharacters = CharacterSet(
+        charactersIn: ";&|<>\n\r`$(){}~*?[]#!\"'\\"
+    )
 
     private static func runtimeEnvValue(
         bindings: [ConnectorRuntimeProjection.EnvironmentBinding],

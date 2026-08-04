@@ -2589,4 +2589,69 @@ struct RunPermissionManifestTests {
         #expect(manifest.mcpServers.first?.promptsEnabled == true)
         #expect(manifest.mcpServers.first?.trustLevel == "high")
     }
+
+    @Test("Copilot launch arguments drop local CLI grants at read-only policy levels")
+    func copilotLaunchArgumentsDropLocalToolGrantsAtReadOnlyLevels() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local Tools", primaryPath: "/tmp/copilot-local-tool-levels")
+        context.insert(workspace)
+        let tool = LocalTool(
+            name: "Stanford Graph Mail",
+            toolDescription: "Read mailbox threads",
+            toolType: "cli",
+            command: "stanford-graph-mail"
+        )
+        tool.workspace = workspace
+        context.insert(tool)
+
+        func launchRender(for level: AgentPolicyLevel) throws -> ProviderPolicyRender {
+            let task = AgentTask(
+                title: "Local Tools",
+                goal: "Summarize the latest mailbox threads",
+                workspace: workspace,
+                runtime: .copilotCLI
+            )
+            let run = TaskRun(task: task)
+            context.insert(task)
+            context.insert(run)
+            TaskPolicyStore.recordSelection(level: level, task: task, modelContext: context, source: "test")
+            try context.save()
+            return AgentPolicyManifestService.recordPreflightManifest(
+                task: task,
+                run: run,
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                workspacePath: workspace.primaryPath,
+                phase: "test",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                providerCapabilities: AgentRuntimePolicyCapabilities(
+                    copilotCLI: CopilotCLICapabilities(helpText: """
+                    --allow-tool
+                    --output-format
+                    """)
+                ),
+                modelContext: context
+            ).providerRender
+        }
+
+        // Control: an executing level still surfaces the scoped grant, so the read-only
+        // expectations below are proving the gate rather than a missing fixture.
+        let buildRender = try launchRender(for: .build)
+        let grant = "shell(stanford-graph-mail:*)"
+        #expect(buildRender.cliArgumentsSummary.contains { $0.contains(grant) })
+        #expect(buildRender.generatedConfigPreview.contains(grant))
+
+        // The launch-argument refresher recomputes these fields after the adapter render,
+        // so it has to re-apply the read-only gate or the grant reaches the process.
+        for level in [AgentPolicyLevel.review, .locked] {
+            let render = try launchRender(for: level)
+            #expect(render.policyLevel == level)
+            #expect(!render.allowedTools.contains(grant))
+            #expect(!render.cliArgumentsSummary.contains { $0.contains(grant) })
+            #expect(!render.generatedConfigPreview.contains(grant))
+        }
+    }
 }
