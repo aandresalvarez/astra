@@ -490,6 +490,107 @@ struct TaskPlanServiceTests {
         #expect(after != before)
     }
 
+    /// `TaskMainView` refreshes the plan projection from durable event
+    /// insertions rather than from `task.updatedAt`. That only works while plan
+    /// recording publishes through `TaskEventInsertionService`; a direct
+    /// `modelContext.insert` would silently stop the plan UI from updating.
+    @MainActor
+    @Test("Plan lifecycle recording publishes durable event insertions")
+    func planLifecycleRecordingPublishesDurableEventInsertions() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        context.insert(task)
+
+        var observed: [String] = []
+        let token = NotificationCenter.default.addObserver(
+            forName: .durableTaskEventInserted,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let insertion = notification.object as? DurableTaskEventInsertion,
+                  insertion.taskID == task.id else { return }
+            observed.append(insertion.type)
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Do work",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+        TaskPlanService.recordExecutionStarted(planID: plan.planID, task: task, modelContext: context)
+        TaskPlanService.recordStepProgress(
+            type: TaskPlanEventTypes.stepCompleted,
+            planID: plan.planID,
+            stepID: "step-1",
+            status: .done,
+            task: task,
+            modelContext: context,
+            title: "Inspect"
+        )
+
+        #expect(observed == [
+            TaskPlanEventTypes.created,
+            TaskPlanEventTypes.approved,
+            TaskPlanEventTypes.executionStarted,
+            TaskPlanEventTypes.stepCompleted
+        ])
+        #expect(observed.allSatisfy { TaskPlanEventRelevance.affectsPlanState(eventType: $0) })
+    }
+
+    @Test("Plan refresh trigger ignores unrelated task activity")
+    func planRefreshTriggerIgnoresUnrelatedTaskActivity() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let before = TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0)
+
+        // Ordinary runtime activity bumps updatedAt several times a second.
+        // That must not invalidate the plan projection cache.
+        task.updatedAt = task.updatedAt.addingTimeInterval(5)
+
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0) == before)
+    }
+
+    @Test("Plan refresh trigger changes on plan events and status changes")
+    func planRefreshTriggerChangesOnPlanEventsAndStatusChanges() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let before = TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0)
+
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 1) != before)
+
+        task.status = .running
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0) != before)
+    }
+
+    @Test("Plan event relevance matches the reader's fetched event types")
+    func planEventRelevanceMatchesReaderEventTypes() {
+        let planRelevant = [
+            TaskPlanEventTypes.created,
+            TaskPlanEventTypes.updated,
+            TaskPlanEventTypes.approved,
+            TaskPlanEventTypes.cancelled,
+            TaskPlanEventTypes.executionStarted,
+            TaskPlanEventTypes.executionCompleted,
+            TaskPlanEventTypes.executionFailed,
+            TaskPlanEventTypes.stepStarted,
+            TaskPlanEventTypes.stepCompleted,
+            TaskPlanEventTypes.stepBlocked,
+            TaskPlanEventTypes.stepSkipped
+        ]
+        for type in planRelevant {
+            #expect(TaskPlanEventRelevance.affectsPlanState(eventType: type), "\(type) should affect plan state")
+        }
+
+        for type in ["user_message", "agent_response", "tool_use", "run_started"] {
+            #expect(!TaskPlanEventRelevance.affectsPlanState(eventType: type), "\(type) should not affect plan state")
+        }
+    }
+
     @Test("Plan state snapshot refreshes only when signature changes")
     func planStateSnapshotRefreshesOnlyWhenSignatureChanges() {
         let task = AgentTask(title: "Plan task", goal: "Do work")

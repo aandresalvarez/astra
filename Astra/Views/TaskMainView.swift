@@ -189,29 +189,6 @@ private struct AgentGeneratedFilesListView: View {
 /// callbacks still fire at snapshot granularity. See the UI responsiveness
 /// audit (Cluster 1).
 ///
-/// Thread refresh is revision/event driven. `AgentTask.updatedAt` covers durable
-/// lifecycle and ordinary event mutations; `taskThreadDidChange` covers coalesced streaming mutations.
-private struct TaskThreadChangeObserver: View {
-    let task: AgentTask
-    let generatedFilesLatestRun: TaskRunSnapshot?
-    let onSnapshotChange: () -> Void
-    let onGeneratedFilesChange: () -> Void
-    var body: some View {
-        Color.clear
-            .onChange(of: task.updatedAt) { _, _ in
-                onSnapshotChange()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .taskThreadDidChange)) { notification in
-                guard let change = notification.object as? TaskThreadChange,
-                      change.taskID == task.id else { return }
-                onSnapshotChange()
-            }
-            .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
-                onGeneratedFilesChange()
-            }
-    }
-}
-
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
@@ -271,6 +248,7 @@ struct TaskMainView: View {
     @State private var isThreadStatusExpanded = false
     @State private var isTaskDecisionDetailsExpanded = false
     @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
+    @State private var planEventRevision = 0
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
@@ -336,7 +314,7 @@ struct TaskMainView: View {
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateRefreshTrigger {
-        TaskPlanStateRefreshTrigger(task: task)
+        TaskPlanStateRefreshTrigger(task: task, planEventRevision: planEventRevision)
     }
 
     private var runtimeHealth: TaskRuntimeHealth {
@@ -566,7 +544,7 @@ struct TaskMainView: View {
             await initializeDisplayedTaskState()
         }
         .task(id: planStateCacheRefreshTrigger) {
-            refreshPlanStateCache()
+            refreshPlanStateCache(reason: .planEvent)
         }
         .task(id: headerFileItemsInputSignature) {
             await recomputeHeaderFileItems()
@@ -618,13 +596,18 @@ struct TaskMainView: View {
             }
         }
         .background {
+            TaskPlanEventObserver(task: task) {
+                planEventRevision &+= 1
+            }
+        }
+        .background {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
                 onSnapshotChange: {
                     deferTaskViewMutation {
                         threadViewModel.requestSnapshotRefresh(for: task)
-                        schedulePlanStateCacheRefresh()
+                        schedulePlanStateCacheRefreshForRecoveredProgress()
                         runtimeHealthNow = Date()
                         logRuntimeHealthIfNeeded(reason: "snapshot")
                     }
@@ -720,7 +703,7 @@ struct TaskMainView: View {
             cachedVerificationPresentation = nil
             refreshTaskContextState()
             refreshForkSourceAvailabilityWarning()
-            refreshPlanStateCache()
+            refreshPlanStateCache(reason: .taskOpen)
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
     }
@@ -749,11 +732,12 @@ struct TaskMainView: View {
         alignTaskAfterRuntimeAvailabilityRefresh()
     }
 
-    private func refreshPlanStateCache() {
+    private func refreshPlanStateCache(reason: TaskPlanStateRefreshReason) {
         guard let snapshot = TaskMainViewPerformanceTelemetry.refreshedPlanStateSnapshot(
             task: task,
             modelContext: modelContext,
-            cached: cachedPlanStateSnapshot
+            cached: cachedPlanStateSnapshot,
+            reason: reason
         ) else { return }
         cachedPlanStateSnapshot = snapshot
     }
@@ -784,12 +768,23 @@ struct TaskMainView: View {
         }
     }
 
-    private func schedulePlanStateCacheRefresh() {
+    /// Thread changes only affect the plan projection through
+    /// `TaskPlanService.applyRecoveredProtocolProgress`, which reads step
+    /// progress out of run output. That recovery pass is a no-op until a plan
+    /// exists, so skip the read entirely when there is nothing to apply it to.
+    /// Plan creation itself arrives as a durable event and is picked up by
+    /// `planStateCacheRefreshTrigger`.
+    private func schedulePlanStateCacheRefreshForRecoveredProgress() {
+        guard cachedPlanStateSnapshot.state.plan != nil else { return }
+        schedulePlanStateCacheRefresh(reason: .recoveredProgress)
+    }
+
+    private func schedulePlanStateCacheRefresh(reason: TaskPlanStateRefreshReason) {
         pendingPlanStateRefreshTask?.cancel()
         pendingPlanStateRefreshTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled else { return }
-            refreshPlanStateCache()
+            refreshPlanStateCache(reason: reason)
         }
     }
 

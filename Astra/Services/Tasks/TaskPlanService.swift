@@ -296,7 +296,7 @@ enum TaskPlanService: Sendable {
             reason: reason
         )
         let event = TaskEvent.structuredPayloadEvent(task: task, type: type, payload: payload, run: run)
-        modelContext.insert(event)
+        TaskEventInsertionService.insert(event, into: modelContext)
         task.updatedAt = Date()
         auditStepProgress(payload, task: task, run: run)
         TaskContextStateManager.refresh(task: task)
@@ -664,7 +664,7 @@ extension TaskPlanService {
             type: type,
             payload: normalize(plan) ?? plan
         )
-        modelContext.insert(event)
+        TaskEventInsertionService.insert(event, into: modelContext)
         recordValidationContractSnapshotIfNeeded(
             plan: plan,
             planEventType: type,
@@ -754,7 +754,7 @@ extension TaskPlanService {
         run: TaskRun? = nil
     ) -> TaskEvent {
         let event = TaskEvent.structuredPayloadEvent(task: task, type: type, payload: payload, run: run)
-        modelContext.insert(event)
+        TaskEventInsertionService.insert(event, into: modelContext)
         task.updatedAt = Date()
         let state = reconstruct(for: task)
         auditPlanLifecycle(
