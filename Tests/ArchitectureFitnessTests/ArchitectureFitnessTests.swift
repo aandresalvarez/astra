@@ -1900,7 +1900,11 @@ struct ArchitectureFitnessTests {
             // command flag plus the portable-package import surface (one
             // @State, one sheet, URL partition in importWorkspace) — the
             // review UI and import logic themselves live in their own files.
-            "Astra/Views/ContentView.swift": .init(4_890, .owner("Workspace shell composition")),
+            // 4_890 -> 4_900 (PR #374 review follow-up): configuration gating now asks
+            // whether prerequisites are *usable* rather than *verified*, which needs its
+            // own accessor plus the note on why an `.unverified` contextual probe is not
+            // missing setup — the two states drive different surfaces.
+            "Astra/Views/ContentView.swift": .init(4_900, .owner("Workspace shell composition")),
             // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
             // freezing a schema version means copying every one of its ~16
             // referenced model types into a fully self-contained nested body
@@ -1914,7 +1918,10 @@ struct ArchitectureFitnessTests {
             // createTaskFromSpec, runApprovedPlan, saveDraft's two branches) plus a
             // couple of session-reset points, so the growth is spread thin by design
             // rather than concentrated in one function that could be extracted.
-            "Astra/Views/ChatPanelView.swift": .init(3_075, .owner("Composer chat surface")),
+            // 3_075 -> 3_076 (PR #374 review follow-up): `attachedFiles` is now read by the
+            // cross-file preview extension, and the one line marking that is what keeps a
+            // future reader from re-privatising it into a compile error.
+            "Astra/Views/ChatPanelView.swift": .init(3_076, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
@@ -1945,6 +1952,11 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
+            // Crossed the 2,000-line threshold in PR #374: one renderer per provider, each
+            // translating the same policy contract into that CLI's flags. Splitting per
+            // provider would hide the cross-provider diff this file exists to make legible,
+            // so it owns itself with a tight ceiling instead.
+            "Astra/Services/Runtime/AgentPolicyAdapters.swift": .init(2_050, .owner("Provider policy rendering")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
@@ -1972,7 +1984,10 @@ struct ArchitectureFitnessTests {
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
-            "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
+            // the relay tokenizer accepts it, and proving that needs a full brokered
+            // jira + gcloud workspace fixture.
+            "Tests/TaskCapabilityResolverTests.swift": .init(3_015, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
@@ -1980,13 +1995,19 @@ struct ArchitectureFitnessTests {
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
             "Tests/AgentRuntimeAdapterTests.swift": .init(3_350, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
+            // ship local tool grants on the real Copilot command line, asserted against a
+            // `.build` control so the test cannot pass vacuously.
+            "Tests/AgentPolicyTests.swift": .init(2_660, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Budget raised for runtimeExplicitlySelected export/import round-trip
             // coverage (PR #281 review follow-up) - two new tests matching this
             // file's existing verbose per-field TaskConfig(...) construction style.
             "Tests/WorkspacePersistenceTests.swift": .init(2_600, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
-            "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_300 -> 2_425 (PR #374 review follow-up): the capability probe is memoised,
+            // drained off-thread, and timeout-bounded; each property needs a real `copilot`
+            // stand-in (spawn counter, oversized help, hung process) to be provable.
+            "Tests/CopilotRuntimeTests.swift": .init(2_425, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode

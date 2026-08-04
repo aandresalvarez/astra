@@ -30,6 +30,7 @@ public enum TaskOutputDiscovery {
     public static func files(
         for task: AgentTask,
         run: TaskRun?,
+        workspacePath: String? = nil,
         fileManager: FileManager = .default
     ) -> [TaskOutputDiscoveredFile] {
         var discovered = files(for: task, fileManager: fileManager)
@@ -37,19 +38,20 @@ public enum TaskOutputDiscovery {
 
         var seen = Set(discovered.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path })
         let taskAccess = TaskWorkspaceAccess(task: task)
+        let executionPath = workspacePath ?? taskAccess.effectiveWorkspacePath
 
         for change in run.fileChanges {
             guard let file = discoveredRunFile(
                 path: change.path,
                 taskFolder: taskAccess.taskFolder,
-                workspacePath: taskAccess.effectiveWorkspacePath,
+                workspacePath: executionPath,
                 fileManager: fileManager
             ) else { continue }
             guard seen.insert(URL(fileURLWithPath: file.path).standardizedFileURL.path).inserted else { continue }
             discovered.append(file)
         }
         let workspaceFiles = TaskOutputWorkspaceDiscovery.filesChangedDuringRun(
-            workspacePath: taskAccess.effectiveWorkspacePath,
+            workspacePath: executionPath,
             taskFolder: taskAccess.taskFolder,
             run: run,
             fileManager: fileManager

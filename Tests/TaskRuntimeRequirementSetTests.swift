@@ -16,7 +16,7 @@ struct TaskRuntimeRequirementSetTests {
         )
 
         #expect(requirements.hostControlTools == ["github", "jira"])
-        #expect(requirements.missingCapabilityNames == ["host-control MCP server for github, jira"])
+        #expect(requirements.missingCapabilityNames == ["ASTRA host tools for github, jira"])
     }
 
     @Test("GitHub host-control skill creates host-control requirement")
@@ -49,7 +49,7 @@ struct TaskRuntimeRequirementSetTests {
         #expect(requirements.hostControlTools == ["github"])
         #expect(requirements.requiresHostControlPlane)
         #expect(!requirements.requiresDockerWorkspaceShell)
-        #expect(requirements.missingCapabilityNames.contains("host-control MCP server for github"))
+        #expect(requirements.missingCapabilityNames.contains("ASTRA host tools for github"))
     }
 
     @Test("Containerized workspace creates Docker workspace shell requirement")

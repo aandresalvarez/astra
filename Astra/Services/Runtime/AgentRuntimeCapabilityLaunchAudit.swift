@@ -46,7 +46,8 @@ enum AgentRuntimeCapabilityLaunchAudit {
         runtime: AgentRuntimeID,
         phase: RunPhase,
         contextText: String,
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        repositoryStatus: HealthStatus?
     ) async {
         let scope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -61,7 +62,6 @@ enum AgentRuntimeCapabilityLaunchAudit {
         }
         guard hasGitHubTool || hasGitHubSkill else { return }
 
-        let gh = RuntimePathResolver.detectExecutablePath(named: "gh")
         var fields: [String: String] = [
             "source": "task_preflight",
             "phase": phase.rawValue,
@@ -71,35 +71,60 @@ enum AgentRuntimeCapabilityLaunchAudit {
             "runtime": runtime.rawValue
         ]
 
-        guard !gh.isEmpty, FileManager.default.isExecutableFile(atPath: gh) else {
-            fields["result"] = "executable_missing"
+        guard let repositoryStatus else {
+            fields["result"] = "repository_status_not_checked"
             AppLogger.audit(.localToolTested, category: "Worker", taskID: task.id, fields: fields, level: .warning)
             return
         }
 
-        fields["executable_path"] = gh
-        let runner = ProcessBinaryRunner()
-        let version = await runner.run(path: gh, args: ["--version"], timeout: 3, environment: nil)
-        fields["version_result"] = runResultLabel(version)
-        if version.isSuccess,
-           let firstLine = version.stdout.split(separator: "\n").first {
-            fields["version_summary"] = String(firstLine)
+        let level: LogLevel
+        switch repositoryStatus {
+        case .healthy(let path, let summary):
+            fields["executable_path"] = path
+            fields["status_summary"] = summary
+            fields["auth_result"] = "success"
+            fields["result"] = "repository_ready"
+            level = .debug
+        case .unverified(let path, let detail):
+            fields["executable_path"] = path
+            fields["status_summary"] = detail
+            fields["auth_result"] = "success"
+            fields["result"] = detail.localizedCaseInsensitiveContains("no repository target")
+                ? "authenticated_no_repository"
+                : "repository_unverified"
+            level = .warning
+        case .unauthenticated(let detail):
+            fields["status_summary"] = detail
+            fields["auth_result"] = "auth_failed"
+            fields["result"] = "auth_failed"
+            level = .warning
+        case .authorizationRequired(let detail, let authorizationURL):
+            let requiresSAML = detail.localizedCaseInsensitiveContains("SAML")
+            fields["status_summary"] = detail
+            fields["auth_result"] = requiresSAML
+                ? "saml_authorization_required"
+                : "authorization_required"
+            fields["result"] = requiresSAML
+                ? "saml_authorization_required"
+                : "repository_permission_required"
+            fields["authorization_action_available"] = String(authorizationURL != nil)
+            level = .warning
+        case .unresponsive(let detail):
+            fields["status_summary"] = detail
+            fields["auth_result"] = "probe_failed"
+            fields["result"] = "repository_probe_failed"
+            level = .warning
+        case .missingBinary:
+            fields["auth_result"] = "not_checked"
+            fields["result"] = "executable_missing"
+            level = .warning
         }
-
-        let auth = await runner.run(
-            path: gh,
-            args: ["auth", "status", "--hostname", "github.com"],
-            timeout: 5,
-            environment: nil
-        )
-        fields["auth_result"] = runResultLabel(auth, nonZeroExitLabel: "auth_failed")
-        fields["result"] = auth.isSuccess ? "authenticated" : runResultLabel(auth, nonZeroExitLabel: "auth_failed")
         AppLogger.audit(
             .localToolTested,
             category: "Worker",
             taskID: task.id,
             fields: fields,
-            level: auth.isSuccess ? .debug : .warning,
+            level: level,
             fieldMaxLength: 220
         )
     }
@@ -107,15 +132,15 @@ enum AgentRuntimeCapabilityLaunchAudit {
     static func runResultLabel(_ result: RunResult, nonZeroExitLabel: String? = nil) -> String {
         switch result.outcome {
         case .exited(code: 0):
-            return "success"
+            "success"
         case .exited(let code):
-            return nonZeroExitLabel ?? "exit_\(code)"
+            nonZeroExitLabel ?? "exit_\(code)"
         case .timedOut:
-            return "timeout"
+            "timeout"
         case .cancelled:
-            return "cancelled"
+            "cancelled"
         case .launchFailed:
-            return "launch_failed"
+            "launch_failed"
         }
     }
 }

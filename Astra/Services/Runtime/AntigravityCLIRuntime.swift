@@ -189,8 +189,11 @@ enum AntigravityCLIRuntime {
         if !trimmedHome.isEmpty {
             extraVars["HOME"] = trimmedHome
         }
+        let additionalPathPrefix = includeAstraToolsPath
+            ? pathPrefix + [RuntimePathResolver.astraToolsPath]
+            : pathPrefix
         let env = RuntimeProcessEnvironment.enriched(
-            additionalPaths: pathPrefix,
+            additionalPaths: additionalPathPrefix,
             extraVariables: extraVars
         )
 

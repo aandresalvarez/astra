@@ -72,6 +72,22 @@ struct AgentRuntimeExecutionPolicyTests {
         }
     }
 
+    @Test("Rebuilt approved-plan policy preserves resource admission")
+    func rebuiltApprovedPlanPolicyPreservesResourceAdmission() {
+        let admitted = AgentRuntimeExecutionPolicy().withResourceAdmission(
+            workspaceAccess: .shared,
+            sandboxEnforcement: .bestEffort
+        )
+        let rebuilt = AgentRuntimeExecutionPolicy.approvedPlan(
+            runtime: .claudeCode,
+            currentPermissionPolicy: .restricted,
+            allowedTools: ["Read"]
+        ).withResourceAdmission(from: admitted)
+
+        #expect(rebuilt.workspaceAccessOverride == .shared)
+        #expect(rebuilt.sandboxEnforcementSnapshot == .bestEffort)
+    }
+
     @Test("Copilot review approval stays scoped to approved tools")
     func copilotReviewApprovalStaysScopedToApprovedTools() {
         let policy = AgentRuntimeExecutionPolicy.approvedPlan(

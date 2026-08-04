@@ -1,13 +1,46 @@
 import Foundation
 import Testing
 import ASTRAModels
+import ASTRACore
 @testable import ASTRA
 
 @Suite("Agent runtime GitHub routing")
 struct AgentRuntimeGitHubRoutingTests {
-    @Test("Cursor GitHub metadata launch block guides users to host-control capable runtimes")
+    @Test("No repository preflight prevents broad GitHub access claims")
+    func noRepositoryPreflightGuidanceIsExplicitlyUnverified() {
+        let prompt = GitHubCapabilityLaunchContext.appendingProviderGuidance(
+            to: "Base prompt",
+            repositoryStatus: .unverified(
+                path: "/opt/homebrew/bin/gh",
+                detail: "Authenticated as aandresalvarez; no repository target was resolved from this workspace."
+            )
+        )
+
+        #expect(prompt.contains("authoritative host evidence"))
+        #expect(prompt.contains("Repository and organization access are unverified"))
+        #expect(prompt.contains("do not prove repository membership"))
+        #expect(prompt.contains("Never claim broad, full"))
+        #expect(prompt.contains("Authentication never grants mutation authority"))
+    }
+
+    @Test("Verified repository guidance scopes the exact proof")
+    func verifiedRepositoryGuidanceScopesTheProof() {
+        let prompt = GitHubCapabilityLaunchContext.appendingProviderGuidance(
+            to: "Base prompt",
+            repositoryStatus: .healthy(
+                path: "/opt/homebrew/bin/gh",
+                version: "aandresalvarez · susom/starr-data-lake"
+            )
+        )
+
+        #expect(prompt.contains("repository-specific read probe succeeded"))
+        #expect(prompt.contains("susom/starr-data-lake"))
+        #expect(prompt.contains("Never claim broad, full"))
+    }
+
+    @Test("Cursor GitHub metadata uses the process-bound CLI relay")
     @MainActor
-    func cursorGitHubMetadataLaunchBlockGuidesUsersToHostControlCapableRuntimes() throws {
+    func cursorGitHubMetadataUsesProcessBoundCLIRelay() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-cursor-github-host-control-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -47,12 +80,12 @@ struct AgentRuntimeGitHubRoutingTests {
                 contextText: "Use GitHub to inspect PR metadata, issue links, and checks for this ASTRA task."
             ))
 
-        let block = try #require(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan))
-        let message = try #require(block.runtimeStopMessage)
-        #expect(message.contains("GitHub metadata/API"))
-        #expect(message.contains("Codex CLI"))
-        #expect(message.contains("Copilot CLI"))
-        #expect(!message.lowercased().contains("secret"))
-        #expect(!message.lowercased().contains("redaction"))
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "none")
+        #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) == nil)
+        #expect(
+            AgentRuntimeCapabilityProfile.defaultProfile(for: .cursorCLI)
+                .usesHostControlCLIRelay
+        )
     }
 }

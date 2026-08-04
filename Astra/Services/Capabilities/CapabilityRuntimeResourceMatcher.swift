@@ -87,6 +87,30 @@ enum CapabilityRuntimeResourceMatcher {
         normalizedName(pluginSkill.name) == normalizedName(skill.name)
     }
 
+    static func packageSkillMatches(
+        _ pluginSkill: PluginSkill,
+        package: PluginPackage,
+        skill: Skill
+    ) -> Bool {
+        let packageID = normalizedOrigin(skill.originPackageID)
+        let componentID = normalizedOrigin(skill.originComponentID)
+        if packageID == package.id, !componentID.isEmpty {
+            return componentID == CapabilityResourceOrigin.componentID(for: pluginSkill)
+        }
+        return skillMatches(pluginSkill, skill: skill)
+    }
+
+    static func preferredPackageSkill(
+        _ pluginSkill: PluginSkill,
+        package: PluginPackage,
+        candidates: [Skill]
+    ) -> Skill? {
+        candidates
+            .filter { packageSkillMatches(pluginSkill, package: package, skill: $0) }
+            .sorted { prefers($0, over: $1, pluginSkill: pluginSkill, package: package) }
+            .first
+    }
+
     static func connectorMatches(_ pluginConnector: PluginConnector, connector: Connector) -> Bool {
         if normalizedName(pluginConnector.name) == normalizedName(connector.name) {
             return true
@@ -114,6 +138,56 @@ enum CapabilityRuntimeResourceMatcher {
 
     static func normalizedName(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func prefers(
+        _ lhs: Skill,
+        over rhs: Skill,
+        pluginSkill: PluginSkill,
+        package: PluginPackage
+    ) -> Bool {
+        let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+        let lhsOwnership = ownershipRank(lhs, packageID: package.id, componentID: componentID)
+        let rhsOwnership = ownershipRank(rhs, packageID: package.id, componentID: componentID)
+        if lhsOwnership != rhsOwnership {
+            return lhsOwnership > rhsOwnership
+        }
+
+        let lhsIsCurrent = lhs.originPackageVersion == package.version
+        let rhsIsCurrent = rhs.originPackageVersion == package.version
+        if lhsIsCurrent != rhsIsCurrent {
+            return lhsIsCurrent
+        }
+
+        if let lhsVersion = lhs.originPackageVersion.flatMap(SemanticVersion.init(string:)),
+           let rhsVersion = rhs.originPackageVersion.flatMap(SemanticVersion.init(string:)),
+           lhsVersion != rhsVersion {
+            return lhsVersion > rhsVersion
+        }
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt > rhs.updatedAt
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func ownershipRank(
+        _ skill: Skill,
+        packageID: String,
+        componentID: String
+    ) -> Int {
+        let originPackageID = normalizedOrigin(skill.originPackageID)
+        let originComponentID = normalizedOrigin(skill.originComponentID)
+        if originPackageID == packageID, originComponentID == componentID {
+            return 3
+        }
+        if originPackageID == packageID {
+            return 2
+        }
+        return 1
+    }
+
+    private static func normalizedOrigin(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private struct DirectoryFingerprint: Equatable {

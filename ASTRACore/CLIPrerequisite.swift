@@ -16,7 +16,11 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// same binary share a result. The struct's `id` is a synthesised
     /// composite so SwiftUI lists can key on it if they want per-package
     /// rendering.
-    public var id: String { "\(binary):\(livenessArgs.joined(separator: " "))" }
+    public var id: String {
+        let base = "\(binary):\(livenessArgs.joined(separator: " "))"
+        guard let contextualCheck else { return base }
+        return "\(base):context=\(contextualCheck.rawValue)"
+    }
 
     /// Short binary name as it should appear on PATH, e.g. `gcloud`,
     /// `docker`, `claude`.
@@ -27,6 +31,11 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
 
     /// Optional second-level probe. `nil` = exit-0 is sufficient.
     public var semantic: SemanticCheck?
+
+    /// Optional check whose result depends on the active workspace rather than
+    /// only the host CLI. Callers without workspace context still run the
+    /// ordinary liveness probe.
+    public var contextualCheck: CLIContextualCheck?
 
     /// Customer-facing label, e.g. "Google Cloud CLI".
     public var displayName: String
@@ -52,6 +61,7 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         binary: String,
         livenessArgs: [String] = ["--version"],
         semantic: SemanticCheck? = nil,
+        contextualCheck: CLIContextualCheck? = nil,
         displayName: String,
         purpose: String,
         installURL: URL? = nil,
@@ -61,12 +71,19 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         self.binary = binary
         self.livenessArgs = livenessArgs
         self.semantic = semantic
+        self.contextualCheck = contextualCheck
         self.displayName = displayName
         self.purpose = purpose
         self.installURL = installURL
         self.installHint = installHint
         self.authHint = authHint
     }
+}
+
+public enum CLIContextualCheck: String, Codable, Sendable, Equatable {
+    /// Proves that the active `gh` account can read the current checkout's
+    /// GitHub repository, including organization SAML policy.
+    case githubRepositoryAccess
 }
 
 // MARK: - Common built-ins
@@ -146,9 +163,10 @@ public enum CommonCLIPrerequisites {
     public static let githubAuth = CLIPrerequisite(
         binary: "gh",
         livenessArgs: ["auth", "status", "--hostname", "github.com"],
-        displayName: "GitHub login",
-        purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
-        installHint: "Run `gh auth login`.",
+        contextualCheck: .githubRepositoryAccess,
+        displayName: "GitHub repository access",
+        purpose: "Verifies the active GitHub CLI account can access this workspace repository, including organization SSO.",
+        installHint: "Run `gh auth login` if no account is signed in.",
         authHint: "Run `gh auth login`."
     )
 

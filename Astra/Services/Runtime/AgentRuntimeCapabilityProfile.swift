@@ -14,6 +14,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
     var taskScopedMCPDelivery: AgentRuntimeTaskScopedMCPDelivery
     var supportsNativeContinuation: Bool
     var supportsShellToolForBrowserBridge: Bool
+    var supportsHostControlCLIRelay: Bool
     var observedEvidence: [String]
 
     /// True when ASTRA knows how to deliver task-scoped MCP configuration to
@@ -28,6 +29,14 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
     /// concrete server for a run.
     var canDeliverHostControlPlaneMCP: Bool {
         supportsTaskScopedMCPDelivery
+    }
+
+    var canDeliverHostControlPlane: Bool {
+        canDeliverHostControlPlaneMCP || supportsHostControlCLIRelay
+    }
+
+    var usesHostControlCLIRelay: Bool {
+        !canDeliverHostControlPlaneMCP && supportsHostControlCLIRelay
     }
 
     /// Pre-render eligibility for delivering the Docker workspace shell MCP
@@ -57,7 +66,12 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
             descriptor: descriptor,
             mcpProfile: mcpProfile,
             supportsShellToolForBrowserBridge: defaultShellToolSupport(for: runtime),
-            observedEvidence: defaultEvidence(for: runtime, delivery: mcpProfile.configDeliveryOwnership)
+            supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime),
+            observedEvidence: defaultEvidence(
+                for: runtime,
+                delivery: mcpProfile.configDeliveryOwnership,
+                supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime)
+            )
         )
     }
 
@@ -71,6 +85,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
             descriptor: descriptor,
             mcpProfile: mcpProfile,
             supportsShellToolForBrowserBridge: false,
+            supportsHostControlCLIRelay: false,
             observedEvidence: [
                 supportsAdditionalMCPConfig
                     ? "copilot-help:additional-mcp-config"
@@ -83,6 +98,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         descriptor: AgentRuntimeDescriptor,
         mcpProfile: MCPRuntimeSupportProfile,
         supportsShellToolForBrowserBridge: Bool,
+        supportsHostControlCLIRelay: Bool,
         observedEvidence: [String]
     ) {
         self.runtime = descriptor.id
@@ -92,6 +108,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         )
         self.supportsNativeContinuation = descriptor.supportsNativeContinuation
         self.supportsShellToolForBrowserBridge = supportsShellToolForBrowserBridge
+        self.supportsHostControlCLIRelay = supportsHostControlCLIRelay
         self.observedEvidence = observedEvidence
     }
 
@@ -99,22 +116,30 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         runtime != .copilotCLI && AgentRuntimeAdapterRegistry.hasAdapter(for: runtime)
     }
 
+    private static func defaultHostControlCLIRelaySupport(for runtime: AgentRuntimeID) -> Bool {
+        [.cursorCLI, .openCodeCLI, .antigravityCLI].contains(runtime)
+    }
+
     private static func defaultEvidence(
         for runtime: AgentRuntimeID,
-        delivery: MCPRuntimeConfigDeliveryOwnership
+        delivery: MCPRuntimeConfigDeliveryOwnership,
+        supportsHostControlCLIRelay: Bool
     ) -> [String] {
+        if supportsHostControlCLIRelay {
+            return ["adapter:process-bound-host-control-cli-relay"]
+        }
         switch delivery {
         case .astraEphemeralLaunchFile:
-            ["descriptor:claude-mcp-config"]
+            return ["descriptor:claude-mcp-config"]
         case .astraInlineLaunchArgument:
-            ["descriptor:codex-inline-mcp"]
+            return ["descriptor:codex-inline-mcp"]
         case .astraAdditionalLaunchFile:
-            ["descriptor:additional-mcp-config"]
+            return ["descriptor:additional-mcp-config"]
         case .unsupported:
             if runtime == .copilotCLI {
-                ["copilot-help:missing-additional-mcp-config"]
+                return ["copilot-help:missing-additional-mcp-config"]
             } else {
-                ["adapter:no-task-scoped-mcp-projection"]
+                return ["adapter:no-task-scoped-mcp-projection"]
             }
         }
     }

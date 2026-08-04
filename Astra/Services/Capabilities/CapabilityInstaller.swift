@@ -338,7 +338,11 @@ struct CapabilityInstaller {
         modelContext: ModelContext,
         configInputs: [String: String]
     ) throws -> Skill {
-        let skill = try existingGlobalSkill(named: pluginSkill.name, modelContext: modelContext) ?? Skill(
+        let skill = try existingGlobalSkill(
+            for: pluginSkill,
+            package: package,
+            modelContext: modelContext
+        ) ?? Skill(
             name: pluginSkill.name,
             icon: pluginSkill.icon,
             skillDescription: pluginSkill.description,
@@ -690,14 +694,19 @@ struct CapabilityInstaller {
         return template
     }
 
-    private func existingGlobalSkill(named name: String, modelContext: ModelContext) throws -> Skill? {
+    private func existingGlobalSkill(
+        for pluginSkill: PluginSkill,
+        package: PluginPackage,
+        modelContext: ModelContext
+    ) throws -> Skill? {
         let descriptor = FetchDescriptor<Skill>(
-            predicate: #Predicate {
-                $0.name == name &&
-                $0.isGlobal
-            }
+            predicate: #Predicate { $0.isGlobal }
         )
-        return try modelContext.fetch(descriptor).first
+        return CapabilityRuntimeResourceMatcher.preferredPackageSkill(
+            pluginSkill,
+            package: package,
+            candidates: try modelContext.fetch(descriptor)
+        )
     }
 
     private func existingGlobalConnector(

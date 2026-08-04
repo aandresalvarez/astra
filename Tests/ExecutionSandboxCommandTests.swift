@@ -6,9 +6,9 @@ import ASTRACore
 
 /// `ExecutionSandbox.decideForCommand` — the non-agent Seatbelt entry point used
 /// by the task-validation harness (`pytest`/`npm test`/`swift test`/`xcodebuild`/
-/// `make test`, gated upstream by `ValidationCommandPolicy`). Unlike `decide()`,
-/// this always floors `.off` to `.bestEffort` and always uses the open (write-only)
-/// read scope — these tests pin both of those deliberately-different behaviors.
+/// `make test`, gated upstream by `ValidationCommandPolicy`). Like `decide()`,
+/// an explicit Off remains authoritative; enabled command boundaries use the
+/// open (write-only) read scope.
 @Suite("Execution Sandbox — Non-agent commands")
 struct ExecutionSandboxCommandTests {
     private func makeWorkspace() throws -> (root: URL, workspace: URL) {
@@ -21,8 +21,8 @@ struct ExecutionSandboxCommandTests {
 
     // MARK: - Enforcement floor
 
-    @Test("Off enforcement still applies (floored to best-effort), not skipped")
-    func offEnforcementFloorsToApplied() throws {
+    @Test("Off enforcement skips command sandboxing")
+    func offEnforcementSkipsSandboxing() throws {
         let (root, workspace) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -35,15 +35,12 @@ struct ExecutionSandboxCommandTests {
             homeWritableRelativePaths: [],
             settings: ExecutionSandboxSettings(enforcement: .off)
         )
-        guard case .applied = decision else {
-            Issue.record("Expected .applied even with enforcement .off (validation always gets a floor), got \(decision)")
-            return
-        }
+        #expect(decision == .skipped(reason: "sandbox_disabled"))
     }
 
     // MARK: - Unavailable branches: floored enforcement still maps strict/best-effort correctly
 
-    @Test("Empty workspace path falls back (floored) or fails closed (explicit strict)")
+    @Test("Empty workspace path is ignored when Off and fails closed when strict")
     func emptyWorkspaceUnavailable() throws {
         let bestEffort = ExecutionSandbox.decideForCommand(
             executablePath: "/bin/zsh",
@@ -53,7 +50,7 @@ struct ExecutionSandboxCommandTests {
             homeWritableRelativePaths: [],
             settings: ExecutionSandboxSettings(enforcement: .off)
         )
-        #expect(bestEffort == .fallback(reason: "no_execution_path"))
+        #expect(bestEffort == .skipped(reason: "sandbox_disabled"))
 
         let strict = ExecutionSandbox.decideForCommand(
             executablePath: "/bin/zsh",
@@ -81,7 +78,7 @@ struct ExecutionSandboxCommandTests {
         }
     }
 
-    @Test("Missing sandbox-exec falls back (floored best-effort) or fails closed (strict)")
+    @Test("Missing sandbox-exec is ignored when Off and fails closed when strict")
     func missingSandboxExecUnavailable() throws {
         let (root, workspace) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -96,7 +93,7 @@ struct ExecutionSandboxCommandTests {
             settings: ExecutionSandboxSettings(enforcement: .off),
             fileManager: absent
         )
-        #expect(bestEffort == .fallback(reason: "sandbox_exec_missing"))
+        #expect(bestEffort == .skipped(reason: "sandbox_disabled"))
 
         let strict = ExecutionSandbox.decideForCommand(
             executablePath: "/bin/zsh",

@@ -191,7 +191,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
-            executionPolicy: context.executionPolicy
+            executionPolicy: context.executionPolicy,
+            runtimeRequirements: context.runtimeRequirements
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,

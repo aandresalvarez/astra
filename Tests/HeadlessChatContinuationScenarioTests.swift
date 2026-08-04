@@ -668,15 +668,15 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
-    @Test("Cursor GitHub Workflow follow-up stops at runtime capability gate before provider policy")
-    func cursorGitHubWorkflowFollowUpStopsAtRuntimeCapabilityGate() async throws {
+    @Test("Cursor GitHub Workflow follow-up runs through the CLI relay")
+    func cursorGitHubWorkflowFollowUpRunsThroughCLIRelay() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            printf '%s\\n' 'Cursor handled GitHub through the ASTRA CLI relay'
             exit 0
             """
         )
@@ -714,31 +714,29 @@ extension HeadlessChatScenarioTests {
         )
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
-        #expect(run.status == .failed)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
-        #expect(task.status == .pendingUser)
-        #expect(task.events.contains { event in
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(task.status == .completed)
+        #expect(run.output == "Cursor handled GitHub through the ASTRA CLI relay")
+        #expect(!task.events.contains { event in
             event.run?.id == run.id &&
-            event.type == TaskEventTypes.System.error.rawValue &&
-            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
-            event.payload.contains("host-control MCP server for github")
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities")
         })
         #expect(!task.events.contains { event in
             event.run?.id == run.id &&
             event.payload.contains("Provider policy blocked this run before launch")
         })
-        #expect(run.output.isEmpty)
     }
 
-    @Test("Cursor generic host-control capability stops at runtime capability gate")
-    func cursorGenericHostControlCapabilityStopsAtRuntimeCapabilityGate() async throws {
+    @Test("Cursor generic host-control capability runs through the CLI relay")
+    func cursorGenericHostControlCapabilityRunsThroughCLIRelay() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for generic host-control work'
+            printf '%s\\n' 'Cursor handled Jira through the ASTRA CLI relay'
             exit 0
             """
         )
@@ -776,20 +774,18 @@ extension HeadlessChatScenarioTests {
         )
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
-        #expect(run.status == .failed)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
-        #expect(task.status == .pendingUser)
-        #expect(task.events.contains { event in
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(task.status == .completed)
+        #expect(run.output == "Cursor handled Jira through the ASTRA CLI relay")
+        #expect(!task.events.contains { event in
             event.run?.id == run.id &&
-            event.type == TaskEventTypes.System.error.rawValue &&
-            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
-            event.payload.contains("host-control MCP server for jira")
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities")
         })
         #expect(!task.events.contains { event in
             event.run?.id == run.id &&
             event.payload.contains("Provider policy blocked this run before launch")
         })
-        #expect(run.output.isEmpty)
     }
 
     @Test("Cursor Docker workspace follow-up stops at runtime capability gate")
@@ -896,15 +892,15 @@ extension HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
     }
 
-    @Test("GitHub host-control retry skips old Copilot default and reroutes to Codex")
-    func githubHostControlRetrySkipsOldCopilotDefaultAndReroutesToCodex() async throws {
+    @Test("GitHub host-control retry stays on Cursor instead of trying an old Copilot default")
+    func githubHostControlRetryStaysOnCursorInsteadOfOldCopilotDefault() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            printf '%s\\n' 'Cursor handled GitHub'
             exit 0
             """
         )
@@ -947,21 +943,22 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .completed)
-        #expect(run.runtimeID == AgentRuntimeID.codexCLI.rawValue)
-        #expect(run.output == "Codex handled GitHub")
-        #expect(task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to Codex CLI") })
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.output == "Cursor handled GitHub")
+        #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
         #expect(!run.output.contains("old copilot should not launch"))
+        #expect(!run.output.contains("Codex handled GitHub"))
     }
 
-    @Test("GitHub host-control retry accepts new Copilot default")
-    func githubHostControlRetryAcceptsNewCopilotDefaultWhenAdditionalMCPConfigIsSupported() async throws {
+    @Test("GitHub host-control retry does not replace compatible Cursor with a new Copilot default")
+    func githubHostControlRetryKeepsCompatibleCursorOverNewCopilotDefault() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            printf '%s\\n' 'Cursor handled GitHub'
             exit 0
             """
         )
@@ -1004,20 +1001,20 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .completed)
-        #expect(run.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
-        #expect(run.output == "Copilot handled GitHub")
-        #expect(task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to GitHub Copilot CLI") })
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.output == "Cursor handled GitHub")
+        #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
     }
 
-    @Test("GitHub host-control retry reroutes from Cursor to configured compatible runtime")
-    func githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime() async throws {
+    @Test("GitHub host-control retry keeps compatible Cursor instead of rerouting")
+    func githubHostControlRetryKeepsCompatibleCursor() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            printf '%s\\n' 'Cursor GitHub answer'
             exit 0
             """
         )
@@ -1068,11 +1065,11 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .completed)
-        #expect(run.runtimeID == AgentRuntimeID.codexCLI.rawValue)
-        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(task.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
         #expect(task.status == .completed)
-        #expect(run.output == "Codex GitHub answer")
-        #expect(task.events.contains { event in
+        #expect(run.output == "Cursor GitHub answer")
+        #expect(!task.events.contains { event in
             event.run?.id == run.id &&
             event.type == TaskEventTypes.System.info.rawValue &&
             event.payload.contains("Runtime changed from Cursor CLI to Codex CLI")
@@ -1084,15 +1081,15 @@ extension HeadlessChatScenarioTests {
         })
     }
 
-    @Test("Explicitly selected Cursor blocks instead of rerouting to a compatible Codex fallback")
-    func explicitlySelectedCursorHostControlTaskBlocksInsteadOfReroutingToCodex() async throws {
+    @Test("Explicitly selected Cursor uses its CLI relay instead of rerouting")
+    func explicitlySelectedCursorHostControlTaskUsesCLIRelay() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            printf '%s\\n' 'Cursor handled explicit GitHub work'
             exit 0
             """
         )
@@ -1128,9 +1125,8 @@ extension HeadlessChatScenarioTests {
         task.skills = [githubSkill]
         harness.context.insert(githubSkill)
 
-        // Codex is a fully compatible, available fallback - if the explicit pick
-        // were ignored, the resolver would silently reroute to it exactly like
-        // githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime.
+        // Codex is also available, but an explicit compatible choice must
+        // remain selected.
         let worker = harness.makeWorker(
             runtime: .cursorCLI,
             executablePath: cursorPath,
@@ -1146,14 +1142,13 @@ extension HeadlessChatScenarioTests {
         _ = await harness.execute(task: task, worker: worker)
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
-        #expect(run.status == .failed)
+        #expect(run.status == .completed)
         #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
         #expect(task.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
-        #expect(task.status == .pendingUser)
-        #expect(run.output.isEmpty)
+        #expect(task.status == .completed)
+        #expect(run.output == "Cursor handled explicit GitHub work")
         #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to Codex CLI") })
-        #expect(task.events.contains { event in
+        #expect(!task.events.contains { event in
             event.run?.id == run.id &&
             event.type == TaskEventTypes.System.error.rawValue &&
             event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities")

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ASTRACore
 
@@ -12,6 +13,7 @@ import ASTRACore
 struct PluginCatalogPrereqBadge: View {
     let prerequisite: CLIPrerequisite
     let cache: PreflightCache
+    var workingDirectory: String?
 
     /// Called with the current status whenever it changes. Lets the parent
     /// card aggregate (e.g., disable install if any prereq is red).
@@ -20,6 +22,8 @@ struct PluginCatalogPrereqBadge: View {
     @State private var status: HealthStatus?
     @State private var isRechecking = false
     @State private var showDetail = false
+    @State private var awaitingGenericAuthorization = false
+    @StateObject private var githubRepair = GitHubRepositoryAccessRepairCoordinator()
 
     var body: some View {
         HStack(spacing: 8) {
@@ -40,7 +44,7 @@ struct PluginCatalogPrereqBadge: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            recheckButton
+            trailingActions
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -56,8 +60,27 @@ struct PluginCatalogPrereqBadge: View {
                 .padding(14)
                 .frame(width: 320)
         }
-        .task(id: prerequisite.id) {
+        .task(id: "\(prerequisite.id):\(workingDirectory ?? "")") {
             await refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard awaitingGenericAuthorization else { return }
+            Task {
+                await recheck()
+                if case .healthy = status {
+                    awaitingGenericAuthorization = false
+                }
+            }
+        }
+        .onChange(of: githubRepair.state) { _, newState in
+            guard case .ready = newState else { return }
+            Task {
+                await recheck()
+                githubRepair.reset()
+            }
+        }
+        .onDisappear {
+            githubRepair.cancel()
         }
     }
 
@@ -65,7 +88,7 @@ struct PluginCatalogPrereqBadge: View {
 
     private var statusIcon: some View {
         Group {
-            if isRechecking {
+            if isRechecking || githubRepair.state.isActivelyWorking {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.7)
@@ -77,17 +100,37 @@ struct PluginCatalogPrereqBadge: View {
         .frame(width: 16, height: 16)
     }
 
-    private var recheckButton: some View {
-        Button {
-            Task { await recheck() }
-        } label: {
-            Image(systemName: "arrow.clockwise")
-                .font(Stanford.ui(11))
-                .foregroundStyle(.secondary)
+    private var trailingActions: some View {
+        HStack(spacing: 8) {
+            if isGitHubRepositoryAuthorization {
+                if !githubRepair.state.isActivelyWorking,
+                   githubRepair.state.deviceCode == nil {
+                    Button(githubRepair.actionTitle) {
+                        startOrVerifyGitHubRepair()
+                    }
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .disabled(isRechecking)
+                }
+            } else if authorizationURL != nil {
+                Button("Authorize") {
+                    openAuthorization()
+                }
+                .font(Stanford.caption(11).weight(.semibold))
+                .buttonStyle(.borderless)
+                .disabled(isRechecking)
+            }
+            Button {
+                Task { await recheck() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Re-check \(prerequisite.binary)")
+            .disabled(isRechecking || githubRepair.state.isInProgress)
         }
-        .buttonStyle(.plain)
-        .help("Re-check \(prerequisite.binary)")
-        .disabled(isRechecking)
     }
 
     private var detailPopover: some View {
@@ -114,6 +157,11 @@ struct PluginCatalogPrereqBadge: View {
                     .foregroundStyle(statusColor)
             }
 
+            if let code = githubRepair.state.deviceCode {
+                Divider()
+                GitHubDeviceCodeView(code: code)
+            }
+
             if shouldShowInstallHint {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
@@ -137,10 +185,29 @@ struct PluginCatalogPrereqBadge: View {
             }
 
             HStack {
-                Spacer()
+                if isGitHubRepositoryAuthorization {
+                    if case .blocked = githubRepair.state {
+                        Link("Open GitHub SSO settings", destination: GitHubRepositoryAccessRepairCoordinator.ssoSettingsURL)
+                    }
+                    Spacer()
+                    if !githubRepair.state.isActivelyWorking,
+                       githubRepair.state.deviceCode == nil {
+                        Button(githubRepair.actionTitle) {
+                            startOrVerifyGitHubRepair()
+                        }
+                    }
+                } else if authorizationURL != nil {
+                    Button("Authorize SSO") {
+                        showDetail = false
+                        openAuthorization()
+                    }
+                    Spacer()
+                } else {
+                    Spacer()
+                }
                 Button("Re-check") { Task { await recheck() } }
                     .font(Stanford.body(13))
-                    .disabled(isRechecking)
+                    .disabled(isRechecking || githubRepair.state.isInProgress)
             }
         }
     }
@@ -150,7 +217,9 @@ struct PluginCatalogPrereqBadge: View {
     private var statusSymbol: String {
         switch status {
         case .healthy: "checkmark.circle.fill"
+        case .unverified: "questionmark.circle.fill"
         case .unauthenticated: "exclamationmark.triangle.fill"
+        case .authorizationRequired: "person.badge.key.fill"
         case .unresponsive: "exclamationmark.octagon.fill"
         case .missingBinary: "xmark.octagon.fill"
         case .none: "circle.dotted"
@@ -160,7 +229,9 @@ struct PluginCatalogPrereqBadge: View {
     private var statusColor: Color {
         switch status {
         case .healthy: Stanford.statusHealthy
+        case .unverified: Stanford.statusWarn
         case .unauthenticated: Stanford.statusWarn
+        case .authorizationRequired: Stanford.statusWarn
         case .unresponsive: Stanford.statusError
         case .missingBinary: Stanford.statusError
         case .none: Stanford.coolGrey
@@ -168,9 +239,15 @@ struct PluginCatalogPrereqBadge: View {
     }
 
     private var statusSummary: String {
-        switch status {
+        if isGitHubRepositoryAuthorization,
+           let repairSummary = githubRepair.state.summary {
+            return repairSummary
+        }
+        return switch status {
         case .healthy(_, let version): "Ready \(version)"
+        case .unverified(_, let detail): detail
         case .unauthenticated(let detail): detail
+        case .authorizationRequired(let detail, _): detail
         case .unresponsive(let detail): detail
         case .missingBinary: "Not installed"
         case .none: "Checking..."
@@ -178,30 +255,58 @@ struct PluginCatalogPrereqBadge: View {
     }
 
     private var healthyVersion: String? {
-        if case .healthy(_, let version) = status { return version }
-        return nil
+        switch status {
+        case .healthy(_, let version):
+            return version
+        case .unverified(let path, _):
+            return path
+        default:
+            return nil
+        }
     }
 
     private var shouldShowInstallHint: Bool {
         switch status {
-        case .healthy, .none: false
-        case .unauthenticated, .unresponsive, .missingBinary: true
+        case .healthy, .unverified, .none: false
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary: true
         }
     }
 
     private var activeHint: String {
         switch status {
         case .unauthenticated:
-            prerequisite.authHint ?? prerequisite.installHint
+            return prerequisite.authHint ?? prerequisite.installHint
+        case .authorizationRequired:
+            if isGitHubRepositoryAuthorization {
+                if let repairSummary = githubRepair.state.summary {
+                    return repairSummary
+                }
+                return "Choose Repair access. ASTRA will authorize the current credential, refresh GitHub CLI if needed, and verify this exact repository. Passwords, MFA, and approval stay in GitHub."
+            }
+            return "Approve access in the external service, then return to ASTRA."
         default:
-            prerequisite.installHint
+            return prerequisite.installHint
         }
+    }
+
+    private var authorizationURL: URL? {
+        guard case .authorizationRequired(_, let url) = status else { return nil }
+        return url
+    }
+
+    private var isGitHubRepositoryAuthorization: Bool {
+        guard prerequisite.contextualCheck == .githubRepositoryAccess else { return false }
+        if case .authorizationRequired = status { return true }
+        return githubRepair.state != .idle
     }
 
     // MARK: - Actions
 
     private func refresh() async {
-        let fresh = await cache.status(for: prerequisite)
+        let fresh = await cache.status(
+            for: prerequisite,
+            workingDirectory: workingDirectory
+        )
         status = fresh
         onStatusChange?(fresh)
     }
@@ -211,6 +316,23 @@ struct PluginCatalogPrereqBadge: View {
         await cache.invalidate(binary: prerequisite.binary)
         await refresh()
         isRechecking = false
+        if case .healthy = status {
+            githubRepair.reset()
+        }
+    }
+
+    private func openAuthorization() {
+        guard let authorizationURL else { return }
+        awaitingGenericAuthorization = NSWorkspace.shared.open(authorizationURL)
+    }
+
+    private func startOrVerifyGitHubRepair() {
+        showDetail = true
+        if githubRepair.state.isAwaitingAuthorization {
+            githubRepair.verifyNow()
+        } else {
+            githubRepair.start(workingDirectory: workingDirectory ?? "")
+        }
     }
 }
 

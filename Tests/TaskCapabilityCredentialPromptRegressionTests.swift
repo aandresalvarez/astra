@@ -5,8 +5,8 @@ import ASTRAModels
 
 @Suite("Task capability credential prompt regressions")
 struct TaskCapabilityCredentialPromptRegressionTests {
-    @Test("Resolution snapshot preserves Auto connector credential exposure")
-    func resolutionSnapshotPreservesAutoCredentialExposure() {
+    @Test("Auto mode does not broaden connector credential exposure")
+    func autoModeDoesNotBroadenConnectorCredentialExposure() {
         let task = AgentTask(title: "Jira lookup", goal: "List my Jira issues")
 
         let restricted = TaskCapabilityResolutionSnapshot.capture(
@@ -20,7 +20,7 @@ struct TaskCapabilityCredentialPromptRegressionTests {
         )
 
         #expect(restricted.connectorCredentialExposurePolicy == .none)
-        #expect(automatic.connectorCredentialExposurePolicy == .allowAllCredentials)
+        #expect(automatic.connectorCredentialExposurePolicy == .none)
     }
 
     @Test("Provider prompt uses the captured connector credential exposure policy")

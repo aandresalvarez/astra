@@ -63,6 +63,8 @@ struct Phase1FunctionalTest {
         try context.save()
 
         let worker = AgentRuntimeWorker.scenarioWorker()
+        worker.defaultRuntimeID = .claudeCode
+        worker.setExecutablePath("/usr/bin/true", for: .claudeCode)
         DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 

@@ -308,8 +308,15 @@ struct CapabilityRailPrerequisiteStatusSignature: Hashable, Comparable {
         switch status {
         case .healthy(let path, let version):
             "healthy:\(path):\(version)"
+        case .unverified(let path, let detail):
+            "unverified:\(path):\(detail)"
         case .unauthenticated(let detail):
             "unauthenticated:\(detail)"
+        case .authorizationRequired(let detail, let authorizationURL):
+            // Every associated value has to participate: a status that gains or loses its
+            // authorization URL is a different status, and dropping it here would serve a
+            // stale snapshot to any consumer that renders the Authorize affordance.
+            "authorizationRequired:\(detail):\(authorizationURL?.absoluteString ?? "")"
         case .unresponsive(let detail):
             "unresponsive:\(detail)"
         case .missingBinary:

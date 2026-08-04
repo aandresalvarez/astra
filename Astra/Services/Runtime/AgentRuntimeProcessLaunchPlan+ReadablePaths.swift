@@ -13,7 +13,7 @@ extension AgentRuntimeProcessLaunchPlan {
             updatedPlannedFields[key] = value
         }
 
-        return AgentRuntimeProcessLaunchPlan(
+        var plan = AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
             executablePath: executablePath,
             arguments: arguments,
@@ -32,13 +32,16 @@ extension AgentRuntimeProcessLaunchPlan {
             pathMapper: pathMapper,
             executionEnvironment: executionEnvironment
         )
+        plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
+        plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        return plan
     }
 
     func addingSandboxProtectedWriteDenyPaths(_ paths: [String]) -> AgentRuntimeProcessLaunchPlan {
         let protected = Self.uniqueNonEmpty(sandboxProtectedWriteDenyPaths + paths)
         guard protected != sandboxProtectedWriteDenyPaths else { return self }
 
-        return AgentRuntimeProcessLaunchPlan(
+        var plan = AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
             executablePath: executablePath,
             arguments: arguments,
@@ -57,6 +60,9 @@ extension AgentRuntimeProcessLaunchPlan {
             pathMapper: pathMapper,
             executionEnvironment: executionEnvironment
         )
+        plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
+        plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        return plan
     }
 
     private static func uniqueNonEmpty(_ values: [String]) -> [String] {

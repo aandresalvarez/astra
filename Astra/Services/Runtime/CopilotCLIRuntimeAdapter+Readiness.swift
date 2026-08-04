@@ -21,6 +21,12 @@ extension CopilotCLIRuntimeAdapter {
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
+            if let executable {
+                // Warm the capability probe off the main actor. Composer admission reads it
+                // synchronously on `@MainActor` for every debounced keystroke; memoising
+                // here means that path finds an answer instead of spawning `copilot help`.
+                CopilotCLIRuntime.warmCapabilities(executablePath: executable)
+            }
             checks.append(copilotAccountDeferredCheck())
         }
         return RuntimeReadinessReport(checks: checks)

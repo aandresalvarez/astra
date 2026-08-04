@@ -5,7 +5,7 @@ import ASTRACore
 
 @Suite("Task Runtime Compatibility Service")
 struct TaskRuntimeCompatibilityServiceTests {
-    @Test("host-control task reroutes from Cursor to usable Codex")
+    @Test("host-control task stays on Cursor through the CLI relay")
     func hostControlTaskReroutesFromCursorToCodex() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["github"],
@@ -21,13 +21,13 @@ struct TaskRuntimeCompatibilityServiceTests {
             isRuntimeUsable: { $0 == .cursorCLI || $0 == .codexCLI }
         )
 
-        #expect(result.selectedRuntime == .codexCLI)
-        #expect(result.reroutedFrom == .cursorCLI)
-        #expect(result.incompatibilities[.cursorCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == true)
+        #expect(result.selectedRuntime == .cursorCLI)
+        #expect(result.reroutedFrom == nil)
+        #expect(result.incompatibilities[.cursorCLI] == [])
     }
 
-    @Test("explicitly-chosen incompatible runtime blocks up front instead of silently rerouting")
-    func explicitlyChosenIncompatibleRuntimeBlocksInsteadOfRerouting() {
+    @Test("explicitly-chosen CLI-relay runtime remains selected")
+    func explicitlyChosenCLIRelayRuntimeRemainsSelected() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["github"],
             requiresDockerWorkspaceShell: false,
@@ -43,19 +43,13 @@ struct TaskRuntimeCompatibilityServiceTests {
             isRuntimeUsable: { $0 == .cursorCLI || $0 == .codexCLI }
         )
 
-        // Codex is genuinely available and compatible (proven by the sibling
-        // test above rerouting to it under the default, non-explicit path),
-        // but an explicit choice must not be silently overridden. It's still
-        // surfaced as a one-click suggestion instead of just prose, though.
         #expect(result.selectedRuntime == .cursorCLI)
         #expect(result.reroutedFrom == nil)
-        #expect(result.launchBlock?.stopReason == TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason)
-        #expect(result.launchBlock?.suggestedRuntime == .codexCLI)
-        #expect(result.launchBlock?.remediation == "Switch to Codex CLI.")
+        #expect(result.launchBlock == nil)
     }
 
-    @Test("explicit block falls back to generic remediation when no compatible runtime exists at all")
-    func explicitBlockFallsBackToGenericRemediationWithNoCompatibleRuntime() {
+    @Test("Cursor and OpenCode both satisfy host control through CLI relays")
+    func cliRelayRuntimesSatisfyHostControl() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["jira"],
             requiresDockerWorkspaceShell: false,
@@ -72,12 +66,12 @@ struct TaskRuntimeCompatibilityServiceTests {
         )
 
         #expect(result.selectedRuntime == .cursorCLI)
-        #expect(result.launchBlock?.suggestedRuntime == nil)
-        #expect(result.launchBlock?.remediation.contains("compatible runtime") == true)
+        #expect(result.incompatibilities[.cursorCLI] == [])
+        #expect(result.launchBlock == nil)
     }
 
-    @Test("default (non-explicit) requested runtime still reroutes silently even when respectExplicitRuntimeChoice is honored elsewhere")
-    func nonExplicitRuntimeStillReroutesByDefault() {
+    @Test("default requested CLI-relay runtime does not reroute")
+    func nonExplicitCLIRelayRuntimeDoesNotReroute() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["github"],
             requiresDockerWorkspaceShell: false,
@@ -93,8 +87,8 @@ struct TaskRuntimeCompatibilityServiceTests {
             isRuntimeUsable: { $0 == .cursorCLI || $0 == .codexCLI }
         )
 
-        #expect(result.selectedRuntime == .codexCLI)
-        #expect(result.reroutedFrom == .cursorCLI)
+        #expect(result.selectedRuntime == .cursorCLI)
+        #expect(result.reroutedFrom == nil)
         #expect(result.launchBlock == nil)
     }
 
@@ -106,7 +100,7 @@ struct TaskRuntimeCompatibilityServiceTests {
             requiresBrowserControl: false
         )
         let result = TaskRuntimeCompatibilityService.resolve(
-            requestedRuntime: .cursorCLI,
+            requestedRuntime: .copilotCLI,
             defaultRuntime: .copilotCLI,
             requirements: requirements,
             candidateRuntimes: [.copilotCLI, .codexCLI],
@@ -168,7 +162,7 @@ struct TaskRuntimeCompatibilityServiceTests {
         #expect(result.launchBlock == nil)
     }
 
-    @Test("no compatible runtime returns launch block")
+    @Test("runtime without MCP or CLI relay returns launch block")
     func noCompatibleRuntimeReturnsLaunchBlock() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["jira"],
@@ -176,18 +170,18 @@ struct TaskRuntimeCompatibilityServiceTests {
             requiresBrowserControl: false
         )
         let result = TaskRuntimeCompatibilityService.resolve(
-            requestedRuntime: .cursorCLI,
-            defaultRuntime: .openCodeCLI,
+            requestedRuntime: .copilotCLI,
+            defaultRuntime: .copilotCLI,
             requirements: requirements,
-            candidateRuntimes: [.cursorCLI, .openCodeCLI],
-            profile: { .defaultProfile(for: $0) },
-            isRuntimeUsable: { $0 == .cursorCLI || $0 == .openCodeCLI }
+            candidateRuntimes: [.copilotCLI],
+            profile: { _ in .copilotProfile(supportsAdditionalMCPConfig: false) },
+            isRuntimeUsable: { $0 == .copilotCLI }
         )
 
-        #expect(result.selectedRuntime == .cursorCLI)
+        #expect(result.selectedRuntime == .copilotCLI)
         #expect(result.reroutedFrom == nil)
-        #expect(result.launchBlock?.message.contains("host-control MCP server for jira") == true)
-        #expect(result.launchBlock?.missingCapabilities == ["host-control MCP server for jira"])
+        #expect(result.launchBlock?.message.contains("ASTRA host tools for jira") == true)
+        #expect(result.launchBlock?.missingCapabilities == ["ASTRA host tools for jira"])
     }
 
     @Test("no compatible Docker runtime returns generic launch block")
@@ -261,13 +255,14 @@ struct TaskRuntimeCompatibilityServiceTests {
         #expect(result.selectedRuntime == .codexCLI)
         #expect(result.reroutedFrom == nil)
         #expect(result.incompatibilities[.codexCLI] == [.runtimeUnavailable])
+        #expect(result.launchBlock?.stopReason == "missing_codex")
         #expect(result.launchBlock?.message.contains("runtime executable") == true)
-        #expect(result.launchBlock?.message.contains("host-control MCP server for github") == false)
+        #expect(result.launchBlock?.message.contains("ASTRA host tools for github") == false)
         #expect(result.launchBlock?.missingCapabilities == ["runtime executable"])
     }
 
-    @Test("unavailable requested runtime keeps executable and missing capability names")
-    func unavailableRequestedRuntimeKeepsExecutableAndMissingCapabilityNames() {
+    @Test("unavailable CLI-relay runtime reports only its executable")
+    func unavailableCLIRelayRuntimeReportsOnlyExecutable() {
         let requirements = TaskRuntimeRequirementSet(
             hostControlTools: ["github"],
             requiresDockerWorkspaceShell: false,
@@ -284,16 +279,11 @@ struct TaskRuntimeCompatibilityServiceTests {
 
         #expect(result.selectedRuntime == .cursorCLI)
         #expect(result.reroutedFrom == nil)
-        #expect(result.incompatibilities[.cursorCLI] == [
-            .runtimeUnavailable,
-            .missingHostControlPlane(requiredTools: ["github"])
-        ])
+        #expect(result.incompatibilities[.cursorCLI] == [.runtimeUnavailable])
+        #expect(result.launchBlock?.stopReason == "missing_cursor")
         #expect(result.launchBlock?.message.contains("runtime executable") == true)
-        #expect(result.launchBlock?.message.contains("host-control MCP server for github") == true)
-        #expect(result.launchBlock?.missingCapabilities == [
-            "runtime executable",
-            "host-control MCP server for github"
-        ])
+        #expect(result.launchBlock?.message.contains("ASTRA host tools for github") == false)
+        #expect(result.launchBlock?.missingCapabilities == ["runtime executable"])
     }
 
     @Test("Docker workspace requirement skips old Copilot")
@@ -375,10 +365,10 @@ struct TaskRuntimeCompatibilityServiceTests {
 
         #expect(result.selectedRuntime == .codexCLI)
         #expect(result.reroutedFrom == .cursorCLI)
-        #expect(result.incompatibilities[.cursorCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == true)
+        #expect(result.incompatibilities[.cursorCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == false)
         #expect(result.incompatibilities[.cursorCLI]?.contains(.missingDockerWorkspaceShell) == true)
         #expect(result.incompatibilities[.cursorCLI]?.contains(.missingBrowserControlTransport) == false)
-        #expect(result.incompatibilities[.openCodeCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == true)
+        #expect(result.incompatibilities[.openCodeCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == false)
         #expect(result.incompatibilities[.openCodeCLI]?.contains(.missingDockerWorkspaceShell) == true)
         #expect(result.incompatibilities[.openCodeCLI]?.contains(.missingBrowserControlTransport) == false)
     }

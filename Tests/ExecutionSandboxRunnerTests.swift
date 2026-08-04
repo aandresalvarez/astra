@@ -209,8 +209,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("Shared workspace forces a strict host boundary even when sandboxing is off")
-    func sharedWorkspaceForcesStrictBoundary() throws {
+    @Test("Shared workspace cannot override an explicitly disabled sandbox")
+    func sharedWorkspaceHonorsSandboxOff() throws {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
         let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-runner-\(UUID().uuidString)")
@@ -244,11 +244,147 @@ struct ExecutionSandboxRunnerTests {
                 )
             )
             guard case .plan(let plan) = outcome else {
-                Issue.record("Expected shared workspace launch to apply a strict sandbox")
+                Issue.record("Expected sandbox-off shared workspace launch to proceed")
+                return
+            }
+            #expect(plan.executablePath == "/bin/sh")
+            #expect(plan.commandPlannedFields["astra_sandbox_applied"] != "true")
+        }
+    }
+
+    @Test("Shared workspace launch uses the queue admission sandbox snapshot")
+    func sharedWorkspaceUsesAdmissionSandboxSnapshot() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-snapshot-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        )
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    executionPolicy: AgentRuntimeExecutionPolicy(sandboxEnforcementSnapshot: .off),
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admission-time Off setting to remain authoritative")
+                return
+            }
+            #expect(plan.executablePath == "/bin/sh")
+            #expect(plan.commandPlannedFields["astra_sandbox_applied"] != "true")
+        }
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    executionPolicy: AgentRuntimeExecutionPolicy(sandboxEnforcementSnapshot: .bestEffort),
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admitted shared lease to retain its execution boundary")
                 return
             }
             #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            #expect(plan.arguments.contains("/bin/sh"))
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
+        }
+    }
+
+    @Test("Enabled admission snapshot retains autonomous native-provider wrapping")
+    func admissionSnapshotRetainsAutonomousForcedWrapping() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-autonomous-snapshot-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    permissionPolicy: .autonomous,
+                    executionPolicy: AgentRuntimeExecutionPolicy(
+                        sandboxEnforcementSnapshot: .bestEffort
+                    )
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected the admitted enabled sandbox to wrap autonomous Codex")
+                return
+            }
+            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
+        }
+    }
+
+    @Test("Shared workspace keeps a strict boundary when sandboxing is enabled")
+    func sharedWorkspaceForcesStrictBoundaryWhenEnabled() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let workspaceRoot = fm.temporaryDirectory.appendingPathComponent("astra-shared-enabled-\(UUID().uuidString)")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Research",
+            goal: "Summarize the project.",
+            workspace: Workspace(name: "Shared", primaryPath: workspaceRoot.path)
+        )
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(
+                sandboxSettingsProvider: sandboxSettingsProvider
+            ).sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: workspaceRoot.path),
+                context: makeContext(
+                    workspacePath: workspaceRoot.path,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected enabled shared workspace launch to apply a strict sandbox")
+                return
+            }
+            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
+            #expect(plan.executionSandboxBoundaryReceipt != nil)
         }
     }
 
@@ -389,24 +525,14 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.sandboxProtectedWriteDenyPaths.contains(expectedAttachmentPath))
             #expect(plan.commandPlannedFields["attachment_readable_path_count"] == "1")
             #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
-            #expect(plan.commandPlannedFields["read_only_input_boundary_mode"] == "host_seatbelt")
-            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            let canonicalAttachmentPath = ExecutionSandbox.canonicalize(expectedAttachmentPath)
-                ?? expectedAttachmentPath
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_DENY_ROOT_") && $0.hasSuffix("=\(canonicalAttachmentPath)")
-            })
-            let canonicalAttachmentDirectory = ExecutionSandbox.canonicalize(attachmentRoot.path)
-                ?? attachmentRoot.path
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_ANCESTOR_DENY_ROOT_")
-                    && $0.hasSuffix("=\(canonicalAttachmentDirectory)")
-            })
+            // Enforcement is off: seatbelt is not applied even when inputs are present.
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
+            #expect(plan.readOnlyBoundaryReceipt?.surfaces.isEmpty != false)
         }
     }
 
-    @Test("read-only inputs fail closed even when the general sandbox is off")
-    func readOnlyInputsFailClosedWhenSandboxIsOff() throws {
+    @Test("sandbox-off tasks with read-only inputs proceed without enforcement boundary")
+    func sandboxOffAllowsTasksWithReadOnlyInputsToProcceed() throws {
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-required-read-only-input-\(UUID().uuidString)")
         try Data("input".utf8).write(to: inputURL)
@@ -441,17 +567,15 @@ struct ExecutionSandboxRunnerTests {
                     launchResourcePlan: launchResourcePlan
                 )
             )
-            guard case .blocked(let result) = outcome else {
-                Issue.record("Expected the mandatory input boundary to fail closed")
+            // Enforcement is off: the task proceeds even with read-only inputs —
+            // the boundary is required but not enforced when the user explicitly
+            // disables the sandbox.
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when sandbox is off, even with read-only inputs")
                 return
             }
-            #expect(result.runtimeStopReason == "read_only_input_boundary_unavailable")
-            #expect(result.runtimeStopMessage?.contains("no_execution_path") == true)
-            #expect(result.runtimeStopMessage?.contains("never downgraded") == true)
-            #expect(result.readOnlyBoundaryEvidence?.status == .unavailable)
-            #expect(result.readOnlyBoundaryEvidence?.resourceCount == 1)
-            #expect(result.readOnlyBoundaryEvidence?.requiredSurfaces == ["host_seatbelt"])
-            #expect(result.readOnlyBoundaryEvidence?.appliedSurfaces.isEmpty == true)
+            #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
         }
     }
 
@@ -521,17 +645,13 @@ struct ExecutionSandboxRunnerTests {
                 )
             )
             guard case .plan(let plan) = outcome else {
-                Issue.record("Expected Codex to launch inside ASTRA's mandatory input boundary")
+                Issue.record("Expected Codex to produce a plan even with read-only inputs")
                 return
             }
-            #expect(plan.executablePath == ExecutionSandbox.sandboxExecPath)
-            #expect(plan.commandPlannedFields["read_only_input_boundary_mode"] == "host_seatbelt")
-            let canonicalInputPath = ExecutionSandbox.canonicalize(inputPath) ?? inputPath
-            #expect(plan.arguments.contains {
-                $0.hasPrefix("PROTECTED_WRITE_DENY_ROOT_") && $0.hasSuffix("=\(canonicalInputPath)")
-            })
-            #expect(plan.readOnlyBoundaryReceipt?.protects(inputPath) == true)
-            #expect(plan.readOnlyBoundaryReceipt?.surfaces == [.hostSeatbelt])
+            // Enforcement is off: seatbelt is not applied even for Codex input boundaries.
+            #expect(plan.commandPlannedFields["read_only_input_boundary_required"] == "true")
+            #expect(plan.executablePath != ExecutionSandbox.sandboxExecPath)
+            #expect(plan.readOnlyBoundaryReceipt?.surfaces.isEmpty != false)
         }
     }
 

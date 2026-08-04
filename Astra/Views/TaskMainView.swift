@@ -232,7 +232,7 @@ struct TaskMainView: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.taskChatUnobscuredWidth) private var taskChatUnobscuredWidth
-    @State private var messageText = ""
+    @State var messageText = ""
     @State private var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
@@ -254,7 +254,7 @@ struct TaskMainView: View {
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
     @State private var pasteMonitor: Any?
-    @State private var threadViewModel = TaskThreadViewModel()
+    @State var threadViewModel = TaskThreadViewModel()
     @State private var sshConnections: [SSHConnection] = []
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
@@ -300,10 +300,11 @@ struct TaskMainView: View {
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
-    @State private var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
-    @State private var taskSkipPermissions = false
+    @State var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    @State var taskSkipPermissions = false
     @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
-    @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    @State private var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -406,7 +407,7 @@ struct TaskMainView: View {
         providerSettingsSnapshot.signature
     }
 
-    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+    var providerSettingsSnapshot: ProviderSettingsSnapshot {
         RuntimeSettingsSnapshotStore.providerSnapshot(
             claudePath: claudePath,
             copilotPath: copilotPath,
@@ -557,6 +558,10 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
+        .runtimeEligibilityPreview(
+            runtimeEligibilityPreviewRequest,
+            state: $runtimeEligibilityPreviewState
+        )
         .task(id: task.id) {
             await initializeDisplayedTaskState()
         }
@@ -4969,6 +4974,8 @@ struct TaskMainView: View {
                     availableSkills: availableSkills,
                     workspace: task.workspace,
                     runtimeReadinessStates: runtimeReadinessStates,
+                    runtimeEligibilityPreviewState: runtimeEligibilityPreviewState,
+                    runtimeEligibilityPreviewSignature: runtimeEligibilityPreviewRequest.signature,
                     taskStatus: task.status,
                     taskStatusOverride: composerTaskStatusOverride,
                     showsTaskStatusPill: decisionDockPresentation == nil,
@@ -5485,6 +5492,10 @@ struct TaskMainView: View {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
+        if sendAction.launchesProviderWork,
+           !selectedComposerRuntimeCanExecuteRequest {
+            return
+        }
         shouldScrollAfterUserMessage = true
 
         switch sendAction {
@@ -5540,6 +5551,17 @@ struct TaskMainView: View {
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
+    }
+
+    private var selectedComposerRuntimeCanExecuteRequest: Bool {
+        let runtime = task.resolvedRuntimeID
+        return RuntimeEligibilitySubmissionPolicy.canExecute(
+            hasInput: hasInput,
+            runtime: runtime,
+            readinessStates: runtimeReadinessStates,
+            previewState: runtimeEligibilityPreviewState,
+            signature: runtimeEligibilityPreviewRequest.signature
+        )
     }
 
     /// Mirrors `TaskQueue.recordForkReadOnlyBlock`: repeated sends while the

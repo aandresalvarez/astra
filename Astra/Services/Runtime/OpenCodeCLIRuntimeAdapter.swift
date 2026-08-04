@@ -192,12 +192,16 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        var taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
-            executionPolicy: context.executionPolicy
+            executionPolicy: context.executionPolicy,
+            runtimeRequirements: context.runtimeRequirements
         )
+        taskEnv.merge(
+            AgentRuntimeProcessRunner.hostControlCLIRelayEnvironment(context: context, runtime: id)
+        ) { _, brokerValue in brokerValue }
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
@@ -231,7 +235,8 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             permissionArguments: context.requiredProviderPolicyRender(for: id).openCodeLaunchPermissionArguments()
         )
         var commandPlannedFields = [

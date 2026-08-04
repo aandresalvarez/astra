@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import ASTRA
 import ASTRACore
 
@@ -67,6 +68,74 @@ struct CapabilityHealthServiceTests {
         )
 
         #expect(issues.isEmpty)
+    }
+
+    @Test("unverified contextual target remains non-blocking")
+    func unverifiedContextualTargetDoesNotCreateHealthIssue() {
+        let prerequisite = CommonCLIPrerequisites.githubAuth
+        let package = PluginPackage(
+            id: "github-workflow",
+            name: "GitHub",
+            icon: "terminal",
+            description: "GitHub workflow",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [prerequisite],
+            governance: .builtInApproved()
+        )
+
+        let issues = CapabilityHealthService.prerequisiteIssues(
+            for: package,
+            statuses: [
+                prerequisite.id: .unverified(
+                    path: "/opt/homebrew/bin/gh",
+                    detail: "Authenticated; no repository target was resolved."
+                )
+            ]
+        )
+
+        #expect(issues.isEmpty)
+    }
+
+    @Test("repository authorization is distinct from login")
+    func repositoryAuthorizationCreatesActionableIssue() {
+        let prerequisite = CommonCLIPrerequisites.githubAuth
+        let package = PluginPackage(
+            id: "github-workflow",
+            name: "GitHub",
+            icon: "terminal",
+            description: "GitHub workflow",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [prerequisite],
+            governance: .builtInApproved()
+        )
+
+        let issues = CapabilityHealthService.prerequisiteIssues(
+            for: package,
+            statuses: [
+                prerequisite.id: .authorizationRequired(
+                    detail: "SAML SSO authorization is required for susom/starr-data-lake",
+                    authorizationURL: URL(string: "https://github.com/enterprises/example/sso")
+                )
+            ]
+        )
+
+        #expect(issues.map(\.kind) == [.authorizationRequired])
+        #expect(issues.first?.message.contains("authorization required") == true)
+        #expect(issues.first?.message.contains("needs login") == false)
     }
 
     @Test("readiness messages include supplied MCP command status")

@@ -196,7 +196,7 @@ final class RuntimeSetupModel: ObservableObject {
             switch statuses[selectedRuntime] {
             case .none, .missingBinary:
                 return .needsInstall(selectedRuntime)
-            case .healthy, .unauthenticated, .unresponsive:
+            case .healthy, .unverified, .unauthenticated, .authorizationRequired, .unresponsive:
                 break
             }
             if runtimeBlockers.contains(where: Self.isAuthCheck) {
@@ -246,8 +246,7 @@ final class RuntimeSetupModel: ObservableObject {
     }
 
     func isInstalled(_ runtime: AgentRuntimeID) -> Bool {
-        if case .healthy = statuses[runtime] { return true }
-        return false
+        statuses[runtime]?.executablePath != nil
     }
 
     func remediation(for runtime: AgentRuntimeID) -> RuntimeRemediation {
@@ -334,7 +333,7 @@ final class RuntimeSetupModel: ObservableObject {
 
         for (runtime, status) in results {
             statuses[runtime] = status
-            if case .healthy(let path, _) = status,
+            if let path = status.executablePath,
                Self.shouldReplaceConfiguredPath(
                    RuntimeProviderSettingsStore.executablePath(for: runtime, defaults: defaults),
                    with: path
@@ -723,7 +722,7 @@ final class RuntimeSetupModel: ObservableObject {
     // MARK: - Helpers
 
     private func resolvedExecutablePath(for runtime: AgentRuntimeID) -> String {
-        if case .healthy(let path, _) = statuses[runtime], !path.isEmpty {
+        if let path = statuses[runtime]?.executablePath, !path.isEmpty {
             return path
         }
         let configured = RuntimeProviderSettingsStore.executablePath(for: runtime, defaults: defaults)

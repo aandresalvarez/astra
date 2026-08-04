@@ -125,6 +125,7 @@ struct TaskExecutionResourceClaimCoverageTests {
             goal: "Explain how the queue works.",
             workspace: workspace
         )
+        reader.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
         let writer = AgentTask(
             title: "Fix the queue",
             goal: "Update the queue implementation.",

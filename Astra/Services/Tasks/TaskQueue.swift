@@ -9,6 +9,7 @@ final class TaskQueue {
     let poolSize: Int
     private let workerFactory: @MainActor () -> AgentRuntimeWorker
     private let persistQueueCancellation: @MainActor (ModelContext) -> Bool
+    let sandboxEnforcementProvider: @MainActor () -> ExecutionSandboxEnforcement
     private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
@@ -30,11 +31,15 @@ final class TaskQueue {
     init(
         poolSize: Int = 3,
         workerFactory: @escaping @MainActor () -> AgentRuntimeWorker = { AgentRuntimeWorker() },
-        persistQueueCancellation: @escaping @MainActor (ModelContext) -> Bool = TaskQueueCancellationService.persist
+        persistQueueCancellation: @escaping @MainActor (ModelContext) -> Bool = TaskQueueCancellationService.persist,
+        sandboxEnforcementProvider: @escaping @MainActor () -> ExecutionSandboxEnforcement = {
+            ExecutionSandboxSettings.resolve(permissionPolicy: .restricted).storedEnforcement
+        }
     ) {
         self.poolSize = poolSize
         self.workerFactory = workerFactory
         self.persistQueueCancellation = persistQueueCancellation
+        self.sandboxEnforcementProvider = sandboxEnforcementProvider
         self.workers = (0..<poolSize).map { _ in workerFactory() }
         self.requestTaskRegistry = ExecutionRequestTaskRegistry()
     }
@@ -328,11 +333,13 @@ final class TaskQueue {
             return
         }
 
+        let sandboxEnforcement = sandboxEnforcementProvider()
         let requestedResources = resourceLockClaims(
             for: executionRequest,
             task: task,
             runMode: "task",
-            fallbackAccess: resourceAccess
+            fallbackAccess: resourceAccess,
+            sandboxEnforcement: sandboxEnforcement
         )
         guard let resourceLease = await waitForResourceLocks(
             task: task,
@@ -397,7 +404,10 @@ final class TaskQueue {
             modelContext: modelContext,
             existingStartEventID: nil,
             executionRequestID: executionRequest?.id,
-            executionPolicy: executionPolicy,
+            executionPolicy: executionPolicy.withResourceAdmission(
+                workspaceAccess: TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: resourceLease),
+                sandboxEnforcement: sandboxEnforcement
+            ),
             onEvent: onEvent
         )
 
@@ -625,11 +635,13 @@ final class TaskQueue {
             return false
         }
 
+        let sandboxEnforcement = sandboxEnforcementProvider()
         let requestedResources = resourceLockClaims(
             for: nil,
             task: task,
             runMode: "continue",
-            fallbackAccess: resourceAccess
+            fallbackAccess: resourceAccess,
+            sandboxEnforcement: sandboxEnforcement
         )
         guard let resourceLease = await waitForResourceLocks(
             task: task,
@@ -664,7 +676,10 @@ final class TaskQueue {
             existingMessageEventID: existingMessageEventID,
             turnRequestID: nil,
             modelContext: modelContext,
-            executionPolicy: executionPolicy,
+            executionPolicy: executionPolicy.withResourceAdmission(
+                workspaceAccess: TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: resourceLease),
+                sandboxEnforcement: sandboxEnforcement
+            ),
             onEvent: onEvent
         )
         taskWorkerMap.removeValue(forKey: task.id)
@@ -751,11 +766,13 @@ final class TaskQueue {
                 continue
             }
 
+            let sandboxEnforcement = sandboxEnforcementProvider()
             let pendingClaims = resourceLockClaims(
                 for: request,
                 task: task,
                 runMode: "continue",
-                fallbackAccess: resourceAccess
+                fallbackAccess: resourceAccess,
+                sandboxEnforcement: sandboxEnforcement
             )
             let blockingTaskID = TaskExecutionResourceBroker.firstConflict(
                 requested: pendingClaims,
@@ -853,7 +870,10 @@ final class TaskQueue {
                 existingMessageEventID: request.messageEventID,
                 turnRequestID: request.id,
                 modelContext: modelContext,
-                executionPolicy: executionPolicy,
+                executionPolicy: executionPolicy.withResourceAdmission(
+                    workspaceAccess: TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: resourceLease),
+                    sandboxEnforcement: sandboxEnforcement
+                ),
                 onEvent: onEvent
             )
             taskWorkerMap.removeValue(forKey: task.id)
@@ -1112,11 +1132,13 @@ final class TaskQueue {
             return
         }
 
+        let sandboxEnforcement = sandboxEnforcementProvider()
         let requestedResources = resourceLockClaims(
             for: executionRequest,
             task: task,
             runMode: "approved_plan",
-            fallbackAccess: resourceAccess
+            fallbackAccess: resourceAccess,
+            sandboxEnforcement: sandboxEnforcement
         )
         guard let resourceLease = await waitForResourceLocks(
             task: task,
@@ -1183,7 +1205,10 @@ final class TaskQueue {
             existingStartEventID: nil,
             executionRequestID: executionRequest?.id,
             modelContext: modelContext,
-            executionPolicy: executionPolicy,
+            executionPolicy: executionPolicy.withResourceAdmission(
+                workspaceAccess: TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: resourceLease),
+                sandboxEnforcement: sandboxEnforcement
+            ),
             onEvent: onEvent
         )
 
@@ -1514,8 +1539,19 @@ final class TaskQueue {
             return
         }
         let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)
+        let turnIntentSnapshot = request.executionPolicySnapshot?.turnIntentSnapshot
+            ?? TaskTurnIntentResolver.capture(
+                for: task,
+                sourceEventID: sourceEvent.id,
+                acceptedTurn: source?.message
+                    ?? (sourceEvent.type == TaskEventTypes.Conversation.userMessage.rawValue
+                        ? sourceEvent.payload
+                        : nil),
+                includeTaskInputs: request.kind == .initial || request.kind == .scheduled
+            )
         let requestExecutionPolicy = (source?.executionPolicyOverride?.executionPolicy ?? .default)
             .withLaunchSnapshot(launchSnapshot)
+            .withTurnIntentSnapshot(turnIntentSnapshot)
         if source?.launchMode == .continuation || request.kind == .followUp {
             _ = await continuePersistedTurn(
                 task: task,
@@ -1826,74 +1862,6 @@ final class TaskQueue {
     private func workerIndex(_ worker: AgentRuntimeWorker) -> Int { workers.firstIndex(where: { $0 === worker }) ?? 0 }
 
     // MARK: - Resource Locks
-
-    @MainActor
-    func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
-        TaskExecutionResourceClaimResolver.workspaceAccess(for: task) == .shared ? .readOnly : .write }
-
-    @MainActor
-    func resourceAccess(for request: TaskTurnRequest?, task: AgentTask) -> TaskResourceAccessMode {
-        TaskExecutionResourceClaimResolver.workspaceClaim(for: request, task: task)?.access == .shared ? .readOnly : .write }
-
-    @MainActor
-    func resourceKey(for task: AgentTask) -> String {
-        TaskExecutionResourceClaimResolver.workspaceClaim(for: nil, task: task)?.key ?? "task:\(task.id.uuidString)" }
-
-    @MainActor
-    func resourceKey(for request: TaskTurnRequest?, task: AgentTask) -> String {
-        TaskExecutionResourceClaimResolver.workspaceClaim(for: request, task: task)?.key ?? resourceKey(for: task) }
-
-    @MainActor
-    func resourceLockClaims(
-        for request: TaskTurnRequest?,
-        task: AgentTask,
-        runMode: String,
-        fallbackAccess: TaskResourceAccessMode? = nil
-    ) -> [TaskResourceLockClaim] {
-        TaskExecutionResourceAdmissionPolicy.lockClaims(
-            for: request,
-            task: task,
-            runMode: runMode,
-            fallbackAccess: fallbackAccess
-        )
-    }
-
-    @MainActor
-    func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim]) -> Bool {
-        !claims.isEmpty && TaskExecutionResourceBroker.canAcquire(claims, active: activeResourceLocks)
-    }
-
-    @MainActor
-    func canAdmitResourceClaims(
-        for candidate: ExecutionRequestAdmissionScheduler.Candidate,
-        in projection: ExecutionRequestAdmissionScheduler.Projection,
-        dispatchedRequestIDs: Set<UUID>,
-        activeTaskIDs: Set<UUID>
-    ) -> Bool {
-        TaskExecutionResourceAdmissionPolicy.canAdmit(
-            candidate,
-            in: projection,
-            dispatchedRequestIDs: dispatchedRequestIDs,
-            activeTaskIDs: activeTaskIDs,
-            activeClaims: activeResourceLocks
-        )
-    }
-
-    @MainActor
-    func canAcquireResourceLock(
-        for task: AgentTask,
-        resourceKey: String? = nil,
-        accessMode: TaskResourceAccessMode
-    ) -> Bool {
-        canAcquireResourceLocks([
-            TaskResourceLockClaim(
-                taskID: task.id,
-                resourceKey: resourceKey ?? self.resourceKey(for: task),
-                accessMode: accessMode,
-                runMode: "probe"
-            )
-        ])
-    }
 
     @MainActor
     @discardableResult

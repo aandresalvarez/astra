@@ -371,6 +371,51 @@ struct CapabilityInstallerTests {
         #expect(workspace.enabledCapabilityIDs == [package.id])
     }
 
+    @Test("updating a capability chooses the newest package-owned duplicate")
+    func updateChoosesNewestPackageOwnedDuplicate() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Duplicate Update", primaryPath: "/tmp/duplicate-update")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.version = "1.1.0"
+        let pluginSkill = try #require(package.skills.first)
+        let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+
+        let newest = Skill(name: pluginSkill.name, behaviorInstructions: "Newest")
+        newest.isGlobal = true
+        newest.originPackageID = package.id
+        newest.originPackageVersion = "1.0.0"
+        newest.originComponentID = componentID
+        newest.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        context.insert(newest)
+
+        let stale = Skill(name: pluginSkill.name, behaviorInstructions: "Stale")
+        stale.isGlobal = true
+        stale.originPackageID = package.id
+        stale.originPackageVersion = "0.9.0"
+        stale.originComponentID = componentID
+        stale.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        context.insert(stale)
+        try context.save()
+
+        let result = try CapabilityInstaller(library: library).install(
+            package,
+            into: workspace,
+            modelContext: context
+        )
+
+        #expect(result.skillIDs == [newest.id])
+        #expect(newest.originPackageVersion == "1.1.0")
+        #expect(newest.behaviorInstructions == pluginSkill.behaviorInstructions)
+        #expect(stale.originPackageVersion == "0.9.0")
+        #expect(stale.behaviorInstructions == "Stale")
+    }
+
     @Test("connector-only and tool-only packages enable standalone shared elements")
     func standaloneElementPackagesEnableGlobalIDs() throws {
         let container = try makeCapabilityInstallerContainer()

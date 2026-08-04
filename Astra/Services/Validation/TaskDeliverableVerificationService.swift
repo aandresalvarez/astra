@@ -31,6 +31,7 @@ enum TaskDeliverableVerificationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext? = nil,
+        workspacePath: String? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
@@ -38,7 +39,11 @@ enum TaskDeliverableVerificationService {
             task,
             requiredOutputFilenames: requiredFilenames
         )
-        let discoveredFiles = TaskOutputDiscovery.files(for: task, run: run)
+        let discoveredFiles = TaskOutputDiscovery.files(
+            for: task,
+            run: run,
+            workspacePath: workspacePath
+        )
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
             for: task,
@@ -105,7 +110,7 @@ enum TaskDeliverableVerificationService {
 
         let hostFileAccess = HostFileAccessBroker()
         let taskAccess = TaskWorkspaceAccess(task: task)
-        let artifactRoots = [taskAccess.taskFolder, taskAccess.effectiveWorkspacePath]
+        let artifactRoots = [taskAccess.taskFolder, workspacePath ?? taskAccess.effectiveWorkspacePath]
             .filter { !$0.isEmpty }
         for file in files.prefix(12) {
             let artifactRoot = artifactRoot(for: file, allowedRoots: artifactRoots)

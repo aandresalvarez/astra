@@ -5,19 +5,26 @@ import ASTRAModels
 enum TaskRuntimeIncompatibility: Equatable, Sendable {
     case runtimeUnavailable
     case missingHostControlPlane(requiredTools: [String])
+    case hostControlBrokerUnavailable
     case missingDockerWorkspaceShell
     case missingBrowserControlTransport
+    case policyBlocked(reason: String)
+    case invalidLaunchResourceContract(reason: String)
 
     var userFacingName: String {
         switch self {
         case .runtimeUnavailable:
             return "runtime executable"
         case .missingHostControlPlane(let tools):
-            return "host-control MCP server for \(tools.joined(separator: ", "))"
+            return "ASTRA host tools for \(tools.joined(separator: ", "))"
+        case .hostControlBrokerUnavailable:
+            return "ASTRA host-control helper"
         case .missingDockerWorkspaceShell:
             return "Docker workspace shell MCP"
         case .missingBrowserControlTransport:
             return "browser control transport"
+        case .policyBlocked(let reason), .invalidLaunchResourceContract(let reason):
+            return reason
         }
     }
 }
@@ -143,14 +150,20 @@ enum TaskRuntimeCompatibilityService {
         runtime: AgentRuntimeID,
         requirements: TaskRuntimeRequirementSet,
         profile: AgentRuntimeCapabilityProfile,
-        isRuntimeUsable: Bool
+        isRuntimeUsable: Bool,
+        isHostControlBrokerAvailable: Bool = true
     ) -> [TaskRuntimeIncompatibility] {
         var missing: [TaskRuntimeIncompatibility] = []
         if !isRuntimeUsable {
             missing.append(.runtimeUnavailable)
         }
-        if requirements.requiresHostControlPlane && !profile.canDeliverHostControlPlaneMCP {
+        if requirements.requiresHostControlPlane && !profile.canDeliverHostControlPlane {
             missing.append(.missingHostControlPlane(requiredTools: requirements.hostControlTools))
+        }
+        if requirements.requiresHostControlPlane,
+           profile.canDeliverHostControlPlane,
+           !isHostControlBrokerAvailable {
+            missing.append(.hostControlBrokerUnavailable)
         }
         if requirements.requiresDockerWorkspaceShell && !profile.canDeliverDockerWorkspaceShellMCP {
             missing.append(.missingDockerWorkspaceShell)
@@ -172,15 +185,27 @@ enum TaskRuntimeCompatibilityService {
             incompatibilities: incompatibilities
         )
         let remediation = suggestedRuntime.map { "Switch to \($0.displayName)." }
-            ?? "Switch to a compatible runtime such as Codex CLI, Claude Code, or a Copilot CLI build with task-scoped MCP config support."
+            ?? "Switch to a runtime that can attach ASTRA host tools."
         return TaskRuntimeCompatibilityLaunchBlock(
-            stopReason: runtimeCapabilityIncompatibleReason,
+            stopReason: stopReason(for: runtime, incompatibilities: incompatibilities),
             title: "Selected runtime is incompatible with required ASTRA capabilities",
             message: "\(runtime.displayName) cannot satisfy: \(missing.joined(separator: ", ")).",
             remediation: remediation,
             missingCapabilities: missing,
             suggestedRuntime: suggestedRuntime
         )
+    }
+
+    static func stopReason(
+        for runtime: AgentRuntimeID,
+        incompatibilities: [TaskRuntimeIncompatibility]
+    ) -> String {
+        guard incompatibilities == [.runtimeUnavailable] else {
+            return runtimeCapabilityIncompatibleReason
+        }
+        return AgentRuntimeAdapterRegistry.adapter(for: runtime)
+            .missingExecutableStopReason()
+            ?? runtimeCapabilityIncompatibleReason
     }
 
     private static func recordCompatibility(

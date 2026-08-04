@@ -128,6 +128,28 @@ struct QueueLockTests {
         }
     }
 
+    @Test("applySettings normalizes persisted executable paths for every worker")
+    func applySettingsNormalizesExecutablePaths() {
+        let persistedPath = "   /Users/test/.local/bin/claude\n"
+        var settings = AgentRuntimeProviderSettings(
+            executablePaths: [.claudeCode: persistedPath]
+        )
+        #expect(settings.executablePath(for: .claudeCode) == "/Users/test/.local/bin/claude")
+
+        settings.setExecutablePath(persistedPath, for: .claudeCode)
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: persistedPath,
+            providerSettings: settings,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.claudePath == "/Users/test/.local/bin/claude")
+        }
+    }
+
     @Test("applySettings defaults to restricted permissions")
     func applySettingsDefaultsRestricted() {
         let queue = TaskQueue(poolSize: 2)
@@ -503,9 +525,7 @@ struct QueueLockTests {
         )
 
         let queue = TaskQueue(poolSize: 1)
-        let processing = Task { @MainActor in
-            await queue.processQueue(modelContext: context)
-        }
+        #expect(queue.processQueueIfIdle(modelContext: context))
         // Bounded: an admission regression must fail this test, not hang CI
         // forever on an unsatisfiable condition.
         let blockedDeadline = ContinuousClock.now.advanced(by: .seconds(10))
@@ -521,9 +541,8 @@ struct QueueLockTests {
         #expect(request.blockingTaskID == source.id)
         #expect(request.blockerSummary?.contains("shared Git worktree") == true)
         #expect(request.terminalReason == nil)
-
         await queue.cancelAllAndWait()
-        await processing.value
+        await queue.cancelAllAndWait()
     }
 }
 

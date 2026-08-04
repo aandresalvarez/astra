@@ -185,7 +185,7 @@ enum HostControlPlaneRuntimeLaunchGuard {
         let requiredTools = normalizedUniqueTools(requiredTools)
         let requiresHostControlPlane = !requiredTools.isEmpty
         let supportsHostControlPlane = !requiresHostControlPlane
-            || HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime)
+            || AgentRuntimeCapabilityProfile.defaultProfile(for: runtime).canDeliverHostControlPlane
         return [
             "host_control_plane_tool_count": String(requiredTools.count),
             "host_control_plane_supported": String(supportsHostControlPlane),
@@ -204,24 +204,24 @@ enum HostControlPlaneRuntimeLaunchGuard {
 
     static func serverDescription(requiredTools: [String]) -> String {
         let requiredTools = normalizedUniqueTools(requiredTools)
-        guard !requiredTools.isEmpty else { return "host-control MCP server" }
-        return "host-control MCP server for \(requiredTools.joined(separator: ", "))"
+        guard !requiredTools.isEmpty else { return "ASTRA host tools" }
+        return "ASTRA host tools for \(requiredTools.joined(separator: ", "))"
     }
 
     static func unsupportedRuntimeDetail(runtime: AgentRuntimeID, requiredTools: [String]) -> String {
         let requiredTools = normalizedUniqueTools(requiredTools)
         if requiredTools.contains("github") {
-            return "\(runtime.displayName) cannot attach ASTRA's host-control MCP route for GitHub metadata/API work, so ASTRA will not fall back to provider-visible native Git or gh credentials. Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+            return "\(runtime.displayName) cannot attach ASTRA's host-control route for GitHub metadata/API work, so ASTRA will not fall back to provider-visible native Git or gh credentials."
         }
-        return "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the \(serverDescription(requiredTools: requiredTools))."
+        return "\(runtime.displayName) cannot attach the \(serverDescription(requiredTools: requiredTools))."
     }
 
     static func unsupportedRuntimeRemediation(requiredTools: [String]) -> String {
         let requiredTools = normalizedUniqueTools(requiredTools)
         if requiredTools.contains("github") {
-            return "Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support, or remove the GitHub host-control capability route for this run."
+            return "Switch to a runtime that can attach ASTRA host tools, or remove the GitHub host-control route for this run."
         }
-        return "Switch to a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+        return "Switch to a runtime that can attach ASTRA host tools."
     }
 
     static func removingNativeLocalToolCommands(_ commands: [String], requiredTools: [String]) -> [String] {
@@ -274,7 +274,7 @@ enum HostControlPlaneRuntimeLaunchGuard {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let message = detail?.isEmpty == false
             ? detail!
-            : "\(plan.runtime.displayName) cannot attach ASTRA's host-control MCP server for this task. Switch to a runtime that supports provider MCP config, then retry."
+            : "\(plan.runtime.displayName) cannot attach ASTRA host tools for this task. Switch to a compatible runtime, then retry."
         return AgentProcessResult(
             exitCode: -1,
             error: message,

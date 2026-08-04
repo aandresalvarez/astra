@@ -113,10 +113,11 @@ struct RuntimeAttachmentPolicyRegressionTests {
         #expect(!manifest.additionalReadOnlyPaths.contains(providerDependency.standardizedFileURL.path))
         #expect(!manifest.additionalPaths.contains { contains(attachment.path, root: $0) })
         #expect(manifest.sandboxEvidence?.storedEnforcement == ExecutionSandboxEnforcement.off.rawValue)
-        #expect(manifest.sandboxEvidence?.effectiveEnforcement == ExecutionSandboxEnforcement.strict.rawValue)
-        #expect(manifest.sandboxEvidence?.effectiveReadScope == ExecutionSandboxReadScope.open.rawValue)
-        #expect(manifest.sandboxEvidence?.resolutionReason == ExecutionSandboxResolutionReason.readOnlyInputBoundary.rawValue)
-        #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+        // Enforcement is off: the read-only input boundary does not upgrade effective
+        // enforcement — sandbox off means off, even when inputs are present.
+        #expect(manifest.sandboxEvidence?.effectiveEnforcement == ExecutionSandboxEnforcement.off.rawValue)
+        #expect(manifest.sandboxEvidence?.resolutionReason == nil)
+        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
         #expect(manifest.providerRender.allowedTools.contains("Read"))
         #expect(manifest.providerRender.askFirstTools.contains("Write"))
         #expect(guardUnderTest.violation(for: .toolUse(

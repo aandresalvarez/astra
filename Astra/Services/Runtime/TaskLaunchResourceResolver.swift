@@ -22,6 +22,7 @@ enum TaskLaunchResourceResolver {
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
+        connectorSecretStore: SecretStore = KeychainSecretStore(),
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
         gitCredentialContextProvider: GitCredentialContextProvider = defaultGitCredentialContext,
         // When the caller already ran this task through
@@ -42,10 +43,20 @@ enum TaskLaunchResourceResolver {
         var providerRequirements: [RuntimeProviderRequirement] = []
         var controlPlaneResources: [RuntimeControlPlaneResource] = []
         var diagnostics: [RuntimeResourceDiagnostic] = []
-        let capabilityScope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
-            providerLaunchContextText: contextText
-        ).providerLaunch
+            providerLaunchContextText: contextText,
+            runtime: runtime,
+            secretStore: connectorSecretStore
+        )
+        let capabilityScope = resolutionSnapshot.providerLaunch
+        let hostControlTools = precomputedRuntimeRequirements?.hostControlTools
+            ?? HostControlPlaneMCPProjection.enabledToolNames(
+                task: task,
+                environment: environment,
+                contextText: contextText,
+                capabilityScope: capabilityScope
+            )
 
         appendWorkspacePathGrants(
             task: task,
@@ -132,8 +143,12 @@ enum TaskLaunchResourceResolver {
 
         appendCapabilityGrants(
             task: task,
+            runtime: runtime,
             contextText: contextText,
             capabilityScope: capabilityScope,
+            connectorCredentialExposurePolicy: resolutionSnapshot.connectorCredentialExposurePolicy,
+            connectorSecretStore: connectorSecretStore,
+            hostControlTools: hostControlTools,
             routesGitHubMetadataThroughHostControl: routesGitHubMetadataThroughHostControl,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
@@ -1156,8 +1171,12 @@ enum TaskLaunchResourceResolver {
 
     private static func appendCapabilityGrants(
         task: AgentTask,
+        runtime: AgentRuntimeID,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope,
+        connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy,
+        connectorSecretStore: SecretStore,
+        hostControlTools: [String],
         routesGitHubMetadataThroughHostControl: Bool,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
@@ -1170,6 +1189,10 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
+        let hostControlPlacement = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+            .usesHostControlCLIRelay
+            ? "host_control_cli_broker"
+            : "host_control_mcp_broker"
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             providerRequirements.append(RuntimeProviderRequirement(
@@ -1199,11 +1222,11 @@ enum TaskLaunchResourceResolver {
             controlPlaneResources.append(RuntimeControlPlaneResource(
                 capability: "github",
                 source: .controlPlane,
-                placement: "host_capability",
+                placement: hostControlPlacement,
                 readiness: .configured,
                 reason: "GitHub metadata/API work uses ASTRA's host control-plane GitHub route instead of provider-native Git or gh credentials.",
                 failureText: "GitHub metadata/API work was requested, but no GitHub host-control route was available to the provider.",
-                repairAction: "Use a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+                repairAction: "Use a runtime that can attach ASTRA host tools."
             ))
         }
 
@@ -1236,44 +1259,70 @@ enum TaskLaunchResourceResolver {
         }
 
         for connector in capabilityScope.connectors {
-            appendConnectorControlPlaneResource(
-                connector,
-                controlPlaneResources: &controlPlaneResources
+            let normalizedServiceType = connector.serviceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let connectorHostControlTool = HostControlPlaneMCPProjection.connectorToolName(
+                normalizedServiceType
             )
+            let routesConnectorThroughHostControl = connectorHostControlTool
+                .map(hostControlTools.contains) == true
+            let brokerOwnsConnectorConfiguration = routesConnectorThroughHostControl
+                && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(
+                    normalizedServiceType
+                )
+            if routesConnectorThroughHostControl {
+                appendConnectorControlPlaneResource(
+                    connector,
+                    placement: hostControlPlacement,
+                    controlPlaneResources: &controlPlaneResources
+                )
+            }
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "connector:\(connector.serviceType)",
-                source: .connector,
-                reason: "Task capability scope includes connector \(connector.name).",
+                source: routesConnectorThroughHostControl ? .controlPlane : .connector,
+                reason: routesConnectorThroughHostControl
+                    ? "\(connector.name) is delivered through ASTRA's host control plane."
+                    : "Task capability scope includes connector \(connector.name).",
                 required: true
             ))
-            for key in connector.credentialKeys {
-                let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { continue }
-                credentialGrants.append(RuntimeCredentialGrant(
-                    label: "\(connector.name):\(trimmed)",
-                    source: .connector,
-                    reason: "Connector declares credential key \(trimmed).",
-                    projectedAsEnvironment: true,
-                    projectedAsFile: false
-                ))
-                environmentGrants.append(RuntimeEnvironmentGrant(
-                    key: trimmed,
-                    source: .connector,
-                    reason: "Connector credential key is projected through ASTRA-managed runtime environment when available.",
-                    sensitivity: .credential,
-                    valueProjected: false
-                ))
-            }
-            for key in connector.configKeys {
-                let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { continue }
-                environmentGrants.append(RuntimeEnvironmentGrant(
-                    key: trimmed,
-                    source: .connector,
-                    reason: "Connector config key is projected through ASTRA-managed runtime environment when configured.",
-                    sensitivity: .normal,
-                    valueProjected: false
-                ))
+            guard !brokerOwnsConnectorConfiguration else { continue }
+
+            let bindings = ConnectorRuntimeProjection(
+                connectors: [connector],
+                secretStore: connectorSecretStore,
+                credentialExposurePolicy: connectorCredentialExposurePolicy
+            ).environmentBindings()
+            for binding in bindings {
+                switch binding.kind {
+                case .credential:
+                    credentialGrants.append(RuntimeCredentialGrant(
+                        label: binding.credentialLabel
+                            ?? ConnectorRuntimeProjection.credentialLabel(
+                                for: connector,
+                                key: binding.originalKey
+                            ),
+                        source: .connector,
+                        reason: "An approved connector credential is projected for \(connector.name).",
+                        projectedAsEnvironment: true,
+                        projectedAsFile: false
+                    ))
+                    environmentGrants.append(RuntimeEnvironmentGrant(
+                        key: binding.envKey,
+                        source: .connector,
+                        reason: "An approved connector credential is projected through the runtime environment.",
+                        sensitivity: .credential,
+                        valueProjected: true
+                    ))
+                case .config:
+                    environmentGrants.append(RuntimeEnvironmentGrant(
+                        key: binding.envKey,
+                        source: .connector,
+                        reason: "Connector configuration is projected through the runtime environment.",
+                        sensitivity: .normal,
+                        valueProjected: true
+                    ))
+                }
             }
         }
         appendSkillControlPlaneResources(
@@ -1328,6 +1377,7 @@ enum TaskLaunchResourceResolver {
 
     private static func appendConnectorControlPlaneResource(
         _ connector: Connector,
+        placement: String,
         controlPlaneResources: inout [RuntimeControlPlaneResource]
     ) {
         let service = normalizedServiceType(connector.serviceType)
@@ -1348,7 +1398,7 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources.append(RuntimeControlPlaneResource(
             capability: capability,
             source: .connector,
-            placement: "host_capability",
+            placement: placement,
             readiness: .configured,
             reason: "Connector \(connector.name) is exposed through ASTRA's host capability layer.",
             failureText: nil,

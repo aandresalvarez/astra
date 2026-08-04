@@ -60,6 +60,8 @@ struct ComposerToolbar: View {
     var availableSkills: [Skill] = []
     var workspace: Workspace?
     var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
+    var runtimeEligibilityPreviewSignature: String?
     var taskStatus: TaskStatus?
     var taskStatusOverride: ComposerTaskStatusPresentation? = nil
     /// The decision dock above the composer owns the task status while it is
@@ -313,30 +315,45 @@ struct ComposerToolbar: View {
 
         return Menu {
             Menu {
-                let runtimes = selectableRuntimes
-                if runtimes.isEmpty {
-                    Label(runtimeReadinessStates.isEmpty ? "Checking providers" : "No ready providers",
-                          systemImage: runtimeReadinessStates.isEmpty ? "clock" : "exclamationmark.triangle")
-                }
-                ForEach(runtimes) { runtime in
-                    Button {
-                        onRuntimeChange?(runtime.rawValue)
-                        onModelChange?(
-                            RuntimeModelAvailability.modelForRuntimeSwitch(
-                                currentModel: model,
-                                to: runtime,
-                                cache: runtimeModelCache
-                            )
-                        )
-                    } label: {
-                        HStack {
-                            Text(runtime.displayName)
-                            if resolvedRuntime == runtime { Image(systemName: "checkmark") }
+                if currentRuntimeEligibilitySnapshot != nil {
+                    Section("Can execute this request") {
+                        if compatibleRuntimes.isEmpty {
+                            Text("No ready provider is compatible")
+                        } else {
+                            ForEach(compatibleRuntimes) { runtime in
+                                runtimeMenuButton(runtime)
+                            }
                         }
+                    }
+                    if !unavailableRuntimes.isEmpty {
+                        Section("Unavailable for this request") {
+                            ForEach(unavailableRuntimes) { runtime in
+                                runtimeMenuButton(runtime)
+                            }
+                        }
+                    }
+                } else {
+                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
+                        runtimeMenuButton(runtime)
                     }
                 }
             } label: {
                 Label("Provider", systemImage: "server.rack")
+            }
+
+            if let suggestedRuntime = compatibleSuggestedRuntime {
+                Button {
+                    onRuntimeChange?(suggestedRuntime.rawValue)
+                    onModelChange?(
+                        RuntimeModelAvailability.modelForRuntimeSwitch(
+                            currentModel: model,
+                            to: suggestedRuntime,
+                            cache: runtimeModelCache
+                        )
+                    )
+                } label: {
+                    Label("Switch to \(suggestedRuntime.displayName)", systemImage: "arrow.triangle.swap")
+                }
             }
 
             Menu {
@@ -415,6 +432,44 @@ struct ComposerToolbar: View {
             shape.stroke(runtimePillStroke, lineWidth: 1)
         )
         .help(runtimeStatusHelp)
+    }
+
+    private var compatibleRuntimes: [AgentRuntimeID] {
+        RuntimeEligibilitySubmissionPolicy.providersThatCanExecute(
+            AgentRuntimeAdapterRegistry.runtimeIDs,
+            readinessStates: runtimeReadinessStates,
+            previewState: runtimeEligibilityPreviewState,
+            signature: runtimeEligibilityPreviewSignature
+        )
+    }
+
+    private var unavailableRuntimes: [AgentRuntimeID] {
+        AgentRuntimeAdapterRegistry.runtimeIDs.filter { !runtimeIsSelectable($0) }
+    }
+
+    private func runtimeMenuButton(_ runtime: AgentRuntimeID) -> some View {
+        Button {
+            onRuntimeChange?(runtime.rawValue)
+            onModelChange?(
+                RuntimeModelAvailability.modelForRuntimeSwitch(
+                    currentModel: model,
+                    to: runtime,
+                    cache: runtimeModelCache
+                )
+            )
+        } label: {
+            HStack {
+                if let reason = runtimeMenuReason(for: runtime) {
+                    Text("\(runtime.displayName) - \(reason)")
+                } else {
+                    Text(runtime.displayName)
+                }
+                if resolvedRuntime == runtime {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        .disabled(!runtimeIsSelectable(runtime))
     }
 
     private var runtimePillColor: Color {
@@ -852,7 +907,7 @@ struct ComposerToolbar: View {
             .buttonStyle(.plain)
             .disabled(!canSubmit)
             .keyboardShortcut(.return, modifiers: .command)
-            .help(submitTitle)
+            .help(submitHelp(fallback: submitTitle))
             .accessibilityIdentifier("ComposerSubmitButton")
             .accessibilityLabel(submitTitle)
         } else {
@@ -878,6 +933,7 @@ struct ComposerToolbar: View {
             .buttonStyle(.plain)
             .disabled(!canSubmit)
             .keyboardShortcut(.return, modifiers: .command)
+            .help(submitHelp(fallback: "Send"))
             .accessibilityIdentifier("ComposerSubmitButton")
             .accessibilityLabel("Send")
         }
@@ -942,26 +998,44 @@ struct ComposerToolbar: View {
     }
 
     private var canSubmit: Bool {
-        hasInput && (runtimeReadinessStates.isEmpty || runtimeReadinessStates[resolvedRuntime] == .ready)
+        RuntimeEligibilitySubmissionPolicy.canExecute(
+            hasInput: hasInput,
+            runtime: submissionRuntime,
+            readinessStates: runtimeReadinessStates,
+            previewState: runtimeEligibilityPreviewState,
+            signature: runtimeEligibilityPreviewSignature
+        )
     }
 
     private var displayedRuntime: AgentRuntimeID? {
-        if runtimeReadinessStates[resolvedRuntime] == .ready {
-            return resolvedRuntime
-        }
-        return selectableRuntimes.first
-    }
-
-    private var selectableRuntimes: [AgentRuntimeID] {
-        RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
+        guard !runtimeReadinessStates.isEmpty else { return nil }
+        return resolvedRuntime
     }
 
     private var runtimeStatusHelp: String {
         if runtimeReadinessStates.isEmpty {
             return "Checking provider readiness"
         }
+        if !hasInput {
+            return selectedProviderReadinessHelp
+        }
+        if compatibilityIsUnavailable {
+            return "Compatibility could not be evaluated. Edit the request to retry."
+        }
+        if compatibilityIsPending {
+            return "Checking compatibility for this turn"
+        }
+        guard currentRuntimeEligibilitySnapshot != nil else {
+            return "Compatibility has not been evaluated for this request."
+        }
+        if let reason = selectedRuntimeBlockReason {
+            return [reason, selectedRuntimeRemediation].compactMap { $0 }.joined(separator: " ")
+        }
         guard let displayedRuntime else {
             return "No ready provider. Finish CLI setup before running a task."
+        }
+        guard runtimeReadinessStates[displayedRuntime] == .ready else {
+            return "\(displayedRuntime.displayName) needs setup before it can run this turn."
         }
         return RuntimeBudgetPresentation.runtimeStatusHelp(
             runtimeName: displayedRuntime.displayName,
@@ -978,6 +1052,27 @@ struct ComposerToolbar: View {
         guard let displayedRuntime else {
             return "Provider setup needed"
         }
+        if !hasInput {
+            return selectedProviderStatusText(
+                displayedRuntime,
+                includeRuntime: includeRuntime
+            )
+        }
+        if compatibilityIsUnavailable {
+            return "Compatibility unavailable"
+        }
+        if compatibilityIsPending {
+            return "Checking compatibility"
+        }
+        guard currentRuntimeEligibilitySnapshot != nil else {
+            return "Compatibility not checked"
+        }
+        if selectedRuntimeBlockReason != nil {
+            return "\(shortRuntimeName(displayedRuntime)) not compatible"
+        }
+        guard runtimeReadinessStates[displayedRuntime] == .ready else {
+            return "\(shortRuntimeName(displayedRuntime)) needs setup"
+        }
         let modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
         return RuntimeBudgetPresentation.runtimeStatusText(
             runtimeName: shortRuntimeName(displayedRuntime),
@@ -985,6 +1080,109 @@ struct ComposerToolbar: View {
             budget: budget,
             includeRuntime: includeRuntime
         )
+    }
+
+    private var selectedRuntimeBlockReason: String? {
+        guard let candidate = submissionRuntimeCandidate,
+              !candidate.isEligible else {
+            return nil
+        }
+        return candidate.blockingReason ?? "Not compatible with this turn."
+    }
+
+    private var selectedRuntimeRemediation: String? {
+        if currentRuntimeEligibilitySnapshot?.requestedRuntime == submissionRuntime {
+            return currentRuntimeEligibilitySnapshot?.launchBlock?.remediation
+        }
+        return submissionRuntimeCandidate?.policyDiagnostics.first {
+            $0.severity == .blocked
+        }?.remediation
+    }
+
+    private var compatibleSuggestedRuntime: AgentRuntimeID? {
+        guard selectedRuntimeBlockReason != nil,
+              let suggestedRuntime = currentRuntimeEligibilitySnapshot?.suggestedRuntime,
+              suggestedRuntime != submissionRuntime,
+              runtimeIsSelectable(suggestedRuntime) else {
+            return nil
+        }
+        return suggestedRuntime
+    }
+
+    private func runtimeIsSelectable(_ runtime: AgentRuntimeID) -> Bool {
+        guard runtimeReadinessStates[runtime] == .ready else { return false }
+        guard let snapshot = currentRuntimeEligibilitySnapshot else { return true }
+        return snapshot.candidates[runtime]?.isEligible == true
+    }
+
+    private func runtimeMenuReason(for runtime: AgentRuntimeID) -> String? {
+        guard !runtimeReadinessStates.isEmpty else { return "checking setup" }
+        guard runtimeReadinessStates[runtime] == .ready else { return "needs setup" }
+        guard let candidate = currentRuntimeEligibilitySnapshot?.candidates[runtime],
+              !candidate.isEligible else {
+            return nil
+        }
+        return candidate.blockingReason ?? "not compatible with this turn"
+    }
+
+    private func submitHelp(fallback: String) -> String {
+        if compatibilityIsUnavailable {
+            return "Compatibility could not be evaluated. Edit the request to retry."
+        }
+        if compatibilityIsPending {
+            return "Wait for ASTRA to finish checking this turn's runtime contract."
+        }
+        guard currentRuntimeEligibilitySnapshot != nil else {
+            return "Compatibility has not been evaluated for this request."
+        }
+        guard let reason = selectedRuntimeBlockReason else { return fallback }
+        return [reason, selectedRuntimeRemediation].compactMap { $0 }.joined(separator: " ")
+    }
+
+    private var currentRuntimeEligibilitySnapshot: TaskRuntimeEligibilitySnapshot? {
+        runtimeEligibilityPreviewState.currentSnapshot(
+            for: runtimeEligibilityPreviewSignature
+        )
+    }
+
+    private var compatibilityIsUnavailable: Bool {
+        hasInput && runtimeEligibilityPreviewState.isUnavailable(
+            for: runtimeEligibilityPreviewSignature
+        )
+    }
+
+    private var compatibilityIsPending: Bool {
+        hasInput && runtimeEligibilityPreviewState.isPending(
+            for: runtimeEligibilityPreviewSignature
+        )
+    }
+
+    private var submissionRuntime: AgentRuntimeID {
+        resolvedRuntime
+    }
+
+    private var submissionRuntimeCandidate: TaskRuntimeAdmissionCandidate? {
+        guard let snapshot = currentRuntimeEligibilitySnapshot else { return nil }
+        return snapshot.candidates[resolvedRuntime]
+    }
+
+    private var selectedProviderReadinessHelp: String {
+        guard runtimeReadinessStates[resolvedRuntime] == .ready else {
+            return "\(resolvedRuntime.displayName) needs setup before it can run a request."
+        }
+        return "Enter a request to check which providers can execute it."
+    }
+
+    private func selectedProviderStatusText(
+        _ runtime: AgentRuntimeID,
+        includeRuntime: Bool
+    ) -> String {
+        guard runtimeReadinessStates[runtime] == .ready else {
+            return "\(shortRuntimeName(runtime)) needs setup"
+        }
+        return includeRuntime
+            ? "\(shortRuntimeName(runtime)) · \(shortModelDisplayName(model))"
+            : shortModelDisplayName(model)
     }
 
     private func shortRuntimeName(_ runtime: AgentRuntimeID) -> String {

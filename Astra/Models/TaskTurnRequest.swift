@@ -28,8 +28,14 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     public let templateHooksJSON: String
     public let skillSnapshotsJSON: String
     public let runtimePermissionGrantsJSON: String?
+    /// Optional for backward compatibility with V16 requests written before
+    /// turn-scoped capability admission was introduced.
+    public let turnIntentSnapshot: TaskTurnIntentSnapshot?
 
-    public init(task: AgentTask) {
+    public init(
+        task: AgentTask,
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil
+    ) {
         version = 1
         runtimeExplicitlySelected = task.runtimeExplicitlySelected
         maxTurns = task.maxTurns
@@ -44,6 +50,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         templateHooksJSON = task.templateHooksJSON
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
+        self.turnIntentSnapshot = turnIntentSnapshot
     }
 }
 
@@ -171,6 +178,7 @@ public final class TaskTurnRequest {
         sequence: Int,
         kind: TaskExecutionRequestKind = .followUp,
         resourceClaims: [TaskExecutionResourceClaim] = [],
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         state: TaskTurnRequestState = .waitingForWorker,
         submittedAt: Date = Date()
     ) {
@@ -195,7 +203,10 @@ public final class TaskTurnRequest {
         self.runtimeIDSnapshot = task.runtimeID ?? task.resolvedRuntimeID.rawValue
         self.modelSnapshot = task.model
         self.tokenBudgetSnapshot = task.tokenBudget
-        self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(task: task))
+        self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(
+            task: task,
+            turnIntentSnapshot: turnIntentSnapshot
+        ))
         self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
     }
 

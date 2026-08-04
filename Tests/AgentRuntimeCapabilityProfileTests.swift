@@ -13,11 +13,15 @@ struct AgentRuntimeCapabilityProfileTests {
         #expect(codex.taskScopedMCPDelivery == .codexInlineConfig)
         #expect(codex.supportsTaskScopedMCPDelivery)
         #expect(codex.canDeliverHostControlPlaneMCP)
+        #expect(codex.canDeliverHostControlPlane)
+        #expect(!codex.usesHostControlCLIRelay)
         #expect(codex.canDeliverDockerWorkspaceShellMCP)
 
         #expect(claude.taskScopedMCPDelivery == .claudeStrictConfigFile)
         #expect(claude.supportsTaskScopedMCPDelivery)
         #expect(claude.canDeliverHostControlPlaneMCP)
+        #expect(claude.canDeliverHostControlPlane)
+        #expect(!claude.usesHostControlCLIRelay)
         #expect(claude.canDeliverDockerWorkspaceShellMCP)
     }
 
@@ -29,11 +33,13 @@ struct AgentRuntimeCapabilityProfileTests {
         #expect(oldCopilot.taskScopedMCPDelivery == .unsupported)
         #expect(!oldCopilot.supportsTaskScopedMCPDelivery)
         #expect(!oldCopilot.canDeliverHostControlPlaneMCP)
+        #expect(!oldCopilot.canDeliverHostControlPlane)
         #expect(!oldCopilot.canDeliverDockerWorkspaceShellMCP)
 
         #expect(newCopilot.taskScopedMCPDelivery == .copilotAdditionalConfigFile)
         #expect(newCopilot.supportsTaskScopedMCPDelivery)
         #expect(newCopilot.canDeliverHostControlPlaneMCP)
+        #expect(newCopilot.canDeliverHostControlPlane)
         #expect(newCopilot.canDeliverDockerWorkspaceShellMCP)
     }
 
@@ -59,13 +65,16 @@ struct AgentRuntimeCapabilityProfileTests {
         #expect(newCopilot.canDeliverHostControlPlaneMCP)
     }
 
-    @Test("Cursor OpenCode and Antigravity remain unsupported until task scoped delivery exists")
-    func nonProjectedRuntimesDoNotClaimTaskScopedMCP() {
+    @Test("Cursor OpenCode and Antigravity use CLI relay without claiming MCP")
+    func nonProjectedRuntimesUseCLIRelayWithoutClaimingMCP() {
         for runtime in [AgentRuntimeID.cursorCLI, .openCodeCLI, .antigravityCLI] {
             let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
             #expect(profile.taskScopedMCPDelivery == .unsupported)
             #expect(!profile.supportsTaskScopedMCPDelivery)
             #expect(!profile.canDeliverHostControlPlaneMCP)
+            #expect(profile.canDeliverHostControlPlane)
+            #expect(profile.usesHostControlCLIRelay)
+            #expect(profile.supportsHostControlCLIRelay)
             #expect(!profile.canDeliverDockerWorkspaceShellMCP)
         }
     }
@@ -84,9 +93,10 @@ struct AgentRuntimeCapabilityProfileTests {
             #expect(profile.taskScopedMCPDelivery == .unsupported)
             #expect(!profile.supportsTaskScopedMCPDelivery)
             #expect(!profile.canDeliverHostControlPlaneMCP)
+            #expect(profile.canDeliverHostControlPlane)
             #expect(!profile.canDeliverDockerWorkspaceShellMCP)
             #expect(!profile.canDeliverBrowserBridgeMCPTool)
-            #expect(profile.observedEvidence == ["adapter:no-task-scoped-mcp-projection"])
+            #expect(profile.observedEvidence == ["adapter:process-bound-host-control-cli-relay"])
         }
     }
 

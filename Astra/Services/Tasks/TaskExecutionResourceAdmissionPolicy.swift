@@ -9,10 +9,12 @@ enum TaskExecutionResourceAdmissionPolicy {
         for request: TaskTurnRequest?,
         task: AgentTask,
         runMode: String,
-        fallbackAccess: TaskResourceAccessMode? = nil
+        fallbackAccess: TaskResourceAccessMode? = nil,
+        sandboxEnforcement: ExecutionSandboxEnforcement = .bestEffort
     ) -> [TaskResourceLockClaim] {
         var claims = TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: task)
         if request == nil,
+           !TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: request, task: task),
            let fallbackAccess,
            let index = claims.firstIndex(where: { $0.kind == .workspace }) {
             let workspace = claims[index]
@@ -22,6 +24,7 @@ enum TaskExecutionResourceAdmissionPolicy {
                 access: fallbackAccess == .readOnly ? .shared : .exclusive
             )
         }
+        claims = effectiveClaims(claims, sandboxEnforcement: sandboxEnforcement)
         return TaskExecutionResourceBroker.lockClaims(
             for: claims,
             taskID: task.id,
@@ -35,9 +38,15 @@ enum TaskExecutionResourceAdmissionPolicy {
         in projection: ExecutionRequestAdmissionScheduler.Projection,
         dispatchedRequestIDs: Set<UUID>,
         activeTaskIDs: Set<UUID>,
-        activeClaims: [TaskResourceLockClaim]
+        activeClaims: [TaskResourceLockClaim],
+        sandboxEnforcement: ExecutionSandboxEnforcement = .bestEffort
     ) -> Bool {
-        let claims = lockClaims(for: candidate.request, task: candidate.task, runMode: "request")
+        let claims = lockClaims(
+            for: candidate.request,
+            task: candidate.task,
+            runMode: "request",
+            sandboxEnforcement: sandboxEnforcement
+        )
         // A request with no resource claims (e.g. a no-workspace task routed to the
         // direct worker path) has nothing to conflict on and must be immediately
         // admissible; only requests that hold claims go through the broker's
@@ -50,7 +59,8 @@ enum TaskExecutionResourceAdmissionPolicy {
             claims: claims,
             in: projection,
             dispatchedRequestIDs: dispatchedRequestIDs,
-            activeTaskIDs: activeTaskIDs
+            activeTaskIDs: activeTaskIDs,
+            sandboxEnforcement: sandboxEnforcement
         ) == nil
     }
 
@@ -59,7 +69,8 @@ enum TaskExecutionResourceAdmissionPolicy {
         claims: [TaskResourceLockClaim],
         in projection: ExecutionRequestAdmissionScheduler.Projection,
         dispatchedRequestIDs: Set<UUID>,
-        activeTaskIDs: Set<UUID>
+        activeTaskIDs: Set<UUID>,
+        sandboxEnforcement: ExecutionSandboxEnforcement = .bestEffort
     ) -> TaskResourceLockClaim? {
         for earlier in projection.ordered {
             if earlier.request.id == candidate.request.id { break }
@@ -68,7 +79,8 @@ enum TaskExecutionResourceAdmissionPolicy {
             let earlierClaims = lockClaims(
                 for: earlier.request,
                 task: earlier.task,
-                runMode: "request"
+                runMode: "request",
+                sandboxEnforcement: sandboxEnforcement
             )
             if let claim = claims.first(where: { requested in
                 earlierClaims.contains { TaskExecutionResourceBroker.claimsCompete($0, requested) }
@@ -77,5 +89,44 @@ enum TaskExecutionResourceAdmissionPolicy {
             }
         }
         return nil
+    }
+
+    static func effectiveWorkspaceAccess(
+        _ access: TaskExecutionResourceAccess,
+        sandboxEnforcement: ExecutionSandboxEnforcement
+    ) -> TaskExecutionResourceAccess {
+        sandboxEnforcement == .off && access == .shared ? .exclusive : access
+    }
+
+    static func workspaceAccess(
+        from lease: [TaskResourceLockClaim]
+    ) -> TaskExecutionResourceAccess? {
+        let workspaceClaims = lease.filter { $0.resourceKind == .workspace }
+        guard !workspaceClaims.isEmpty else { return nil }
+        return workspaceClaims.allSatisfy { $0.accessMode == .readOnly }
+            ? .shared
+            : .exclusive
+    }
+
+    private static func effectiveClaims(
+        _ claims: [TaskExecutionResourceClaim],
+        sandboxEnforcement: ExecutionSandboxEnforcement
+    ) -> [TaskExecutionResourceClaim] {
+        guard sandboxEnforcement == .off else { return claims }
+        return claims.map { claim in
+            guard claim.access == .shared,
+                  claim.kind == .workspace || claim.kind == .gitCommonDirectory else {
+                return claim
+            }
+            // Shared admission is only safe while a read-only execution
+            // boundary can uphold it. With sandboxing explicitly Off, preserve
+            // safety by serializing the run as a writer instead of silently
+            // turning Seatbelt back on.
+            return TaskExecutionResourceClaim(
+                kind: claim.kind,
+                key: claim.key,
+                access: .exclusive
+            )
+        }
     }
 }

@@ -909,7 +909,10 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         let github = packages.first { $0.id == "github-workflow" }
-        #expect(github?.version == "2.1.5")
+        #expect(github?.version == "2.2.0")
+        #expect(github?.skills.first?.behaviorInstructions.contains(
+            "astra-host-control github -- issue list"
+        ) == true)
         #expect(github?.governance.externalEffects == [.readOnly])
         #expect(github?.skills.first?.allowedTools.contains("Bash") == false)
         #expect(github?.skills.first?.disallowedTools.contains("Bash") == true)

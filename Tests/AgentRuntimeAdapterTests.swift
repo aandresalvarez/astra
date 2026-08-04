@@ -3034,58 +3034,6 @@ struct AgentRuntimeAdapterTests {
         #expect(!joinedArguments.contains("shell(gh:*)"))
     }
 
-    @Test("Non-MCP runtimes block GitHub host-control tasks before launch")
-    @MainActor
-    func nonMCPRuntimesBlockGitHubHostControlTasksBeforeLaunch() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-host-control-non-mcp-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-        for runtime in [AgentRuntimeID.openCodeCLI, .cursorCLI, .antigravityCLI] {
-            let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-            workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
-            let task = AgentTask(
-                title: "Review PR",
-                goal: "Use GitHub to inspect pull requests",
-                workspace: workspace,
-                model: "test-model",
-                runtime: runtime
-            )
-            let githubSkill = Skill(
-                name: "GitHub Agent",
-                allowedTools: ["Read"],
-                behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
-            )
-            githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
-            githubSkill.workspace = workspace
-            task.skills = [githubSkill]
-
-            let plan = AgentRuntimeAdapterRegistry
-                .adapter(for: runtime)
-                .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
-                    prompt: "Review pull requests",
-                    task: task,
-                    workspacePath: workspace.primaryPath,
-                    executablePath: "/bin/echo",
-                    providerHomeDirectory: root.appendingPathComponent(runtime.rawValue).path,
-                    permissionPolicy: .restricted,
-                    executionPolicy: .default,
-                    permissionManifest: nil,
-                    timeoutSeconds: 30,
-                    phase: "run",
-                    contextText: "Use GitHub to inspect pull requests."
-                ))
-
-            #expect(plan.commandPlannedFields["host_control_plane_tool_count"] == "1")
-            #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
-            #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
-            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("GitHub metadata/API") == true)
-            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("Codex CLI") == true)
-            #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan)?.runtimeStopReason == "host_control_plane_unsupported_runtime")
-        }
-    }
-
     @Test("Host-control launch diagnostics name the required host tools")
     @MainActor
     func hostControlLaunchDiagnosticsNameRequiredHostTools() throws {
@@ -3093,8 +3041,9 @@ struct AgentRuntimeAdapterTests {
             runtime: .openCodeCLI,
             requiredTools: ["gcloud", "bq"]
         )
-        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("gcloud, bq") == true)
-        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("GitHub") == false)
+        #expect(sharedMetadata["host_control_plane_tool_count"] == "2")
+        #expect(sharedMetadata["host_control_plane_supported"] == "true")
+        #expect(sharedMetadata["host_control_plane_unsupported_detail"] == "")
 
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-docker-host-control-detail-\(UUID().uuidString)", isDirectory: true)

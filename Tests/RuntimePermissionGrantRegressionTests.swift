@@ -51,4 +51,31 @@ struct RuntimePermissionGrantRegressionTests {
         ].sorted { $0.displayName < $1.displayName })
         #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .openCodeCLI).isEmpty)
     }
+
+    @Test("Credential approvals never replay across runtimes or without a runtime")
+    func credentialApprovalsRemainRuntimeScoped() throws {
+        let container = try makeRuntimePermissionGrantContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Scoped credential", goal: "Use the approved connector")
+        context.insert(task)
+        let grant = PermissionGrant.credential(label: "connector:test:JIRA_API_TOKEN")
+
+        _ = TaskRuntimePermissionGrants.record(
+            grants: [grant],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: context,
+            source: "runtime-scope-test"
+        )
+
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            runtime: .claudeCode
+        ) == ["connector:test:JIRA_API_TOKEN"])
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            runtime: .cursorCLI
+        ).isEmpty)
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task).isEmpty)
+    }
 }

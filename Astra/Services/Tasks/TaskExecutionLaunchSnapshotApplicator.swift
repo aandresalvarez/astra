@@ -43,7 +43,13 @@ enum TaskExecutionLaunchSnapshotApplicator {
     /// An unmanaged task view lets existing launch planners consume the same
     /// task-shaped interface without giving them a writable SwiftData object.
     static func detachedTask(_ snapshot: AgentTaskLaunchSnapshot, from source: AgentTask) -> AgentTask {
+        let resolvedInventory = TaskCapabilityResolver(task: source).resourceInventory
+        let cloneSources = capabilityCloneSources(source: source, resolvedInventory: resolvedInventory)
         let workspace = source.workspace.map(detachedWorkspace)
+        let capabilityGraph = detachedCapabilityGraph(
+            sources: cloneSources,
+            workspace: workspace
+        )
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
         task.inputs = source.inputs
@@ -89,9 +95,99 @@ enum TaskExecutionLaunchSnapshotApplicator {
         task.runs = detachedRuns
         task.events = source.events.map { detachedEvent($0, task: task, runs: runByID) }
         task.artifacts = source.artifacts.map { detachedArtifact($0, task: task) }
-        let workspaceSkills = Dictionary(uniqueKeysWithValues: (workspace?.skills ?? []).map { ($0.id, $0) })
-        task.skills = source.skills.map { workspaceSkills[$0.id] ?? detachedSkill($0) }
+        task.skills = source.skills.map {
+            capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
+        }
         return task
+    }
+
+    private struct CapabilityCloneSources {
+        let skills: [Skill]
+        let connectors: [Connector]
+        let localTools: [LocalTool]
+        let workspaceSkillIDs: Set<UUID>
+        let workspaceConnectorIDs: Set<UUID>
+        let workspaceLocalToolIDs: Set<UUID>
+    }
+
+    private struct DetachedCapabilityGraph {
+        let skillsByID: [UUID: Skill]
+    }
+
+    /// The live workspace remains authoritative for capability enablement. At
+    /// dispatch, project exactly its resolved inventory into the unmanaged
+    /// launch graph so later planners do not need a SwiftData ModelContext.
+    private static func capabilityCloneSources(
+        source: AgentTask,
+        resolvedInventory: TaskCapabilityResolver.ResourceInventory
+    ) -> CapabilityCloneSources {
+        let workspaceSkills = source.workspace?.skills ?? []
+        let workspaceConnectors = source.workspace?.connectors ?? []
+        let workspaceLocalTools = source.workspace?.localTools ?? []
+
+        var skills = uniqueSkills(
+            workspaceSkills + source.skills + resolvedInventory.behaviorSkills
+        )
+        var connectors = uniqueConnectors(
+            workspaceConnectors +
+                (workspaceSkills + source.skills).flatMap(\.connectors) +
+                resolvedInventory.connectors
+        )
+        var localTools = uniqueLocalTools(
+            workspaceLocalTools +
+                (workspaceSkills + source.skills).flatMap(\.localTools) +
+                resolvedInventory.localTools
+        )
+
+        skills = uniqueSkills(
+            skills + connectors.compactMap(\.skill) + localTools.compactMap(\.skill)
+        )
+        connectors = uniqueConnectors(connectors)
+        localTools = uniqueLocalTools(localTools)
+
+        return CapabilityCloneSources(
+            skills: skills,
+            connectors: connectors,
+            localTools: localTools,
+            workspaceSkillIDs: Set(
+                (workspaceSkills + resolvedInventory.behaviorSkills).map(\.id)
+            ),
+            workspaceConnectorIDs: Set(
+                (workspaceConnectors + resolvedInventory.connectors).map(\.id)
+            ),
+            workspaceLocalToolIDs: Set(
+                (workspaceLocalTools + resolvedInventory.localTools).map(\.id)
+            )
+        )
+    }
+
+    /// Clone first, then wire only clones. This keeps every UUID represented by
+    /// one launch object and prevents inverse relationships from touching the
+    /// managed source graph.
+    private static func detachedCapabilityGraph(
+        sources: CapabilityCloneSources,
+        workspace: Workspace?
+    ) -> DetachedCapabilityGraph {
+        let skills = sources.skills.map(detachedSkill)
+        let skillsByID = Dictionary(uniqueKeysWithValues: skills.map { ($0.id, $0) })
+        let connectors = sources.connectors.map { source in
+            detachedConnector(source, skill: source.skill.flatMap { skillsByID[$0.id] })
+        }
+        let localTools = sources.localTools.map { source in
+            detachedLocalTool(source, skill: source.skill.flatMap { skillsByID[$0.id] })
+        }
+
+        if let workspace {
+            workspace.skills = skills.filter { sources.workspaceSkillIDs.contains($0.id) }
+            workspace.connectors = connectors.filter {
+                sources.workspaceConnectorIDs.contains($0.id)
+            }
+            workspace.localTools = localTools.filter {
+                sources.workspaceLocalToolIDs.contains($0.id)
+            }
+        }
+
+        return DetachedCapabilityGraph(skillsByID: skillsByID)
     }
 
     private static func detachedWorkspace(_ source: Workspace) -> Workspace {
@@ -119,16 +215,22 @@ enum TaskExecutionLaunchSnapshotApplicator {
         workspace.activeExecutionEnvironmentJSON = source.activeExecutionEnvironmentJSON
         workspace.createdAt = source.createdAt
         workspace.updatedAt = source.updatedAt
-
-        workspace.skills = source.skills.map(detachedSkill)
-        let skillsByID = Dictionary(uniqueKeysWithValues: workspace.skills.map { ($0.id, $0) })
-        workspace.connectors = source.connectors.map {
-            detachedConnector($0, workspace: workspace, skill: $0.skill.flatMap { skillsByID[$0.id] })
-        }
-        workspace.localTools = source.localTools.map {
-            detachedLocalTool($0, workspace: workspace, skill: $0.skill.flatMap { skillsByID[$0.id] })
-        }
         return workspace
+    }
+
+    private static func uniqueSkills(_ skills: [Skill]) -> [Skill] {
+        var seen = Set<UUID>()
+        return skills.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func uniqueConnectors(_ connectors: [Connector]) -> [Connector] {
+        var seen = Set<UUID>()
+        return connectors.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func uniqueLocalTools(_ localTools: [LocalTool]) -> [LocalTool] {
+        var seen = Set<UUID>()
+        return localTools.filter { seen.insert($0.id).inserted }
     }
 
     private static func detachedRun(_ source: TaskRun, task: AgentTask) -> TaskRun {
@@ -203,8 +305,6 @@ enum TaskExecutionLaunchSnapshotApplicator {
         skill.updatedAt = source.updatedAt
         skill.isGlobal = source.isGlobal
         skill.isBuiltIn = source.isBuiltIn
-        skill.connectors = source.connectors.map { detachedConnector($0, skill: skill) }
-        skill.localTools = source.localTools.map { detachedLocalTool($0, skill: skill) }
         return skill
     }
 

@@ -3,12 +3,16 @@ import Foundation
 /// Product-level classification of a CLI's state, derived from running
 /// `which` + a liveness probe + an optional semantic check against stdout.
 ///
-/// Four cases, in rough "pain" order:
+/// Cases, in rough "pain" order:
 ///   - `healthy`       — binary resolves, liveness probe exits 0, and any
 ///                       semantic check passed. User can run the skill.
+///   - `unverified`    — the CLI and identity are usable, but no contextual
+///                       target was available to prove target-specific access.
 ///   - `unauthenticated` — binary resolves and runs but a semantic probe
 ///                       (e.g. `gcloud auth list`) says no active identity.
 ///                       User needs to log in; the app can link to the fix.
+///   - `authorizationRequired` — the identity is valid, but an external
+///                       policy requires an explicit user authorization.
 ///   - `unresponsive`  — binary resolves but the liveness probe timed out
 ///                       or exited non-zero. Often means broken install or
 ///                       hung background state.
@@ -16,9 +20,32 @@ import Foundation
 ///                       to install it.
 public enum HealthStatus: Sendable, Equatable {
     case healthy(path: String, version: String)
+    case unverified(path: String, detail: String)
     case unauthenticated(detail: String)
+    case authorizationRequired(detail: String, authorizationURL: URL?)
     case unresponsive(detail: String)
     case missingBinary
+
+    public var executablePath: String? {
+        switch self {
+        case .healthy(let path, _), .unverified(let path, _):
+            return path
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+            return nil
+        }
+    }
+
+    /// Whether the prerequisite can be used without blocking launch. An
+    /// unverified contextual target remains usable, but must not be described
+    /// as target access having been proved.
+    public var isUsable: Bool {
+        switch self {
+        case .healthy, .unverified:
+            return true
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+            return false
+        }
+    }
 }
 
 /// A semantic check inspects liveness stdout/stderr and returns whether the

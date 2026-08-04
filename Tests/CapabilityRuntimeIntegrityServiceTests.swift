@@ -466,7 +466,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         )
 
         #expect(issues.map(\.resourceKind) == [.credential])
-        #expect(issues.first?.resourceName == "GitHub login")
+        #expect(issues.first?.resourceName == "GitHub repository access")
         #expect(issues.first?.message.contains("Run `gh auth login`.") == true)
     }
 

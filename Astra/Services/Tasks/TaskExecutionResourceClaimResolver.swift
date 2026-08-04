@@ -41,10 +41,12 @@ enum TaskExecutionResourceClaimResolver {
         // direction needs the claim decision to see the same inputs, which
         // conflicts with freezing claims at submission — see
         // Tests/TaskExecutionResourceClaimCoverageTests.swift.
-        guard GitOperationIntentDetector.detectsRuntimeGitOperation(
-            prompt: acceptedTurn ?? "",
-            task: task
-        ) else {
+        let mutatesGitMetadata = task.isolationStrategy == .gitBranch
+            || GitOperationIntentDetector.detectsRuntimeGitOperation(
+                prompt: acceptedTurn ?? "",
+                task: task
+            )
+        guard mutatesGitMetadata else {
             return workspaceClaims
         }
         return workspaceClaims
@@ -80,21 +82,37 @@ enum TaskExecutionResourceClaimResolver {
         for request: TaskTurnRequest?,
         task: AgentTask
     ) -> [TaskExecutionResourceClaim] {
+        let claims: [TaskExecutionResourceClaim]
         if let request, !request.resourceClaims.isEmpty {
             let persisted = request.resourceClaims
             if persisted.contains(where: { $0.kind == .workspace }) {
-                return persisted
+                claims = persisted
+            } else if let fallback = workspaceClaim(for: nil, task: task) {
+                // Every runtime still receives a workspace root. Additional
+                // account/browser/Git claims may narrow global admission but
+                // must never replace the workspace safety boundary.
+                claims = persisted + [fallback]
+            } else {
+                claims = persisted
             }
-            // Every runtime still receives a workspace root. Additional
-            // account/browser/Git claims may narrow global admission but must
-            // never replace the workspace safety boundary.
-            if let fallback = workspaceClaim(for: nil, task: task) {
-                return persisted + [fallback]
-            }
-            return persisted
+        } else if let fallback = workspaceClaim(for: nil, task: task) {
+            claims = [fallback]
+        } else {
+            claims = []
         }
-        guard let fallback = workspaceClaim(for: nil, task: task) else { return [] }
-        return [fallback]
+        return applyingIntrinsicWorkflowClaims(claims, request: request, task: task)
+    }
+
+    static func requiresExclusiveWorkflowAccess(
+        for request: TaskTurnRequest?,
+        task: AgentTask
+    ) -> Bool {
+        let policy = request?.executionPolicySnapshot
+        let isolation = policy.flatMap { IsolationStrategy(rawValue: $0.isolationStrategyRawValue) }
+            ?? task.isolationStrategy
+        let validation = policy.flatMap { ValidationStrategy(rawValue: $0.validationStrategyRawValue) }
+            ?? task.validationStrategy
+        return isolation == .gitBranch || validation == .runTests
     }
 
     static func workspaceAccess(for request: TaskTurnRequest?) -> TaskExecutionResourceAccess {
@@ -118,7 +136,7 @@ enum TaskExecutionResourceClaimResolver {
 
     static func workspaceAccess(
         for task: AgentTask,
-        acceptedTurn: String? = nil
+        acceptedTurn _: String? = nil
     ) -> TaskExecutionResourceAccess {
         // ASTRA itself — not the prompt — rewrites the workspace's
         // `.claude/settings.local.json` before the provider starts and restores
@@ -127,32 +145,24 @@ enum TaskExecutionResourceClaimResolver {
         // task must never resolve to a concurrently-admissible shared claim:
         // two of them would overwrite each other's backup and strand or drop
         // executable hooks while the sibling is still running.
-        if injectsTemplateHooks(task) { return .exclusive }
-        let declarations = (task.constraints + task.inputs).map(normalizedDeclaration)
-        if declarations.contains(where: { containsAccessMarker($0, access: "write") }) {
+        if injectsTemplateHooks(task) || requiresExclusiveWorkflowAccess(task) {
             return .exclusive
         }
-        if declarations.contains(where: { containsAccessMarker($0, access: "read_only") }) {
+        let declarations = (task.constraints + task.inputs).compactMap(declaredAccess)
+        if declarations.contains(.exclusive) {
+            return .exclusive
+        }
+        if declarations.contains(.shared) {
             return .shared
         }
-
-        // Isolation preparation itself mutates or copies repository state.
-        // Keep it exclusive unless the task is pinned to a distinct execution
-        // root, in which case workspaceKey(for:) already separates the claim.
-        if task.isolationStrategy != .sameDirectory {
-            return .exclusive
-        }
-        if task.validationStrategy == .runTests
-            || !task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .exclusive
-        }
-        if TaskDeliverableExpectation.requiresDeliverableArtifact(task) {
-            return .exclusive
-        }
-        if hasWorkspaceMutationIntent(task, acceptedTurn: acceptedTurn) {
-            return .exclusive
-        }
-        return hasInformationalIntent(task, acceptedTurn: acceptedTurn) ? .shared : .exclusive
+        // A shared claim is both a concurrency promise and, while ASTRA's
+        // execution boundary is enabled, a read-only filesystem contract.
+        // Natural-language inference is not strong enough authority for that
+        // contract: follow-ups such as "yes, proceed" can change an
+        // informational task into implementation work without containing a
+        // mutation keyword. Default to exclusive/write-capable admission and
+        // require an explicit declaration for shared/read-only execution.
+        return .exclusive
     }
 
     /// Every path a runtime may write must participate in admission. The
@@ -168,8 +178,14 @@ enum TaskExecutionResourceClaimResolver {
         // settings file. Claim that root too, or two pinned siblings of one
         // workspace would hold disjoint claims and race on the same file.
         let hookRoots = injectsTemplateHooks(task) ? [access.effectiveWorkspacePath] : []
+        // `git checkout` accepts a repository subdirectory but changes the
+        // entire containing worktree. Claim that root as well so sibling
+        // subdirectory workspaces cannot switch one checkout concurrently.
+        let branchRoots = task.isolationStrategy == .gitBranch
+            ? [gitWorktreeRoot(for: primary)].compactMap { $0 }
+            : []
         var seen = Set<String>()
-        return ([primary] + access.runtimeWritablePaths + hookRoots).compactMap { rawPath in
+        return ([primary] + branchRoots + access.runtimeWritablePaths + hookRoots).compactMap { rawPath in
             guard let key = standardizedPath(rawPath), seen.insert(key).inserted else { return nil }
             return key
         }
@@ -179,6 +195,61 @@ enum TaskExecutionResourceClaimResolver {
     /// empty or `{}` payload never touches the settings file.
     private static func injectsTemplateHooks(_ task: AgentTask) -> Bool {
         !task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}"
+    }
+
+    /// Shared admission covers the provider boundary only when every
+    /// ASTRA-owned step is also read-only. Branch preparation changes the
+    /// checkout and Git metadata before launch, while test validation may
+    /// write build products after launch; neither is constrained by the
+    /// provider's read-only boundary.
+    private static func requiresExclusiveWorkflowAccess(_ task: AgentTask) -> Bool {
+        task.isolationStrategy == .gitBranch || task.validationStrategy == .runTests
+    }
+
+    private static func applyingIntrinsicWorkflowClaims(
+        _ claims: [TaskExecutionResourceClaim],
+        request: TaskTurnRequest?,
+        task: AgentTask
+    ) -> [TaskExecutionResourceClaim] {
+        guard requiresExclusiveWorkflowAccess(for: request, task: task) else {
+            return claims
+        }
+        let policy = request?.executionPolicySnapshot
+        let isolation = policy.flatMap { IsolationStrategy(rawValue: $0.isolationStrategyRawValue) }
+            ?? task.isolationStrategy
+        var effective = claims.map { claim in
+            guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else {
+                return claim
+            }
+            return TaskExecutionResourceClaim(kind: claim.kind, key: claim.key, access: .exclusive)
+        }
+        guard isolation == .gitBranch else { return effective }
+
+        var seen = Set(effective.map { "\($0.kind.rawValue):\($0.key)" })
+        let workspaceRoots = effective.filter { $0.kind == .workspace }.map(\.key)
+        for root in workspaceRoots {
+            if let worktree = gitWorktreeRoot(for: root) {
+                let identity = "\(TaskExecutionResourceKind.workspace.rawValue):\(worktree)"
+                if seen.insert(identity).inserted {
+                    effective.append(TaskExecutionResourceClaim(
+                        kind: .workspace,
+                        key: worktree,
+                        access: .exclusive
+                    ))
+                }
+            }
+            if let commonDirectory = gitCommonDirectory(for: root) {
+                let identity = "\(TaskExecutionResourceKind.gitCommonDirectory.rawValue):\(commonDirectory)"
+                if seen.insert(identity).inserted {
+                    effective.append(TaskExecutionResourceClaim(
+                        kind: .gitCommonDirectory,
+                        key: commonDirectory,
+                        access: .exclusive
+                    ))
+                }
+            }
+        }
+        return effective
     }
 
     /// Distinct Git common directories behind the task's writable roots.
@@ -201,12 +272,13 @@ enum TaskExecutionResourceClaimResolver {
     }
 
     private static func gitCommonDirectory(for root: String) -> String? {
-        let dotGit = (root as NSString).appendingPathComponent(".git")
+        guard let worktreeRoot = gitWorktreeRoot(for: root) else { return nil }
+        let dotGit = (worktreeRoot as NSString).appendingPathComponent(".git")
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) else { return nil }
+        _ = FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory)
         let resolvedGitDirectory = isDirectory.boolValue
             ? standardizedPath(dotGit)
-            : linkedWorktreeGitDirectory(at: dotGit, root: root)
+            : linkedWorktreeGitDirectory(at: dotGit, root: worktreeRoot)
         guard let gitDirectory = resolvedGitDirectory else { return nil }
         // `commondir` exists only inside a linked worktree's admin directory
         // and normally holds a path relative to it (`../..`). A main checkout
@@ -216,6 +288,20 @@ enum TaskExecutionResourceClaimResolver {
             return gitDirectory
         }
         return resolvedGitPath(raw, relativeTo: gitDirectory) ?? gitDirectory
+    }
+
+    private static func gitWorktreeRoot(for path: String) -> String? {
+        guard let standardized = standardizedPath(path) else { return nil }
+        var candidate = URL(fileURLWithPath: standardized, isDirectory: true)
+        while true {
+            let dotGit = candidate.appendingPathComponent(".git").path
+            if FileManager.default.fileExists(atPath: dotGit) {
+                return candidate.path
+            }
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { return nil }
+            candidate = parent
+        }
     }
 
     private static func linkedWorktreeGitDirectory(at dotGitFile: String, root: String) -> String? {
@@ -242,59 +328,28 @@ enum TaskExecutionResourceClaimResolver {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private static func hasWorkspaceMutationIntent(
-        _ task: AgentTask,
-        acceptedTurn: String?
-    ) -> Bool {
-        let text = intentText(for: task, acceptedTurn: acceptedTurn)
-        let mutationWords: Set<String> = [
-            "add", "apply", "build", "change", "commit", "configure", "create",
-            "delete", "edit", "fix", "generate", "implement", "install", "make",
-            "merge", "modify", "move", "patch", "publish", "refactor", "remove",
-            "rename", "replace", "revert", "save", "scaffold", "set", "upgrade",
-            "update", "write"
-        ]
-        if TaskIntentLanguagePolicy.containsAffirmativeAction(in: text, words: mutationWords) { return true }
-        return [
-            "run tests", "run the tests", "execute tests", "git checkout",
-            "git rebase", "open a pull request", "create a pull request"
-        ].contains { text.contains($0) }
-    }
-
-    private static func hasInformationalIntent(
-        _ task: AgentTask,
-        acceptedTurn: String?
-    ) -> Bool {
-        let tokens = Set(intentText(for: task, acceptedTurn: acceptedTurn)
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init))
-        let informationalWords: Set<String> = [
-            "analyze", "audit", "check", "compare", "describe", "diagnose",
-            "explain", "find", "inspect", "investigate", "list", "monitor",
-            "read", "research", "review", "summarize", "verify", "watch"
-        ]
-        return !tokens.isDisjoint(with: informationalWords)
-    }
-
-    private static func intentText(for task: AgentTask, acceptedTurn: String?) -> String {
-        [task.title, task.goal, task.acceptanceCriteria.joined(separator: " "), acceptedTurn ?? ""]
-            .joined(separator: " ")
-            .lowercased()
-    }
-
-    private static func normalizedDeclaration(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func declaredAccess(_ declaration: String) -> TaskExecutionResourceAccess? {
+        let parts = declaration.split(
+            maxSplits: 1,
+            omittingEmptySubsequences: false,
+            whereSeparator: { $0 == "=" || $0 == ":" }
+        )
+        guard parts.count == 2 else { return nil }
+        let key = parts[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "-", with: "_")
-            .replacingOccurrences(of: " ", with: "")
-    }
-
-    private static func containsAccessMarker(_ declaration: String, access: String) -> Bool {
-        [
-            "astra_resource_access=\(access)",
-            "astra_resource_access:\(access)",
-            "resource_access=\(access)",
-            "resource_access:\(access)"
-        ].contains { declaration.contains($0) }
+        guard key == "astra_resource_access" else { return nil }
+        switch parts[1]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_") {
+        case "read_only":
+            return .shared
+        case "write":
+            return .exclusive
+        default:
+            return nil
+        }
     }
 }

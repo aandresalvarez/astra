@@ -10,8 +10,19 @@ struct TaskInferredValidationSuggestion: Equatable {
 
 enum TaskInferredValidationService {
     @MainActor
-    static func suggestion(for task: AgentTask) -> TaskInferredValidationSuggestion? {
-        let files = TaskOutputDiscovery.files(for: task)
+    static func suggestion(
+        for task: AgentTask,
+        workspacePath: String? = nil
+    ) -> TaskInferredValidationSuggestion? {
+        let files = if let workspacePath {
+            TaskOutputDiscovery.files(
+                for: task,
+                run: latestRun(for: task),
+                workspacePath: workspacePath
+            )
+        } else {
+            TaskOutputDiscovery.files(for: task)
+        }
         guard !files.isEmpty else { return nil }
 
         let primaryFile = preferredFile(from: files)
@@ -78,8 +89,13 @@ enum TaskInferredValidationService {
 
     @MainActor
     @discardableResult
-    static func run(task: AgentTask, modelContext: ModelContext) async -> TaskValidationContractEvaluation {
-        guard let suggestion = suggestion(for: task) else {
+    static func run(
+        task: AgentTask,
+        modelContext: ModelContext,
+        workspacePath: String? = nil,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
+    ) async -> TaskValidationContractEvaluation {
+        guard let suggestion = suggestion(for: task, workspacePath: workspacePath) else {
             return .notRequired
         }
         recordDefinitionSnapshot(plan: suggestion.plan, task: task, modelContext: modelContext)
@@ -87,7 +103,9 @@ enum TaskInferredValidationService {
             task: task,
             plan: suggestion.plan,
             run: latestRun(for: task),
-            modelContext: modelContext
+            modelContext: modelContext,
+            workspacePath: workspacePath,
+            commandRunner: commandRunner
         )
         task.updatedAt = Date()
         TaskContextStateManager.refresh(task: task)
@@ -95,12 +113,15 @@ enum TaskInferredValidationService {
     }
 
     @MainActor
-    static func shouldRunAutomaticBaseline(for task: AgentTask) -> Bool {
+    static func shouldRunAutomaticBaseline(
+        for task: AgentTask,
+        workspacePath: String? = nil
+    ) -> Bool {
         guard task.status == .completed,
               task.validationStrategy == .manual,
               !hasValidationContractEvidence(for: task),
               !hasTerminalDeliverableVerification(for: task),
-              suggestion(for: task) != nil else {
+              suggestion(for: task, workspacePath: workspacePath) != nil else {
             return false
         }
         return true
@@ -110,12 +131,19 @@ enum TaskInferredValidationService {
     @discardableResult
     static func runAutomaticBaselineIfNeeded(
         task: AgentTask,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        workspacePath: String? = nil,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
-        guard shouldRunAutomaticBaseline(for: task) else {
+        guard shouldRunAutomaticBaseline(for: task, workspacePath: workspacePath) else {
             return .notRequired
         }
-        return await run(task: task, modelContext: modelContext)
+        return await run(
+            task: task,
+            modelContext: modelContext,
+            workspacePath: workspacePath,
+            commandRunner: commandRunner
+        )
     }
 
     private static func preferredFile(from files: [TaskOutputDiscoveredFile]) -> TaskOutputDiscoveredFile {

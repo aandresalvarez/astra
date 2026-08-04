@@ -12,8 +12,8 @@ struct TaskExecutionResourceClaimResolverTests {
         #expect(TaskExecutionResourceClaimResolver.workspaceAccess(for: task) == .exclusive)
     }
 
-    @Test("Informational work in one workspace uses a shared claim")
-    func informationalWorkUsesSharedClaim() throws {
+    @Test("Informational language alone does not authorize shared read-only execution")
+    func informationalWorkDefaultsToExclusiveClaim() throws {
         let workspace = Workspace(name: "Research", primaryPath: "/tmp/astra-claim-research")
         let task = AgentTask(
             title: "Research release notes",
@@ -25,7 +25,7 @@ struct TaskExecutionResourceClaimResolverTests {
 
         #expect(claim.kind == .workspace)
         #expect(claim.key == "/tmp/astra-claim-research")
-        #expect(claim.access == .shared)
+        #expect(claim.access == .exclusive)
     }
 
     @Test("Every writable workspace path receives a deterministic claim")
@@ -70,27 +70,27 @@ struct TaskExecutionResourceClaimResolverTests {
         ]))
     }
 
-    @Test("Accepted follow-up intent can strengthen an informational task claim")
-    func acceptedTurnStrengthensClaim() {
+    @Test("Ambiguous implementation follow-up on an informational task stays writable")
+    func ambiguousImplementationFollowUpIsExclusive() {
         let workspace = Workspace(name: "Follow-up", primaryPath: "/tmp/astra-claim-follow-up")
         let task = AgentTask(
-            title: "Research the scheduler",
-            goal: "Explain the current implementation.",
+            title: "Explain Jira story STAR-10969",
+            goal: "Please read this Jira story and explain what I am supposed to do.",
             workspace: workspace
         )
 
         #expect(TaskExecutionResourceClaimResolver.claims(
             for: task,
             acceptedTurn: "Summarize the remaining risks."
-        ).first?.access == .shared)
+        ).first?.access == .exclusive)
         #expect(TaskExecutionResourceClaimResolver.claims(
             for: task,
-            acceptedTurn: "Now fix the scheduler and update the tests."
+            acceptedTurn: "ok yes proceed wit hthe 101 conept fields , and hte marcro aproach"
         ).first?.access == .exclusive)
     }
 
-    @Test("Negated mutation language keeps informational work shared")
-    func negatedMutationLanguageDoesNotEscalateInformationalWork() {
+    @Test("Natural-language read-only promises do not replace an explicit declaration")
+    func naturalLanguageReadOnlyPromisesRemainExclusive() {
         let workspace = Workspace(name: "Read Only Research", primaryPath: "/tmp/astra-claim-negation")
         let negatedGoals = [
             "Explain the current implementation. Do not create or modify workspace files.",
@@ -115,7 +115,7 @@ struct TaskExecutionResourceClaimResolverTests {
                 goal: goal,
                 workspace: workspace
             )
-            #expect(TaskExecutionResourceClaimResolver.claims(for: negated).first?.access == .shared)
+            #expect(TaskExecutionResourceClaimResolver.claims(for: negated).first?.access == .exclusive)
         }
         #expect(TaskExecutionResourceClaimResolver.claims(for: affirmative).first?.access == .exclusive)
         #expect(TaskExecutionResourceClaimResolver.claims(for: mixed).first?.access == .exclusive)
@@ -151,8 +151,8 @@ struct TaskExecutionResourceClaimResolverTests {
         }
     }
 
-    @Test("Explicit access declarations override inferred intent")
-    func explicitAccessMarkersOverrideInference() {
+    @Test("Explicit access declarations authorize shared execution without intrinsic writes")
+    func explicitAccessMarkersAuthorizeSharedExecution() {
         let workspace = Workspace(name: "Markers", primaryPath: "/tmp/astra-claim-markers")
         let declaredReader = AgentTask(
             title: "Implement a fix",
@@ -166,10 +166,52 @@ struct TaskExecutionResourceClaimResolverTests {
             goal: "Summarize the current implementation.",
             workspace: workspace
         )
-        declaredWriter.inputs = ["resource_access=write"]
+        declaredWriter.inputs = ["ASTRA_RESOURCE_ACCESS=write"]
 
         #expect(TaskExecutionResourceClaimResolver.claims(for: declaredReader).first?.access == .shared)
         #expect(TaskExecutionResourceClaimResolver.claims(for: declaredWriter).first?.access == .exclusive)
+    }
+
+    @Test("ASTRA-owned branch and validation writes remain exclusive")
+    func intrinsicWorkflowWritesOverrideSharedDeclaration() {
+        let workspace = Workspace(name: "Intrinsic writes", primaryPath: "/tmp/astra-claim-intrinsic")
+        let branchTask = AgentTask(
+            title: "Inspect branch",
+            goal: "Summarize the branch.",
+            workspace: workspace,
+            isolationStrategy: .gitBranch
+        )
+        branchTask.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        let validationTask = AgentTask(
+            title: "Inspect tests",
+            goal: "Summarize test behavior.",
+            workspace: workspace,
+            validationStrategy: .runTests
+        )
+        validationTask.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        validationTask.testCommand = "swift test"
+
+        #expect(TaskExecutionResourceClaimResolver.workspaceAccess(for: branchTask) == .exclusive)
+        #expect(TaskExecutionResourceClaimResolver.workspaceAccess(for: validationTask) == .exclusive)
+    }
+
+    @Test("Only an anchored ASTRA access declaration authorizes shared execution")
+    func accessDeclarationMustBeAnchored() {
+        let workspace = Workspace(name: "Markers", primaryPath: "/tmp/astra-claim-anchored")
+        let task = AgentTask(title: "Research", goal: "Summarize.", workspace: workspace)
+
+        for prose in [
+            "Do not set ASTRA_RESOURCE_ACCESS=read_only",
+            "resource_access=read_only",
+            "Prefix ASTRA_RESOURCE_ACCESS=read_only with prose",
+            "ASTRA_RESOURCE_ACCESS=read_only because this is safe"
+        ] {
+            task.constraints = [prose]
+            #expect(TaskExecutionResourceClaimResolver.claims(for: task).first?.access == .exclusive)
+        }
+
+        task.constraints = [" ASTRA_RESOURCE_ACCESS = read_only "]
+        #expect(TaskExecutionResourceClaimResolver.claims(for: task).first?.access == .shared)
     }
 
     @Test("Pinned execution roots produce distinct workspace claim keys")
@@ -177,6 +219,8 @@ struct TaskExecutionResourceClaimResolverTests {
         let workspace = Workspace(name: "Worktrees", primaryPath: "/tmp/astra-claim-worktrees")
         let first = AgentTask(title: "Research first", goal: "Summarize status.", workspace: workspace)
         let second = AgentTask(title: "Research second", goal: "Summarize status.", workspace: workspace)
+        first.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        second.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-claim-roots-\(UUID().uuidString)", isDirectory: true)
         let firstRoot = root.appendingPathComponent("feature-a", isDirectory: true)
@@ -205,8 +249,9 @@ struct TaskExecutionResourceClaimResolverTests {
             goal: "Summarize the latest release notes and explain the differences.",
             workspace: workspace
         )
+        task.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
 
-        // Informational language alone stays shared…
+        // The explicit declaration allows shared admission…
         #expect(TaskExecutionResourceClaimResolver.claims(for: task).first?.access == .shared)
         // …and an empty hook payload never touches the settings file.
         task.templateHooksJSON = "{}"
@@ -315,6 +360,99 @@ struct TaskExecutionResourceClaimResolverTests {
         ))
     }
 
+    @Test("Git-branch isolation claims the containing worktree from nested workspace roots")
+    func gitBranchIsolationClaimsContainingWorktree() throws {
+        let repository = try makeWorktreeLayout(worktrees: ["wt-a"])
+        defer { try? FileManager.default.removeItem(at: repository.root) }
+        let worktree = try #require(repository.worktrees["wt-a"])
+        let firstRoot = worktree.appendingPathComponent("Sources/FeatureA", isDirectory: true)
+        let secondRoot = worktree.appendingPathComponent("Sources/FeatureB", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        let first = AgentTask(
+            title: "Inspect first isolated branch",
+            goal: "Summarize the current implementation.",
+            workspace: Workspace(name: "First nested workspace", primaryPath: firstRoot.path),
+            isolationStrategy: .gitBranch
+        )
+        let second = AgentTask(
+            title: "Inspect second isolated branch",
+            goal: "Summarize the current implementation.",
+            workspace: Workspace(name: "Second nested workspace", primaryPath: secondRoot.path),
+            isolationStrategy: .gitBranch
+        )
+        first.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        second.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+
+        let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
+        let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
+
+        #expect(firstClaims.allSatisfy { $0.access == .exclusive })
+        #expect(firstClaims.contains {
+            $0.kind == .workspace && $0.key == worktree.standardizedFileURL.path
+        })
+        #expect(firstClaims.contains {
+            $0.kind == .gitCommonDirectory
+                && $0.key == repository.commonDirectory.standardizedFileURL.path
+        })
+        #expect(!TaskExecutionResourceBroker.canAcquire(
+            lease(for: secondClaims, taskID: second.id),
+            active: lease(for: firstClaims, taskID: first.id)
+        ))
+    }
+
+    @Test("Legacy Git-branch admission synthesizes nested worktree and common-directory claims")
+    @MainActor
+    func legacyGitBranchAdmissionClaimsRepositoryWideResources() throws {
+        let repository = try makeWorktreeLayout(worktrees: ["wt-a"])
+        defer { try? FileManager.default.removeItem(at: repository.root) }
+        let worktree = try #require(repository.worktrees["wt-a"])
+        let nestedRoot = worktree.appendingPathComponent("Sources/Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedRoot, withIntermediateDirectories: true)
+        let task = AgentTask(
+            title: "Legacy isolated branch",
+            goal: "Update the nested project.",
+            workspace: Workspace(name: "Legacy nested workspace", primaryPath: nestedRoot.path),
+            isolationStrategy: .gitBranch
+        )
+        let legacyRequest = TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: []
+        )
+
+        for request in [nil, legacyRequest] as [TaskTurnRequest?] {
+            let claims = TaskExecutionResourceClaimResolver.admissionClaims(
+                for: request,
+                task: task
+            )
+            #expect(claims.allSatisfy { $0.access == .exclusive })
+            #expect(claims.contains {
+                $0.kind == .workspace && $0.key == nestedRoot.standardizedFileURL.path
+            })
+            #expect(claims.contains {
+                $0.kind == .workspace && $0.key == worktree.standardizedFileURL.path
+            })
+            #expect(claims.contains {
+                $0.kind == .gitCommonDirectory
+                    && $0.key == repository.commonDirectory.standardizedFileURL.path
+            })
+        }
+
+        let fallbackLease = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil,
+            task: task,
+            runMode: "legacy",
+            fallbackAccess: .readOnly
+        )
+        #expect(fallbackLease.allSatisfy { $0.accessMode == .write })
+        #expect(fallbackLease.contains {
+            $0.resourceKind == .gitCommonDirectory
+                && $0.resourceKey == repository.commonDirectory.standardizedFileURL.path
+        })
+    }
+
     @Test("Writers in sibling worktrees stay parallel when neither touches Git")
     func nonGitWorktreeWritersDoNotSerialize() throws {
         let repository = try makeWorktreeLayout(worktrees: ["wt-a", "wt-b"])
@@ -377,6 +515,7 @@ struct TaskExecutionResourceClaimResolverTests {
             goal: "Summarize how it works.",
             workspace: workspace
         )
+        task.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
         let submittedClaim = try #require(TaskExecutionResourceClaimResolver.claims(for: task).first)
         let request = TaskTurnRequest(
             task: task,

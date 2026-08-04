@@ -48,6 +48,7 @@ enum PlanStepCheckpointVerifier {
         step: TaskPlanPayloadStep,
         plan: TaskPlanPayload,
         task: AgentTask,
+        workspacePath: String? = nil,
         fileManager: FileManager = .default
     ) -> PlanStepCheckpointOutcome {
         let access = TaskWorkspaceAccess(task: task)
@@ -58,7 +59,7 @@ enum PlanStepCheckpointVerifier {
             // The provider executes in the pinned worktree (or resolved working
             // path), not necessarily the workspace primary path — verify where
             // the work actually happened.
-            workspacePath: access.codeWorkingDirectory,
+            workspacePath: workspacePath ?? access.codeWorkingDirectory,
             fileManager: fileManager
         )
     }
@@ -69,11 +70,18 @@ enum PlanStepCheckpointVerifier {
     static func verifyAllSteps(
         plan: TaskPlanPayload,
         task: AgentTask,
+        workspacePath: String? = nil,
         fileManager: FileManager = .default
     ) -> [(step: TaskPlanPayloadStep, missing: [String])] {
         plan.steps.compactMap { step in
             guard step.status != .skipped else { return nil }
-            let outcome = verify(step: step, plan: plan, task: task, fileManager: fileManager)
+            let outcome = verify(
+                step: step,
+                plan: plan,
+                task: task,
+                workspacePath: workspacePath,
+                fileManager: fileManager
+            )
             return outcome.missingRequiredPaths.isEmpty ? nil : (step, outcome.missingRequiredPaths)
         }
     }
@@ -113,9 +121,10 @@ enum PlanStepCheckpointVerifier {
         plan: TaskPlanPayload,
         task: AgentTask,
         run: TaskRun?,
+        workspacePath: String? = nil,
         modelContext: ModelContext
     ) -> String? {
-        let unverified = verifyAllSteps(plan: plan, task: task)
+        let unverified = verifyAllSteps(plan: plan, task: task, workspacePath: workspacePath)
         guard !unverified.isEmpty else { return nil }
         for entry in unverified {
             _ = recordCheckpointBlock(

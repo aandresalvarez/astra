@@ -196,7 +196,8 @@ struct TaskCapabilityResolverTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("Behavioral Instructions (from Skills):"))
         #expect(prompt.contains("[Jira Agent]:"))
-        #expect(prompt.contains("JIRA_PROJECTS: STAR"))
+        #expect(prompt.contains("mcp__astra_host__jira"))
+        #expect(!prompt.contains("JIRA_PROJECTS: STAR"))
     }
 
     @Test("Runtime connector resolution ignores stale duplicate when a configured connector exists")
@@ -419,12 +420,11 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("Alias: study_b_target"))
         #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
         #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
-        #expect(prompt.contains("ASTRA_CONNECTORS"))
-        #expect(prompt.contains("connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative"))
+        #expect(prompt.contains("The connector details and runtime routes above are authoritative"))
     }
 
-    @Test("Multiple Jira connectors prompt uses projected env names")
-    func multipleJiraConnectorsPromptUsesProjectedEnvNames() throws {
+    @Test("Multiple Jira connectors use broker aliases without provider credentials")
+    func multipleJiraConnectorsUseBrokerAliases() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
@@ -466,13 +466,12 @@ struct TaskCapabilityResolverTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("Alias: eng_jira"))
         #expect(prompt.contains("Alias: ops_jira"))
-        #expect(prompt.contains("baseURL: $JIRA_ENG_JIRA_BASE_URL"))
-        #expect(prompt.contains("projects: $JIRA_OPS_JIRA_PROJECTS"))
-        #expect(prompt.contains(#""$JIRA_ENG_JIRA_EMAIL:$JIRA_ENG_JIRA_API_TOKEN""#))
-        #expect(prompt.contains(#""${JIRA_ENG_JIRA_BASE_URL}/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS""#))
-        #expect(prompt.contains(#""${JIRA_OPS_JIRA_BASE_URL}/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS""#))
-        #expect(prompt.contains("connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative"))
-        #expect(!prompt.contains(#""$JIRA_BASE_URL/rest/api/3/...""#))
+        #expect(prompt.contains(#"mcp__astra_host__jira with {"operation":"status","alias":"eng_jira"}"#))
+        #expect(prompt.contains(#"mcp__astra_host__jira with {"operation":"status","alias":"ops_jira"}"#))
+        #expect(!prompt.contains("JIRA_ENG_JIRA_EMAIL"))
+        #expect(!prompt.contains("JIRA_ENG_JIRA_API_TOKEN"))
+        #expect(!prompt.contains("/rest/api/3/mypermissions"))
+        #expect(prompt.contains("The connector details and runtime routes above are authoritative"))
     }
 
     @Test("Docker-routed connector prompt describes bq host control as help-only")
@@ -613,6 +612,76 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains(#"{"operation":"search_jql","alias":"ops_jira","jql":"project = KEY","max_results":1}"#))
     }
 
+    @Test("CLI-relay runtime examples are accepted by the relay tokenizer")
+    func cliRelayRuntimeExamplesAreRunnable() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Relay Example Workspace", primaryPath: "/tmp/relay-example-workspace")
+        context.insert(workspace)
+
+        let skill = Skill(
+            name: "Cloud Ops",
+            skillDescription: "Jira and Cloud Run operations",
+            behaviorInstructions: "Always use the ASTRA host-control MCP tool mcp__astra_host__gcloud; never call the gcloud binary directly."
+        )
+        context.insert(skill)
+
+        let jira = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.workspace = workspace
+        jira.configKeys = ["JIRA_BASE_URL"]
+        jira.configValues = ["https://eng.example.atlassian.net"]
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jira)
+
+        let gcloud = Connector(
+            name: "Cloud Run",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud project",
+            baseURL: "https://console.cloud.google.com",
+            authMethod: "adc"
+        )
+        gcloud.workspace = workspace
+        gcloud.configKeys = ["GCP_PROJECT", "GCP_REGION"]
+        gcloud.configValues = ["astra-example", "us-central1"]
+        context.insert(gcloud)
+
+        let task = AgentTask(
+            title: "Relay",
+            goal: "Check Jira and list Cloud Run services with gcloud",
+            workspace: workspace,
+            runtime: .cursorCLI
+        )
+        task.skills = [skill]
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        let relayCommands = prompt
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                guard let range = line.range(of: "astra-host-control ") else { return nil }
+                return String(line[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+            }
+
+        // Every printed example is copied verbatim into a relay call, so each one has to
+        // survive the tokenizer that gates the relay - one command per line, no `;`, no `$VAR`.
+        #expect(relayCommands.count >= 3)
+        for command in relayCommands {
+            #expect(HostControlCLIRelayPolicy.allows(command), "Relay rejects: \(command)")
+        }
+        #expect(relayCommands.contains { $0.hasPrefix("astra-host-control jira --operation status") })
+        #expect(relayCommands.contains { $0.hasPrefix("astra-host-control jira --operation search-jql") })
+        #expect(relayCommands.contains { $0.contains("astra-example") && $0.contains("us-central1") })
+        #expect(!relayCommands.contains { $0.contains("$") })
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -654,7 +723,7 @@ struct TaskCapabilityResolverTests {
         try context.save()
 
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
-            message: "Continue copying records",
+            message: "Continue that",
             task: task
         )
 
@@ -662,7 +731,7 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("Alias: study_b_target"))
         #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
         #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
-        #expect(prompt.contains("ASTRA_CONNECTORS"))
+        #expect(prompt.contains("The connector details and runtime routes above are authoritative"))
     }
 
     @Test("Single same-service connector uses namespaced env vars by default")
@@ -868,8 +937,8 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("mypermissions?permissions=BROWSE_PROJECTS"))
     }
 
-    @Test("Prompt config summary only includes projected config values")
-    func promptConfigSummaryOnlyIncludesProjectedConfigValues() throws {
+    @Test("Brokered connector prompt omits provider environment projection")
+    func brokeredConnectorPromptOmitsProviderEnvironmentProjection() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
@@ -898,11 +967,12 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
-        #expect(prompt.contains("Config: JIRA_BASE_URL: https://jira.example.edu"))
+        #expect(prompt.contains("Base URL: https://jira.example.edu"))
+        #expect(!prompt.contains("Config: JIRA_BASE_URL"))
         #expect(!prompt.contains("Config: JIRA_PROJECTS"))
         #expect(!prompt.contains("JIRA_PROJECTS:    "))
         #expect(!prompt.contains("JIRA_REGION:"))
-        #expect(prompt.contains("Config env vars: JIRA_JIRA_BASE_URL"))
+        #expect(!prompt.contains("Config env vars: JIRA_JIRA_BASE_URL"))
         #expect(!prompt.contains("JIRA_JIRA_PROJECTS"))
         #expect(!prompt.contains("JIRA_JIRA_REGION"))
     }
@@ -1158,7 +1228,7 @@ struct TaskCapabilityResolverTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("[Jira Agent]:"))
         #expect(prompt.contains("Jira-new"))
-        #expect(prompt.contains("ASTRA_CONNECTORS"))
+        #expect(prompt.contains("The connector details and runtime routes above are authoritative"))
         #expect(!prompt.contains("[GCloud Agent]:"))
     }
 
@@ -1422,7 +1492,7 @@ struct TaskCapabilityResolverTests {
 
         #expect(issues.map(\.source) == [.selectedPackageSkill])
         #expect(issues.map(\.resourceKind) == [.credential])
-        #expect(issues.first?.resourceName == "GitHub login")
+        #expect(issues.first?.resourceName == "GitHub repository access")
     }
 
     @Test("Runtime integrity ignores stale package skill snapshots")
@@ -2866,7 +2936,8 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("Shelf Browser Session:"))
         #expect(prompt.contains("[Jira Agent]:"))
         #expect(prompt.contains("https://example.atlassian.net"))
-        #expect(prompt.contains("JIRA_PROJECTS: STAR"))
+        #expect(prompt.contains("mcp__astra_host__jira"))
+        #expect(!prompt.contains("JIRA_PROJECTS: STAR"))
         #expect(!prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
         #expect(!prompt.contains("Apple Mail mailbox bridge"))
     }

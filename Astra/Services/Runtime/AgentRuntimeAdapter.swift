@@ -709,7 +709,10 @@ struct AgentRuntimeProcessLaunchContext {
         self.capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            turnIntentSnapshot: executionPolicy.turnIntentSnapshot,
+            runtime: executionPolicy.launchSnapshot?.runtimeID
+                .flatMap(AgentRuntimeID.init(rawValue:))
         )
         self.runtimeRequirements = runtimeRequirements
     }
@@ -776,6 +779,10 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
     /// enforcement surface has been applied and verified.
     var readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
+    /// Evidence from the exact Seatbelt profile applied to this launch. The
+    /// monitor uses it to distinguish a policy-denied path from an unrelated
+    /// host filesystem EPERM.
+    var executionSandboxBoundaryReceipt: ExecutionSandboxBoundaryReceipt?
 
     init(
         runtime: AgentRuntimeID,
@@ -814,6 +821,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.pathMapper = pathMapper
         self.executionEnvironment = executionEnvironment
         self.readOnlyBoundaryReceipt = nil
+        self.executionSandboxBoundaryReceipt = nil
     }
 
 }
@@ -1227,7 +1235,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
-            executionPolicy: context.executionPolicy
+            executionPolicy: context.executionPolicy,
+            runtimeRequirements: context.runtimeRequirements
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -1849,7 +1858,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
-            executionPolicy: context.executionPolicy
+            executionPolicy: context.executionPolicy,
+            runtimeRequirements: context.runtimeRequirements
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -2474,12 +2484,16 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        var taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
-            executionPolicy: context.executionPolicy
+            executionPolicy: context.executionPolicy,
+            runtimeRequirements: context.runtimeRequirements
         )
+        taskEnv.merge(
+            AgentRuntimeProcessRunner.hostControlCLIRelayEnvironment(context: context, runtime: id)
+        ) { _, brokerValue in brokerValue }
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
@@ -2529,7 +2543,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText,
                 capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             diagnosticLogPath: diagnosticLogPath,
             permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
         )

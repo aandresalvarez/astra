@@ -1,13 +1,11 @@
 import Darwin
 import Foundation
 import ASTRACore
-
 protocol AgentRuntimeProcessControl: AnyObject {
     var isRunning: Bool { get }
     var terminationStatus: Int32 { get }
     func terminate()
 }
-
 extension Process: AgentRuntimeProcessControl {}
 
 final class AgentRuntimeProcessControlBox: @unchecked Sendable {
@@ -81,6 +79,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         defer { lock.unlock() }
         return status
     }
+
+    var processIdentifier: Int32 { lock.withLock { processID } }
 
     init(
         executablePath: String,
@@ -632,9 +632,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// owns them — so it can't double-prompt or kill a run whose command simply
     /// can't be reduced to a replayable scoped grant. Hard denies still stop.
     let liveApprovalsActive: Bool
-    let astraSandboxApplied: Bool
+    let sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext
     let readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
-
     private let lock = NSLock()
 
     private var _estimatedTokens: Int = 0
@@ -696,7 +695,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
     var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
-
     init(
         tokenBudget: Int,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
@@ -710,7 +708,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
         liveApprovalsActive: Bool = false,
-        astraSandboxApplied: Bool = false,
+        sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext = .none,
         readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
     ) {
         self.tokenBudget = tokenBudget
@@ -726,7 +724,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.taskID = taskID
         self.policyGuard = policyGuard
         self.liveApprovalsActive = liveApprovalsActive
-        self.astraSandboxApplied = astraSandboxApplied
+        self.sandboxDiagnosticContext = sandboxDiagnosticContext
         self.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
     }
 
@@ -817,7 +815,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     process: process
                 )
             }
-            if let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: content) {
+            if let denial = RuntimeSandboxDenialDiagnostics.fileDenial(
+                in: content, currentDirectory: sandboxDiagnosticContext.workingDirectory,
+                operationContext: toolContext(for: toolID)?.summary
+            ) {
                 return recordOSSandboxFileDenial(denial, toolID: toolID, toolResultWasError: isError, process: process)
             }
             let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
@@ -1686,9 +1687,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         toolResultWasError: Bool,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        // Trust a receipt-protected write-denial as terminal only from a FAILED tool
-        // result: the marker can be content the agent read from a protected input.
-        guard astraSandboxApplied
+        // Receipt-protected input writes are terminal only from a failed tool result.
+        guard sandboxDiagnosticContext.appliedBoundaryExplains(denial)
                 || (toolResultWasError && denial.operation == .write && readOnlyBoundaryReceipt?.protects(denial.path) == true),
               !_policyViolation, !_policyApprovalRequired, _runtimeStopReason == nil else { return false }
         let context = toolContext(for: toolID)
@@ -1713,13 +1713,13 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let message = PermissionBroker.approvalPayloadString(
             providerID: providerID,
             request: request,
-            reason: "ASTRA's applied macOS sandbox blocked a bounded local read required by this operation.",
+            reason: "ASTRA's applied execution sandbox blocked a bounded local read required by this operation.",
             providerDetail: denial.detail,
             grants: grants
         )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
             "reason": denial.stopReason,
-            "source": "os_sandbox_denial",
+            "source": "execution_sandbox_denial",
             "operation": denial.operation.rawValue,
             "path": denial.path,
             "tool": toolName,

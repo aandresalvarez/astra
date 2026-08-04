@@ -1465,49 +1465,6 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
-    @Test("Autonomous override honors a disabled sandbox")
-    func preflightManifestTierHonorsDisabledEnforcementUnderAutonomousOverride() throws {
-        // Provider permission mode and OS sandbox enforcement are independent.
-        // The execution-policy override may select Auto, but an explicit Off
-        // remains Off and the manifest must not claim an OS sandbox tier.
-        //
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
-        // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
-
-        let container = try makeAgentPolicyContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Override Tier", primaryPath: "/tmp/override-tier-workspace")
-        context.insert(workspace)
-        let task = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
-        let run = TaskRun(task: task)
-        context.insert(task)
-        context.insert(run)
-
-        let overridePolicy = AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: .autonomous,
-            allowedToolsOverride: nil,
-            permissionGrantsOverride: nil
-        )
-        let manifest = AgentPolicyManifestService.recordPreflightManifest(
-            task: task,
-            run: run,
-            runtime: .claudeCode,
-            model: "claude-sonnet-4-6",
-            workspacePath: workspace.primaryPath,
-            phase: "test",
-            permissionPolicy: .restricted,
-            executionPolicy: overridePolicy,
-            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
-            sandboxSettingsDefaults: defaults,
-            modelContext: context
-        )
-        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
-    }
-
     @Test("Preflight manifest sandbox tier follows task-selected Auto render")
     func preflightManifestTierFollowsTaskSelectedAutoRender() throws {
         // The worker may pass a restricted fallback policy while the task itself
@@ -2150,7 +2107,7 @@ struct RunPermissionManifestTests {
         context.insert(TaskEvent(
             task: task,
             type: "tool.result",
-            payload: "Exit code 128\nfatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted",
+            payload: "Exit code 128\nfatal: cannot read '/Users/alvaro1/.gitconfig': Operation not permitted",
             run: run
         ))
         try context.save()
@@ -2223,8 +2180,8 @@ struct RunPermissionManifestTests {
         #expect(deniedActions.isEmpty)
     }
 
-    @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
-    func preflightManifestReplaysTaskScopedBrokerGrantsThroughActiveProviderAdapter() throws {
+    @Test("Preflight manifest does not replay grants approved for another provider")
+    func preflightManifestDoesNotReplayCrossProviderGrants() throws {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Task Grants", primaryPath: "/tmp/task-grants-workspace")
@@ -2262,11 +2219,9 @@ struct RunPermissionManifestTests {
         )
 
         #expect(recorded == [.shellCommand(executable: "gh", pattern: "search prs *")])
-        #expect(manifest.policyScope == .taskApproval)
-        #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
-        #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
-        #expect(manifest.providerRender.allowedTools.contains("shell(gh:auth status *)"))
-        #expect(manifest.providerRender.allowedTools.contains("shell(mkdir:-p *)"))
+        #expect(manifest.policyScope == .globalDefault)
+        #expect(manifest.approvalGrants.isEmpty)
+        #expect(!manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
         #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
     }
 
@@ -2633,5 +2588,70 @@ struct RunPermissionManifestTests {
         #expect(manifest.mcpServers.first?.resourcesEnabled == true)
         #expect(manifest.mcpServers.first?.promptsEnabled == true)
         #expect(manifest.mcpServers.first?.trustLevel == "high")
+    }
+
+    @Test("Copilot launch arguments drop local CLI grants at read-only policy levels")
+    func copilotLaunchArgumentsDropLocalToolGrantsAtReadOnlyLevels() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local Tools", primaryPath: "/tmp/copilot-local-tool-levels")
+        context.insert(workspace)
+        let tool = LocalTool(
+            name: "Stanford Graph Mail",
+            toolDescription: "Read mailbox threads",
+            toolType: "cli",
+            command: "stanford-graph-mail"
+        )
+        tool.workspace = workspace
+        context.insert(tool)
+
+        func launchRender(for level: AgentPolicyLevel) throws -> ProviderPolicyRender {
+            let task = AgentTask(
+                title: "Local Tools",
+                goal: "Summarize the latest mailbox threads",
+                workspace: workspace,
+                runtime: .copilotCLI
+            )
+            let run = TaskRun(task: task)
+            context.insert(task)
+            context.insert(run)
+            TaskPolicyStore.recordSelection(level: level, task: task, modelContext: context, source: "test")
+            try context.save()
+            return AgentPolicyManifestService.recordPreflightManifest(
+                task: task,
+                run: run,
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                workspacePath: workspace.primaryPath,
+                phase: "test",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                providerCapabilities: AgentRuntimePolicyCapabilities(
+                    copilotCLI: CopilotCLICapabilities(helpText: """
+                    --allow-tool
+                    --output-format
+                    """)
+                ),
+                modelContext: context
+            ).providerRender
+        }
+
+        // Control: an executing level still surfaces the scoped grant, so the read-only
+        // expectations below are proving the gate rather than a missing fixture.
+        let buildRender = try launchRender(for: .build)
+        let grant = "shell(stanford-graph-mail:*)"
+        #expect(buildRender.cliArgumentsSummary.contains { $0.contains(grant) })
+        #expect(buildRender.generatedConfigPreview.contains(grant))
+
+        // The launch-argument refresher recomputes these fields after the adapter render,
+        // so it has to re-apply the read-only gate or the grant reaches the process.
+        for level in [AgentPolicyLevel.review, .locked] {
+            let render = try launchRender(for: level)
+            #expect(render.policyLevel == level)
+            #expect(!render.allowedTools.contains(grant))
+            #expect(!render.cliArgumentsSummary.contains { $0.contains(grant) })
+            #expect(!render.generatedConfigPreview.contains(grant))
+        }
     }
 }

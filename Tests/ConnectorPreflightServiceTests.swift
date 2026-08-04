@@ -235,7 +235,9 @@ struct ConnectorPreflightServiceTests {
             modelContext: context,
             phase: "test",
             contextText: "Check Jira permissions",
-            secretStore: store
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
         )
 
         let approvalEvent = try #require(task.events.first {
@@ -291,7 +293,9 @@ struct ConnectorPreflightServiceTests {
             modelContext: context,
             phase: "test",
             contextText: "Check Jira permissions",
-            secretStore: store
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
         )
 
         let approvalEvent = try #require(task.events.first {
@@ -407,8 +411,8 @@ struct ConnectorPreflightServiceTests {
         #expect(summary.rawPayload?.contains("connector:\(connector.id.uuidString)") == false)
     }
 
-    @Test("Auto exposes configured connector credentials without an approval stop")
-    func autoBypassesConnectorCredentialApproval() async throws {
+    @Test("Auto does not bypass connector credential approval")
+    func autoDoesNotBypassConnectorCredentialApproval() async throws {
         let container = try makeConnectorPreflightContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Auto Credential", primaryPath: "/tmp/auto-credential")
@@ -460,19 +464,20 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(result.didPass)
-        #expect(!task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue })
+        #expect(result.status == .connectorCredentialApprovalRequired)
+        #expect(!result.didPass)
+        #expect(task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue })
         #expect(task.events.contains {
             $0.type == TaskEventTypes.System.info.rawValue &&
                 $0.payload.contains("Auto mode superseded 1 pending provider permission request")
         })
-        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
-        #expect(task.runtimePermissionOpenRequestsJSON == "[]")
-        #expect(run.typedStopReason != .permissionApprovalRequired)
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
+        #expect(task.runtimePermissionOpenRequestsJSON != "[]")
+        #expect(run.typedStopReason == .permissionApprovalRequired)
     }
 
-    @Test("Auto honors a typed tombstone over legacy events and preserves a later sandbox approval")
-    func autoHonorsTypedTombstoneAndPreservesLaterSandboxApproval() async throws {
+    @Test("Auto tombstones stale requests but preserves fresh credential and sandbox approvals")
+    func autoTombstonesStaleRequestsButPreservesFreshApprovals() async throws {
         let container = try makeConnectorPreflightContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Auto Sequence", primaryPath: "/tmp/auto-sequence")
@@ -524,8 +529,8 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(firstResult.didPass)
-        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
+        #expect(firstResult.status == .connectorCredentialApprovalRequired)
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         let sandboxPayload = PermissionBroker.approvalPayloadString(
             providerID: .claudeCode,
@@ -548,8 +553,11 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(secondResult.didPass)
-        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) == [sandboxPayload])
+        #expect(secondResult.status == .connectorCredentialApprovalRequired)
+        let openPayloads = TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task)
+        #expect(openPayloads.count == 2)
+        #expect(openPayloads.contains(sandboxPayload))
+        #expect(openPayloads.contains { $0.contains("connectorCredentials") })
     }
 }
 

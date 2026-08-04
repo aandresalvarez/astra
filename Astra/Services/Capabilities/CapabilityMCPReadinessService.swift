@@ -28,12 +28,14 @@ enum CapabilityMCPReadinessService {
     ) -> String? {
         let name = displayName(server.displayName, fallback: server.id)
         switch status {
-        case .healthy:
+        case .healthy, .unverified:
             return nil
         case .missingBinary:
             return "\(name): command \(command) is not installed.\(installHint(for: server))"
         case .unauthenticated(let detail):
             return "\(name): command \(command) needs login. \(detail)"
+        case .authorizationRequired(let detail, _):
+            return "\(name): command \(command) needs authorization. \(detail)"
         case .unresponsive(let detail):
             return "\(name): command \(command) did not respond. \(detail)"
         }
@@ -61,10 +63,14 @@ enum CapabilityMCPReadinessService {
             return 0
         case .unauthenticated:
             return 1
-        case .unresponsive:
+        case .authorizationRequired:
             return 2
-        case .healthy:
+        case .unresponsive:
             return 3
+        case .unverified:
+            return 4
+        case .healthy:
+            return 5
         }
     }
 

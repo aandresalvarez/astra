@@ -137,6 +137,41 @@ struct PlanStepCheckpointTests {
         #expect(outcome.verifiedPaths == ["index.html"])
     }
 
+    @Test("task checkpoint wrapper honors an isolated execution root")
+    func taskCheckpointWrapperUsesExecutionRootOverride() throws {
+        let originalRoot = NSTemporaryDirectory() + "checkpoint-original-\(UUID().uuidString)"
+        let executionRoot = NSTemporaryDirectory() + "checkpoint-execution-\(UUID().uuidString)"
+        defer {
+            try? FileManager.default.removeItem(atPath: originalRoot)
+            try? FileManager.default.removeItem(atPath: executionRoot)
+        }
+        try FileManager.default.createDirectory(atPath: originalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: executionRoot, withIntermediateDirectories: true)
+        try "isolated".write(
+            toFile: (executionRoot as NSString).appendingPathComponent("result.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let task = AgentTask(
+            title: "Checkpoint isolated output",
+            goal: "Create result.txt",
+            workspace: Workspace(name: "Checkpoint original", primaryPath: originalRoot)
+        )
+        let step = makeStep(outputs: [
+            TaskPlanStepOutput(kind: .file, scope: .workspace, path: "result.txt", required: true)
+        ])
+
+        let outcome = PlanStepCheckpointVerifier.verify(
+            step: step,
+            plan: makePlan(step: step),
+            task: task,
+            workspacePath: executionRoot
+        )
+
+        #expect(outcome.isVerified)
+        #expect(outcome.verifiedPaths == ["result.txt"])
+    }
+
     @Test("steps with no declared outputs verify vacuously")
     func noOutputsVerifyVacuously() {
         let step = makeStep(outputs: [])

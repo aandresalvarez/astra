@@ -314,6 +314,32 @@ struct ValidationServiceTests {
         ])
     }
 
+    @Test("runTests validates the task's pinned execution root")
+    func runTestsUsesPinnedExecutionRoot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-validation-pinned-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let executionRoot = root.appendingPathComponent("worktree", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: executionRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let task = AgentTask(
+            title: "Validate pinned worktree",
+            goal: "Run tests where the provider executed.",
+            workspace: Workspace(name: "Pinned validation", primaryPath: workspaceRoot.path)
+        )
+        task.executionRootPath = executionRoot.path
+        task.testCommand = "swift test --filter Focused"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "passed", stderr: "")
+        ])
+
+        _ = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        #expect(await runner.recordedCalls().first?.workingDirectory == executionRoot.path)
+    }
+
     @Test("runTests rejects shell composition before executing imported task commands")
     func runTestsRejectsShellCompositionBeforeExecution() async throws {
         let root = "/tmp/astra-validation-imported-\(UUID().uuidString.prefix(8))"

@@ -5,6 +5,7 @@ struct CapabilityHealthIssue: Equatable, Identifiable {
     enum Kind: String, Equatable {
         case missingBinary = "missing_binary"
         case unauthenticated
+        case authorizationRequired = "authorization_required"
         case unresponsive
     }
 
@@ -22,11 +23,15 @@ struct CapabilityHealthIssue: Equatable, Identifiable {
 enum CapabilityHealthService {
     static func prerequisiteStatuses(
         for package: PluginPackage,
-        cache: PreflightCache
+        cache: PreflightCache,
+        workingDirectory: String? = nil
     ) async -> [String: HealthStatus] {
         var statuses: [String: HealthStatus] = [:]
         for prerequisite in package.prerequisites {
-            statuses[prerequisite.id] = await cache.status(for: prerequisite)
+            statuses[prerequisite.id] = await cache.status(
+                for: prerequisite,
+                workingDirectory: workingDirectory
+            )
         }
         return statuses
     }
@@ -55,7 +60,7 @@ enum CapabilityHealthService {
         package: PluginPackage
     ) -> CapabilityHealthIssue? {
         switch status {
-        case .healthy:
+        case .healthy, .unverified:
             return nil
         case .missingBinary:
             return CapabilityHealthIssue(
@@ -73,6 +78,14 @@ enum CapabilityHealthService {
                 resourceName: prerequisite.displayName,
                 message: "\(prerequisite.displayName): needs login. \(detail). \(prerequisite.authHint ?? "")"
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        case .authorizationRequired(let detail, _):
+            return CapabilityHealthIssue(
+                packageID: package.id,
+                packageName: package.name,
+                kind: .authorizationRequired,
+                resourceName: prerequisite.displayName,
+                message: "\(prerequisite.displayName): authorization required. \(detail). Open Manage Capabilities and choose Repair access."
             )
         case .unresponsive(let detail):
             let hint = prerequisite.authHint ?? prerequisite.installHint

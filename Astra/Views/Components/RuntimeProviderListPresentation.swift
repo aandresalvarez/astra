@@ -136,7 +136,11 @@ enum RuntimeProviderListPresentation {
                     isInstalled: true
                 )
             }
+        case .unverified(_, let detail):
+            return make(subtitle: detail, state: .unverified, isInstalled: true)
         case .unauthenticated(let detail):
+            return make(subtitle: detail, state: .unauthenticated, isInstalled: true)
+        case .authorizationRequired(let detail, _):
             return make(subtitle: detail, state: .unauthenticated, isInstalled: true)
         case .unresponsive(let detail):
             return make(subtitle: detail, state: .unresponsive, isInstalled: true)
@@ -239,7 +243,7 @@ enum RuntimeProviderListPresentation {
 
     private static func isInstalledStatus(_ status: HealthStatus?) -> Bool {
         switch status {
-        case .healthy, .unauthenticated, .unresponsive:
+        case .healthy, .unverified, .unauthenticated, .authorizationRequired, .unresponsive:
             return true
         case .missingBinary, .none:
             return false

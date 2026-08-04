@@ -137,14 +137,16 @@ struct PluginPackagePrereqTests {
     func builtInGitHubRequiresGhAndRoutesThroughHostControl() {
         let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
         #expect(github != nil)
-        #expect(github?.version == "2.1.5")
+        #expect(github?.version == "2.2.0")
         #expect(github?.connectors.isEmpty == true)
         #expect(github?.browserAdapters.isEmpty == true)
         #expect(github?.localTools.isEmpty == true)
         #expect(github?.prerequisites.count == 2)
         #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])
         #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status", "--hostname", "github.com"])
+        #expect(github?.prerequisites.last?.contextualCheck == .githubRepositoryAccess)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("SAML SSO authorization") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("mcp__astra_host__github") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("astra_host-github") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("via Bash") == false)
