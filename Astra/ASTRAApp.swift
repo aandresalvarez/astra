@@ -871,6 +871,10 @@ public struct ASTRAApp: App {
             approvedPackages: PluginCatalog.builtInPackages
         )
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
+        TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
+            modelContext: modelContext,
+            currentBuild: AppBuildInfo.current.build
+        )
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery

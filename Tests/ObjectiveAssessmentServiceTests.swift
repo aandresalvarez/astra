@@ -152,7 +152,7 @@ struct ObjectiveAssessmentServiceTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "done"
+        run.setOutput("done")
         run.completedAt = Date()
         context.insert(run)
         TaskContextStateManager.recordTurn(task: task, run: run, message: "Ship the release notes")
@@ -208,7 +208,7 @@ struct ObjectiveAssessmentServiceTests {
             let run = TaskRun(task: task)
             run.status = .completed
             run.stopReason = "completed"
-            run.output = "progress \(index)"
+            run.setOutput("progress \(index)")
             run.completedAt = Date()
             context.insert(run)
             let message = index == 5
@@ -272,7 +272,7 @@ struct ObjectiveAssessmentServiceTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "done"
+        run.setOutput("done")
         run.completedAt = Date()
         context.insert(run)
 
@@ -468,7 +468,7 @@ struct ObjectiveAssessmentServiceTests {
             let run = TaskRun(task: task)
             run.status = .completed
             run.stopReason = "completed"
-            run.output = "progress \(index)"
+            run.setOutput("progress \(index)")
             run.completedAt = Date()
             context.insert(run)
             TaskContextStateManager.recordTurn(task: task, run: run, message: "progress \(index)")
@@ -584,7 +584,7 @@ struct ObjectiveAssessmentServiceTests {
             let run = TaskRun(task: task)
             run.status = .completed
             run.stopReason = "completed"
-            run.output = "progress \(index)"
+            run.setOutput("progress \(index)")
             run.completedAt = Date()
             context.insert(run)
             let message = index == 5

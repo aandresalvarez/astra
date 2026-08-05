@@ -70,11 +70,11 @@ struct TaskPlanServiceTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
             if index == 0 {
-                run.output = """
+                run.setOutput("""
                 ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)","stepID":"step-1","status":"done","summary":"Recovered historical progress"}
-                """
+                """)
             } else {
-                run.output = "ordinary run \(index)"
+                run.setOutput("ordinary run \(index)")
             }
             context.insert(run)
         }
@@ -461,12 +461,12 @@ struct TaskPlanServiceTests {
         task.events.append(contentsOf: [created, approved, started])
 
         let run = TaskRun(task: task)
-        run.output = """
+        run.setOutput("""
         ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)",
            "stepID":"step-1","status":"done","summary":"Created index.html"}
         ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)",
            "stepID":"step-2","status":"done","summary":"Created styles.css with black and white design"}
-        """
+        """)
         task.runs.append(run)
 
         let state = TaskPlanService.reconstruct(for: task)
@@ -634,14 +634,72 @@ struct TaskPlanServiceTests {
     func planCacheSignatureTracksSameLengthRunOutputEdits() {
         let task = AgentTask(title: "Plan task", goal: "Do work")
         let run = TaskRun(task: task)
-        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"aaaa"}"#
+        run.setOutput(#"ASTRA_EVENT {"type":"plan.step.completed","summary":"aaaa"}"#)
         task.runs.append(run)
         let before = TaskPlanStateCacheSignature(task: task)
 
-        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"bbbb"}"#
+        run.setOutput(#"ASTRA_EVENT {"type":"plan.step.completed","summary":"bbbb"}"#)
         let after = TaskPlanStateCacheSignature(task: task)
 
         #expect(after != before)
+    }
+
+    @Test("Protocol marker split across streamed appends still sets the run flag")
+    func protocolMarkerSplitAcrossAppendsSetsTheRunFlag() {
+        let task = AgentTask(title: "Streaming task", goal: "Recover progress")
+        let run = TaskRun(task: task)
+        #expect(run.hasProtocolEvents == false)
+
+        // Provider deltas arrive as arbitrary chunks, so the marker can land
+        // across a boundary. Testing only the tail of the new text would report
+        // a false negative here and permanently lose this run's plan progress.
+        run.appendOutput("some visible answer text\nASTRA_")
+        #expect(run.hasProtocolEvents == false)
+        run.appendOutput(#"EVENT {"v":1,"type":"plan.step.completed"}"#)
+
+        #expect(run.hasProtocolEvents == true)
+        #expect(run.output.contains("ASTRA_EVENT"))
+    }
+
+    @Test("Appending marker-free text leaves an already-flagged run flagged")
+    func appendingMarkerFreeTextKeepsTheRunFlagged() {
+        let task = AgentTask(title: "Streaming task", goal: "Recover progress")
+        let run = TaskRun(task: task)
+        run.appendOutput(#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"#)
+        #expect(run.hasProtocolEvents == true)
+
+        run.appendOutput("\nand then some ordinary prose")
+        #expect(run.hasProtocolEvents == true)
+    }
+
+    @Test("Replacing output with protocol-stripped text clears the run flag")
+    func replacingOutputWithStrippedTextClearsTheRunFlag() {
+        let task = AgentTask(title: "Completed task", goal: "Summarize")
+        let run = TaskRun(task: task)
+        run.appendOutput(#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"# + "\nvisible answer")
+        #expect(run.hasProtocolEvents == true)
+
+        // The completed-summary rewrite strips markers, so a monotonic flag
+        // would go stale here. `setOutput` re-derives it from the stored text.
+        run.setOutput("visible answer")
+        #expect(run.hasProtocolEvents == false)
+    }
+
+    @Test("Plan cache signature changes when only the protocol marker flag flips")
+    func planCacheSignatureTracksProtocolMarkerFlagFlips() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let run = TaskRun(task: task)
+        run.setOutput("ASTRA_EVENT")
+        task.runs.append(run)
+        let before = TaskPlanStateCacheSignature(task: task)
+
+        // Same byte count, so only the flag (and the marker fingerprint it now
+        // gates) can distinguish the two states.
+        run.setOutput("XSTRA_EVENT")
+        #expect(run.output.utf8.count == 11)
+        #expect(run.hasProtocolEvents == false)
+
+        #expect(TaskPlanStateCacheSignature(task: task) != before)
     }
 
     private func encode<T: Encodable>(_ value: T) -> String {

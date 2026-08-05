@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 struct TaskPlanStateCacheSignature: Equatable {
@@ -72,7 +73,12 @@ struct TaskPlanStateCacheSignature: Equatable {
             runAccumulator.include(run.startedAt)
             runAccumulator.include(run.completedAt)
             runAccumulator.include(run.output.utf8.count)
-            if let protocolOutputFingerprint = Self.protocolOutputFingerprint(for: run.output) {
+            // A flag flip alone must bust the cache, so it is part of the
+            // fingerprint as well as the gate for the marker scan below.
+            let hasProtocolEvents = run.hasProtocolEvents
+            runAccumulator.include(hasProtocolEvents.map { $0 ? 2 : 1 } ?? 0)
+            if hasProtocolEvents != false,
+               let protocolOutputFingerprint = Self.protocolOutputFingerprint(for: run.output) {
                 runAccumulator.include(1)
                 runAccumulator.include(protocolOutputFingerprint)
             } else {
@@ -118,7 +124,8 @@ struct TaskPlanStateCacheSignature: Equatable {
     }
 
     private static func protocolOutputFingerprint(for output: String) -> UInt64? {
-        guard var markerRange = output.range(of: "ASTRA_EVENT") else { return nil }
+        let token = AstraRunProtocolParser.markerToken
+        guard var markerRange = output.range(of: token) else { return nil }
         var accumulator = FingerprintAccumulator()
         while true {
             let lineStart = output[..<markerRange.lowerBound].lastIndex(of: "\n").map { output.index(after: $0) } ?? output.startIndex
@@ -126,7 +133,7 @@ struct TaskPlanStateCacheSignature: Equatable {
             accumulator.include(output.distance(from: lineStart, to: lineEnd))
             accumulator.includeBoundedSample(output[lineStart..<lineEnd])
 
-            guard let next = output[markerRange.upperBound...].range(of: "ASTRA_EVENT") else {
+            guard let next = output[markerRange.upperBound...].range(of: token) else {
                 break
             }
             markerRange = next

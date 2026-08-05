@@ -99,7 +99,7 @@ struct SessionResumeTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "The cache uses an LRU policy with a 512 MB ceiling."
+        run.setOutput("The cache uses an LRU policy with a 512 MB ceiling.")
         run.completedAt = Date()
         context.insert(run)
         AgentRuntimeRunPersistence.recordSessionTurn(

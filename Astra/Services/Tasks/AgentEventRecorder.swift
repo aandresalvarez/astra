@@ -843,7 +843,7 @@ enum AgentEventRecorder {
         let mayReplace = run.output.isEmpty
             || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
         if !visibleText.isEmpty, mayReplace {
-            run.output = visibleText
+            run.setOutput(visibleText)
             if let taskID = run.task?.id {
                 run.task?.updatedAt = Date()
                 TaskThreadChangeNotifier.post(taskID: taskID, source: "completed_output_replaced")
@@ -862,7 +862,7 @@ enum AgentEventRecorder {
     ) {
         let textToAppend = AgentEventRecordingPresentation.responseTextToAppend(text, after: run.output)
         guard !textToAppend.isEmpty else { return }
-        run.output += textToAppend
+        run.appendOutput(textToAppend)
         // Output now contains streamed deltas; a later `.completed` envelope must
         // not clobber it even if an earlier `.completed` seeded the output.
         recordingState?.clearOutputFromCompletedSummary(for: run)

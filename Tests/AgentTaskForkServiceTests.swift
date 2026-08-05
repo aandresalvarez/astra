@@ -36,7 +36,7 @@ struct AgentTaskForkServiceTests {
         firstRun.startedAt = Date(timeIntervalSince1970: 100)
         firstRun.completedAt = Date(timeIntervalSince1970: 110)
         firstRun.status = RunStatus.completed
-        firstRun.output = "First branch result"
+        firstRun.setOutput("First branch result")
         firstRun.stopReason = "completed"
         context.insert(firstRun)
 
@@ -53,7 +53,7 @@ struct AgentTaskForkServiceTests {
         secondRun.startedAt = Date(timeIntervalSince1970: 200)
         secondRun.completedAt = Date(timeIntervalSince1970: 210)
         secondRun.status = RunStatus.completed
-        secondRun.output = "Second branch result"
+        secondRun.setOutput("Second branch result")
         secondRun.stopReason = "completed"
         context.insert(secondRun)
 
@@ -135,7 +135,7 @@ struct AgentTaskForkServiceTests {
         firstRun.startedAt = Date(timeIntervalSince1970: 100)
         firstRun.completedAt = Date(timeIntervalSince1970: 110)
         firstRun.status = .completed
-        firstRun.output = "First branch result"
+        firstRun.setOutput("First branch result")
         context.insert(firstRun)
 
         let artifact = Artifact(task: source, type: "html", path: artifactPath)
@@ -146,7 +146,7 @@ struct AgentTaskForkServiceTests {
         secondRun.startedAt = Date(timeIntervalSince1970: 200)
         secondRun.completedAt = Date(timeIntervalSince1970: 210)
         secondRun.status = .completed
-        secondRun.output = "Second branch result"
+        secondRun.setOutput("Second branch result")
         context.insert(secondRun)
 
         let forked = try AgentTask.fork(from: source, upToRun: firstRun, in: context)
@@ -340,7 +340,7 @@ struct AgentTaskForkServiceTests {
         run.status = .completed
         run.startedAt = Date(timeIntervalSince1970: 100)
         run.completedAt = Date(timeIntervalSince1970: 110)
-        run.output = "Use \(inputPath), but preserve the distinct \(inputPath).bak reference."
+        run.setOutput("Use \(inputPath), but preserve the distinct \(inputPath).bak reference.")
         run.fileChangesJSON = TaskEvent.payloadString([
             StoredFileChange(path: inputPath, changeType: "Write", content: "checkpoint report")
         ])
@@ -494,7 +494,7 @@ struct AgentTaskForkServiceTests {
         context.insert(source)
         let run = TaskRun(task: source)
         run.status = .completed
-        run.output = "Checkpoint answer"
+        run.setOutput("Checkpoint answer")
         context.insert(run)
 
         let forked = try AgentTask.fork(from: source, upToRun: run, in: context)
@@ -603,7 +603,7 @@ struct AgentTaskForkServiceTests {
         run.status = .completed
         run.startedAt = Date(timeIntervalSince1970: 100)
         run.completedAt = Date(timeIntervalSince1970: 110)
-        run.output = "Read \(expandedPath) then wrote \(expandedPath) again, or \(tildePath)"
+        run.setOutput("Read \(expandedPath) then wrote \(expandedPath) again, or \(tildePath)")
         context.insert(run)
         let attachmentEvent = TaskEvent(
             task: source,
@@ -815,7 +815,7 @@ struct AgentTaskForkServiceTests {
         context.insert(source)
         let run = TaskRun(task: source)
         run.status = .completed
-        run.output = "Read \(tildePath)"
+        run.setOutput("Read \(tildePath)")
         context.insert(run)
         let event = TaskEvent(task: source, type: TaskPlanConversationEventTypes.userMessage, payload: "Attached files:\n- \(tildePath)", run: run)
         context.insert(event)
@@ -849,12 +849,12 @@ struct AgentTaskForkServiceTests {
         first.id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         first.startedAt = Date(timeIntervalSince1970: 100)
         first.status = .completed
-        first.output = "FIRST-TIED-RUN"
+        first.setOutput("FIRST-TIED-RUN")
         let checkpoint = TaskRun(task: source)
         checkpoint.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         checkpoint.startedAt = first.startedAt
         checkpoint.status = .completed
-        checkpoint.output = "SELECTED-TIED-CHECKPOINT"
+        checkpoint.setOutput("SELECTED-TIED-CHECKPOINT")
         context.insert(first)
         context.insert(checkpoint)
 

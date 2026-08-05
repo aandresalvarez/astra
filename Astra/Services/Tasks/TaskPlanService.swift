@@ -899,7 +899,9 @@ extension TaskPlanService {
     private static func applyRecoveredProtocolProgress(from runs: [TaskRun], to state: inout TaskPlanState) {
         guard state.plan != nil else { return }
 
-        for run in runs.sorted(by: { $0.startedAt < $1.startedAt }) where run.output.contains("ASTRA_EVENT") {
+        // `!= false` keeps never-scanned (pre-V17) rows in the candidate set,
+        // so this is exactly the old text scan minus the proven-clean rows.
+        for run in runs.sorted(by: { $0.startedAt < $1.startedAt }) where run.hasProtocolEvents != false {
             var filter = AstraRunProtocolTextFilter()
             let outputs = filter.process(text: run.output).outputs + filter.flush().outputs
             for output in outputs {

@@ -528,7 +528,7 @@ final class TaskQueue {
             copiedRun.inputTokens = latestRun.inputTokens
             copiedRun.outputTokens = latestRun.outputTokens
             copiedRun.exitCode = latestRun.exitCode
-            copiedRun.output = latestRun.output
+            copiedRun.setOutput(latestRun.output)
             copiedRun.costUSD = latestRun.costUSD
             copiedRun.fileChangesJSON = latestRun.fileChangesJSON
             copiedRun.stopReason = latestRun.stopReason

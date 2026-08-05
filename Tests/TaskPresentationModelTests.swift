@@ -394,7 +394,7 @@ struct AgentTaskPropertyTests {
         )
         let run = TaskRun(task: task)
         run.status = .completed
-        run.output = "Completed without automated verification."
+        run.setOutput("Completed without automated verification.")
         run.completedAt = Date()
         task.runs = [run]
 

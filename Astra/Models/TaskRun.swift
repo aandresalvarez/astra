@@ -29,7 +29,11 @@ public final class TaskRun {
     /// continuation is safe for a follow-up run.
     public var providerLaunchSignatureJSON: String?
     public var exitCode: Int?
-    public var output: String
+    public private(set) var output: String
+    /// Whether `output` contains at least one run-protocol marker.
+    /// `nil` means "never scanned" (a row written before schema V17); readers
+    /// must treat that as "might contain markers" and fall back to the text.
+    public private(set) var hasProtocolEvents: Bool?
     public var costUSD: Double
     public var fileChangesJSON: String  // JSON array of file changes
     public var stopReason: String       // "completed", "failed", "max_turns_reached", "max_budget_reached", "timeout", "cancelled", "repetition_detected"
@@ -55,9 +59,42 @@ public final class TaskRun {
         }
         self.providerLaunchSignatureJSON = nil
         self.output = ""
+        self.hasProtocolEvents = false
         self.costUSD = 0
         self.fileChangesJSON = "[]"
         self.stopReason = ""
+    }
+
+    /// Replaces the stored output and recomputes the protocol-marker flag.
+    /// Recomputation (rather than a monotonic OR) is required because several
+    /// writers shrink the text: the completed-summary rewrite strips markers,
+    /// output capping elides the middle, and the workspace-JSON mirror
+    /// truncates.
+    public func setOutput(_ newValue: String) {
+        output = newValue
+        hasProtocolEvents = newValue.contains(AstraRunProtocolParser.markerToken)
+    }
+
+    /// Appends streamed text and keeps the marker flag exact.
+    /// Provider deltas can split the marker across two chunks, so the tail of
+    /// the already-stored output is re-scanned together with the new text. A
+    /// never-scanned (`nil`) row stays `nil` on a miss: the appended text alone
+    /// cannot prove the older output is marker-free.
+    public func appendOutput(_ text: String) {
+        if hasProtocolEvents != true {
+            let token = AstraRunProtocolParser.markerToken
+            let overlap = String(output.suffix(token.count - 1))
+            if (overlap + text).contains(token) {
+                hasProtocolEvents = true
+            }
+        }
+        output += text
+    }
+
+    /// Re-derives the marker flag from the stored text without rewriting it.
+    /// Used by the one-time backfill of pre-V17 rows.
+    public func refreshProtocolMarkerFlag() {
+        hasProtocolEvents = output.contains(AstraRunProtocolParser.markerToken)
     }
 
     /// Decoded file changes from JSON storage

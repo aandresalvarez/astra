@@ -1905,13 +1905,13 @@ struct ArchitectureFitnessTests {
             // own accessor plus the note on why an `.unverified` contextual probe is not
             // missing setup — the two states drive different surfaces.
             "Astra/Views/ContentView.swift": .init(4_900, .owner("Workspace shell composition")),
-            // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
-            // freezing a schema version means copying every one of its ~16
-            // referenced model types into a fully self-contained nested body
-            // (957a90a8's V10 freeze is the precedent), which grows this file
-            // by ~450-500 lines every time. That growth is expected schema
-            // history, not scope creep - there's nothing to shrink here.
-            "Astra/Models/SchemaVersions.swift": .init(4_100, .owner("SwiftData schema history")),
+            // Freezing a schema version means copying every one of its ~16
+            // referenced model types into a self-contained nested body
+            // (957a90a8's V10 freeze is the precedent), which once grew this
+            // file by ~450-500 lines a time. Ratcheted down for the V17 mint,
+            // which moved the three SchemaMigrationPlan enums out to
+            // ASTRAMigrationPlans.swift: only frozen V1-V13 bodies remain.
+            "Astra/Models/SchemaVersions.swift": .init(4_030, .owner("SwiftData schema history")),
             // Budget raised to propagate AgentTask.runtimeExplicitlySelected through
             // this composer's draft lifecycle: the flag has to be set/preserved at
             // every one of its task-creation and draft-resync call sites (quickRun,

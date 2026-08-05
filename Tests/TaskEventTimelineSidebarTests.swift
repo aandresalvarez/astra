@@ -384,15 +384,15 @@ struct SidebarGroupingTests {
         let task = makeTask(status: .running)
         let run = TaskRun(task: task)
         task.runs.append(run)
-        run.output = "small chunk"
+        run.setOutput("small chunk")
         task.events.append(TaskEvent(task: task, type: "agent.response", payload: "small chunk", run: run))
         let initial = TaskThreadSnapshotTrigger(task: task)
 
-        run.output += " plus more"
+        run.appendOutput(" plus more")
         task.events.append(TaskEvent(task: task, type: "agent.response", payload: " plus more", run: run))
         let afterSmallTextUpdate = TaskThreadSnapshotTrigger(task: task)
 
-        run.output = String(repeating: "x", count: 1_025)
+        run.setOutput(String(repeating: "x", count: 1_025))
         let afterOutputBucketChange = TaskThreadSnapshotTrigger(task: task)
 
         #expect(afterSmallTextUpdate == initial)

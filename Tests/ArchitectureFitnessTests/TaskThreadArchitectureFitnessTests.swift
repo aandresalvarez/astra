@@ -50,6 +50,56 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!viewModel.contains("TaskThreadHistoryReader."))
     }
 
+    @Test("TaskRun output writes go through the protocol-marker mutators")
+    func taskRunOutputWritesGoThroughTheProtocolMarkerMutators() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskRun = try source("Astra/Models/TaskRun.swift", root: root)
+
+        // `hasProtocolEvents` is a cached derivation of `output`, and plan
+        // recovery selects candidate runs from it in SQL. Reopening either
+        // setter lets a writer move the text without the flag, which silently
+        // drops recovered plan progress with no test failure anywhere else.
+        #expect(taskRun.contains("public private(set) var output: String"))
+        #expect(taskRun.contains("public private(set) var hasProtocolEvents: Bool?"))
+        #expect(taskRun.contains("public func setOutput("))
+        #expect(taskRun.contains("public func appendOutput("))
+        #expect(taskRun.contains("public func refreshProtocolMarkerFlag("))
+
+        // Belt and braces for the day someone relaxes `private(set)`: no
+        // run-shaped receiver outside the model may assign the text directly.
+        let assignment = try NSRegularExpression(pattern: #"\b\w*[Rr]un\.output\s*(=[^=]|\+=)"#)
+        var offenders: [String] = []
+        for directory in ["Astra", "ASTRACore", "AppExecutable"] {
+            for file in try swiftFiles(under: root.appendingPathComponent(directory))
+            where file.lastPathComponent != "TaskRun.swift" {
+                let text = try String(contentsOf: file, encoding: .utf8)
+                let range = NSRange(text.startIndex..., in: text)
+                if assignment.firstMatch(in: text, range: range) != nil {
+                    offenders.append(file.lastPathComponent)
+                }
+            }
+        }
+        #expect(offenders.isEmpty, "These write TaskRun.output directly: \(offenders.joined(separator: ", "))")
+    }
+
+    private func swiftFiles(under root: URL) throws -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+
+        return try enumerator.compactMap { item in
+            guard let url = item as? URL, url.pathExtension == "swift" else { return nil }
+            return try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true ? url : nil
+        }
+    }
+
     @Test("Transcript rows stay grouped below the outer lazy stack")
     func transcriptRowsStayGroupedBelowOuterLazyStack() throws {
         let root = URL(fileURLWithPath: #filePath)

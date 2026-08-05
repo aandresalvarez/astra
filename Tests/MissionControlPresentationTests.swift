@@ -27,7 +27,7 @@ struct MissionControlPresentationTests {
         context.insert(task)
         let run = TaskRun(task: task)
         run.status = .completed
-        run.output = "Finished."
+        run.setOutput("Finished.")
         task.runs = [run]
         context.insert(run)
 
