@@ -1264,6 +1264,8 @@ struct ContentView: View {
 
     private var workspaceCanvasPreferenceService: WorkspaceCanvasItemPreferenceService { WorkspaceCanvasItemPreferenceService(modelContext: modelContext) }
 
+    private var taskReadStateService: TaskReadStateService { TaskReadStateService(modelContext: modelContext) }
+
     private func setRightRailPresented(_ isPresented: Bool) {
         animatePanelChange { rightPanel.setRailPresented(isPresented) }
         if isPresented {
@@ -2454,18 +2456,7 @@ struct ContentView: View {
             task: task,
             scope: taskOpenResponsivenessScope
         ) {
-            task.markRead()
-            do {
-                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                    workspace: task.workspace,
-                    modelContext: modelContext
-                )
-            } catch {
-                AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
-                    "operation": "mark_task_read",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
+            taskReadStateService.markRead(task)
         }
     }
 
