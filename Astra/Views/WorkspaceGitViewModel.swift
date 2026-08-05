@@ -143,15 +143,25 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
         Task { await scanRepositories() }
 
-        // setup() runs on appear / task change, i.e. the rail is visible again.
+        // setup() runs on appear *and* on task change: the panel drives it from
+        // `.task(id:)` over a signature that includes the selected task. Only a
+        // genuine (re)appearance is a foreground signal, and `isRefreshPaused`
+        // is exactly that — `pauseRefresh()` sets it when the rail goes
+        // offscreen or the app is backgrounded, so it is still true here only
+        // when the panel is coming back.
+        let isPanelReappearing = isRefreshPaused
         isRefreshPaused = false
-        // Re-arm here too: clearing `isRefreshPaused` makes a later
-        // `resumeRefresh()` return early, so a panel re-created after the user
-        // went off to authorize would otherwise never re-probe and would keep
-        // hiding a real pull request for the rest of the cooldown. The
-        // breaker's own 60s delay still stops rail churn from restoring the
-        // failure poll.
-        prLookupBreaker.rearmAfterForeground()
+        if isPanelReappearing {
+            // Re-arm here too: clearing `isRefreshPaused` makes a later
+            // `resumeRefresh()` return early, so a panel re-created after the
+            // user went off to authorize would otherwise never re-probe and
+            // would keep hiding a real pull request for the rest of the
+            // cooldown. Task switches inside an already-visible panel are
+            // deliberately excluded: re-arming there would leave only the
+            // breaker's 60s delay, collapsing the 900s cooldown that exists to
+            // stop re-spawning `gh` for a credential GitHub already rejected.
+            prLookupBreaker.rearmAfterForeground()
+        }
         startRefreshTimer()
     }
 
@@ -233,6 +243,23 @@ final class WorkspaceGitViewModel: ObservableObject {
     ) {
         prLookupBreaker.backdateOpenedAtForTesting(by: interval)
     }
+
+    /// The lookup task `refreshOpenPullRequest` most recently spawned. Debug
+    /// only: nothing in the shipping app joins it. Tests await the real work
+    /// instead of sleeping for a scheduling window a loaded machine blows past.
+    private var pendingPullRequestLookup: Task<Void, Never>?
+
+    private func notePendingPullRequestLookup(_ task: Task<Void, Never>) {
+        pendingPullRequestLookup = task
+    }
+
+    /// Awaits the in-flight `gh pr list` lookup *and* the main-actor state it
+    /// applies, so a test observes a settled panel instead of racing it.
+    func waitForPendingPullRequestLookupForTesting() async {
+        await pendingPullRequestLookup?.value
+    }
+    #else
+    private func notePendingPullRequestLookup(_ task: Task<Void, Never>) {}
     #endif
 
     deinit {
@@ -502,7 +529,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         prLookupBranch = branch
         prLookupAt = Date()
 
-        Task {
+        notePendingPullRequestLookup(Task {
             let result = await git.lookupOpenPullRequest(repoPath: path, head: branch)
             if self.currentBranch == branch {
                 switch result {
@@ -532,7 +559,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                     self.clearPullRequestChecks()
                 }
             }
-        }
+        })
     }
 
     func refreshPullRequestComments(
