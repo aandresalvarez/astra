@@ -685,21 +685,80 @@ struct TaskPlanServiceTests {
         #expect(run.hasProtocolEvents == false)
     }
 
-    @Test("Plan cache signature changes when only the protocol marker flag flips")
-    func planCacheSignatureTracksProtocolMarkerFlagFlips() {
+    @Test("Plan cache signature changes when a same-length edit removes the last marker")
+    func planCacheSignatureTracksMarkerRemovingSameLengthEdits() {
         let task = AgentTask(title: "Plan task", goal: "Do work")
         let run = TaskRun(task: task)
         run.setOutput("ASTRA_EVENT")
         task.runs.append(run)
         let before = TaskPlanStateCacheSignature(task: task)
 
-        // Same byte count, so only the flag (and the marker fingerprint it now
-        // gates) can distinguish the two states.
+        // Same byte count, so the output-length term cannot see this edit. It is
+        // the marker fingerprint dropping to "absent" that moves the signature;
+        // the flag term is exercised on its own below.
         run.setOutput("XSTRA_EVENT")
         #expect(run.output.utf8.count == 11)
         #expect(run.hasProtocolEvents == false)
 
         #expect(TaskPlanStateCacheSignature(task: task) != before)
+    }
+
+    /// Isolates the flag term. The bytes never move, so `hasProtocolEvents`
+    /// going `nil` -> `false` is the only input that changes, and the signature
+    /// still has to move: `TaskPlanService.reconstruct` reads that flag directly
+    /// (`!= false`) when picking recovery candidates, so a cache key that
+    /// ignored it would be keyed on less than the projection reads.
+    ///
+    /// Not a synthetic state — it is exactly what the one-time marker backfill
+    /// does to every pre-V17 row on the first launch after it ships. Migrating
+    /// an on-disk V16 store is the only way to obtain the `nil` flag:
+    /// `TaskRun(task:)` always pins it and the setter is `private(set)`.
+    @MainActor
+    @Test("Plan cache signature changes when the marker backfill resolves a never-scanned run")
+    func planCacheSignatureTracksBackfilledProtocolMarkerFlag() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-plan-signature-marker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let markerFreeOutput = "ordinary completion summary"
+
+        do {
+            let legacyContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV16.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let legacyContext = legacyContainer.mainContext
+            let legacyTask = ASTRASchemaV14Models.AgentTask()
+            legacyTask.title = "Legacy plan task"
+            legacyTask.goal = "Recover progress"
+            legacyContext.insert(legacyTask)
+            let legacyRun = ASTRASchemaV14Models.TaskRun()
+            legacyRun.task = legacyTask
+            legacyRun.output = markerFreeOutput
+            legacyContext.insert(legacyRun)
+            try legacyContext.save()
+        }
+
+        // Held for the whole test: a `ModelContext` does not keep its container
+        // alive, and reading through a released one traps in SwiftData.
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = container.mainContext
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let run = try #require(try context.fetch(FetchDescriptor<TaskRun>()).first)
+        #expect(task.runs.count == 1)
+        #expect(run.hasProtocolEvents == nil)
+        let beforeBackfill = TaskPlanStateCacheSignature(task: task)
+
+        run.refreshProtocolMarkerFlag()
+
+        #expect(run.output == markerFreeOutput)
+        #expect(run.hasProtocolEvents == false)
+        #expect(TaskPlanStateCacheSignature(task: task) != beforeBackfill)
     }
 
     private func encode<T: Encodable>(_ value: T) -> String {
