@@ -58,6 +58,10 @@ final class AgentEventRecordingState {
            existing.payload.count + text.count <= maxCoalescedPayloadLength {
             existing.payload += text
             let changedAt = Date()
+            // The incremental transcript read (`TaskThreadHistoryReader.tailPage`)
+            // only refetches rows at or after its cursor. Bumping the timestamp
+            // forward is what keeps this in-place mutation visible to it; drop
+            // the bump and the transcript freezes on the partial message.
             existing.timestamp = changedAt
             task.updatedAt = changedAt
             TaskThreadChangeNotifier.post(taskID: task.id, source: "conversation_chunk_coalesced")

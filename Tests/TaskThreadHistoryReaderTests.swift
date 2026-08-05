@@ -407,6 +407,132 @@ struct TaskThreadHistoryReaderTests {
         #expect(elapsed < .seconds(2))
     }
 
+    @Test("Tail read returns only events at or after the cursor")
+    func tailPageReturnsOnlyEventsAtOrAfterCursor() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        for index in 0..<300 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let page = try TaskThreadHistoryReader.initialPage(taskID: task.id, modelContext: context)
+        let newest = try #require(page.events.first)
+        let cursor = TaskThreadEventCursor(timestamp: newest.timestamp, id: newest.id)
+        for index in 300..<303 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let tail = try TaskThreadHistoryReader.tailPage(
+            taskID: task.id,
+            since: cursor,
+            modelContext: context
+        )
+
+        #expect(tail.events.count == 4)
+        #expect(Set(tail.events.map(\.payload)) == Set((299..<303).map { "chunk \($0)" }))
+        #expect(!tail.overflowed)
+        #expect(tail.totalEventCount == 303)
+    }
+
+    @Test("Tail read returns the whole timestamp tie group around its cursor")
+    func tailPageIncludesFullTimestampTieGroup() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let timestamp = Date(timeIntervalSince1970: 100)
+        let ids = [
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+            "00000000-0000-0000-0000-000000000003",
+            "00000000-0000-0000-0000-000000000004",
+            "00000000-0000-0000-0000-000000000005"
+        ].compactMap(UUID.init(uuidString:))
+        for (index, id) in ids.enumerated() {
+            let event = TaskEvent(task: task, type: "user.message", payload: "tied \(index)")
+            event.id = id
+            event.timestamp = timestamp
+            context.insert(event)
+        }
+        try context.save()
+
+        let tail = try TaskThreadHistoryReader.tailPage(
+            taskID: task.id,
+            since: TaskThreadEventCursor(timestamp: timestamp, id: ids[2]),
+            modelContext: context
+        )
+
+        #expect(Set(tail.events.map(\.id)) == Set(ids))
+    }
+
+    @Test("Tail read reports overflow when new events exceed the page size")
+    func tailPageOverflowsWhenNewEventsExceedPageSize() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let anchor = TaskEvent(task: task, type: "user.message", payload: "anchor")
+        anchor.timestamp = Date(timeIntervalSince1970: 0)
+        context.insert(anchor)
+        for index in 1...9 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let tail = try TaskThreadHistoryReader.tailPage(
+            taskID: task.id,
+            since: TaskThreadEventCursor(timestamp: anchor.timestamp, id: anchor.id),
+            modelContext: context,
+            eventPageSize: 5
+        )
+
+        #expect(tail.overflowed)
+        #expect(tail.events.count == 5)
+    }
+
+    @Test("Tail read totals stay authoritative across inserts and deletes")
+    func tailPageReportsAuthoritativeTotals() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        context.insert(run)
+        var events: [TaskEvent] = []
+        for index in 0..<10 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+            events.append(event)
+        }
+        try context.save()
+        let cursor = TaskThreadEventCursor(timestamp: events[9].timestamp, id: events[9].id)
+
+        let afterInsert = try TaskThreadHistoryReader.tailPage(
+            taskID: task.id,
+            since: cursor,
+            modelContext: context
+        )
+        #expect(afterInsert.totalEventCount == 10)
+        #expect(afterInsert.totalRunCount == 1)
+
+        // A backdated delete never appears in the tail rows, so the total is the
+        // only signal the caller has that history changed underneath it.
+        context.delete(events[0])
+        try context.save()
+        let afterDelete = try TaskThreadHistoryReader.tailPage(
+            taskID: task.id,
+            since: cursor,
+            modelContext: context
+        )
+
+        #expect(afterDelete.totalEventCount == 9)
+        #expect(afterDelete.events.count == afterInsert.events.count)
+    }
+
     @Test("Storage projection caps tool results and drops events for omitted runs")
     func storageProjectionMatchesWindowPolicies() throws {
         let (container, context, task) = try fixture()
@@ -629,6 +755,274 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.appliedSnapshotTaskID == secondTask.id)
         #expect(viewModel.snapshot?.sortedEvents.isEmpty == true)
         #expect(viewModel.historyLoadState == .idle)
+    }
+
+    @Test("Streaming appends read the tail instead of the whole page")
+    func streamingAppendsUseTailReadsNotFullPages() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        for index in 0..<600 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.historyFullReadCountForTesting == 1)
+        #expect(viewModel.historyTailReadCountForTesting == 0)
+
+        for index in 600..<605 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+            try context.save()
+            viewModel.requestSnapshotRefresh(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
+
+        #expect(viewModel.historyFullReadCountForTesting == 1)
+        #expect(viewModel.historyTailReadCountForTesting == 5)
+        #expect(viewModel.historyReadCountForTesting == 6)
+        #expect(viewModel.snapshot?.sortedEvents.count == 605)
+    }
+
+    @Test("Coalesced stream chunk is re-read by the tail because its timestamp moves forward")
+    func coalescedChunkMutationIsPickedUpByTailRead() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let run = TaskRun(task: task)
+        context.insert(run)
+        let state = AgentEventRecordingState(maxCoalescedPayloadLength: 1_000)
+        state.appendConversationChunk(
+            eventType: TaskEventTypes.Conversation.agentResponse,
+            text: "first ",
+            to: task,
+            run: run,
+            modelContext: context
+        )
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "first " } == true)
+
+        state.appendConversationChunk(
+            eventType: TaskEventTypes.Conversation.agentResponse,
+            text: "second",
+            to: task,
+            run: run,
+            modelContext: context
+        )
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(task.events.count == 1)
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "first second" } == true)
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 1)
+    }
+
+    @Test("Compaction forces a full re-read instead of stranding deleted rows")
+    func compactionForcesFullReread() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        for index in 0..<260 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == 260)
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        let events = viewModel.snapshot?.sortedEvents ?? []
+        #expect(events.contains { $0.type == "activity.compacted" })
+        #expect(!events.contains { $0.payload == "chunk 0" })
+        #expect(events.contains { $0.payload == "chunk 259" })
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 2)
+    }
+
+    @Test("Backdated insert forces a full re-read")
+    func backdatedInsertForcesFullReread() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        for index in 1...5 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+
+        // Mirrors TaskQueue backdating a source message to the run's start.
+        let backdated = TaskEvent(task: task, type: "user.message", payload: "backdated")
+        backdated.timestamp = Date(timeIntervalSince1970: 2.5)
+        context.insert(backdated)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "backdated" } == true)
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 2)
+    }
+
+    @Test("Event deletion forces a full re-read")
+    func eventDeletionForcesFullReread() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        var events: [TaskEvent] = []
+        for index in 1...5 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+            events.append(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+
+        context.delete(events[2])
+        task.updatedAt = task.updatedAt.addingTimeInterval(1)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(viewModel.snapshot?.sortedEvents.count == 4)
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "message 3" } == false)
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 2)
+    }
+
+    @Test("Tail read keeps state anchors that live outside the loaded page")
+    func tailReadPreservesStateAnchorsOutsideThePage() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let anchor = TaskEvent(task: task, type: "astra.todo.replace", payload: "old plan")
+        anchor.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(anchor)
+        for index in 0..<1_205 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 10))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.id == anchor.id } == true)
+
+        let appended = TaskEvent(task: task, type: "user.message", payload: "newest")
+        appended.timestamp = Date(timeIntervalSince1970: 2_000)
+        context.insert(appended)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        // The tail read performs no anchor fetch, so the anchor can only still
+        // be here if the merge left the accumulated anchors alone.
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.id == anchor.id } == true)
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "newest" } == true)
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 1)
+    }
+
+    @Test("Anchor event arriving in a tail read supersedes the stale anchor")
+    func newAnchorEventInTailBecomesAStateAnchor() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        context.insert(run)
+        let staleAnchor = TaskEvent(
+            task: task,
+            type: "astra.permission_manifest",
+            payload: "manifest old",
+            run: run
+        )
+        staleAnchor.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(staleAnchor)
+        for index in 0..<1_205 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 10))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "manifest old" } == true)
+
+        let freshAnchor = TaskEvent(
+            task: task,
+            type: "astra.permission_manifest",
+            payload: "manifest new",
+            run: run
+        )
+        freshAnchor.timestamp = Date(timeIntervalSince1970: 2_000)
+        context.insert(freshAnchor)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        let events = viewModel.snapshot?.sortedEvents ?? []
+        #expect(events.contains { $0.payload == "manifest new" })
+        #expect(!events.contains { $0.payload == "manifest old" })
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 1)
+    }
+
+    @Test("Earlier pages survive a tail read")
+    func earlierPagesSurviveATailRead() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        for index in 0..<1_205 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        viewModel.loadEarlierHistory(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
+
+        let appended = TaskEvent(task: task, type: "user.message", payload: "newest")
+        appended.timestamp = Date(timeIntervalSince1970: 2_000)
+        context.insert(appended)
+        try context.save()
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_206)
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "message 0" } == true)
+        #expect(!viewModel.hasEarlierHistory)
+        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.historyFullReadCountForTesting == 1)
     }
 
     @Test("Storage-backed snapshot caps tool results to the chronologically newest, not dictionary order")

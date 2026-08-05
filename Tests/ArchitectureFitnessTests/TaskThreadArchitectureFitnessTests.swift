@@ -28,6 +28,11 @@ struct TaskThreadArchitectureFitnessTests {
         // filter over a single fetch.
         #expect(!historyReader.contains("for run in runs"))
         #expect(historyReader.contains("let loadedRunIDs = Set(runs.map(\\.id))"))
+        // Streaming appends re-read only the rows at or after the tail cursor.
+        // Losing either half of that pair silently restores a full page read on
+        // every invalidation.
+        #expect(historyReader.contains("static func tailPage("))
+        #expect(viewModel.contains("historyTailCursor"))
         #expect(!viewModel.contains("loadedHistoryRuns.values.min"))
         #expect(!viewModel.contains("loadedHistoryEvents.values.min"))
     }

@@ -162,6 +162,9 @@ final class TaskThreadViewModel {
     private var expansionRunCount: Int = 50
     private var historyPersistence: HistoryPersistence?
     private var historyCursor: TaskThreadHistoryCursor?
+    /// Newest event seen by a completed read. Independent of `historyCursor`,
+    /// which walks backwards for explicit paging and must never move it.
+    private var historyTailCursor: TaskThreadEventCursor?
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
     private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
     private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
@@ -181,6 +184,8 @@ final class TaskThreadViewModel {
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
     private(set) var snapshotBuildCountForTesting = 0
     private(set) var historyReadCountForTesting = 0
+    private(set) var historyTailReadCountForTesting = 0
+    private(set) var historyFullReadCountForTesting = 0
     private let snapshotBuilder: SnapshotBuilder?
     private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
 
@@ -206,6 +211,7 @@ final class TaskThreadViewModel {
             historyTaskID = task.id
             historyTask = task
             historyCursor = nil
+            historyTailCursor = nil
             loadedHistoryEvents = [:]
             loadedHistoryStateAnchors = [:]
             loadedHistoryRuns = [:]
@@ -214,6 +220,8 @@ final class TaskThreadViewModel {
             historyLoadState = .idle
             hasEarlierHistory = false
             historyReadCountForTesting = 0
+            historyTailReadCountForTesting = 0
+            historyFullReadCountForTesting = 0
             snapshotTrigger = nil
             self.responsivenessContext?.cancel()
             pendingSnapshotRequest = nil
@@ -315,12 +323,7 @@ final class TaskThreadViewModel {
             input = preparedInput
         } else if let historyPersistence {
             do {
-                let page = try TaskThreadHistoryReader.initialPage(
-                    taskID: task.id,
-                    modelContext: historyPersistence.context
-                )
-                historyReadCountForTesting += 1
-                mergeLatestHistoryPage(page)
+                try readHistory(for: task, modelContext: historyPersistence.context)
                 input = storageBackedInput(for: task)
                 historyLoadState = .idle
             } catch {
@@ -727,6 +730,75 @@ final class TaskThreadViewModel {
         loadEarlierHistory(for: task)
     }
 
+    /// Streaming appends dominate transcript invalidation, so read only the rows
+    /// at or after the newest one already loaded and pay for a full page only
+    /// when that tail cannot account for every change.
+    private func readHistory(for task: AgentTask, modelContext: ModelContext) throws {
+        if let cursor = historyTailCursor, historyCursor != nil {
+            let tail = try TaskThreadHistoryReader.tailPage(
+                taskID: task.id,
+                since: cursor,
+                modelContext: modelContext
+            )
+            historyTailReadCountForTesting += 1
+            if applyTailPage(tail) {
+                historyReadCountForTesting += 1
+                return
+            }
+        }
+        let page = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: modelContext
+        )
+        historyFullReadCountForTesting += 1
+        historyReadCountForTesting += 1
+        mergeLatestHistoryPage(page)
+    }
+
+    /// Applies an incremental tail read, or reports that it cannot be trusted
+    /// so the caller re-reads the full page.
+    private func applyTailPage(_ tail: TaskThreadHistoryTailPage) -> Bool {
+        guard !tail.overflowed, tail.totalRunCount >= loadedHistoryRuns.count else { return false }
+        let appended = tail.events.reduce(0) { $0 + (loadedHistoryEvents[$1.id] == nil ? 1 : 0) }
+        // Backdated inserts and deletions are invisible to a tail read, but both
+        // move the authoritative count. An exact match is therefore the only
+        // proof that the tail observed every change since the previous read;
+        // relaxing this to `>=` would let compaction strand deleted rows in the
+        // transcript.
+        guard tail.totalEventCount == historyTotalEventCount + appended else { return false }
+        for event in tail.events { loadedHistoryEvents[event.id] = event }
+        // A refreshed anchor arrives as an ordinary tail row. Merge (never
+        // replace) so anchors the tail page never refetches are retained.
+        mergeStateAnchors(tail.events.filter { TaskThreadStateEventPolicy.contains($0.type) })
+        for run in tail.runs { loadedHistoryRuns[run.id] = run }
+        historyTotalRunCount = tail.totalRunCount
+        historyTotalEventCount = tail.totalEventCount
+        advanceTailCursor(with: tail.events)
+        historyCursor = TaskThreadHistoryCursor(
+            run: historyCursor?.run,
+            event: historyCursor?.event,
+            hasEarlierRuns: tail.totalRunCount > loadedHistoryRuns.count,
+            hasEarlierEvents: tail.totalEventCount > loadedHistoryEvents.count
+        )
+        hasEarlierHistory = historyCursor?.hasEarlierHistory == true
+        return true
+    }
+
+    private func advanceTailCursor(with events: [TaskEventSnapshot]) {
+        for event in events {
+            guard let current = historyTailCursor else {
+                historyTailCursor = TaskThreadEventCursor(timestamp: event.timestamp, id: event.id)
+                continue
+            }
+            let isLater = event.timestamp == current.timestamp
+                ? event.id.uuidString > current.id.uuidString
+                : event.timestamp > current.timestamp
+            if isLater {
+                historyTailCursor = TaskThreadEventCursor(timestamp: event.timestamp, id: event.id)
+            }
+        }
+    }
+
     private func replaceHistory(with page: TaskThreadHistoryPage) {
         loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
         loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.map { ($0.id, $0) })
@@ -734,6 +806,12 @@ final class TaskThreadViewModel {
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
         historyCursor = page.cursor
+        // `latestEvents` sorts descending, so the first row is the newest. This
+        // is a reset, not an advance: the discarded pages may have held rows
+        // that no longer exist.
+        historyTailCursor = page.events.first.map {
+            TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id)
+        }
         hasEarlierHistory = page.cursor.hasEarlierHistory
     }
 
@@ -757,6 +835,7 @@ final class TaskThreadViewModel {
         replaceLatestStateAnchors(with: page.stateAnchors, refreshedRuns: page.runs)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
+        advanceTailCursor(with: page.events)
         historyCursor = TaskThreadHistoryCursor(
             run: currentCursor.run,
             event: currentCursor.event,
