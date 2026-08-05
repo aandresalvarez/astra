@@ -228,6 +228,185 @@ struct TaskThreadHistoryReaderTests {
         #expect(previous.stateAnchors.map(\.id) == [anchors[0].id])
     }
 
+    @Test("Batched state anchors match the per-run fetch semantics")
+    func batchedStateAnchorsMatchPerRunFetchSemantics() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let types = TaskThreadStateEventPolicy.eventTypes
+        var runs: [TaskRun] = []
+        var winnersByRun: [UUID: [UUID]] = [:]
+        for runIndex in 0..<6 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(runIndex + 1))
+            context.insert(run)
+            runs.append(run)
+            for offset in 0..<3 {
+                let type = types[(runIndex + offset) % types.count]
+                let superseded = TaskEvent(task: task, type: type, payload: "old", run: run)
+                superseded.timestamp = Date(timeIntervalSince1970: Double(runIndex * 10 + offset))
+                context.insert(superseded)
+                let winner = TaskEvent(task: task, type: type, payload: "new", run: run)
+                winner.timestamp = superseded.timestamp.addingTimeInterval(1)
+                context.insert(winner)
+                winnersByRun[run.id, default: []].append(winner.id)
+            }
+        }
+        var runlessIDs: [UUID] = []
+        for offset in 0..<2 {
+            let runless = TaskEvent(task: task, type: types[offset], payload: "runless \(offset)")
+            runless.timestamp = Date(timeIntervalSince1970: Double(500 + offset))
+            context.insert(runless)
+            runlessIDs.append(runless.id)
+        }
+        try context.save()
+
+        let page = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: context,
+            runPageSize: 3,
+            eventPageSize: 5
+        )
+
+        let expected = Set(runs.suffix(3).flatMap { winnersByRun[$0.id] ?? [] } + runlessIDs)
+        #expect(expected.count == 11)
+        #expect(Set(page.stateAnchors.map(\.id)) == expected)
+    }
+
+    @Test("Off-page runs contribute no state anchors")
+    func offPageRunsContributeNoStateAnchors() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        var runs: [TaskRun] = []
+        for index in 0..<5 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(run)
+            runs.append(run)
+            let anchor = TaskEvent(
+                task: task,
+                type: "astra.todo.replace",
+                payload: "plan \(index)",
+                run: run
+            )
+            anchor.timestamp = Date(timeIntervalSince1970: Double(index + 10))
+            context.insert(anchor)
+        }
+        try context.save()
+
+        let page = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: context,
+            runPageSize: 2,
+            eventPageSize: 10
+        )
+
+        #expect(page.stateAnchors.count == 2)
+        #expect(Set(page.stateAnchors.compactMap(\.runID)) == Set(runs.suffix(2).map(\.id)))
+    }
+
+    @Test("State anchor ties break on UUID string, not fetch order")
+    func stateAnchorTiesBreakOnUUIDString() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        context.insert(run)
+        let timestamp = Date(timeIntervalSince1970: 5)
+        let ids = [
+            "00000000-0000-0000-0000-0000000000AA",
+            "00000000-0000-0000-0000-0000000000BB"
+        ].compactMap(UUID.init(uuidString:))
+        for (index, id) in ids.enumerated() {
+            let anchor = TaskEvent(task: task, type: "astra.complete", payload: "tied \(index)", run: run)
+            anchor.id = id
+            anchor.timestamp = timestamp
+            context.insert(anchor)
+        }
+        try context.save()
+
+        let page = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: context,
+            runPageSize: 5,
+            eventPageSize: 10
+        )
+
+        #expect(page.stateAnchors.map(\.id) == [ids[1]])
+    }
+
+    @Test("Previous page state anchors exclude runless anchors")
+    func previousPageStateAnchorsExcludeRunlessAnchors() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let runless = TaskEvent(task: task, type: "astra.complete", payload: "no run")
+        runless.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(runless)
+        for index in 0..<4 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(run)
+            let anchor = TaskEvent(
+                task: task,
+                type: "astra.permission_manifest",
+                payload: "manifest \(index)",
+                run: run
+            )
+            anchor.timestamp = Date(timeIntervalSince1970: Double(index + 10))
+            context.insert(anchor)
+        }
+        try context.save()
+
+        let latest = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: context,
+            runPageSize: 2,
+            eventPageSize: 10
+        )
+        let previous = try TaskThreadHistoryReader.previousPage(
+            taskID: task.id,
+            before: latest.cursor,
+            modelContext: context,
+            runPageSize: 2,
+            eventPageSize: 10
+        )
+
+        #expect(latest.stateAnchors.contains { $0.id == runless.id })
+        #expect(previous.stateAnchors.count == 2)
+        #expect(!previous.stateAnchors.contains { $0.runID == nil })
+    }
+
+    @Test("Fifty-run state anchor read stays bounded and fast")
+    func fiftyRunStateAnchorReadIsBounded() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let types = TaskThreadStateEventPolicy.eventTypes
+        for runIndex in 0..<60 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(runIndex + 1))
+            context.insert(run)
+            for (typeIndex, type) in types.enumerated() {
+                let anchor = TaskEvent(task: task, type: type, payload: "anchor", run: run)
+                anchor.timestamp = Date(timeIntervalSince1970: Double(runIndex * 100 + typeIndex))
+                context.insert(anchor)
+            }
+        }
+        for index in 0..<1_200 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "chunk \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 10_000))
+            context.insert(event)
+        }
+        try context.save()
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        let page = try TaskThreadHistoryReader.initialPage(taskID: task.id, modelContext: context)
+        let elapsed = started.duration(to: clock.now)
+
+        #expect(page.runs.count == 50)
+        #expect(page.stateAnchors.count == 50 * types.count)
+        #expect(elapsed < .seconds(2))
+    }
+
     @Test("Storage projection caps tool results and drops events for omitted runs")
     func storageProjectionMatchesWindowPolicies() throws {
         let (container, context, task) = try fixture()

@@ -23,6 +23,11 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(taskMainView.contains("requestSnapshotRefresh(for: task)"))
         #expect(taskMainView.contains("modelContext: modelContext"))
         #expect(historyReader.contains("descriptor.fetchLimit = limit + 1"))
+        // State anchors were once fetched once per loaded run, which cost up to
+        // 51 main-actor round trips per page. Membership must stay an in-memory
+        // filter over a single fetch.
+        #expect(!historyReader.contains("for run in runs"))
+        #expect(historyReader.contains("let loadedRunIDs = Set(runs.map(\\.id))"))
         #expect(!viewModel.contains("loadedHistoryRuns.values.min"))
         #expect(!viewModel.contains("loadedHistoryEvents.values.min"))
     }

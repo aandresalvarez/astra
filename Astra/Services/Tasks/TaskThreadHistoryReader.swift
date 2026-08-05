@@ -290,33 +290,31 @@ enum TaskThreadHistoryReader {
         includeRunless: Bool,
         modelContext: ModelContext
     ) throws -> [TaskEventSnapshot] {
+        // One fetch per loaded run cost up to 51 round trips per page read on the
+        // main actor. The run membership test is applied in memory instead: it is
+        // the same predicate, factored, and `TaskEvent` has no scalar run-id
+        // column to filter an optional relationship on in SQL.
+        guard !runs.isEmpty || includeRunless else { return [] }
         let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
-        var events: [TaskEvent] = []
-        for run in runs {
-            let runID = run.id
-            let descriptor = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID
-                        && $0.run?.id == runID
-                        && stateEventTypes.contains($0.type)
-                }
-            )
-            events.append(contentsOf: try modelContext.fetch(descriptor))
-        }
-        if includeRunless {
-            let descriptor = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID
-                        && $0.run == nil
-                        && stateEventTypes.contains($0.type)
-                }
-            )
-            events.append(contentsOf: try modelContext.fetch(descriptor))
-        }
+        var descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> {
+                $0.task?.id == taskID && stateEventTypes.contains($0.type)
+            }
+        )
+        // `TaskEventSnapshot` reads `event.run?.id` for every row, so prefetch the
+        // relationship rather than faulting it one row at a time.
+        descriptor.relationshipKeyPathsForPrefetching = [\TaskEvent.run]
+        let events = try modelContext.fetch(descriptor)
+        let loadedRunIDs = Set(runs.map(\.id))
 
         var latestByKey: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
         for event in events {
             let snapshot = TaskEventSnapshot(event: event)
+            if let runID = snapshot.runID {
+                guard loadedRunIDs.contains(runID) else { continue }
+            } else {
+                guard includeRunless else { continue }
+            }
             let key = TaskThreadStateEventKey(event: snapshot)
             if let current = latestByKey[key], !isLater(snapshot, than: current) {
                 continue
