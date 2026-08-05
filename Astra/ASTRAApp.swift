@@ -234,6 +234,9 @@ private struct AboutHighlightLabelStyle: LabelStyle {
 @MainActor
 final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     weak var runtimeController: AppRuntimeController?
+    /// Supplied by the scene once the main window appears. Only used to reach
+    /// the main context for the termination export drain.
+    var modelContainer: ModelContainer?
     private var isDrainingForTermination = false
 
     static func requiresTerminationDrain(for queue: TaskQueue) -> Bool {
@@ -268,6 +271,7 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtimeController,
               Self.requiresTerminationDrain(for: runtimeController.taskQueue) else {
+            prepareForImmediateTermination()
             return .terminateNow
         }
         guard !isDrainingForTermination else { return .terminateLater }
@@ -275,9 +279,33 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let cancellationIsDurable = await runtimeController.shutdown()
             if !cancellationIsDurable { self.isDrainingForTermination = false }
+            if cancellationIsDurable { self.prepareForImmediateTermination() }
             sender.reply(toApplicationShouldTerminate: cancellationIsDurable)
         }
         return .terminateLater
+    }
+
+    /// Last durable write before the process goes away. Workspace mirror
+    /// exports (read state, canvas item preferences, pack settings, workspace
+    /// detail edits) are debounced 600 ms behind their SwiftData save, so a
+    /// quit inside that window would otherwise leave `.astra-workspace.json`
+    /// describing state the user already changed - and a later import or
+    /// recovery from that mirror would restore the stale value.
+    ///
+    /// Bounded: `flushAllPendingExports` writes only the workspaces that still
+    /// have a pending debounce (at most one entry each), never the full
+    /// workspace list, so termination cannot hang behind a fan-out.
+    /// Called from every path that actually lets the app quit.
+    func prepareForImmediateTermination() {
+        guard let modelContainer else { return }
+        let flushed = WorkspacePersistenceCoordinator.flushAllPendingExports(
+            modelContext: modelContainer.mainContext
+        )
+        guard flushed > 0 else { return }
+        AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            "result": "flushed_on_terminate",
+            "workspace_count": String(flushed)
+        ], level: .info)
     }
 }
 
@@ -871,10 +899,6 @@ public struct ASTRAApp: App {
             approvedPackages: PluginCatalog.builtInPackages
         )
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
-        TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
-            modelContext: modelContext,
-            currentBuild: AppBuildInfo.current.build
-        )
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
@@ -882,6 +906,34 @@ public struct ASTRAApp: App {
         TaskTurnRequestRecoveryService.recoverInterruptedRequests(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
+        )
+    }
+
+    /// Guards `runDeferredStartupMigrations`. Separate from
+    /// `hasRunDeferredStartupWork` because the two run at different points in
+    /// the caller's sequence.
+    @MainActor private static var hasRunDeferredStartupMigrations = false
+
+    /// One-time performance migrations, kept out of `runDeferredStartupWork` so
+    /// they run *after* crash recovery and turn replay rather than in front of
+    /// them: a run left `.running` by a crash occupies the queue until
+    /// `recoverOrphanedRunningRuns` reclaims it, so recovery must never queue
+    /// behind a whole-store sweep.
+    ///
+    /// `async` because the sweep yields the main actor between batches; a
+    /// legacy store with tens of thousands of runs would otherwise freeze the
+    /// first launch after an update for the length of the pass.
+    @MainActor
+    public static func runDeferredStartupMigrations(modelContext: ModelContext) async {
+        guard !hasRunDeferredStartupMigrations else { return }
+        hasRunDeferredStartupMigrations = true
+
+        let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
+        guard !isUITesting else { return }
+
+        await TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
+            modelContext: modelContext,
+            currentBuild: AppBuildInfo.current.build
         )
     }
 
@@ -1011,7 +1063,12 @@ public struct ASTRAApp: App {
                     .environmentObject(feedbackCrashOfferService)
                     .tint(Stanford.interactive)
                     .preferredColorScheme(resolvedAppearance.colorScheme)
-                    .onAppear { appDelegate.runtimeController = runtime }
+                    .onAppear {
+                        appDelegate.runtimeController = runtime
+                        // Gives the delegate the main context it needs to drain
+                        // debounced workspace mirror exports on quit.
+                        appDelegate.modelContainer = modelContainer
+                    }
                     .onOpenURL { url in
                         guard let route = AstraExternalRouteCodec.route(from: url) else { return }
                         AstraExternalRouteStore.shared.submit(route)

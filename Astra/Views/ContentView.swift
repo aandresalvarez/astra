@@ -2641,6 +2641,7 @@ struct ContentView: View {
             ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
             runtime.taskQueue.replayRecoveredTurns(modelContext: modelContext)
             refreshRunningTaskCount()
+            await ASTRAApp.runDeferredStartupMigrations(modelContext: modelContext)
         }
     }
 

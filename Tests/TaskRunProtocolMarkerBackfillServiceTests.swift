@@ -5,11 +5,18 @@ import ASTRAModels
 @testable import ASTRA
 @testable import ASTRAPersistence
 
+/// Counts how many turns a competing main-actor job got while another
+/// main-actor job was running.
+@MainActor
+private final class MainActorTicker {
+    var value = 0
+}
+
 @Suite("Task run protocol marker backfill")
 struct TaskRunProtocolMarkerBackfillServiceTests {
     @MainActor
     @Test("Backfill resolves never-scanned runs and then finds nothing to do")
-    func backfillResolvesNeverScannedRunsOnce() throws {
+    func backfillResolvesNeverScannedRunsOnce() async throws {
         let root = try makeLegacyStoreRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let container = try migratedContainer(at: root)
@@ -18,22 +25,100 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
         #expect(runs.count == 3)
         #expect(runs.allSatisfy { $0.hasProtocolEvents == nil })
 
-        let first = TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
+        let first = await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
         #expect(first == .init(scanned: 3, markerBearing: 1, completed: true))
 
         for run in try context.fetch(FetchDescriptor<TaskRun>()) {
             #expect(run.hasProtocolEvents == run.output.contains("ASTRA_EVENT"))
         }
 
-        // The predicate only selects nil rows, so a repeat pass costs one empty
-        // fetch rather than a second scan of every output blob.
-        let second = TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
-        #expect(second == .init(scanned: 0, markerBearing: 0, completed: true))
+        // A repeat pass - and a fresh install, which is the same shape - stops
+        // at the aggregate probe. `skippedEmptyStore` is how that is visible:
+        // nothing is fetched, so no managed object is materialized at all.
+        let second = await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
+        #expect(second == .init(completed: true, skippedEmptyStore: true))
+    }
+
+    @MainActor
+    @Test("Backfill pages past the batch size and terminates")
+    func backfillWalksEveryBatchUntilTheStoreIsResolved() async throws {
+        let extraRuns = 250
+        let root = try makeLegacyStoreRoot(additionalCleanRuns: extraRuns)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try migratedContainer(at: root)
+        let context = container.mainContext
+        let total = 3 + extraRuns
+        // The multi-batch loop only runs when the store outgrows one page.
+        #expect(total > TaskRunProtocolMarkerBackfillService.batchSize)
+        #expect(try context.fetch(FetchDescriptor<TaskRun>()).count == total)
+
+        let outcome = await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
+        #expect(outcome == .init(scanned: total, markerBearing: 1, completed: true))
+        #expect(try context.fetch(FetchDescriptor<TaskRun>()).allSatisfy { $0.hasProtocolEvents != nil })
+
+        let second = await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
+        #expect(second == .init(completed: true, skippedEmptyStore: true))
+    }
+
+    @MainActor
+    @Test("Backfill hands the main actor back between batches")
+    func backfillYieldsTheMainActorBetweenBatches() async throws {
+        let root = try makeLegacyStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try migratedContainer(at: root)
+        let context = container.mainContext
+
+        // Enqueued, not started: an unstructured Task only gets the main actor
+        // once the current job suspends. If the pass never suspends, this loop
+        // never runs a single iteration - which is precisely the launch-path
+        // freeze a whole-store sweep produces on the first launch after an
+        // update. `batchSize: 1` makes every run its own batch boundary.
+        let ticker = MainActorTicker()
+        let observer = Task { @MainActor in
+            while !Task.isCancelled {
+                ticker.value += 1
+                await Task.yield()
+            }
+        }
+        let outcome = await TaskRunProtocolMarkerBackfillService.backfill(
+            modelContext: context,
+            batchSize: 1
+        )
+        observer.cancel()
+
+        #expect(outcome == .init(scanned: 3, markerBearing: 1, completed: true))
+        #expect(ticker.value >= 1)
+    }
+
+    @Test("The one-time sweep is sequenced after crash recovery, not in front of it")
+    func startupSweepRunsAfterOrphanedRunRecovery() throws {
+        let root = try TestRepositoryRoot.resolve()
+        let app = try String(
+            contentsOf: root.appendingPathComponent("Astra/ASTRAApp.swift"),
+            encoding: .utf8
+        )
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        // A run a crash left `.running` keeps occupying the queue until
+        // recovery reclaims it, so recovery must never queue behind a
+        // whole-store performance sweep.
+        let workStart = try #require(app.range(of: "public static func runDeferredStartupWork("))
+        let migrationsStart = try #require(app.range(of: "public static func runDeferredStartupMigrations("))
+        let deferredWorkBody = app[workStart.upperBound..<migrationsStart.lowerBound]
+        #expect(deferredWorkBody.contains("recoverOrphanedRunningRuns"))
+        #expect(!deferredWorkBody.contains("TaskRunProtocolMarkerBackfillService"))
+
+        let replay = try #require(contentView.range(of: "replayRecoveredTurns"))
+        let sweep = try #require(contentView.range(of: "runDeferredStartupMigrations"))
+        #expect(replay.lowerBound < sweep.lowerBound)
     }
 
     @MainActor
     @Test("Build gate skips a backfill that already ran for this build")
-    func buildGateSkipsAnAlreadyCompletedBackfill() throws {
+    func buildGateSkipsAnAlreadyCompletedBackfill() async throws {
         let root = try makeLegacyStoreRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let container = try migratedContainer(at: root)
@@ -43,7 +128,7 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("42", forKey: AppStorageKeys.completedRunProtocolMarkerBackfillBuild)
 
-        TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
+        await TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
             modelContext: context,
             currentBuild: "42",
             defaults: defaults
@@ -52,7 +137,7 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
 
         // A new build re-arms the pass, which is how a store imported or
         // recovered since the last run still gets resolved.
-        TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
+        await TaskRunProtocolMarkerBackfillService.backfillIfNeeded(
             modelContext: context,
             currentBuild: "43",
             defaults: defaults
@@ -63,7 +148,7 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
 
     @MainActor
     @Test("Plan recovery keeps every never-scanned run and drops proven-clean ones")
-    func planRecoveryNarrowsOnlyAfterTheBackfill() throws {
+    func planRecoveryNarrowsOnlyAfterTheBackfill() async throws {
         let root = try makeLegacyStoreRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let container = try migratedContainer(at: root)
@@ -77,7 +162,7 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
         // plan progress can be lost while the flag is still unknown.
         #expect(try TaskPlanStateReader.read(taskID: task.id, modelContext: context).recoveryRuns.count == 3)
 
-        TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
+        await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
 
         // After it, SQLite rejects the clean rows instead of handing their
         // output blobs to the main actor.
@@ -107,8 +192,11 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
     /// Writes an on-disk V16 store. Migrating it forward is the only way to
     /// obtain the `nil` flag this service exists to resolve: `TaskRun(task:)`
     /// always pins the flag and both stored properties are `private(set)`.
+    ///
+    /// `additionalCleanRuns` pads the store past `batchSize` so the paging loop
+    /// is actually executed rather than short-circuited by a single-page store.
     @MainActor
-    private func makeLegacyStoreRoot() throws -> URL {
+    private func makeLegacyStoreRoot(additionalCleanRuns: Int = 0) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-marker-backfill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -121,7 +209,8 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
         task.title = "Legacy task"
         task.goal = "Resolve protocol marker flags"
         context.insert(task)
-        let outputs = [#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"#, "ordinary output", ""]
+        var outputs = [#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"#, "ordinary output", ""]
+        outputs += (0..<additionalCleanRuns).map { "clean output \($0)" }
         for (index, output) in outputs.enumerated() {
             let run = ASTRASchemaV14Models.TaskRun()
             run.task = task

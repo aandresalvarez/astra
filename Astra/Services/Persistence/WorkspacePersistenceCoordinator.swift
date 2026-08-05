@@ -5,7 +5,14 @@ import ASTRACore
 
 @MainActor
 public enum WorkspacePersistenceCoordinator {
-    private static var pendingExports: [UUID: Task<Void, Never>] = [:]
+    /// The workspace is retained alongside its timer so a termination flush can
+    /// write the pending mirror without re-fetching it from the store.
+    private struct PendingExport {
+        let workspace: Workspace
+        let task: Task<Void, Never>
+    }
+
+    private static var pendingExports: [UUID: PendingExport] = [:]
 
     @discardableResult
     public static func saveAndAutoExport(
@@ -161,25 +168,86 @@ public enum WorkspacePersistenceCoordinator {
         }
 
         let workspaceID = workspace.id
-        pendingExports[workspaceID]?.cancel()
-        pendingExports[workspaceID] = Task { @MainActor in
-            do {
-                try await Task.sleep(nanoseconds: delayNanoseconds)
-            } catch {
-                return
+        pendingExports[workspaceID]?.task.cancel()
+        pendingExports[workspaceID] = PendingExport(
+            workspace: workspace,
+            task: Task { @MainActor in
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                pendingExports[workspaceID] = nil
+                saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             }
-            guard !Task.isCancelled else { return }
-            pendingExports[workspaceID] = nil
-            saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        }
+        )
     }
 
     public static func flushPendingExport(workspace: Workspace?, modelContext: ModelContext) {
         if let id = workspace?.id {
-            pendingExports[id]?.cancel()
+            pendingExports[id]?.task.cancel()
             pendingExports[id] = nil
         }
         saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    /// Workspaces whose debounced mirror export has not fired yet.
+    public static var pendingExportWorkspaceCount: Int { pendingExports.count }
+
+    /// Writes every debounced mirror export that has not fired yet.
+    ///
+    /// `scheduleAutoExport` puts the `.astra-workspace.json` mirror 600 ms
+    /// behind its SwiftData save, so quitting inside that window drops the
+    /// pending write and leaves the mirror stale (a task the user just read
+    /// keeps its `unreadAt`, and a later import or recovery resurrects it as
+    /// unread). Termination drains the queue through here.
+    ///
+    /// Bounded on purpose: only workspaces with a still-pending export are
+    /// written, and the debounce coalesces to at most one entry per workspace,
+    /// so this cannot fan out across the whole workspace list on quit.
+    /// Returns how many mirrors were written.
+    ///
+    /// The write is synchronous rather than going through `saveAndAutoExport`.
+    /// That path hands the encode and file write to a detached task, which is
+    /// not guaranteed to be scheduled before the process exits, so at quit time
+    /// it would drop exactly the write this call exists to make.
+    /// `WorkspaceRecoveryService` uses the same synchronous
+    /// `autoExportTarget` + `exportToFileResult` shape for the same reason.
+    @discardableResult
+    public static func flushAllPendingExports(modelContext: ModelContext) -> Int {
+        let pending = pendingExports
+        pendingExports.removeAll()
+        for entry in pending.values {
+            entry.task.cancel()
+        }
+        guard !pending.isEmpty else { return 0 }
+        guard !shouldSkipAutoExport() else {
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "skipped",
+                "reason": "launch_flag"
+            ], level: .debug)
+            return 0
+        }
+
+        // One save covers the whole drain; the debounced saves already ran.
+        saveWithoutAutoExport(
+            modelContext: modelContext,
+            auditFields: ["operation": "pending_export_drain"]
+        )
+
+        var exported = 0
+        for entry in pending.values {
+            let target = WorkspaceConfigManager.autoExportTarget(for: entry.workspace.primaryPath)
+            guard let url = target.url else { continue }
+            let result = WorkspaceConfigManager.exportToFileResult(
+                workspace: entry.workspace,
+                modelContext: modelContext,
+                url: url
+            )
+            if result.didExport { exported += 1 }
+        }
+        return exported
     }
 
     public nonisolated static func shouldSkipAutoExport(
