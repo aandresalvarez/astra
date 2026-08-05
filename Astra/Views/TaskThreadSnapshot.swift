@@ -1564,10 +1564,16 @@ struct TaskThreadSnapshotTrigger: Equatable {
         )
     }
 
-    init(task: AgentTask, input: TaskThreadSnapshotInput) {
+    /// `inputRevision` is the task revision the *input* describes, which is not
+    /// the task's live revision: the storage read that produced `input` ran
+    /// across an `await`, and streaming writes land during that suspension.
+    /// Stamping the live revision here would make this trigger claim a
+    /// generation whose content the input does not contain, and the follow-up
+    /// read that does carry it would then compare equal and be discarded.
+    init(task: AgentTask, input: TaskThreadSnapshotInput, inputRevision: Date) {
         let latestRun = input.runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
-        revision = task.updatedAt
+        revision = inputRevision
         usesDurableRevision = true
         eventCount = input.totalEventCount
         // Storage-backed refresh is already driven by the durable task revision

@@ -852,7 +852,11 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(events.contains { $0.type == "activity.compacted" })
         #expect(!events.contains { $0.payload == "chunk 0" })
         #expect(events.contains { $0.payload == "chunk 259" })
-        #expect(viewModel.historyTailReadCountForTesting == 1)
+        // Compaction announces itself through `TaskThreadHistoryInvalidation`,
+        // so the tail read is not merely rejected after the fact — it is never
+        // issued. A tail read here can only ever be discarded, because the
+        // deletes and the backdated summary all land before the tail cursor.
+        #expect(viewModel.historyTailReadCountForTesting == 0)
         #expect(viewModel.historyFullReadCountForTesting == 2)
     }
 
