@@ -102,11 +102,21 @@ final class WorkspaceGitViewModel: ObservableObject {
     // rail is offscreen or the app is backgrounded — see pause/resumeRefresh.
     private let refreshInterval: TimeInterval = 30.0
     private let git: GitRepositoryOperating
+    private let urlLauncher: any GitHubAuthorizationURLLaunching
+    /// Live subscription to completed GitHub access repairs. A verified repair
+    /// is a stronger recovery signal than foregrounding, so it clears the
+    /// pull-request lookup breaker for this panel's repository immediately.
+    private var accessRepairObserver: NSObjectProtocol?
 
     var authoringServiceFactory: (() -> any GitCommitMessageGenerating & GitPullRequestGenerating)?
 
-    init(git: GitRepositoryOperating = GitService.shared) {
+    init(
+        git: GitRepositoryOperating = GitService.shared,
+        urlLauncher: any GitHubAuthorizationURLLaunching = SystemGitHubAuthorizationURLLauncher()
+    ) {
         self.git = git
+        self.urlLauncher = urlLauncher
+        observeGitHubAccessRepairs()
     }
 
     private func makeAuthoringService() -> any GitCommitMessageGenerating & GitPullRequestGenerating {
@@ -135,6 +145,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
         // setup() runs on appear / task change, i.e. the rail is visible again.
         isRefreshPaused = false
+        // Re-arm here too: clearing `isRefreshPaused` makes a later
+        // `resumeRefresh()` return early, so a panel re-created after the user
+        // went off to authorize would otherwise never re-probe and would keep
+        // hiding a real pull request for the rest of the cooldown. The
+        // breaker's own 60s delay still stops rail churn from restoring the
+        // failure poll.
+        prLookupBreaker.rearmAfterForeground()
         startRefreshTimer()
     }
 
@@ -159,14 +176,41 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// Resume background refresh and refresh once immediately so the rail is
     /// current the moment it becomes visible/active again.
     func resumeRefresh() {
+        // Returning to the app is the strongest ambient signal that the user
+        // just authorized in the browser, so let a paused PR lookup probe once.
+        // Re-armed ahead of the pause guard: `setup()` also clears
+        // `isRefreshPaused`, and a rearm behind the guard would be skipped in
+        // exactly the case that matters — coming back to a re-created panel.
+        prLookupBreaker.rearmAfterForeground()
         guard isRefreshPaused else { return }
         isRefreshPaused = false
         guard workspace != nil else { return }
-        // Returning to the app is the strongest signal that the user just
-        // authorized in the browser, so let a paused PR lookup probe once.
-        prLookupBreaker.rearmAfterForeground()
         scheduleRefresh()
         startRefreshTimer()
+    }
+
+    /// A verified GitHub access repair proves the credential the breaker
+    /// recorded as rejected now works, so drop the cooldown and probe now
+    /// instead of leaving a real pull request hidden behind "check paused".
+    private func notePullRequestAccessRepaired(at repairedDirectory: String) {
+        guard prLookupBreaker.isOpen,
+              prLookupBreaker.coversRepairedDirectory(repairedDirectory) else { return }
+        prLookupBreaker.reset()
+        prLookupAt = nil
+        refreshOpenPullRequest(force: true)
+    }
+
+    private func observeGitHubAccessRepairs() {
+        accessRepairObserver = NotificationCenter.default.addObserver(
+            forName: .gitHubRepositoryAccessRepaired,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let directory = notification.object as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.notePullRequestAccessRepaired(at: directory)
+            }
+        }
     }
 
     #if DEBUG
@@ -181,10 +225,21 @@ final class WorkspaceGitViewModel: ObservableObject {
     func expirePullRequestLookupThrottleForTesting() {
         prLookupAt = nil
     }
+
+    /// Ages an open breaker past `foregroundRearmDelay` so tests can drive the
+    /// production re-arm sites without sleeping for a minute.
+    func agePullRequestLookupBreakerForTesting(
+        by interval: TimeInterval = GitPullRequestLookupBreaker.foregroundRearmDelay + 1
+    ) {
+        prLookupBreaker.backdateOpenedAtForTesting(by: interval)
+    }
     #endif
 
     deinit {
         refreshTimer?.invalidate()
+        if let accessRepairObserver {
+            NotificationCenter.default.removeObserver(accessRepairObserver)
+        }
     }
 
     // MARK: - Repository scan
@@ -627,7 +682,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     func openExistingPullRequest() {
         guard let pr = openPullRequest, let url = URL(string: pr.url) else { return }
         #if os(macOS)
-        NSWorkspace.shared.open(url)
+        _ = urlLauncher.open(url)
         #endif
     }
 
@@ -1393,7 +1448,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 AppLogger.info("Created pull request via gh", category: "Git")
                 await MainActor.run {
                     #if os(macOS)
-                    if let prURL = URL(string: url) { NSWorkspace.shared.open(prURL) }
+                    if let prURL = URL(string: url) { _ = self.urlLauncher.open(prURL) }
                     #endif
                     self.prDraft = nil
                     self.errorMessage = nil
@@ -1464,7 +1519,7 @@ final class WorkspaceGitViewModel: ObservableObject {
             }
             await MainActor.run {
                 #if os(macOS)
-                NSWorkspace.shared.open(url)
+                _ = self.urlLauncher.open(url)
                 #endif
                 self.prDraft = nil
             }

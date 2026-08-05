@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// How a failed `gh pr list` lookup should affect future polling.
 enum GitPullRequestLookupFailureKind: Equatable, Sendable {
@@ -85,11 +86,27 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
         reset()
     }
 
-    /// Re-probes on app activation, the strongest signal that the user just
-    /// authorized in the browser.
+    /// Re-probes on app activation or panel re-appearance, the strongest
+    /// *ambient* signal that the user just authorized in the browser. The
+    /// delay keeps app-switching (or rail churn) from turning a paused poll
+    /// back into the 90s failure poll this breaker exists to stop.
     mutating func rearmAfterForeground(now: Date = Date()) {
         guard let openedAt, now.timeIntervalSince(openedAt) >= Self.foregroundRearmDelay else { return }
         reset()
+    }
+
+    /// True when a repaired GitHub repository access covers the checkout this
+    /// breaker is holding open. The capability rail repairs the workspace root
+    /// while the panel may be polling a nested repository or a worktree under
+    /// it, so an ancestor (or descendant) directory counts as the same repair.
+    func coversRepairedDirectory(_ directory: String) -> Bool {
+        guard let repoPath else { return false }
+        let repaired = WorkspacePathPresentation.standardizedPath(directory)
+        let held = WorkspacePathPresentation.standardizedPath(repoPath)
+        guard !repaired.isEmpty, !held.isEmpty else { return false }
+        return repaired == held
+            || held.hasPrefix(repaired + "/")
+            || repaired.hasPrefix(held + "/")
     }
 
     mutating func reset() {
@@ -98,4 +115,13 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
         branch = nil
         repoPath = nil
     }
+
+    #if DEBUG
+    /// Ages an open breaker so tests can drive `rearmAfterForeground` through
+    /// the production call sites instead of sleeping out `foregroundRearmDelay`.
+    mutating func backdateOpenedAtForTesting(by interval: TimeInterval) {
+        guard let openedAt else { return }
+        self.openedAt = openedAt.addingTimeInterval(-interval)
+    }
+    #endif
 }

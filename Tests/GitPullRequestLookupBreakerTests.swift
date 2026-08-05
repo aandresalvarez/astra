@@ -152,4 +152,22 @@ struct GitPullRequestLookupBreakerTests {
         returned.rearmAfterForeground(now: openedAt.addingTimeInterval(61))
         #expect(!returned.isOpen)
     }
+
+    @Test("A repaired directory covers the held checkout, its parents, and its worktrees")
+    func repairedDirectoryScoping() {
+        let breaker = openedBreaker()
+
+        // The capability rail repairs the workspace root; the panel may be
+        // polling the repository itself or a checkout nested under it.
+        #expect(breaker.coversRepairedDirectory(Self.repoPath))
+        #expect(breaker.coversRepairedDirectory("/repos"))
+        #expect(breaker.coversRepairedDirectory("/repos/example/worktrees/login"))
+        #expect(breaker.coversRepairedDirectory("/repos/example/"))
+        // A repair of some other organization's checkout says nothing about
+        // this one, so the cooldown must survive it.
+        #expect(!breaker.coversRepairedDirectory("/repos/example-two"))
+        #expect(!breaker.coversRepairedDirectory("/other"))
+        #expect(!breaker.coversRepairedDirectory(""))
+        #expect(!GitPullRequestLookupBreaker().coversRepairedDirectory(Self.repoPath))
+    }
 }

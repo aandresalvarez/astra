@@ -87,6 +87,20 @@ private actor GitHubRefreshRunnerStub: BinaryRunner {
     }
 }
 
+/// Collects `gitHubRepositoryAccessRepaired` payloads from the posting thread.
+private final class RepairAnnouncementRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var directories: [String] {
+        lock.withLock { storage }
+    }
+
+    func record(_ directory: String) {
+        lock.withLock { storage.append(directory) }
+    }
+}
+
 private actor SequencedGitHubRepairProbe {
     private var statuses: [GitHubRepositoryAccessStatus]
     private(set) var callCount = 0
@@ -464,6 +478,40 @@ struct GitHubRepositoryAccessRepairCoordinatorTests {
             account: "aandresalvarez",
             repository: "susom/starr-data-lake"
         ))
+    }
+
+    @Test("Verified access announces the repaired working directory")
+    func verifiedAccessAnnouncesRepairedDirectory() async {
+        let probe = SequencedGitHubRepairProbe([
+            .ready(account: "aandresalvarez", repository: "susom/starr-data-lake")
+        ])
+        let coordinator = makeCoordinator(
+            probe: probe,
+            refresh: GitHubRefreshOutcomeStub(.refreshed),
+            launcher: RecordingGitHubURLLauncher()
+        )
+        let recorder = RepairAnnouncementRecorder()
+        let token = NotificationCenter.default.addObserver(
+            forName: .gitHubRepositoryAccessRepaired,
+            object: nil,
+            queue: nil
+        ) { notification in
+            if let directory = notification.object as? String {
+                recorder.record(directory)
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        coordinator.start(workingDirectory: "/workspace/repo")
+        await coordinator.waitForCurrentOperation()
+
+        #expect(coordinator.state == .ready(
+            account: "aandresalvarez",
+            repository: "susom/starr-data-lake"
+        ))
+        // Panels that stopped polling GitHub on this credential need the
+        // directory to know the repair covers them.
+        #expect(recorder.directories.contains("/workspace/repo"))
     }
 
     private func saml(url: URL) -> GitHubRepositoryAccessStatus {
