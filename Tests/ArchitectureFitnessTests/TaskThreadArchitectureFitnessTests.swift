@@ -50,6 +50,86 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!viewModel.contains("TaskThreadHistoryReader."))
     }
 
+    /// Writable test seams must not ship. `historyFlushResultOverrideForTesting`
+    /// is the reason this is a fitness test and not a convention: production
+    /// consults it *before* the real pre-read save, so a release build able to
+    /// reach it would report a failed save as succeeded and freeze the
+    /// transcript silently — the exact defect that seam exists to test.
+    /// Read-only `private(set)` counters are deliberately out of scope; they
+    /// cannot lie to production.
+    @Test("Writable transcript test seams stay out of release builds")
+    func writableTranscriptTestSeamsStayOutOfReleaseBuilds() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let relativePath = "Astra/Views/TaskThreadViewModel.swift"
+        let lines = try source(relativePath, root: root).components(separatedBy: "\n")
+        let debugLines = debugGatedLineNumbers(in: lines)
+
+        var seamNames: [String] = []
+        var offenders: [String] = []
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let name = writableTestSeamName(in: trimmed) else { continue }
+            seamNames.append(name)
+            guard !debugGated(index + 1, in: debugLines) else { continue }
+            offenders.append("\(relativePath):\(index + 1): \(trimmed)")
+        }
+
+        #expect(!seamNames.isEmpty, "Seam scan found nothing to check — the pattern stopped matching.")
+        for (index, line) in lines.enumerated() where !debugGated(index + 1, in: debugLines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("//"), writableTestSeamName(in: trimmed) == nil else { continue }
+            for name in seamNames where trimmed.contains(name) {
+                offenders.append("\(relativePath):\(index + 1): \(trimmed)")
+            }
+        }
+
+        #expect(
+            offenders.isEmpty,
+            "Writable *ForTesting seams and their call sites must be inside #if DEBUG: \(offenders.sorted())"
+        )
+    }
+
+    /// Line numbers (1-based) enclosed by an `#if DEBUG`. Nested `#if`s are
+    /// tracked by depth so an unrelated inner condition cannot close the gate.
+    private func debugGatedLineNumbers(in lines: [String]) -> Set<Int> {
+        var gated = Set<Int>()
+        var depth = 0
+        var debugDepths: [Int] = []
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if") {
+                depth += 1
+                if trimmed.contains("DEBUG") { debugDepths.append(depth) }
+                continue
+            }
+            if trimmed.hasPrefix("#endif") {
+                if debugDepths.last == depth { debugDepths.removeLast() }
+                depth = max(0, depth - 1)
+                continue
+            }
+            if !debugDepths.isEmpty { gated.insert(index + 1) }
+        }
+        return gated
+    }
+
+    private func debugGated(_ line: Int, in gated: Set<Int>) -> Bool {
+        gated.contains(line)
+    }
+
+    /// `var somethingForTesting` that an outside caller can assign. `let`,
+    /// `private(set) var`, functions and computed statics are not seams a
+    /// release build can be made to lie with.
+    private func writableTestSeamName(in line: String) -> String? {
+        guard let range = line.range(of: #"^(?:@\w+\s+)*var\s+[A-Za-z0-9_]*ForTesting\b"#, options: .regularExpression) else {
+            return nil
+        }
+        return line[range]
+            .replacingOccurrences(of: #"^(?:@\w+\s+)*var\s+"#, with: "", options: .regularExpression)
+    }
+
     @Test("TaskRun output writes go through the protocol-marker mutators")
     func taskRunOutputWritesGoThroughTheProtocolMarkerMutators() throws {
         let root = URL(fileURLWithPath: #filePath)

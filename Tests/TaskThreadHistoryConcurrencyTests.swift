@@ -219,6 +219,66 @@ struct TaskThreadHistoryConcurrencyTests {
         #expect(viewModel.historyLoadState == .idle)
     }
 
+    @Test("A failed earlier-history load still renders the rows it deferred")
+    func failedEarlierHistoryLoadStillRendersDeferredRows() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        task.status = .running
+        for index in 0..<1_205 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.hasEarlierHistory)
+
+        let streamed = TaskEvent(task: task, type: "user.message", payload: "streamed while paging")
+        streamed.timestamp = Date(timeIntervalSince1970: 2_000)
+        context.insert(streamed)
+        try context.save()
+
+        var didInterleave = false
+        viewModel.didCaptureHistoryPageForTesting = { [weak viewModel] in
+            guard !didInterleave, let viewModel else { return }
+            didInterleave = true
+            // The user taps "Load earlier messages" while this streaming read is
+            // suspended, so its apply is deferred to the earlier load. That load
+            // then fails before it can read its page.
+            viewModel.historyFlushResultOverrideForTesting = { false }
+            viewModel.loadEarlierHistory(for: task)
+        }
+
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        viewModel.didCaptureHistoryPageForTesting = nil
+        viewModel.historyFlushResultOverrideForTesting = nil
+
+        #expect(didInterleave)
+        // The earlier page is what failed, so its banner has to stay up...
+        if case .failed = viewModel.historyLoadState {
+            // Expected: the Retry affordance is visible.
+        } else {
+            Issue.record("Expected .failed, got \(viewModel.historyLoadState)")
+        }
+        // ...but the streamed row merged before the failure, and dropping its
+        // apply is the same silent stall as a frozen transcript.
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_201)
+        #expect(viewModel.snapshot?.sortedEvents.last?.payload == "streamed while paging")
+
+        // Retry still re-issues the earlier page rather than the latest one.
+        viewModel.retryEarlierHistory(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        #expect(viewModel.historyLoadState == .idle)
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_206)
+        #expect(!viewModel.hasEarlierHistory)
+    }
+
     @Test("A one-row compaction does not strand the deleted event in the transcript")
     func oneRowCompactionDoesNotStrandTheDeletedEvent() async throws {
         let (container, context, task) = try fixture()

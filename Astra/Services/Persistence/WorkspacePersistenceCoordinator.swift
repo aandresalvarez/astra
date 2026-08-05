@@ -64,15 +64,23 @@ public enum WorkspacePersistenceCoordinator {
     /// is guaranteed to be superseded by a later, more authoritative
     /// save-and-export call (e.g. pre-admission lock events), so the mirror
     /// is never snapshotted mid-transition.
+    ///
+    /// `auditsSuccess: false` keeps `taskID`/`auditFields` attributing the
+    /// *failure* while paying nothing on the success path. Every other caller
+    /// here is a once-per-lifecycle event, but the transcript's pre-read flush
+    /// runs once per invalidation while a task streams: `AppLogger.emit` is not
+    /// level-gated, so even a `.debug` audit sanitizes fields, writes os_log,
+    /// posts a notification and queues two file appends on the calling thread.
     @discardableResult
     public static func saveWithoutAutoExport(
         modelContext: ModelContext,
         taskID: UUID? = nil,
-        auditFields: [String: String] = [:]
+        auditFields: [String: String] = [:],
+        auditsSuccess: Bool = true
     ) -> Bool {
         do {
             try modelContext.save()
-            if taskID != nil || !auditFields.isEmpty {
+            if auditsSuccess, taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["auto_export"] = "skipped"

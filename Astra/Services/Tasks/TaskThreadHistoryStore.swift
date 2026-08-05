@@ -26,8 +26,16 @@ actor TaskThreadHistoryStore {
         self.container = container
     }
 
+    /// The newest page. `covering*` widen it to at least the window the caller
+    /// already holds — the page size is the floor, never the cap — because a
+    /// caller that has to *replace* what it accumulated (an announced mutation
+    /// invalidated it) would otherwise collapse a transcript the user paged
+    /// open back to a single page and lose their place. The widening is bounded
+    /// by rows the caller is already holding in memory.
     func initialPage(
         taskID: UUID,
+        coveringEventCount: Int = 0,
+        coveringRunCount: Int = 0,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
         eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
     ) throws -> TaskThreadHistoryPage {
@@ -36,8 +44,8 @@ actor TaskThreadHistoryStore {
         try TaskThreadHistoryReader.initialPage(
             taskID: taskID,
             modelContext: makeContext(),
-            runPageSize: runPageSize,
-            eventPageSize: eventPageSize
+            runPageSize: max(runPageSize, coveringRunCount),
+            eventPageSize: max(eventPageSize, coveringEventCount)
         )
     }
 

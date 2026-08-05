@@ -860,6 +860,95 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.historyFullReadCountForTesting == 2)
     }
 
+    @Test("A streaming pre-read save writes no audit line when it succeeds")
+    func streamingPreReadSaveDoesNotAuditOnSuccess() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let saved = TaskEvent(task: task, type: "user.message", payload: "saved")
+        saved.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(saved)
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+
+        // Streaming coalesces into the main context without saving, so the
+        // pre-read flush finds `hasChanges` true on essentially every 120 ms
+        // invalidation for as long as the task runs.
+        let streamed = TaskEvent(task: task, type: "agent.response", payload: "chunk")
+        streamed.timestamp = Date(timeIntervalSince1970: 2)
+        TaskEventInsertionService.insert(streamed, into: context)
+        #expect(context.hasChanges)
+
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        AppLogger.flushForTesting()
+
+        // The save really ran: the read could only see the row through it.
+        #expect(viewModel.snapshot?.sortedEvents.count == 2)
+        // `AppLogger.emit` is not level-gated, so a `.debug` audit here is
+        // per-refresh main-actor work (sanitize, os_log, notification post) plus
+        // a line in both the main and the per-task log. Failures stay audited.
+        let auditLines = AppLogger.entries
+            .filter { $0.taskID == task.id }
+            .map(\.message)
+            .filter { $0.contains("operation=thread_history_pre_read_save") }
+        #expect(auditLines.isEmpty, "Pre-read save audit lines: \(auditLines)")
+    }
+
+    @Test("Compaction re-reads the paged-open window instead of collapsing it")
+    func compactionPreservesThePagedOpenWindow() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        TaskThreadHistoryInvalidation.resetForTesting()
+
+        // One compactable row among 1_249 preserved `user.message` rows, so the
+        // delete and the backdated summary cancel out and the transcript stays
+        // wider than a single page after compaction.
+        let strandedPayload = "tool call the compaction deletes"
+        let stranded = TaskEvent(task: task, type: "tool.call", payload: strandedPayload)
+        stranded.timestamp = Date(timeIntervalSince1970: 10)
+        context.insert(stranded)
+        for index in 1..<1_250 {
+            let event = TaskEvent(task: task, type: "user.message", payload: "message \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 1) * 10)
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.hasEarlierHistory)
+
+        // The user pages back to the top.
+        viewModel.loadEarlierHistory(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_250)
+        #expect(!viewModel.hasEarlierHistory)
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+        #expect(task.events.count == 1_250)
+
+        viewModel.requestSnapshotRefresh(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+
+        let events = viewModel.snapshot?.sortedEvents ?? []
+        // The announced mutation still has to drop the deleted row and surface
+        // the backdated summary — the untrusted read replaces rather than
+        // merges.
+        #expect(!events.contains { $0.payload == strandedPayload })
+        #expect(events.contains { $0.type == "activity.compacted" })
+        // But replacing must not throw away the pages the user opened: nothing
+        // they did triggered this read.
+        #expect(events.count == 1_250)
+        #expect(!viewModel.hasEarlierHistory)
+        #expect(events.contains { $0.payload == "message 1" })
+    }
+
     @Test("Backdated insert forces a full re-read")
     func backdatedInsertForcesFullReread() async throws {
         let (container, context, task) = try fixture()
