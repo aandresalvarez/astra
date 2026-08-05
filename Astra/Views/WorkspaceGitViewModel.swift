@@ -62,6 +62,9 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// panel to link to the PR instead of offering to create a duplicate.
     @Published var openPullRequest: GitHubPullRequestRef? = nil
     @Published var pullRequestLookupIssue: String? = nil
+    /// True while polled lookups are paused because GitHub rejected the
+    /// credential. The panel swaps the caption for an actionable retry.
+    var pullRequestLookupAuthBlocked: Bool { prLookupBreaker.isOpen }
     @Published var pullRequestComments: GitHubPullRequestCommentSummary? = nil
     @Published var pullRequestCommentsIssue: String? = nil
     @Published var isRefreshingPullRequestComments: Bool = false
@@ -71,6 +74,9 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var isRefreshingPullRequestChecks: Bool = false
     private var prLookupBranch: String?
     private var prLookupAt: Date?
+    /// Sole owner of "should this polled lookup run". Published so the panel
+    /// re-renders when a rejected credential pauses the check.
+    @Published private var prLookupBreaker = GitPullRequestLookupBreaker()
     private var prCommentsKey: String?
     private var prCommentsLookupAt: Date?
     private var prChecksKey: String?
@@ -156,6 +162,9 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard isRefreshPaused else { return }
         isRefreshPaused = false
         guard workspace != nil else { return }
+        // Returning to the app is the strongest signal that the user just
+        // authorized in the browser, so let a paused PR lookup probe once.
+        prLookupBreaker.rearmAfterForeground()
         scheduleRefresh()
         startRefreshTimer()
     }
@@ -165,6 +174,12 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.workspace = workspace
         self.selectedTask = selectedTask
         self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
+    }
+
+    /// Ages out the 60s time throttle so tests can observe what the breaker
+    /// gates rather than what the clock gates.
+    func expirePullRequestLookupThrottleForTesting() {
+        prLookupAt = nil
     }
     #endif
 
@@ -340,6 +355,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         pullRequestLookupIssue = nil
         prLookupBranch = nil
         prLookupAt = nil
+        prLookupBreaker.reset()
         AppLogger.audit(.gitActiveRepositoryChanged, category: "Git", fields: [
             "result": "changed",
             "repo": repo.path,
@@ -401,6 +417,7 @@ final class WorkspaceGitViewModel: ObservableObject {
             pullRequestLookupIssue = nil
             prLookupBranch = nil
             prLookupAt = nil
+            prLookupBreaker.reset()
             clearPullRequestComments()
             clearPullRequestChecks()
             return
@@ -413,12 +430,20 @@ final class WorkspaceGitViewModel: ObservableObject {
            Date().timeIntervalSince(checkedAt) < 60 {
             return
         }
+        // A credential GitHub has already rejected cannot start working on the
+        // next tick, so stop re-spawning `gh`. Checked before `prLookupAt` is
+        // stamped below so a skipped poll does not push the time throttle
+        // forward, and after `branchChanged` so a branch switch always probes.
+        if !force, !branchChanged, prLookupBreaker.shouldSkip(branch: branch, repoPath: path) {
+            return
+        }
         // Drop a previous branch's PR immediately so the panel never shows a
         // mismatched number while the async lookup is in flight.
         if branchChanged { openPullRequest = nil }
         if branchChanged { pullRequestLookupIssue = nil }
         if branchChanged { clearPullRequestComments() }
         if branchChanged { clearPullRequestChecks() }
+        if branchChanged { prLookupBreaker.reset() }
         prLookupBranch = branch
         prLookupAt = Date()
 
@@ -427,18 +452,27 @@ final class WorkspaceGitViewModel: ObservableObject {
             if self.currentBranch == branch {
                 switch result {
                 case let .found(pr):
+                    self.prLookupBreaker.recordSuccess()
                     self.openPullRequest = pr
                     self.pullRequestLookupIssue = nil
                     self.refreshPullRequestComments(for: pr, repoPath: path, branch: branch, force: force || branchChanged)
                     self.refreshPullRequestChecks(for: pr, repoPath: path, branch: branch, force: force || branchChanged)
                 case .none:
+                    self.prLookupBreaker.recordSuccess()
                     self.openPullRequest = nil
                     self.pullRequestLookupIssue = nil
                     self.clearPullRequestComments()
                     self.clearPullRequestChecks()
                 case let .unavailable(detail):
+                    let kind = self.prLookupBreaker.recordFailure(detail: detail, branch: branch, repoPath: path)
                     self.openPullRequest = nil
-                    self.pullRequestLookupIssue = detail
+                    // Auth failures surface the actionable GitHubCLIError text
+                    // instead of the raw multi-line gh stderr and its SSO URL.
+                    if case let .authorization(message) = kind {
+                        self.pullRequestLookupIssue = message
+                    } else {
+                        self.pullRequestLookupIssue = detail
+                    }
                     self.clearPullRequestComments()
                     self.clearPullRequestChecks()
                 }
@@ -544,6 +578,14 @@ final class WorkspaceGitViewModel: ObservableObject {
         isRefreshingPullRequestChecks = false
         prChecksKey = nil
         prChecksLookupAt = nil
+    }
+
+    /// Manual re-check offered by the panel once a rejected credential has
+    /// paused polled lookups. Clears both throttles so the probe runs now.
+    func retryPullRequestLookup() {
+        prLookupBreaker.reset()
+        prLookupAt = nil
+        refreshOpenPullRequest(force: true)
     }
 
     func refreshPullRequestCommentsNow() {
@@ -1361,6 +1403,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                         self.openPullRequest = ref
                         self.pullRequestLookupIssue = nil
                     }
+                    self.prLookupBreaker.reset()
                     self.refreshOpenPullRequest(force: true)
                 }
             } catch let error as GitHubCLIError {

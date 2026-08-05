@@ -477,6 +477,39 @@ struct GitPullRequestTests {
             && log.contains("reason=invalid_json"))
     }
 
+    @Test("gh SAML failure surfaces an actionable authorization message")
+    func lookupOpenPullRequestSAMLFailureClassifiesAsAuthorization() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        // Verbatim stderr from the recorded production session that re-spawned
+        // this lookup 524 times in 11.2 hours.
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s' 'GraphQL: Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization. (repository) Authorize in your web browser: https://github.com/orgs/example/sso?authorization_request=ABC123' 1>&2
+        exit 1
+        """)
+
+        let result = await GitService.shared.lookupOpenPullRequest(
+            repoPath: repo,
+            head: "feature/saml-\(UUID().uuidString.prefix(8))",
+            ghPathOverride: fakeGH.path
+        )
+
+        guard case .unavailable(let detail) = result else {
+            Issue.record("Expected unavailable lookup result, got \(result)")
+            return
+        }
+        #expect(detail.contains("SAML enforcement"))
+
+        guard case .authorization(let message) = GitPullRequestLookupFailureKind.classify(detail) else {
+            Issue.record("Expected the SAML stderr to classify as an authorization failure")
+            return
+        }
+        #expect(message.contains("Repair access"))
+    }
+
     @Test("lookupPullRequestComments invokes gh GraphQL and returns actionable comments")
     func lookupPullRequestCommentsUsesGraphQL() async throws {
         let repo = try makeTempDir()
