@@ -48,10 +48,14 @@ struct TaskThreadHistoryTailPage: Sendable {
 /// Reads bounded pages directly from SwiftData. The durable `TaskRun` and
 /// `TaskEvent` rows remain the only owners of thread history; this service
 /// returns immutable presentation inputs and never persists a second copy.
-@MainActor
+///
+/// Deliberately not isolated: production drives it from `TaskThreadHistoryStore`
+/// on a background context, and it needs nothing from the main actor. Every
+/// entry point takes the caller's `ModelContext` and returns only `Sendable`
+/// snapshots, so a managed model can never escape the isolation that fetched it.
 enum TaskThreadHistoryReader {
-    nonisolated static let defaultRunPageSize = 50
-    nonisolated static let defaultEventPageSize = 1_200
+    static let defaultRunPageSize = 50
+    static let defaultEventPageSize = 1_200
 
     static func initialPage(
         taskID: UUID,
@@ -425,6 +429,13 @@ enum TaskThreadHistoryReader {
         return candidate.id.uuidString > current.id.uuidString
     }
 
+    /// Durations before and after the offload are not comparable, so every read
+    /// records where it ran. A `main` value in production means something put
+    /// the read back on the UI path.
+    private static var isolationField: String {
+        Thread.isMainThread ? "main" : "background"
+    }
+
     private static func logRead(
         operation: String,
         page: TaskThreadHistoryPage,
@@ -434,9 +445,10 @@ enum TaskThreadHistoryReader {
         PerformanceTelemetry.logIfNeeded(
             "thread_history_page_read",
             start: startedAt,
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
             fields: [
                 "operation": operation,
+                "isolation": Self.isolationField,
                 "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
                 "page_events": PerformanceTelemetryFields.count(page.events.count),
                 "page_runs": PerformanceTelemetryFields.count(page.runs.count),
@@ -458,9 +470,10 @@ enum TaskThreadHistoryReader {
         PerformanceTelemetry.logIfNeeded(
             "thread_history_page_read",
             start: startedAt,
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
             fields: [
                 "operation": "tail",
+                "isolation": Self.isolationField,
                 "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
                 "page_events": PerformanceTelemetryFields.count(tail.events.count),
                 "page_runs": PerformanceTelemetryFields.count(tail.runs.count),

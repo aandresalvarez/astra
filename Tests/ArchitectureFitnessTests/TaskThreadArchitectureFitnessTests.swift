@@ -35,6 +35,19 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(viewModel.contains("historyTailCursor"))
         #expect(!viewModel.contains("loadedHistoryRuns.values.min"))
         #expect(!viewModel.contains("loadedHistoryEvents.values.min"))
+        // The reader runs on `TaskThreadHistoryStore`'s background context.
+        // Re-isolating it to the main actor, or routing either read around the
+        // store, puts the app's largest measured main-actor block back on the
+        // UI path. `initialPage` deliberately stays reachable from the view
+        // model: it is the count-invariant fallback when a tail read cannot
+        // account for every change.
+        let historyStore = try source("Astra/Services/Tasks/TaskThreadHistoryStore.swift", root: root)
+        #expect(!historyReader.contains("@MainActor"))
+        #expect(historyStore.contains("actor TaskThreadHistoryStore"))
+        #expect(historyStore.contains("ModelContext(container)"))
+        #expect(viewModel.contains("store.initialPage("))
+        #expect(viewModel.contains("store.tailPage("))
+        #expect(!viewModel.contains("TaskThreadHistoryReader."))
     }
 
     @Test("Transcript rows stay grouped below the outer lazy stack")
