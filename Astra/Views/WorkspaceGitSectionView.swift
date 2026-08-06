@@ -608,11 +608,19 @@ struct WorkspaceGitSectionView: View {
             }
 
             if !prExists, let caption = pullRequestReadinessCaption {
-                Text(caption)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(pullRequestReadinessHelp ?? caption)
+                HStack(spacing: 6) {
+                    Text(caption)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(pullRequestReadinessHelp ?? caption)
+                    if viewModel.pullRequestLookupAuthBlocked {
+                        Button("Retry") { viewModel.retryPullRequestLookup() }
+                            .font(Stanford.caption(11).weight(.medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Stanford.statusInfo)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -707,6 +715,9 @@ struct WorkspaceGitSectionView: View {
         if let issue = viewModel.pullRequestReadinessIssue {
             return "Pull request — \(shortPullRequestIssue(issue).lowercased())"
         }
+        if viewModel.pullRequestLookupAuthBlocked {
+            return "Pull request check paused — GitHub authorization needed"
+        }
         if viewModel.pullRequestLookupIssue != nil {
             return "Could not check for an existing pull request"
         }
@@ -717,6 +728,9 @@ struct WorkspaceGitSectionView: View {
     /// explanatory prefix so the raw error never appears without context.
     private var pullRequestReadinessHelp: String? {
         if let issue = viewModel.pullRequestReadinessIssue { return issue }
+        // The auth-blocked message already names the repair path, so it stands
+        // alone instead of being buried behind the generic prefix.
+        if viewModel.pullRequestLookupAuthBlocked { return viewModel.pullRequestLookupIssue }
         if let issue = viewModel.pullRequestLookupIssue {
             return "Could not check for an existing pull request: \(issue)"
         }

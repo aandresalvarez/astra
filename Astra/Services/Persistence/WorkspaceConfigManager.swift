@@ -2531,7 +2531,7 @@ public enum WorkspaceConfigManager {
             )
             run.providerLaunchSignatureJSON = rc.providerLaunchSignatureJSON
             run.exitCode = rc.exitCode
-            run.output = rc.output
+            run.setOutput(rc.output)
             run.costUSD = rc.costUSD
             run.stopReason = rc.stopReason
             run.fileChangesJSON = rc.fileChangesJSON

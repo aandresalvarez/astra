@@ -40,7 +40,7 @@ struct UIStressThreadSnapshotTests {
             run.startedAt = Date(timeIntervalSince1970: base)
             run.completedAt = Date(timeIntervalSince1970: base + 9_000)
             run.status = .completed
-            run.output = "Answer for run \(runIndex) with a small body of text."
+            run.setOutput("Answer for run \(runIndex) with a small body of text.")
             runs.append(run)
 
             for eventIndex in 0..<eventsPerRun {
@@ -232,7 +232,7 @@ struct UIStressThreadSnapshotTests {
     @Test("full snapshot build at the window ceiling stays within budget")
     func fullBuildAtWindowCeiling() {
         let task = Self.denseTask(runCount: 50, eventsPerRun: 24)
-        task.runs.last?.output = String(repeating: "Streaming answer prose. ", count: 4_000)
+        task.runs.last?.setOutput(String(repeating: "Streaming answer prose. ", count: 4_000))
 
         let input = TaskThreadSnapshotInput(task: task)
         #expect(input.events.count <= 1_200)
@@ -269,7 +269,7 @@ struct UIStressThreadSnapshotTests {
     func cancellableBuildHonorsCancellation() async {
         let task = Self.denseTask(runCount: 50, eventsPerRun: 24)
         for run in task.runs {
-            run.output = String(repeating: "Large body to scan. ", count: 10_000)
+            run.setOutput(String(repeating: "Large body to scan. ", count: 10_000))
         }
         let input = TaskThreadSnapshotInput(task: task)
         let executor = TaskThreadSnapshotBuildExecutor()
@@ -293,7 +293,7 @@ struct UIStressThreadSnapshotTests {
         case .success:
             // A race where the build wins is legal; it must still be a
             // complete, well-formed snapshot.
-            #expect((try? outcome.get())?.sortedRuns.count == 50)
+            #expect((try? outcome.get())?.snapshot.sortedRuns.count == 50)
         }
     }
 
@@ -308,13 +308,13 @@ struct UIStressThreadSnapshotTests {
         try await withThrowingTaskGroup(of: Int.self) { group in
             for _ in 0..<24 {
                 group.addTask {
-                    let snapshot = try await executor.build(
+                    let outcome = try await executor.build(
                         input: input,
                         fields: [:],
                         responsivenessContext: nil,
                         admittedAt: DispatchTime.now().uptimeNanoseconds
                     )
-                    return snapshot.sortedEvents.count
+                    return outcome.snapshot.sortedEvents.count
                 }
             }
             var results: [Int] = []
@@ -341,14 +341,14 @@ struct UIStressThreadSnapshotTests {
         run.status = .running
         task.runs.append(run)
 
-        run.output = String(repeating: "a", count: 100)
+        run.setOutput(String(repeating: "a", count: 100))
         let base = TaskThreadSnapshotTrigger(task: task)
 
-        run.output += String(repeating: "b", count: 100)
+        run.appendOutput(String(repeating: "b", count: 100))
         let sameBucket = TaskThreadSnapshotTrigger(task: task)
         #expect(base == sameBucket, "sub-bucket output growth must coalesce (no rebuild per chunk)")
 
-        run.output += String(repeating: "c", count: 1_024)
+        run.appendOutput(String(repeating: "c", count: 1_024))
         let nextBucket = TaskThreadSnapshotTrigger(task: task)
         #expect(base != nextBucket, "crossing a 1KB bucket must invalidate")
 

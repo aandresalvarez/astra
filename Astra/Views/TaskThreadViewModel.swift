@@ -111,11 +111,20 @@ final class TaskThreadViewModel {
     private struct HistoryPersistence {
         let container: ModelContainer
         let context: ModelContext
+        /// Reads run here, off the main actor. The context stays main-actor
+        /// owned and is only used to flush pending writes before a read.
+        let store: TaskThreadHistoryStore
 
         init(context: ModelContext) {
             container = context.container
             self.context = context
+            store = TaskThreadHistoryStore(container: context.container)
         }
+    }
+
+    private struct DeferredHistoryApply {
+        let task: AgentTask
+        let generation: Date
     }
 
     private(set) var snapshot: TaskThreadSnapshot?
@@ -156,12 +165,29 @@ final class TaskThreadViewModel {
     private var generatedFilesTask: Task<Void, Never>?
     private var requestedRefreshTask: Task<Void, Never>?
     private var historyLoadTask: Task<Void, Never>?
+    /// Single-flight worker for the latest-page read. Making the read async
+    /// removed the back-pressure the synchronous block used to provide, so at
+    /// most one read is in flight and at most one is queued behind it.
+    private var historyReadTask: Task<Void, Never>?
+    private var historyReadWorkerID: UUID?
+    private var pendingHistoryRead: AgentTask?
+    /// A latest-page read that landed while an explicit "load earlier messages"
+    /// page was still in flight. Its rows are already merged; only the snapshot
+    /// apply is held back so the earlier page owns the next transcript update.
+    private var deferredHistoryApply: DeferredHistoryApply?
+    /// Newest `TaskThreadHistoryInvalidation` generation this view model's
+    /// loaded rows were built from. A different value means a mutation the tail
+    /// read cannot see has landed.
+    private var historyInvalidationToken = 0
     private var hasPendingRequestedRefresh = false
     private var historyTaskID: UUID?
     private var historyTask: AgentTask?
     private var expansionRunCount: Int = 50
     private var historyPersistence: HistoryPersistence?
     private var historyCursor: TaskThreadHistoryCursor?
+    /// Newest event seen by a completed read. Independent of `historyCursor`,
+    /// which walks backwards for explicit paging and must never move it.
+    private var historyTailCursor: TaskThreadEventCursor?
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
     private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
     private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
@@ -181,8 +207,32 @@ final class TaskThreadViewModel {
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
     private(set) var snapshotBuildCountForTesting = 0
     private(set) var historyReadCountForTesting = 0
+    private(set) var historyTailReadCountForTesting = 0
+    private(set) var historyFullReadCountForTesting = 0
     private let snapshotBuilder: SnapshotBuilder?
     private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
+    private let mainActorStallSampler = TaskThreadMainActorStallSampler()
+
+    // Debug-only, like `setWorkspaceForTesting` and
+    // `agePullRequestLookupBreakerForTesting`. `historyFlushResultOverride`
+    // especially: it short-circuits the real save, so a release build that
+    // could reach it would believe a failed save succeeded -- the silent
+    // transcript freeze these seams exist to test.
+    #if DEBUG
+    /// Test seam for the window between a store page being captured off the
+    /// main actor and this view model applying it. That window is where
+    /// production damage happens -- `AgentRuntimeWorker` coalesces chunks and
+    /// finalizes runs into the main context while the read is suspended -- and
+    /// it is unreachable from a test that writes, saves, and only then
+    /// refreshes.
+    @ObservationIgnored
+    var didCaptureHistoryPageForTesting: (@MainActor () async -> Void)?
+    /// Test seam standing in for the pre-read main-context save so the
+    /// save-failure branch is reachable. Production always routes through
+    /// `WorkspacePersistenceCoordinator`.
+    @ObservationIgnored
+    var historyFlushResultOverrideForTesting: (@MainActor () -> Bool)?
+    #endif
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
     private static var terminalSnapshotCache = TaskThreadSnapshotCache()
@@ -206,6 +256,7 @@ final class TaskThreadViewModel {
             historyTaskID = task.id
             historyTask = task
             historyCursor = nil
+            historyTailCursor = nil
             loadedHistoryEvents = [:]
             loadedHistoryStateAnchors = [:]
             loadedHistoryRuns = [:]
@@ -214,6 +265,8 @@ final class TaskThreadViewModel {
             historyLoadState = .idle
             hasEarlierHistory = false
             historyReadCountForTesting = 0
+            historyTailReadCountForTesting = 0
+            historyFullReadCountForTesting = 0
             snapshotTrigger = nil
             self.responsivenessContext?.cancel()
             pendingSnapshotRequest = nil
@@ -221,8 +274,17 @@ final class TaskThreadViewModel {
             requestedRefreshTask = nil
             historyLoadTask?.cancel()
             historyLoadTask = nil
+            pendingHistoryRead = nil
+            deferredHistoryApply = nil
+            historyInvalidationToken = TaskThreadHistoryInvalidation.token(for: task.id)
+            supersedeHistoryReadWorker()
             hasPendingRequestedRefresh = false
             supersedeSnapshotWorker()
+            // Dropped here rather than left to the idle backstop so switching
+            // tasks can never leave a 20 Hz probe behind. `refreshSnapshot`
+            // below restarts it if the incoming task is live.
+            mainActorStallSampler.stop()
+            _ = mainActorStallSampler.consumeTelemetryFields()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
             initialSnapshotResponsivenessTraceID = responsivenessContext?.traceID
@@ -268,10 +330,14 @@ final class TaskThreadViewModel {
         refreshSnapshot(for: historyTask)
     }
 
+    /// `inputGeneration` is the `task.updatedAt` captured before the storage
+    /// read that produced `preparedInput` was issued. It is the generation the
+    /// input actually describes; the live task may already be newer.
     private func refreshSnapshot(
         for task: AgentTask,
         preparedInput: TaskThreadSnapshotInput?,
-        bypassCache: Bool
+        bypassCache: Bool,
+        inputGeneration: Date? = nil
     ) {
         var fields = Self.taskFields(task)
         let responsivenessContext = responsivenessContext
@@ -280,7 +346,14 @@ final class TaskThreadViewModel {
         // keeping repeated opens of long completed histories off the main
         // actor's event scan path.
         let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount)
-        let applicableCacheKey = bypassCache ? nil : cacheKey
+        // Never cache a page read under a key claiming a generation the page
+        // does not contain. The read runs across an `await`, so the completion
+        // envelope and the last coalesced chunk can both land during the
+        // suspension; storing that stale page under the post-completion key
+        // would poison every later open of the task, because `updatedAt` -- the
+        // whole key's revision term -- stops moving once a task is terminal.
+        let readIsBehindLiveTask = inputGeneration.map { $0 != task.updatedAt } ?? false
+        let applicableCacheKey = bypassCache || readIsBehindLiveTask ? nil : cacheKey
         if preparedInput == nil, let cacheKey = applicableCacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
             snapshotRevision += 1
@@ -313,26 +386,13 @@ final class TaskThreadViewModel {
         let input: TaskThreadSnapshotInput
         if let preparedInput {
             input = preparedInput
-        } else if let historyPersistence {
-            do {
-                let page = try TaskThreadHistoryReader.initialPage(
-                    taskID: task.id,
-                    modelContext: historyPersistence.context
-                )
-                historyReadCountForTesting += 1
-                mergeLatestHistoryPage(page)
-                input = storageBackedInput(for: task)
-                historyLoadState = .idle
-            } catch {
-                historyLoadState = .failed(error.localizedDescription)
-                PerformanceTelemetry.log(
-                    "thread_history_read_failed",
-                    level: .error,
-                    fields: fields.merging(["operation": "latest"], uniquingKeysWith: { _, new in new }),
-                    taskID: task.id
-                )
-                return
-            }
+        } else if historyPersistence != nil {
+            // The storage read is the single largest main-actor block in the
+            // app, so it is handed to `TaskThreadHistoryStore` and re-enters
+            // here with a prepared input once it lands.
+            pendingHistoryRead = task
+            startHistoryReadWorkerIfNeeded()
+            return
         } else {
             input = TaskThreadSnapshotInput(
                 task: task,
@@ -341,7 +401,11 @@ final class TaskThreadViewModel {
             )
         }
 
-        let trigger = TaskThreadSnapshotTrigger(task: task, input: input)
+        let trigger = TaskThreadSnapshotTrigger(
+            task: task,
+            input: input,
+            inputRevision: inputGeneration ?? task.updatedAt
+        )
         let resolvedTrigger = historyPersistence == nil
             ? TaskThreadSnapshotTrigger(task: task)
             : trigger
@@ -367,6 +431,13 @@ final class TaskThreadViewModel {
         let isLive = resolvedTrigger.status == .running
             || resolvedTrigger.status == .queued
             || resolvedTrigger.latestRunStatus == .running
+        // The probe only exists to explain the streaming tail, so it lives
+        // exactly as long as the stream does.
+        if isLive {
+            mainActorStallSampler.start()
+        } else {
+            mainActorStallSampler.stop()
+        }
         let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
         let minimumInterval = Self.liveSnapshotMinimumInterval
         let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
@@ -435,6 +506,11 @@ final class TaskThreadViewModel {
                 let buildStartedAt = DispatchTime.now().uptimeNanoseconds
                 self.snapshotBuildCountForTesting += 1
                 let builtSnapshot: TaskThreadSnapshot
+                // Stamped by the executor before it returns, so the gap between
+                // it and the apply below is the real main-actor hop. Stamping it
+                // here, after resumption, measures the hop as zero by
+                // construction — which is what it used to report.
+                let buildCompletedAt: UInt64
                 do {
                     if let snapshotBuilder = self.snapshotBuilder {
                         builtSnapshot = try await snapshotBuilder(
@@ -442,6 +518,7 @@ final class TaskThreadViewModel {
                             request.fields,
                             request.responsivenessContext
                         )
+                        buildCompletedAt = DispatchTime.now().uptimeNanoseconds
                     } else {
                         // Capture executor admission immediately before the
                         // actor await. Request scheduling and live throttling
@@ -451,12 +528,14 @@ final class TaskThreadViewModel {
                             "thread_snapshot_executor_admission_started",
                             0
                         )
-                        builtSnapshot = try await self.snapshotBuildExecutor.build(
+                        let outcome = try await self.snapshotBuildExecutor.build(
                             input: request.input,
                             fields: request.fields,
                             responsivenessContext: request.responsivenessContext,
                             admittedAt: executorAdmissionStartedAt
                         )
+                        builtSnapshot = outcome.snapshot
+                        buildCompletedAt = outcome.completedAtUptimeNanoseconds
                     }
                 } catch is CancellationError {
                     break
@@ -472,7 +551,6 @@ final class TaskThreadViewModel {
                     )
                     continue
                 }
-                let buildCompletedAt = DispatchTime.now().uptimeNanoseconds
                 guard !Task.isCancelled else { break }
                 self.applySnapshotIfCurrent(
                     builtSnapshot,
@@ -503,11 +581,26 @@ final class TaskThreadViewModel {
         buildStartedAt: UInt64,
         buildCompletedAt: UInt64
     ) {
+        // Measured before the revision guard so a superseded generation cannot
+        // hide a hop that already happened.
+        let applyHopMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt)
+        let buildMilliseconds = Double(buildCompletedAt &- buildStartedAt) / 1_000_000
         guard request.revision == snapshotRevision else { return }
+        // The task-open trace is cancelled after the first apply, so anything
+        // reported only inside `performIfActive` is invisible for the entire
+        // streaming lifetime — where the multi-second hops actually live. Emit
+        // the unconditional event first, then the trace-correlated copy.
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_apply_hop",
+            start: buildCompletedAt,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: request.fields,
+            taskID: request.taskID
+        )
         request.responsivenessContext?.performIfActive { traceFields in
             PerformanceTelemetry.log(
-                "task_open_snapshot_main_actor_apply_wait",
-                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt),
+                "task_open_snapshot_apply_hop",
+                durationMilliseconds: applyHopMilliseconds,
                 fields: request.fields.merging(traceFields, uniquingKeysWith: { _, new in new }),
                 taskID: request.taskID
             )
@@ -539,8 +632,14 @@ final class TaskThreadViewModel {
                 level: .debug,
                 fields: request.fields.merging([
                     "throttle_delay_ms": String(format: "%.2f", request.delay * 1_000),
-                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount)
-                ], uniquingKeysWith: { _, new in new }),
+                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount),
+                    // Cadence is build + hop + apply. Carrying the split on the
+                    // same line makes every sample self-decomposing instead of
+                    // needing a join against the preceding build line.
+                    "build_ms": String(format: "%.2f", buildMilliseconds),
+                    "apply_hop_ms": String(format: "%.2f", applyHopMilliseconds)
+                ], uniquingKeysWith: { _, new in new })
+                .merging(mainActorStallSampler.consumeTelemetryFields(), uniquingKeysWith: { _, new in new }),
                 taskID: request.taskID
             )
             deferredLiveSnapshotCount = 0
@@ -593,11 +692,24 @@ final class TaskThreadViewModel {
                 await historyLoadTask.value
                 continue
             }
+            if let historyReadTask {
+                await historyReadTask.value
+                continue
+            }
             if let snapshotTask {
                 await snapshotTask.value
                 continue
             }
             return
+        }
+    }
+
+    /// Awaits only the latest-page reader. `waitForPendingWorkForTesting` also
+    /// awaits `historyLoadTask`, which deadlocks when the caller is running
+    /// inside that task -- exactly the interleaving these tests reproduce.
+    func waitForHistoryReadForTesting() async {
+        while let historyReadTask {
+            await historyReadTask.value
         }
     }
 
@@ -652,7 +764,7 @@ final class TaskThreadViewModel {
 
     func loadEarlierHistory(for task: AgentTask) {
         guard historyLoadState != .loading else { return }
-        guard let modelContext = historyPersistence?.context else {
+        guard let store = historyPersistence?.store else {
             expandWindow(for: task)
             return
         }
@@ -663,24 +775,35 @@ final class TaskThreadViewModel {
             await Task.yield()
             guard !Task.isCancelled else { return }
             guard self?.historyTaskID == taskID else { return }
-            self?.performEarlierHistoryLoad(for: task, modelContext: modelContext)
+            await self?.performEarlierHistoryLoad(for: task, store: store)
         }
     }
 
-    private func performEarlierHistoryLoad(for task: AgentTask, modelContext: ModelContext) {
+    private func performEarlierHistoryLoad(
+        for task: AgentTask,
+        store: TaskThreadHistoryStore
+    ) async {
         guard historyTaskID == task.id, !Task.isCancelled else { return }
         defer {
             if historyTaskID == task.id {
                 historyLoadTask = nil
+                // This load owned `historyLoadState` and the view's scroll
+                // anchor, so any latest-page read that landed inside it was
+                // held back. Release it now that the earlier page has merged.
+                flushDeferredHistoryApply()
             }
         }
         do {
             var initializedHistory = false
+            var generation = task.updatedAt
             if historyCursor == nil {
-                let initialPage = try TaskThreadHistoryReader.initialPage(
-                    taskID: task.id,
-                    modelContext: modelContext
-                )
+                guard flushPendingHistoryWrites() else {
+                    reportHistoryFlushFailure(for: task, operation: "earlier")
+                    return
+                }
+                let initialPage = try await store.initialPage(taskID: task.id)
+                await notifyHistoryPageCapturedForTesting()
+                guard isCurrentHistoryRead(task.id) else { return }
                 historyReadCountForTesting += 1
                 replaceHistory(with: initialPage)
                 initializedHistory = true
@@ -692,27 +815,33 @@ final class TaskThreadViewModel {
                     refreshSnapshot(
                         for: task,
                         preparedInput: storageBackedInput(for: task),
-                        bypassCache: true
+                        bypassCache: true,
+                        inputGeneration: generation
                     )
                 } else {
                     historyLoadState = .idle
                 }
                 return
             }
-            let page = try TaskThreadHistoryReader.previousPage(
-                taskID: task.id,
-                before: cursor,
-                modelContext: modelContext
-            )
+            generation = task.updatedAt
+            guard flushPendingHistoryWrites() else {
+                reportHistoryFlushFailure(for: task, operation: "earlier")
+                return
+            }
+            let page = try await store.previousPage(taskID: task.id, before: cursor)
+            await notifyHistoryPageCapturedForTesting()
+            guard isCurrentHistoryRead(task.id) else { return }
             historyReadCountForTesting += 1
             mergeEarlierHistoryPage(page)
             snapshotTrigger = nil
             refreshSnapshot(
                 for: task,
                 preparedInput: storageBackedInput(for: task),
-                bypassCache: true
+                bypassCache: true,
+                inputGeneration: generation
             )
         } catch {
+            guard historyTaskID == task.id else { return }
             historyLoadState = .failed(error.localizedDescription)
             AppLogger.error(
                 "Could not load earlier task history: \(error.localizedDescription)",
@@ -724,7 +853,296 @@ final class TaskThreadViewModel {
     func retryEarlierHistory(for task: AgentTask) {
         guard case .failed = historyLoadState else { return }
         historyLoadState = .idle
+        guard hasEarlierHistory else {
+            // The failure can come from the latest-page read (a failed pre-read
+            // flush freezes the transcript with no earlier page involved), so
+            // Retry must re-issue that read rather than no-op.
+            refreshSnapshot(for: task, preparedInput: nil, bypassCache: true)
+            return
+        }
         loadEarlierHistory(for: task)
+    }
+
+    private func supersedeHistoryReadWorker() {
+        historyReadTask?.cancel()
+        historyReadTask = nil
+        historyReadWorkerID = nil
+    }
+
+    private func startHistoryReadWorkerIfNeeded() {
+        guard historyReadTask == nil else { return }
+        let workerID = UUID()
+        historyReadWorkerID = workerID
+        historyReadTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, let task = self.takePendingHistoryRead() {
+                await self.readHistory(for: task)
+            }
+            guard self.historyReadWorkerID == workerID else { return }
+            self.historyReadTask = nil
+            self.historyReadWorkerID = nil
+            // A refresh can arrive after the loop observes an empty slot but
+            // before this task clears itself. Recheck to avoid stranding it.
+            if self.pendingHistoryRead != nil {
+                self.startHistoryReadWorkerIfNeeded()
+            }
+        }
+    }
+
+    private func takePendingHistoryRead() -> AgentTask? {
+        defer { pendingHistoryRead = nil }
+        return pendingHistoryRead
+    }
+
+    /// Streaming appends dominate transcript invalidation, so read only the rows
+    /// at or after the newest one already loaded and pay for a full page only
+    /// when that tail cannot account for every change. Both reads run on
+    /// `TaskThreadHistoryStore`; only the merge and the re-entry are main-actor.
+    private func readHistory(for task: AgentTask) async {
+        guard let store = historyPersistence?.store, historyTaskID == task.id else { return }
+        let taskID = task.id
+        // A mutation the tail read provably cannot observe (see
+        // `TaskThreadHistoryInvalidation`) disqualifies the tail for one cycle
+        // and makes the accumulated rows untrustworthy, not just incomplete.
+        let invalidationToken = TaskThreadHistoryInvalidation.token(for: taskID)
+        let tailIsTrusted = invalidationToken == historyInvalidationToken
+        do {
+            if tailIsTrusted, let cursor = historyTailCursor, historyCursor != nil {
+                // Captured before the flush: writes that land from here on are
+                // not guaranteed to be in the page this read returns.
+                let generation = task.updatedAt
+                guard flushPendingHistoryWrites() else {
+                    reportHistoryFlushFailure(for: task, operation: "latest")
+                    return
+                }
+                let tail = try await store.tailPage(taskID: taskID, since: cursor)
+                await notifyHistoryPageCapturedForTesting()
+                guard isCurrentHistoryRead(taskID) else { return }
+                historyTailReadCountForTesting += 1
+                if applyTailPage(tail) {
+                    historyReadCountForTesting += 1
+                    applyHistoryRead(for: task, generation: generation)
+                    return
+                }
+            }
+            let generation = task.updatedAt
+            guard flushPendingHistoryWrites() else {
+                reportHistoryFlushFailure(for: task, operation: "latest")
+                return
+            }
+            // An untrusted read replaces rather than merges, so it must come
+            // back as wide as the window the user has paged open or the replace
+            // itself snaps them back to the latest page. The widening is
+            // bounded by rows already held, and only an announced mutation
+            // (compaction) ever asks for it.
+            let page = try await store.initialPage(
+                taskID: taskID,
+                coveringEventCount: tailIsTrusted ? 0 : loadedHistoryEvents.count,
+                coveringRunCount: tailIsTrusted ? 0 : loadedHistoryRuns.count
+            )
+            await notifyHistoryPageCapturedForTesting()
+            guard isCurrentHistoryRead(taskID) else { return }
+            historyFullReadCountForTesting += 1
+            historyReadCountForTesting += 1
+            if tailIsTrusted {
+                mergeLatestHistoryPage(page)
+            } else {
+                // An announced mutation deleted rows this view model still
+                // holds. Merging would keep rendering them, so take the page as
+                // authoritative -- the same replace-on-shrink the full-read path
+                // used to reach by counting.
+                replaceHistory(with: page)
+                // Such a mutation can leave every trigger field identical (a
+                // one-row compaction swaps a deleted row for a backdated
+                // summary and moves no count and no revision), so the rebuilt
+                // page must not be deduped away.
+                snapshotTrigger = nil
+            }
+            historyInvalidationToken = invalidationToken
+            applyHistoryRead(for: task, generation: generation)
+        } catch {
+            guard isCurrentHistoryRead(taskID) else { return }
+            historyLoadState = .failed(error.localizedDescription)
+            PerformanceTelemetry.log(
+                "thread_history_read_failed",
+                level: .error,
+                fields: Self.taskFields(task).merging(
+                    ["operation": "latest"],
+                    uniquingKeysWith: { _, new in new }
+                ),
+                taskID: taskID
+            )
+        }
+    }
+
+    /// A task switch or a `reset` while a page is in flight must not let the
+    /// previous task's rows reach the transcript.
+    private func isCurrentHistoryRead(_ taskID: UUID) -> Bool {
+        historyTaskID == taskID && !Task.isCancelled
+    }
+
+    /// `generation` is the `task.updatedAt` captured before the read was
+    /// issued, i.e. the revision the merged rows describe. The live task can
+    /// already be newer, which is what makes it unsafe to cache this snapshot
+    /// or to stamp the trigger with the live revision.
+    ///
+    /// `preservingLoadState` applies the rows without clearing a failure the
+    /// user still needs to see (`applySnapshotIfCurrent` only ever clears
+    /// `.loading`, so the built snapshot cannot clear it either).
+    private func applyHistoryRead(
+        for task: AgentTask,
+        generation: Date,
+        preservingLoadState: Bool = false
+    ) {
+        // An explicit "load earlier messages" page owns `historyLoadState` and,
+        // through the snapshot it eventually applies, the view's scroll anchor.
+        // A streaming read that lands inside that window has already merged its
+        // rows, so hold the apply back instead of reverting the spinner and
+        // consuming the anchor before the earlier page exists.
+        guard historyLoadTask == nil else {
+            deferredHistoryApply = DeferredHistoryApply(task: task, generation: generation)
+            return
+        }
+        PerformanceTelemetry.measure(
+            "thread_history_apply",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: Self.taskFields(task)
+        ) {
+            if !preservingLoadState {
+                historyLoadState = .idle
+            }
+            refreshSnapshot(
+                for: task,
+                preparedInput: storageBackedInput(for: task),
+                bypassCache: false,
+                inputGeneration: generation
+            )
+        }
+    }
+
+    private func flushDeferredHistoryApply() {
+        guard let deferred = deferredHistoryApply else { return }
+        deferredHistoryApply = nil
+        guard historyTaskID == deferred.task.id else { return }
+        // A failure raised by the load that owned this window has to stay
+        // visible, but the deferred read's rows are already merged and dropping
+        // the apply leaves them invisible until Retry or an unrelated refresh --
+        // the silent "transcript stopped updating" symptom again. Render them
+        // under the earlier-page failure banner instead.
+        if case .failed = historyLoadState {
+            applyHistoryRead(
+                for: deferred.task,
+                generation: deferred.generation,
+                preservingLoadState: true
+            )
+            return
+        }
+        applyHistoryRead(for: deferred.task, generation: deferred.generation)
+    }
+
+    private func notifyHistoryPageCapturedForTesting() async {
+        #if DEBUG
+        guard let hook = didCaptureHistoryPageForTesting else { return }
+        await hook()
+        #endif
+    }
+
+    /// The store reads the persistent file, but streaming coalesces
+    /// `TaskEvent.payload` into the main context and never saves it
+    /// (`AgentEventRecorder`). Without this flush the newest chunk stays
+    /// invisible to the read and the transcript freezes one chunk behind.
+    ///
+    /// Returns whether the store is safe to read. A failed save is not a
+    /// cosmetic miss: the read would serve pre-failure rows whose count matches
+    /// the equally stale `historyTotalEventCount`, so the tail invariant accepts
+    /// them and the transcript freezes mid-sentence with no error.
+    private func flushPendingHistoryWrites() -> Bool {
+        #if DEBUG
+        if let override = historyFlushResultOverrideForTesting { return override() }
+        #endif
+        guard let persistence = historyPersistence, persistence.context.hasChanges else { return true }
+        var didSave = false
+        PerformanceTelemetry.measure(
+            "thread_history_pre_read_save",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: ["task_id": PerformanceTelemetryFields.abbreviatedID(historyTaskID)]
+        ) {
+            // Deliberately no auto-export: this runs once per transcript
+            // invalidation, and the workspace JSON mirror is written by the
+            // run-finalize save that supersedes these rows anyway.
+            // Audited on failure only. This is the one hot-path caller: while a
+            // task streams, `hasChanges` is true on essentially every 120 ms
+            // invalidation, and an audit line is main-actor work per refresh.
+            didSave = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: persistence.context,
+                taskID: historyTaskID,
+                auditFields: ["operation": "thread_history_pre_read_save"],
+                auditsSuccess: false
+            )
+        }
+        return didSave
+    }
+
+    private func reportHistoryFlushFailure(for task: AgentTask, operation: String) {
+        guard historyTaskID == task.id else { return }
+        historyLoadState = .failed("The transcript could not be saved before reading it.")
+        PerformanceTelemetry.log(
+            "thread_history_read_failed",
+            level: .error,
+            fields: Self.taskFields(task).merging(
+                ["operation": operation, "reason": "pre_read_save_failed"],
+                uniquingKeysWith: { _, new in new }
+            ),
+            taskID: task.id
+        )
+    }
+
+    /// Applies an incremental tail read, or reports that it cannot be trusted
+    /// so the caller re-reads the full page.
+    private func applyTailPage(_ tail: TaskThreadHistoryTailPage) -> Bool {
+        guard !tail.overflowed, tail.totalRunCount >= loadedHistoryRuns.count else { return false }
+        let appended = tail.events.reduce(0) { $0 + (loadedHistoryEvents[$1.id] == nil ? 1 : 0) }
+        // Backdated inserts and deletions are invisible to a tail read. What
+        // this proves is narrower than "the tail observed every change": it
+        // proves the authoritative event count moved by exactly the number of
+        // rows the tail brought back, so any mutation with a *net* effect on
+        // that count is caught. Relaxing it to `>=` would let a plain deletion
+        // strand deleted rows. Mutations that net to zero -- a delete paired
+        // with a backdated insert, i.e. `AgentEventCompactor` -- are invisible
+        // to any count and are handled by `TaskThreadHistoryInvalidation`
+        // instead, which `readHistory` consults before choosing this path.
+        guard tail.totalEventCount == historyTotalEventCount + appended else { return false }
+        for event in tail.events { loadedHistoryEvents[event.id] = event }
+        // A refreshed anchor arrives as an ordinary tail row. Merge (never
+        // replace) so anchors the tail page never refetches are retained.
+        mergeStateAnchors(tail.events.filter { TaskThreadStateEventPolicy.contains($0.type) })
+        for run in tail.runs { loadedHistoryRuns[run.id] = run }
+        historyTotalRunCount = tail.totalRunCount
+        historyTotalEventCount = tail.totalEventCount
+        advanceTailCursor(with: tail.events)
+        historyCursor = TaskThreadHistoryCursor(
+            run: historyCursor?.run,
+            event: historyCursor?.event,
+            hasEarlierRuns: tail.totalRunCount > loadedHistoryRuns.count,
+            hasEarlierEvents: tail.totalEventCount > loadedHistoryEvents.count
+        )
+        hasEarlierHistory = historyCursor?.hasEarlierHistory == true
+        return true
+    }
+
+    private func advanceTailCursor(with events: [TaskEventSnapshot]) {
+        for event in events {
+            guard let current = historyTailCursor else {
+                historyTailCursor = TaskThreadEventCursor(timestamp: event.timestamp, id: event.id)
+                continue
+            }
+            let isLater = event.timestamp == current.timestamp
+                ? event.id.uuidString > current.id.uuidString
+                : event.timestamp > current.timestamp
+            if isLater {
+                historyTailCursor = TaskThreadEventCursor(timestamp: event.timestamp, id: event.id)
+            }
+        }
     }
 
     private func replaceHistory(with page: TaskThreadHistoryPage) {
@@ -734,6 +1152,12 @@ final class TaskThreadViewModel {
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
         historyCursor = page.cursor
+        // `latestEvents` sorts descending, so the first row is the newest. This
+        // is a reset, not an advance: the discarded pages may have held rows
+        // that no longer exist.
+        historyTailCursor = page.events.first.map {
+            TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id)
+        }
         hasEarlierHistory = page.cursor.hasEarlierHistory
     }
 
@@ -757,6 +1181,7 @@ final class TaskThreadViewModel {
         replaceLatestStateAnchors(with: page.stateAnchors, refreshedRuns: page.runs)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
+        advanceTailCursor(with: page.events)
         historyCursor = TaskThreadHistoryCursor(
             run: currentCursor.run,
             event: currentCursor.event,

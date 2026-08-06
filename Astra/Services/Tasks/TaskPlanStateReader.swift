@@ -57,10 +57,15 @@ enum TaskPlanStateReader {
             return $0.id.uuidString < $1.id.uuidString
         }
 
-        let protocolMarker = "ASTRA_EVENT"
+        // The nil branch is load-bearing and cannot be written as
+        // `hasProtocolEvents != false`: that translates to SQL `!= 0`, and
+        // three-valued logic drops NULL rows — silently losing recovered plan
+        // progress for every run written before schema V17 (verified by
+        // `v16StoreMigratesToUnknownProtocolMarkerFlag`).
         let runDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
-                $0.task?.id == taskID && $0.output.contains(protocolMarker)
+                $0.task?.id == taskID
+                    && ($0.hasProtocolEvents == nil || $0.hasProtocolEvents == true)
             },
             sortBy: [
                 SortDescriptor(\TaskRun.startedAt),

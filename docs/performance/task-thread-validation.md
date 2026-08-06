@@ -29,10 +29,11 @@ event=task_open_phase phase=thread_reset
 event=task_open_phase phase=context_state_refresh
 event=task_open_snapshot_input_capture
 event=task_open_snapshot_queue_wait
-event=task_open_snapshot_main_actor_apply_wait
+event=task_open_snapshot_apply_hop
 event=task_open_snapshot_apply
 event=task_open_snapshot_apply_to_transcript_ready
 event=thread_history_page_read
+event=thread_snapshot_apply_hop
 event=chat_stream_snapshot_cadence
 event=chat_scroll_recovery
 event=task_selection_timeout
@@ -44,6 +45,24 @@ buckets, window omission counts, snapshot cache state, cache-derived snapshot co
 buckets. Task-open results additionally include bounded main-actor probe-gap and
 hitch summaries plus visible transcript size / Markdown-shape buckets. It must
 never include a title, prompt, output, path, or secret.
+
+### Reading a slow `chat_stream_snapshot_cadence` sample
+
+Each cadence line carries its own decomposition, so a slow sample does not need
+a second run to explain: `build_ms` is the snapshot build, `apply_hop_ms` is the
+gap between the executor finishing and the main actor applying the result, and
+`main_actor_max_stall_ms` / `main_actor_hitch_count` / `main_actor_probe_count`
+summarise a 50 ms main-actor probe that runs only while the task streams.
+`thread_snapshot_build` additionally reports `cpu_ms` from
+`CLOCK_THREAD_CPUTIME_ID`, which separates "the build got more expensive" from
+"the build got descheduled".
+
+Read the hitch count before the maximum. Every streamed event enqueues its own
+main-actor continuation, so a burst delays the probe and the apply together:
+**many hitches with a modest maximum means main-actor queue depth**, and the fix
+is scheduling, not the work itself. **One hitch with a large maximum means a
+single synchronous call blocked the thread**, and the fix is to move that call
+off the main actor. `main_actor_max_stall_ms` alone cannot tell those apart.
 
 If an open remains incomplete for five seconds while its view is still alive,
 `task_selection_timeout` records the elapsed time and whether the shell and

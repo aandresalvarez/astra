@@ -2,17 +2,30 @@ import Foundation
 import SwiftData
 import ASTRAModels
 
+/// Why a plan-state read was attempted. Recorded so log review can tell an
+/// exact, event-driven refresh apart from the run-output recovery fallback.
+enum TaskPlanStateRefreshReason: String {
+    /// Task opened, or the view switched to a different task.
+    case taskOpen = "task_open"
+    /// A durable plan-relevant event landed, or the task status changed.
+    case planEvent = "plan_event"
+    /// A thread snapshot changed, so run-output protocol progress may need
+    /// re-applying. Only reached while a plan already exists.
+    case recoveredProgress = "recovered_progress"
+}
+
 enum TaskMainViewPerformanceTelemetry {
     @MainActor
     static func refreshedPlanStateSnapshot(
         task: AgentTask,
         modelContext: ModelContext,
-        cached: TaskPlanStateSnapshot
+        cached: TaskPlanStateSnapshot,
+        reason: TaskPlanStateRefreshReason
     ) -> TaskPlanStateSnapshot? {
         PerformanceTelemetry.measure(
             "plan_state_refresh",
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: planStateFields(task: task),
+            fields: planStateFields(task: task, reason: reason),
             resultFields: { snapshot in
                 [
                     "refreshed": PerformanceTelemetryFields.bool(snapshot != nil)
@@ -35,10 +48,14 @@ enum TaskMainViewPerformanceTelemetry {
         }
     }
 
-    private static func planStateFields(task: AgentTask) -> [String: String] {
+    private static func planStateFields(
+        task: AgentTask,
+        reason: TaskPlanStateRefreshReason
+    ) -> [String: String] {
         return [
             "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
-            "status": task.status.rawValue
+            "status": task.status.rawValue,
+            "reason": reason.rawValue
         ]
     }
 }

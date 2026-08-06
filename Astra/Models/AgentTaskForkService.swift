@@ -161,7 +161,7 @@ public enum AgentTaskForkService {
             newRun.runtimeID = sourceRun.runtimeID
             newRun.providerVersion = sourceRun.providerVersion
             newRun.providerLaunchSignatureJSON = sourceRun.providerLaunchSignatureJSON
-            newRun.output = sourceRun.output
+            newRun.setOutput(sourceRun.output)
             newRun.costUSD = sourceRun.costUSD
             newRun.fileChangesJSON = sourceRun.fileChangesJSON
             newRun.executionEnvironmentSnapshotJSON = sourceRun.executionEnvironmentSnapshotJSON
@@ -263,7 +263,7 @@ public enum AgentTaskForkService {
             forked.acceptanceCriteria = forked.acceptanceCriteria.map { TaskForkPathRewriter.rewrite($0, using: pathMapping) }
             forked.teamInstructions = TaskForkPathRewriter.rewrite(forked.teamInstructions, using: pathMapping)
             for run in copiedRuns {
-                run.output = TaskForkPathRewriter.rewrite(run.output, using: pathMapping)
+                run.setOutput(TaskForkPathRewriter.rewrite(run.output, using: pathMapping))
                 rewriteFileChanges(in: run, using: pathMapping)
             }
             manifestPathMapping = pathMapping

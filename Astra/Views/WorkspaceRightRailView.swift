@@ -1004,7 +1004,7 @@ struct WorkspaceRightRailView: View {
         guard !capabilityRailSnapshotCache.matches(signature) else { return }
 
         let snapshot = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_snapshot",
+            "right_rail_capability_snapshot",
             thresholdMilliseconds: 20,
             fields: capabilityRailTelemetryFields.merging(["cache_state": "miss"], uniquingKeysWith: { _, new in new })
         ) {
@@ -1017,7 +1017,7 @@ struct WorkspaceRightRailView: View {
         let telemetryFields = capabilityRailTelemetryFields
         let currentCapabilities = capabilities
         let resourceIndex = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_resource_index",
+            "right_rail_capability_resources",
             thresholdMilliseconds: 20,
             fields: telemetryFields
         ) {
@@ -1033,7 +1033,7 @@ struct WorkspaceRightRailView: View {
                 return cached
             }
             let state = PerformanceTelemetry.measure(
-                "workspace_right_rail_capability_package_state",
+                "right_rail_capability_package",
                 thresholdMilliseconds: 20,
                 fields: telemetryFields.merging(["package_id": package.id], uniquingKeysWith: { _, new in new })
             ) {
@@ -1047,7 +1047,7 @@ struct WorkspaceRightRailView: View {
         }
 
         let catalogPackages = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_catalog_inventory",
+            "right_rail_capability_catalog",
             thresholdMilliseconds: 20,
             fields: telemetryFields
         ) {
@@ -1059,7 +1059,7 @@ struct WorkspaceRightRailView: View {
         }
 
         let items = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_items",
+            "right_rail_capability_items",
             thresholdMilliseconds: 20,
             fields: telemetryFields,
             resultFields: { ["item_count": PerformanceTelemetryFields.count($0.count)] }
@@ -1213,7 +1213,7 @@ struct WorkspaceRightRailView: View {
         Task { @MainActor in
             let snapshot = await Task.detached(priority: .userInitiated) {
                 PerformanceTelemetry.measure(
-                    "workspace_right_rail_capability_load",
+                    "right_rail_capability_load",
                     thresholdMilliseconds: 20
                 ) {
                     ApprovedCapabilitiesSnapshot(

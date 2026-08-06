@@ -894,7 +894,7 @@ struct ExecutionEnvironmentTests {
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
         let previousRun = TaskRun(task: task)
         previousRun.status = .failed
-        previousRun.output = "provider already changed files"
+        previousRun.setOutput("provider already changed files")
         previousRun.outputTokens = 5
         previousRun.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         let retryRun = TaskRun(task: task)
@@ -1592,7 +1592,7 @@ struct ExecutionEnvironmentTests {
         let run = TaskRun(task: task)
         run.status = .failed
         run.typedStopReason = .failed
-        run.output = "provider started"
+        run.setOutput("provider started")
         run.outputTokens = 5
         run.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         task.runs = [run]

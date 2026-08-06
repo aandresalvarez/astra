@@ -501,9 +501,11 @@ struct CompactionTests {
         let context = container.mainContext
         let task = AgentTask(title: "T", goal: "G")
         let run = TaskRun(task: task)
-        run.output = (0..<40)
-            .map { "Final answer chunk \($0)." }
-            .joined(separator: " ")
+        run.setOutput(
+            (0..<40)
+                .map { "Final answer chunk \($0)." }
+                .joined(separator: " ")
+        )
         context.insert(task)
         context.insert(run)
 

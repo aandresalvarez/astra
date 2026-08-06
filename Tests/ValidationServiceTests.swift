@@ -1805,7 +1805,7 @@ struct ValidationServiceTests {
         let workspace = Workspace(name: "Verifier Pass", primaryPath: root)
         let task = AgentTask(title: "Verifier", goal: "Review independently", workspace: workspace)
         let run = TaskRun(task: task)
-        run.output = "Worker says the change is complete."
+        run.setOutput("Worker says the change is complete.")
         context.insert(workspace)
         context.insert(task)
         context.insert(run)

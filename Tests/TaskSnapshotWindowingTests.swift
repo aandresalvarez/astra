@@ -17,7 +17,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -42,7 +42,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -69,7 +69,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
 
             task.events.append(makeEvent(
@@ -108,7 +108,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -131,7 +131,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "output \(i)"
+            run.setOutput("output \(i)")
             task.runs.append(run)
 
             task.events.append(makeEvent(
@@ -168,7 +168,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 10))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 10 + 9))
-            run.output = "r\(i)"
+            run.setOutput("r\(i)")
             task.runs.append(run)
         }
 
@@ -197,7 +197,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
-            run.output = "completed run \(runIndex)"
+            run.setOutput("completed run \(runIndex)")
             runs.append(run)
 
             for eventIndex in 0..<20 {

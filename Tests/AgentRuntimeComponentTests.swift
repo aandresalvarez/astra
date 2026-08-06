@@ -992,7 +992,7 @@ struct AgentRuntimeRunPersistenceTests {
         run.status = .completed
         run.stopReason = "completed"
         run.exitCode = 0
-        run.output = "done"
+        run.setOutput("done")
         run.inputTokens = 7
         run.outputTokens = 11
         run.providerVersion = "test-provider"
@@ -1042,7 +1042,7 @@ struct AgentRuntimeRunPersistenceTests {
         task.status = .completed
         run.status = .completed
         let oversizedOutputCount = TaskRunOutputCap.headByteLimit + TaskRunOutputCap.tailByteLimit + 128
-        run.output = String(repeating: "x", count: oversizedOutputCount)
+        run.setOutput(String(repeating: "x", count: oversizedOutputCount))
         context.insert(task)
         context.insert(run)
 
@@ -1065,7 +1065,7 @@ struct AgentRuntimeRunPersistenceTests {
     func finalizationPhaseTelemetryIsPrivacySafe() {
         let task = AgentTask(title: "Sensitive title", goal: "Sensitive goal")
         let run = TaskRun(task: task)
-        run.output = "Sensitive provider output"
+        run.setOutput("Sensitive provider output")
         task.status = .completed
         run.status = .completed
 
@@ -1103,7 +1103,7 @@ struct AgentRuntimeRunPersistenceTests {
         let workspace = Workspace(name: "History", primaryPath: root)
         let task = AgentTask(title: "History Task", goal: "Goal", workspace: workspace)
         let run = TaskRun(task: task)
-        run.output = "assistant output"
+        run.setOutput("assistant output")
         run.tokensUsed = 12
         run.costUSD = 0.25
         context.insert(workspace)

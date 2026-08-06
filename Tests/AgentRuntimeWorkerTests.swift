@@ -857,7 +857,7 @@ struct BuildPromptTests {
         let run = TaskRun(task: task)
         run.status = .failed
         run.stopReason = "no_usable_result"
-        run.output = "The prior run stopped while trying to read ASTRA task state."
+        run.setOutput("The prior run stopped while trying to read ASTRA task state.")
         run.completedAt = Date()
         ctx.insert(run)
         AgentRuntimeRunPersistence.recordSessionTurn(
@@ -1024,7 +1024,7 @@ struct BuildPromptTests {
         oldTask.completedAt = Date().addingTimeInterval(-60)
         let oldRun = TaskRun(task: oldTask)
         oldRun.status = .completed
-        oldRun.output = "This old task is context only and must not become the current task."
+        oldRun.setOutput("This old task is context only and must not become the current task.")
         oldTask.runs = [oldRun]
         ctx.insert(oldTask)
         ctx.insert(oldRun)
@@ -1428,7 +1428,7 @@ struct BuildPromptTests {
 
         let run = TaskRun(task: task)
         run.status = .completed
-        run.output = "Created a source index test artifact."
+        run.setOutput("Created a source index test artifact.")
         run.completedAt = Date()
         let changedPath = (root as NSString).appendingPathComponent("Sources/Changed.swift")
         run.appendFileChange(StoredFileChange(from: FileChange(
@@ -1821,7 +1821,7 @@ struct BuildPromptTests {
             run.startedAt = Date(timeIntervalSince1970: Double(index))
             run.completedAt = run.startedAt.addingTimeInterval(1)
             run.status = .completed
-            run.output = index < 5 ? "STALE_COPIED_RUN_\(index)" : "ACTIVE_FORK_RUN_\(index)"
+            run.setOutput(index < 5 ? "STALE_COPIED_RUN_\(index)" : "ACTIVE_FORK_RUN_\(index)")
             run.appendFileChange(StoredFileChange(from: FileChange(
                 path: index < 5 ? "/tmp/stale-copied-\(index).txt" : "/tmp/active-fork-\(index).txt",
                 changeType: .write,

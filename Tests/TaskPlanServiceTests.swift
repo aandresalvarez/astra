@@ -70,11 +70,11 @@ struct TaskPlanServiceTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
             if index == 0 {
-                run.output = """
+                run.setOutput("""
                 ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)","stepID":"step-1","status":"done","summary":"Recovered historical progress"}
-                """
+                """)
             } else {
-                run.output = "ordinary run \(index)"
+                run.setOutput("ordinary run \(index)")
             }
             context.insert(run)
         }
@@ -461,12 +461,12 @@ struct TaskPlanServiceTests {
         task.events.append(contentsOf: [created, approved, started])
 
         let run = TaskRun(task: task)
-        run.output = """
+        run.setOutput("""
         ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)",
            "stepID":"step-1","status":"done","summary":"Created index.html"}
         ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)",
            "stepID":"step-2","status":"done","summary":"Created styles.css with black and white design"}
-        """
+        """)
         task.runs.append(run)
 
         let state = TaskPlanService.reconstruct(for: task)
@@ -488,6 +488,107 @@ struct TaskPlanServiceTests {
         let after = TaskPlanStateCacheSignature(task: task)
 
         #expect(after != before)
+    }
+
+    /// `TaskMainView` refreshes the plan projection from durable event
+    /// insertions rather than from `task.updatedAt`. That only works while plan
+    /// recording publishes through `TaskEventInsertionService`; a direct
+    /// `modelContext.insert` would silently stop the plan UI from updating.
+    @MainActor
+    @Test("Plan lifecycle recording publishes durable event insertions")
+    func planLifecycleRecordingPublishesDurableEventInsertions() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        context.insert(task)
+
+        var observed: [String] = []
+        let token = NotificationCenter.default.addObserver(
+            forName: .durableTaskEventInserted,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let insertion = notification.object as? DurableTaskEventInsertion,
+                  insertion.taskID == task.id else { return }
+            observed.append(insertion.type)
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Do work",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+        TaskPlanService.recordExecutionStarted(planID: plan.planID, task: task, modelContext: context)
+        TaskPlanService.recordStepProgress(
+            type: TaskPlanEventTypes.stepCompleted,
+            planID: plan.planID,
+            stepID: "step-1",
+            status: .done,
+            task: task,
+            modelContext: context,
+            title: "Inspect"
+        )
+
+        #expect(observed == [
+            TaskPlanEventTypes.created,
+            TaskPlanEventTypes.approved,
+            TaskPlanEventTypes.executionStarted,
+            TaskPlanEventTypes.stepCompleted
+        ])
+        #expect(observed.allSatisfy { TaskPlanEventRelevance.affectsPlanState(eventType: $0) })
+    }
+
+    @Test("Plan refresh trigger ignores unrelated task activity")
+    func planRefreshTriggerIgnoresUnrelatedTaskActivity() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let before = TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0)
+
+        // Ordinary runtime activity bumps updatedAt several times a second.
+        // That must not invalidate the plan projection cache.
+        task.updatedAt = task.updatedAt.addingTimeInterval(5)
+
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0) == before)
+    }
+
+    @Test("Plan refresh trigger changes on plan events and status changes")
+    func planRefreshTriggerChangesOnPlanEventsAndStatusChanges() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let before = TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0)
+
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 1) != before)
+
+        task.status = .running
+        #expect(TaskPlanStateRefreshTrigger(task: task, planEventRevision: 0) != before)
+    }
+
+    @Test("Plan event relevance matches the reader's fetched event types")
+    func planEventRelevanceMatchesReaderEventTypes() {
+        let planRelevant = [
+            TaskPlanEventTypes.created,
+            TaskPlanEventTypes.updated,
+            TaskPlanEventTypes.approved,
+            TaskPlanEventTypes.cancelled,
+            TaskPlanEventTypes.executionStarted,
+            TaskPlanEventTypes.executionCompleted,
+            TaskPlanEventTypes.executionFailed,
+            TaskPlanEventTypes.stepStarted,
+            TaskPlanEventTypes.stepCompleted,
+            TaskPlanEventTypes.stepBlocked,
+            TaskPlanEventTypes.stepSkipped
+        ]
+        for type in planRelevant {
+            #expect(TaskPlanEventRelevance.affectsPlanState(eventType: type), "\(type) should affect plan state")
+        }
+
+        for type in ["user_message", "agent_response", "tool_use", "run_started"] {
+            #expect(!TaskPlanEventRelevance.affectsPlanState(eventType: type), "\(type) should not affect plan state")
+        }
     }
 
     @Test("Plan state snapshot refreshes only when signature changes")
@@ -533,14 +634,131 @@ struct TaskPlanServiceTests {
     func planCacheSignatureTracksSameLengthRunOutputEdits() {
         let task = AgentTask(title: "Plan task", goal: "Do work")
         let run = TaskRun(task: task)
-        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"aaaa"}"#
+        run.setOutput(#"ASTRA_EVENT {"type":"plan.step.completed","summary":"aaaa"}"#)
         task.runs.append(run)
         let before = TaskPlanStateCacheSignature(task: task)
 
-        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"bbbb"}"#
+        run.setOutput(#"ASTRA_EVENT {"type":"plan.step.completed","summary":"bbbb"}"#)
         let after = TaskPlanStateCacheSignature(task: task)
 
         #expect(after != before)
+    }
+
+    @Test("Protocol marker split across streamed appends still sets the run flag")
+    func protocolMarkerSplitAcrossAppendsSetsTheRunFlag() {
+        let task = AgentTask(title: "Streaming task", goal: "Recover progress")
+        let run = TaskRun(task: task)
+        #expect(run.hasProtocolEvents == false)
+
+        // Provider deltas arrive as arbitrary chunks, so the marker can land
+        // across a boundary. Testing only the tail of the new text would report
+        // a false negative here and permanently lose this run's plan progress.
+        run.appendOutput("some visible answer text\nASTRA_")
+        #expect(run.hasProtocolEvents == false)
+        run.appendOutput(#"EVENT {"v":1,"type":"plan.step.completed"}"#)
+
+        #expect(run.hasProtocolEvents == true)
+        #expect(run.output.contains("ASTRA_EVENT"))
+    }
+
+    @Test("Appending marker-free text leaves an already-flagged run flagged")
+    func appendingMarkerFreeTextKeepsTheRunFlagged() {
+        let task = AgentTask(title: "Streaming task", goal: "Recover progress")
+        let run = TaskRun(task: task)
+        run.appendOutput(#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"#)
+        #expect(run.hasProtocolEvents == true)
+
+        run.appendOutput("\nand then some ordinary prose")
+        #expect(run.hasProtocolEvents == true)
+    }
+
+    @Test("Replacing output with protocol-stripped text clears the run flag")
+    func replacingOutputWithStrippedTextClearsTheRunFlag() {
+        let task = AgentTask(title: "Completed task", goal: "Summarize")
+        let run = TaskRun(task: task)
+        run.appendOutput(#"ASTRA_EVENT {"v":1,"type":"plan.step.completed"}"# + "\nvisible answer")
+        #expect(run.hasProtocolEvents == true)
+
+        // The completed-summary rewrite strips markers, so a monotonic flag
+        // would go stale here. `setOutput` re-derives it from the stored text.
+        run.setOutput("visible answer")
+        #expect(run.hasProtocolEvents == false)
+    }
+
+    @Test("Plan cache signature changes when a same-length edit removes the last marker")
+    func planCacheSignatureTracksMarkerRemovingSameLengthEdits() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let run = TaskRun(task: task)
+        run.setOutput("ASTRA_EVENT")
+        task.runs.append(run)
+        let before = TaskPlanStateCacheSignature(task: task)
+
+        // Same byte count, so the output-length term cannot see this edit. It is
+        // the marker fingerprint dropping to "absent" that moves the signature;
+        // the flag term is exercised on its own below.
+        run.setOutput("XSTRA_EVENT")
+        #expect(run.output.utf8.count == 11)
+        #expect(run.hasProtocolEvents == false)
+
+        #expect(TaskPlanStateCacheSignature(task: task) != before)
+    }
+
+    /// Isolates the flag term. The bytes never move, so `hasProtocolEvents`
+    /// going `nil` -> `false` is the only input that changes, and the signature
+    /// still has to move: `TaskPlanService.reconstruct` reads that flag directly
+    /// (`!= false`) when picking recovery candidates, so a cache key that
+    /// ignored it would be keyed on less than the projection reads.
+    ///
+    /// Not a synthetic state — it is exactly what the one-time marker backfill
+    /// does to every pre-V17 row on the first launch after it ships. Migrating
+    /// an on-disk V16 store is the only way to obtain the `nil` flag:
+    /// `TaskRun(task:)` always pins it and the setter is `private(set)`.
+    @MainActor
+    @Test("Plan cache signature changes when the marker backfill resolves a never-scanned run")
+    func planCacheSignatureTracksBackfilledProtocolMarkerFlag() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-plan-signature-marker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let markerFreeOutput = "ordinary completion summary"
+
+        do {
+            let legacyContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV16.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let legacyContext = legacyContainer.mainContext
+            let legacyTask = ASTRASchemaV14Models.AgentTask()
+            legacyTask.title = "Legacy plan task"
+            legacyTask.goal = "Recover progress"
+            legacyContext.insert(legacyTask)
+            let legacyRun = ASTRASchemaV14Models.TaskRun()
+            legacyRun.task = legacyTask
+            legacyRun.output = markerFreeOutput
+            legacyContext.insert(legacyRun)
+            try legacyContext.save()
+        }
+
+        // Held for the whole test: a `ModelContext` does not keep its container
+        // alive, and reading through a released one traps in SwiftData.
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = container.mainContext
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let run = try #require(try context.fetch(FetchDescriptor<TaskRun>()).first)
+        #expect(task.runs.count == 1)
+        #expect(run.hasProtocolEvents == nil)
+        let beforeBackfill = TaskPlanStateCacheSignature(task: task)
+
+        run.refreshProtocolMarkerFlag()
+
+        #expect(run.output == markerFreeOutput)
+        #expect(run.hasProtocolEvents == false)
+        #expect(TaskPlanStateCacheSignature(task: task) != beforeBackfill)
     }
 
     private func encode<T: Encodable>(_ value: T) -> String {

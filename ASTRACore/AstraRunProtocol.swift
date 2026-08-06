@@ -557,7 +557,10 @@ public enum AstraRunProtocolDisplaySanitizer {
 }
 
 public enum AstraRunProtocolParser {
-    public static let markerPrefix = "ASTRA_EVENT "
+    /// Bare marker token. Owned here so run-output scans and the persisted
+    /// `TaskRun.hasProtocolEvents` flag cannot drift from the parser.
+    public static let markerToken = "ASTRA_EVENT"
+    public static let markerPrefix = markerToken + " "
 
     public static func parseMarkerLine(_ line: String) -> AstraRunProtocolParsedEvent? {
         guard line.hasPrefix(markerPrefix) else { return nil }

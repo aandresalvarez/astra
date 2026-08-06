@@ -32,13 +32,30 @@ struct TaskThreadHistoryPage: Sendable {
     let totalEventCount: Int
 }
 
+/// The newest slice of a transcript, read from a caller-held cursor instead of
+/// from the top. It carries no state anchors: those are a whole-task scan, and
+/// the caller keeps the ones its last full page produced.
+struct TaskThreadHistoryTailPage: Sendable {
+    /// Newest first, exactly like `TaskThreadHistoryPage.events`.
+    let events: [TaskEventSnapshot]
+    let runs: [TaskRunSnapshotInput]
+    let totalRunCount: Int
+    let totalEventCount: Int
+    let hasEarlierRuns: Bool
+    let overflowed: Bool
+}
+
 /// Reads bounded pages directly from SwiftData. The durable `TaskRun` and
 /// `TaskEvent` rows remain the only owners of thread history; this service
 /// returns immutable presentation inputs and never persists a second copy.
-@MainActor
+///
+/// Deliberately not isolated: production drives it from `TaskThreadHistoryStore`
+/// on a background context, and it needs nothing from the main actor. Every
+/// entry point takes the caller's `ModelContext` and returns only `Sendable`
+/// snapshots, so a managed model can never escape the isolation that fetched it.
 enum TaskThreadHistoryReader {
-    nonisolated static let defaultRunPageSize = 50
-    nonisolated static let defaultEventPageSize = 1_200
+    static let defaultRunPageSize = 50
+    static let defaultEventPageSize = 1_200
 
     static func initialPage(
         taskID: UUID,
@@ -67,6 +84,46 @@ enum TaskThreadHistoryReader {
             includeRunlessStateAnchors: true
         )
         logRead(operation: "latest", page: page, startedAt: startedAt, taskID: taskID)
+        return page
+    }
+
+    /// Reads only the rows at or after `cursor`, which is what a streaming
+    /// append actually changes. Backdated inserts and deletions are invisible
+    /// here by construction, so callers must reconcile `totalEventCount`
+    /// against their own accumulated count and fall back to `initialPage`
+    /// whenever it does not match.
+    static func tailPage(
+        taskID: UUID,
+        since cursor: TaskThreadEventCursor,
+        modelContext: ModelContext,
+        runPageSize: Int = defaultRunPageSize,
+        eventPageSize: Int = defaultEventPageSize
+    ) throws -> TaskThreadHistoryTailPage {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let eventResult = try eventsSince(
+            taskID: taskID,
+            cursor: cursor,
+            limit: max(1, eventPageSize),
+            modelContext: modelContext
+        )
+        // `TaskRun.output`, `status` and `completedAt` mutate in place with no
+        // ordering key, so the newest run page must still be re-read or a live
+        // run's streamed output stops updating.
+        let runResult = try latestRuns(
+            taskID: taskID,
+            limit: max(1, runPageSize),
+            modelContext: modelContext
+        )
+        let counts = try totals(taskID: taskID, modelContext: modelContext)
+        let page = TaskThreadHistoryTailPage(
+            events: eventResult.items.map(TaskEventSnapshot.init),
+            runs: runResult.items.map(TaskRunSnapshotInput.init),
+            totalRunCount: counts.runs,
+            totalEventCount: counts.events,
+            hasEarlierRuns: runResult.hasEarlier,
+            overflowed: eventResult.hasEarlier
+        )
+        logRead(tail: page, startedAt: startedAt, taskID: taskID)
         return page
     }
 
@@ -129,12 +186,9 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext,
         includeRunlessStateAnchors: Bool
     ) throws -> TaskThreadHistoryPage {
-        let totalRunCount = try modelContext.fetchCount(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID }
-        ))
-        let totalEventCount = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID }
-        ))
+        let counts = try totals(taskID: taskID, modelContext: modelContext)
+        let totalRunCount = counts.runs
+        let totalEventCount = counts.events
         let runSnapshots = runs.map(TaskRunSnapshotInput.init)
         let eventSnapshots = events.map(TaskEventSnapshot.init)
         let stateAnchors = try latestStateAnchors(
@@ -157,6 +211,21 @@ enum TaskThreadHistoryReader {
             totalRunCount: totalRunCount,
             totalEventCount: totalEventCount
         )
+    }
+
+    /// The authoritative row counts for the task. Tail reads reconcile against
+    /// these, so both callers must derive them from the same predicates.
+    private static func totals(
+        taskID: UUID,
+        modelContext: ModelContext
+    ) throws -> (runs: Int, events: Int) {
+        let runCount = try modelContext.fetchCount(FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.task?.id == taskID }
+        ))
+        let eventCount = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID }
+        ))
+        return (runCount, eventCount)
     }
 
     private static func latestRuns(
@@ -183,6 +252,32 @@ enum TaskThreadHistoryReader {
     ) throws -> PageResult<TaskEvent> {
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { $0.task?.id == taskID },
+            sortBy: [
+                SortDescriptor(\TaskEvent.timestamp, order: .reverse),
+                SortDescriptor(\TaskEvent.id, order: .reverse)
+            ]
+        )
+        descriptor.fetchLimit = limit + 1
+        let fetched = try modelContext.fetch(descriptor)
+        return PageResult(items: Array(fetched.prefix(limit)), hasEarlier: fetched.count > limit)
+    }
+
+    /// The boundary is inclusive on purpose. `>=` re-reads the cursor row and
+    /// its whole timestamp tie group, so a stream chunk coalesced in place
+    /// (which bumps `timestamp` forward) and same-millisecond siblings both
+    /// come back; a strict composite compare would drop a tie-mate whose UUID
+    /// sorts below the cursor. Callers dedupe by id.
+    private static func eventsSince(
+        taskID: UUID,
+        cursor: TaskThreadEventCursor,
+        limit: Int,
+        modelContext: ModelContext
+    ) throws -> PageResult<TaskEvent> {
+        let boundaryDate = cursor.timestamp
+        var descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> {
+                $0.task?.id == taskID && $0.timestamp >= boundaryDate
+            },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
                 SortDescriptor(\TaskEvent.id, order: .reverse)
@@ -290,33 +385,31 @@ enum TaskThreadHistoryReader {
         includeRunless: Bool,
         modelContext: ModelContext
     ) throws -> [TaskEventSnapshot] {
+        // One fetch per loaded run cost up to 51 round trips per page read on the
+        // main actor. The run membership test is applied in memory instead: it is
+        // the same predicate, factored, and `TaskEvent` has no scalar run-id
+        // column to filter an optional relationship on in SQL.
+        guard !runs.isEmpty || includeRunless else { return [] }
         let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
-        var events: [TaskEvent] = []
-        for run in runs {
-            let runID = run.id
-            let descriptor = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID
-                        && $0.run?.id == runID
-                        && stateEventTypes.contains($0.type)
-                }
-            )
-            events.append(contentsOf: try modelContext.fetch(descriptor))
-        }
-        if includeRunless {
-            let descriptor = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID
-                        && $0.run == nil
-                        && stateEventTypes.contains($0.type)
-                }
-            )
-            events.append(contentsOf: try modelContext.fetch(descriptor))
-        }
+        var descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> {
+                $0.task?.id == taskID && stateEventTypes.contains($0.type)
+            }
+        )
+        // `TaskEventSnapshot` reads `event.run?.id` for every row, so prefetch the
+        // relationship rather than faulting it one row at a time.
+        descriptor.relationshipKeyPathsForPrefetching = [\TaskEvent.run]
+        let events = try modelContext.fetch(descriptor)
+        let loadedRunIDs = Set(runs.map(\.id))
 
         var latestByKey: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
         for event in events {
             let snapshot = TaskEventSnapshot(event: event)
+            if let runID = snapshot.runID {
+                guard loadedRunIDs.contains(runID) else { continue }
+            } else {
+                guard includeRunless else { continue }
+            }
             let key = TaskThreadStateEventKey(event: snapshot)
             if let current = latestByKey[key], !isLater(snapshot, than: current) {
                 continue
@@ -336,6 +429,13 @@ enum TaskThreadHistoryReader {
         return candidate.id.uuidString > current.id.uuidString
     }
 
+    /// Durations before and after the offload are not comparable, so every read
+    /// records where it ran. A `main` value in production means something put
+    /// the read back on the UI path.
+    private static var isolationField: String {
+        Thread.isMainThread ? "main" : "background"
+    }
+
     private static func logRead(
         operation: String,
         page: TaskThreadHistoryPage,
@@ -345,9 +445,10 @@ enum TaskThreadHistoryReader {
         PerformanceTelemetry.logIfNeeded(
             "thread_history_page_read",
             start: startedAt,
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
             fields: [
                 "operation": operation,
+                "isolation": Self.isolationField,
                 "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
                 "page_events": PerformanceTelemetryFields.count(page.events.count),
                 "page_runs": PerformanceTelemetryFields.count(page.runs.count),
@@ -356,6 +457,30 @@ enum TaskThreadHistoryReader {
                 "total_runs": PerformanceTelemetryFields.count(page.totalRunCount),
                 "has_earlier_events": PerformanceTelemetryFields.bool(page.cursor.hasEarlierEvents),
                 "has_earlier_runs": PerformanceTelemetryFields.bool(page.cursor.hasEarlierRuns)
+            ],
+            taskID: taskID
+        )
+    }
+
+    private static func logRead(
+        tail: TaskThreadHistoryTailPage,
+        startedAt: UInt64,
+        taskID: UUID
+    ) {
+        PerformanceTelemetry.logIfNeeded(
+            "thread_history_page_read",
+            start: startedAt,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+            fields: [
+                "operation": "tail",
+                "isolation": Self.isolationField,
+                "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
+                "page_events": PerformanceTelemetryFields.count(tail.events.count),
+                "page_runs": PerformanceTelemetryFields.count(tail.runs.count),
+                "total_events": PerformanceTelemetryFields.count(tail.totalEventCount),
+                "total_runs": PerformanceTelemetryFields.count(tail.totalRunCount),
+                "overflowed": PerformanceTelemetryFields.bool(tail.overflowed),
+                "has_earlier_runs": PerformanceTelemetryFields.bool(tail.hasEarlierRuns)
             ],
             taskID: taskID
         )

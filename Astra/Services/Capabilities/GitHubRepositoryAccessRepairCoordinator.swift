@@ -3,6 +3,15 @@ import Combine
 import Foundation
 import os
 
+extension Notification.Name {
+    /// Posted the moment a repair verifies real GitHub repository access. The
+    /// `object` is the repaired working directory. Surfaces that stopped
+    /// talking to GitHub because the credential was rejected (the repository
+    /// panel's pull-request lookup breaker) use it to drop their cooldown at
+    /// once instead of hiding a real pull request for the rest of it.
+    static let gitHubRepositoryAccessRepaired = Notification.Name("astra.gitHubRepositoryAccessRepaired")
+}
+
 enum GitHubRepositoryAccessRepairStage: Equatable, Sendable {
     case currentCredential
     case refreshedCredential
@@ -446,10 +455,16 @@ final class GitHubRepositoryAccessRepairCoordinator: ObservableObject {
     }
 
     private func finishReady(account: String?, repository: String) {
+        let repairedDirectory = context?.workingDirectory
         state = .ready(account: account, repository: repository)
         context = nil
         observedExternalTransition = false
         Self.log.info("github access repair verified repository")
+        guard let repairedDirectory else { return }
+        NotificationCenter.default.post(
+            name: .gitHubRepositoryAccessRepaired,
+            object: repairedDirectory
+        )
     }
 
     private func finishPolicyBlock(

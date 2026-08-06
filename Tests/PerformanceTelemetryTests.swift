@@ -58,9 +58,9 @@ struct PerformanceTelemetryTests {
         context.insert(secondTask)
 
         let firstRun = TaskRun(task: firstTask)
-        firstRun.output = String(repeating: "x", count: 512)
+        firstRun.setOutput(String(repeating: "x", count: 512))
         let secondRun = TaskRun(task: firstTask)
-        secondRun.output = String(repeating: "y", count: 2_048)
+        secondRun.setOutput(String(repeating: "y", count: 2_048))
         context.insert(firstRun)
         context.insert(secondRun)
 
