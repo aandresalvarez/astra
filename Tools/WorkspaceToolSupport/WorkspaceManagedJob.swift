@@ -58,6 +58,10 @@ public protocol WorkspaceJobManaging: AnyObject {
     /// Fails closed: true means provider cleanup must preserve the executor
     /// because it may still own admitted external work.
     func hasTrustedNonterminalOwnedJob() -> Bool
+    /// Runs the destructive executor cleanup, when safe, inside the same
+    /// cross-process exclusion boundary used by managed-job admission.
+    @discardableResult
+    func cleanupExecutorIfIdle(_ cleanup: () -> Void) -> Bool
 }
 
 public extension WorkspaceJobManaging {
@@ -79,17 +83,35 @@ public extension WorkspaceJobManaging {
     }
 
     func hasTrustedNonterminalOwnedJob() -> Bool { true }
+
+    @discardableResult
+    func cleanupExecutorIfIdle(_ cleanup: () -> Void) -> Bool {
+        guard !hasTrustedNonterminalOwnedJob() else { return false }
+        cleanup()
+        return true
+    }
 }
 
 public final class WorkspaceManagedJobStore {
     private let rootURL: URL
+    private let trustedStateRootURL: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var afterTrustedRegularFileStatForTesting: ((URL) -> Void)?
+    var afterLaunchBeforeSaveForTesting: (() throws -> Void)?
+    var beforeProviderProjectionWriteForTesting: ((URL) throws -> Void)?
 
-    public init(rootPath: String, fileManager: FileManager = .default) {
+    public init(
+        rootPath: String,
+        trustedStateRootPath: String? = nil,
+        fileManager: FileManager = .default
+    ) {
         self.rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        self.trustedStateRootURL = URL(
+            fileURLWithPath: trustedStateRootPath ?? rootPath,
+            isDirectory: true
+        )
         self.fileManager = fileManager
         self.encoder = JSONEncoder()
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -165,6 +187,32 @@ public final class WorkspaceManagedJobStore {
         invocationID: String,
         containerName: String
     ) throws -> WorkspaceManagedJobRecord {
+        try createAdmittedRecord(
+            command: command,
+            timeoutSeconds: timeoutSeconds,
+            label: label,
+            progressProbe: progressProbe,
+            runtime: runtime,
+            taskID: taskID,
+            runID: runID,
+            invocationID: invocationID,
+            containerName: containerName,
+            trustedLockHeld: false
+        )
+    }
+
+    private func createAdmittedRecord(
+        command: String,
+        timeoutSeconds: TimeInterval?,
+        label: String?,
+        progressProbe: String?,
+        runtime: String,
+        taskID: String,
+        runID: String,
+        invocationID: String,
+        containerName: String,
+        trustedLockHeld: Bool
+    ) throws -> WorkspaceManagedJobRecord {
         let jobID = makeJobID()
         let directory = try jobDirectory(jobID: jobID)
         let layout = WorkspaceManagedJobFileLayout(directory: directory)
@@ -203,15 +251,19 @@ public final class WorkspaceManagedJobStore {
             resultPath: layout.result.path,
             startReceipt: receipt
         )
-        try save(record)
+        if trustedLockHeld {
+            try save(record, trustedLockHeld: true)
+        } else {
+            try save(record)
+        }
         return record
     }
 
     /// Atomically adopts or creates one invocation receipt across provider/MCP
     /// processes. `flock` ownership is released by the kernel after crashes.
-    /// The lock covers lookup plus durable queued-record creation; it does not
-    /// cover executor launch, so a crash leaves an adoptable, explicitly
-    /// uncertain queued receipt instead of permitting a duplicate launch.
+    /// The lock covers lookup plus durable queued-record creation. The launch
+    /// path upgrades that receipt to a durable `.launching` fence before the
+    /// detached effect, so an ambiguous crash cannot permit a duplicate launch.
     public func admitInvocation(
         command: String,
         timeoutSeconds: TimeInterval?,
@@ -230,7 +282,7 @@ public final class WorkspaceManagedJobStore {
             progressProbe: progressProbe
         )
         return try withInvocationAdmissionLock {
-            if let existing = try listTrustedRecords().first(where: { record in
+            if let existing = try listTrustedRecordsUnlocked().first(where: { record in
                 guard let receipt = record.startReceipt else { return false }
                 return receipt.invocationID == invocationID
                     && receipt.belongsTo(
@@ -245,7 +297,7 @@ public final class WorkspaceManagedJobStore {
                 return WorkspaceManagedJobAdmission(record: existing, isNew: false)
             }
             return WorkspaceManagedJobAdmission(
-                record: try create(
+                record: try createAdmittedRecord(
                     command: command,
                     timeoutSeconds: timeoutSeconds,
                     label: label,
@@ -254,7 +306,8 @@ public final class WorkspaceManagedJobStore {
                     taskID: taskID,
                     runID: runID,
                     invocationID: invocationID,
-                    containerName: containerName
+                    containerName: containerName,
+                    trustedLockHeld: true
                 ),
                 isNew: true
             )
@@ -262,6 +315,13 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
+        try withInvocationAdmissionLock {
+            try save(record, trustedLockHeld: true)
+        }
+    }
+
+    private func save(_ record: WorkspaceManagedJobRecord, trustedLockHeld: Bool) throws {
+        precondition(trustedLockHeld)
         let canonicalID = try canonicalJobID(record.jobID)
         try record.startReceipt?.validate(jobID: canonicalID)
         let directory = jobDirectory(forCanonicalID: canonicalID)
@@ -269,17 +329,31 @@ public final class WorkspaceManagedJobStore {
         applyTrustedFileLayout(to: &trustedRecord, jobID: canonicalID, directory: directory)
         try createTrustedDirectoryChain(to: directory)
         let data = try encoder.encode(trustedRecord)
-        try data.write(to: WorkspaceManagedJobFileLayout(directory: directory).metadata, options: [.atomic])
+        try writeDurably(data, to: trustedMetadataURL(forCanonicalID: canonicalID))
+        // This copy is a provider-visible projection only. It is useful to the
+        // wrapper and operators, but never participates in admission or cleanup.
+        // Its failure cannot roll back or contradict already-durable authority.
+        let projectionURL = WorkspaceManagedJobFileLayout(directory: directory).metadata
+        do {
+            try beforeProviderProjectionWriteForTesting?(projectionURL)
+            try data.write(to: projectionURL, options: [.atomic])
+        } catch {
+            FileHandle.standardError.write(Data("ASTRA managed-job metadata projection failed.\n".utf8))
+        }
     }
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
         let canonicalID = try canonicalJobID(jobID)
         let directory = jobDirectory(forCanonicalID: canonicalID)
-        let metadataURL = WorkspaceManagedJobFileLayout(directory: directory).metadata
+        let metadataURL = trustedMetadataURL(forCanonicalID: canonicalID)
         if pathExistsWithoutFollowingSymlink(at: metadataURL) == false {
             throw jobNotFoundError(jobID: canonicalID)
         }
-        guard let data = trustedFileData(at: metadataURL, inside: directory) else {
+        guard trustedDirectoryStat(at: directory) != nil,
+              isTrustedDirectoryChain(from: rootURL, to: directory) else {
+            throw trustedFileReadError(path: directory.path)
+        }
+        guard let data = trustedStateFileData(at: metadataURL) else {
             throw trustedFileReadError(path: metadataURL.path)
         }
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
@@ -296,31 +370,81 @@ public final class WorkspaceManagedJobStore {
     /// direct lookup. Any malformed candidate fails the whole listing so
     /// destructive cleanup preserves the executor.
     public func listTrustedRecords() throws -> [WorkspaceManagedJobRecord] {
-        switch pathExistsWithoutFollowingSymlink(at: rootURL) {
+        try withInvocationAdmissionLock {
+            try listTrustedRecordsUnlocked()
+        }
+    }
+
+    func withExclusiveAdmissionAndCleanup<T>(_ body: () throws -> T) throws -> T {
+        try withInvocationAdmissionLock(body)
+    }
+
+    func listTrustedRecordsAssumingExclusiveAdmission() throws -> [WorkspaceManagedJobRecord] {
+        try listTrustedRecordsUnlocked()
+    }
+
+    /// Persists a record while the caller holds the admission/cleanup lock.
+    /// Terminal reconciliation uses this to promote host-verified runtime
+    /// evidence without recursively acquiring the non-recursive process lock.
+    func saveAssumingExclusiveAdmission(_ record: WorkspaceManagedJobRecord) throws {
+        try save(record, trustedLockHeld: true)
+    }
+
+    /// Fences a queued receipt before its detached effect. A retry may observe
+    /// `.launching`, but must never repeat an ambiguously accepted launch.
+    func launchQueuedInvocation(
+        jobID: String,
+        _ launch: (WorkspaceManagedJobRecord) throws -> WorkspaceManagedJobRecord
+    ) throws -> WorkspaceManagedJobRecord {
+        try withInvocationAdmissionLock {
+            let canonicalID = try canonicalJobID(jobID)
+            guard let record = try listTrustedRecordsUnlocked().first(where: { $0.jobID == canonicalID }) else {
+                throw jobNotFoundError(jobID: canonicalID)
+            }
+            guard record.status == .queued else { return record }
+            var fenced = record
+            fenced.status = .launching
+            fenced.updatedAt = Date()
+            fenced.message = "Detached launch outcome is awaiting durable reconciliation."
+            try save(fenced, trustedLockHeld: true)
+            let launched = try launch(fenced)
+            try afterLaunchBeforeSaveForTesting?()
+            try save(launched, trustedLockHeld: true)
+            return launched
+        }
+    }
+
+    private func listTrustedRecordsUnlocked() throws -> [WorkspaceManagedJobRecord] {
+        switch pathExistsWithoutFollowingSymlink(at: trustedStateRootURL) {
         case false:
             return []
         case nil:
-            throw trustedFileReadError(path: rootURL.path)
+            throw trustedFileReadError(path: trustedStateRootURL.path)
         case true:
-            guard trustedDirectoryStat(at: rootURL) != nil else {
-                throw trustedFileReadError(path: rootURL.path)
+            guard trustedDirectoryStat(at: trustedStateRootURL) != nil else {
+                throw trustedFileReadError(path: trustedStateRootURL.path)
             }
         }
 
         let entries = try fileManager.contentsOfDirectory(
-            at: rootURL,
+            at: trustedStateRootURL,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ).sorted { $0.lastPathComponent < $1.lastPathComponent }
         var records: [WorkspaceManagedJobRecord] = []
         var ownerInvocations: Set<String> = []
-        for entry in entries {
-            let name = entry.lastPathComponent
+        for entry in entries where entry.pathExtension == "json" {
+            let name = entry.deletingPathExtension().lastPathComponent
             guard (try? canonicalJobID(name)) == name,
-                  trustedDirectoryStat(at: entry) != nil else {
+                  let data = trustedStateFileData(at: entry) else {
                 throw trustedFileReadError(path: entry.path)
             }
-            let record = try load(jobID: name)
+            var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
+            guard (try? canonicalJobID(record.jobID)) == name else {
+                throw trustedFileReadError(path: entry.path)
+            }
+            try record.startReceipt?.validate(jobID: name)
+            applyTrustedFileLayout(to: &record, jobID: name, directory: jobDirectory(forCanonicalID: name))
             if let receipt = record.startReceipt {
                 let ownerInvocation = [
                     receipt.taskID.uuidString.lowercased(),
@@ -340,9 +464,8 @@ public final class WorkspaceManagedJobStore {
     private func withInvocationAdmissionLock<T>(_ body: () throws -> T) throws -> T {
         workspaceManagedJobAdmissionProcessLock.lock()
         defer { workspaceManagedJobAdmissionProcessLock.unlock() }
-        try validateJobRootForCreation()
-        try createTrustedDirectoryChain(to: rootURL)
-        let lockURL = rootURL.appendingPathComponent(".invocation-admission.lock", isDirectory: false)
+        try createTrustedStateDirectory()
+        let lockURL = trustedStateRootURL.appendingPathComponent(".invocation-admission.lock", isDirectory: false)
         let descriptor = open(
             lockURL.path,
             O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
@@ -362,6 +485,69 @@ public final class WorkspaceManagedJobStore {
         }
         defer { _ = flock(descriptor, LOCK_UN) }
         return try body()
+    }
+
+    private func trustedMetadataURL(forCanonicalID jobID: String) -> URL {
+        trustedStateRootURL.appendingPathComponent(jobID + ".json", isDirectory: false)
+    }
+
+    private func createTrustedStateDirectory() throws {
+        try validateTrustedCreationPath(to: trustedStateRootURL)
+        try fileManager.createDirectory(at: trustedStateRootURL, withIntermediateDirectories: true)
+        try validateTrustedCreationPath(to: trustedStateRootURL)
+        guard trustedDirectoryStat(at: trustedStateRootURL) != nil else {
+            throw trustedFileReadError(path: trustedStateRootURL.path)
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: trustedStateRootURL.path)
+    }
+
+    private func trustedStateFileData(at url: URL) -> Data? {
+        let parent = url.deletingLastPathComponent().standardizedFileURL
+        guard parent.path == trustedStateRootURL.standardizedFileURL.path else { return nil }
+        return withTrustedFileDescriptor(at: url, inside: trustedStateRootURL) { fd in
+            var result = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let count = read(fd, &buffer, buffer.count)
+                if count > 0 { result.append(buffer, count: count) }
+                else if count == 0 { return result }
+                else if errno != EINTR { return nil }
+            }
+        }
+    }
+
+    private func writeDurably(_ data: Data, to destination: URL) throws {
+        try createTrustedStateDirectory()
+        let temporary = trustedStateRootURL.appendingPathComponent(".\(UUID().uuidString).tmp")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode_t(S_IRUSR | S_IWUSR))
+        guard fd >= 0 else { throw trustedFileReadError(path: temporary.path) }
+        var failure: Error?
+        data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < rawBuffer.count {
+                let count = write(fd, base.advanced(by: offset), rawBuffer.count - offset)
+                if count > 0 { offset += count }
+                else if errno != EINTR {
+                    failure = trustedFileReadError(path: temporary.path)
+                    break
+                }
+            }
+        }
+        if failure == nil, fsync(fd) != 0 { failure = trustedFileReadError(path: temporary.path) }
+        _ = close(fd)
+        if let failure {
+            try? fileManager.removeItem(at: temporary)
+            throw failure
+        }
+        guard rename(temporary.path, destination.path) == 0 else {
+            try? fileManager.removeItem(at: temporary)
+            throw trustedFileReadError(path: destination.path)
+        }
+        let directoryFD = open(trustedStateRootURL.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard directoryFD >= 0 else { throw trustedFileReadError(path: trustedStateRootURL.path) }
+        defer { close(directoryFD) }
+        guard fsync(directoryFD) == 0 else { throw trustedFileReadError(path: trustedStateRootURL.path) }
     }
 
     private func jobDirectory(forCanonicalID canonicalID: String) -> URL {
@@ -470,12 +656,15 @@ public final class WorkspaceManagedJobStore {
     }
 
     private func trustedRegularFileStat(at url: URL, inside directory: URL) -> stat? {
-        let rootPath = rootURL.standardizedFileURL.path
+        let containmentRoot = directory.standardizedFileURL.path == trustedStateRootURL.standardizedFileURL.path
+            ? trustedStateRootURL
+            : rootURL
+        let rootPath = containmentRoot.standardizedFileURL.path
         let directoryPath = directory.standardizedFileURL.path
         let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
-        guard WorkspaceManagedJobPathContainment.isDescendant(directoryPath, of: rootPath),
+        guard (directoryPath == rootPath || WorkspaceManagedJobPathContainment.isDescendant(directoryPath, of: rootPath)),
               parentPath == directoryPath,
-              isTrustedDirectoryChain(from: rootURL, to: directory) else {
+              isTrustedDirectoryChain(from: containmentRoot, to: directory) else {
             return nil
         }
 
@@ -662,7 +851,7 @@ public final class WorkspaceManagedJobStore {
         var record = try load(jobID: jobID)
         record.status = status
         record.updatedAt = Date()
-        if status != .queued && status != .running {
+        if status != .queued && status != .launching && status != .running {
             record.completedAt = record.updatedAt
         }
         if let message {
@@ -680,7 +869,7 @@ public final class WorkspaceManagedJobStore {
         if let heartbeatData = trustedFileData(at: layout.heartbeat, inside: directory),
            let heartbeat = try? RuntimeHeartbeat.read(from: heartbeatData, decoder: decoder) {
             record.lastHeartbeatAt = heartbeat.timestamp
-            if record.status == .queued {
+            if record.status == .queued || record.status == .launching {
                 record.status = .running
             }
         }
@@ -921,7 +1110,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     public init(configuration: WorkspaceToolConfiguration, executor: DockerWorkspaceCommandExecutor) {
         self.configuration = configuration
         self.executor = executor
-        self.store = WorkspaceManagedJobStore(rootPath: configuration.jobRootHostPath)
+        self.store = WorkspaceManagedJobStore(
+            rootPath: configuration.jobRootHostPath,
+            trustedStateRootPath: configuration.managedJobTrustedStateHostPath
+        )
     }
 
     public func start(
@@ -934,6 +1126,12 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return failedSynthetic(command: command, message: "workspace_job_start requires a non-empty command")
+        }
+        guard !providerCanWriteTrustedState else {
+            return failedSynthetic(
+                command: command,
+                message: "Managed-job trusted state must be outside every provider-writable Docker mount."
+            )
         }
         let pathResolution = configuration.containerCommand(for: trimmed)
         if let errorMessage = pathResolution.errorMessage {
@@ -968,49 +1166,49 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         } catch {
             return failedSynthetic(command: command, message: error.localizedDescription)
         }
-        guard admission.isNew else { return admission.record }
-        var record = admission.record
-
-        let container = executor.ensureContainerStarted()
-        guard container.exitCode == 0 else {
-            let message = container.stderr.isEmpty
-                ? "Failed to start Docker workspace container"
-                : container.stderr
-            return (try? store.mark(
-                jobID: record.jobID,
-                status: .failed,
-                message: message,
-                exitCode: container.exitCode
-            )) ?? failedSynthetic(command: command, message: message)
-        }
-
         do {
-            let result = executor.runDockerCommand(
-                arguments: [
-                    "exec", "-d",
-                    "--workdir", configuration.workdir,
-                    configuration.containerName,
-                    "sh", "-c", wrapperScript(
-                        containerJobDirectory: containerJobDirectory(jobID: record.jobID),
-                        timeoutSeconds: timeoutSeconds
-                    )
-                ],
-                commandLabel: "workspace_job_start \(record.jobID)",
-                timeoutSeconds: 30
-            )
-            guard result.exitCode == 0 else {
-                return try store.mark(
-                    jobID: record.jobID,
-                    status: .failed,
-                    message: result.stderr.isEmpty ? "Docker could not start the managed workspace job." : result.stderr,
-                    exitCode: result.exitCode
+            let launched = try store.launchQueuedInvocation(jobID: admission.record.jobID) { queued in
+                var record = queued
+                let container = executor.ensureContainerStarted()
+                guard container.exitCode == 0 else {
+                    record.status = .failed
+                    record.updatedAt = Date()
+                    record.completedAt = record.updatedAt
+                    record.message = container.stderr.isEmpty
+                        ? "Failed to start Docker workspace container"
+                        : container.stderr
+                    record.exitCode = container.exitCode
+                    return record
+                }
+                let result = executor.runDockerCommand(
+                    arguments: [
+                        "exec", "-d",
+                        "--workdir", configuration.workdir,
+                        configuration.containerName,
+                        "sh", "-c", wrapperScript(
+                            containerJobDirectory: containerJobDirectory(jobID: record.jobID),
+                            timeoutSeconds: timeoutSeconds
+                        )
+                    ],
+                    commandLabel: "workspace_job_start \(record.jobID)",
+                    timeoutSeconds: 30
                 )
+                guard result.exitCode == 0 else {
+                    record.status = .failed
+                    record.updatedAt = Date()
+                    record.completedAt = record.updatedAt
+                    record.message = result.stderr.isEmpty
+                        ? "Docker could not start the managed workspace job."
+                        : result.stderr
+                    record.exitCode = result.exitCode
+                    return record
+                }
+                record.status = .running
+                record.startedAt = Date()
+                record.updatedAt = record.startedAt ?? record.updatedAt
+                return record
             }
-            record.status = .running
-            record.startedAt = Date()
-            record.updatedAt = record.startedAt ?? record.updatedAt
-            try store.save(record)
-            return try store.load(jobID: record.jobID)
+            return try store.load(jobID: launched.jobID)
         } catch {
             return failedSynthetic(command: command, message: error.localizedDescription)
         }
@@ -1041,10 +1239,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                     "exec", configuration.containerName,
                     "sh", "-c",
                     """
-                    pidfile=\(shellQuote(directory + "/pid"))
-                    pid_metadata=\(shellQuote(directory + "/pid.meta"))
+                    pidfile=\(Self.shellQuote(directory + "/pid"))
+                    pid_metadata=\(Self.shellQuote(directory + "/pid.meta"))
                     pid_metadata_tmp="$pid_metadata.tmp"
-                    command_script=\(shellQuote(directory + "/command.sh"))
+                    command_script=\(Self.shellQuote(directory + "/command.sh"))
                     kill_bin=""
                     for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
                       if [ -x "$candidate" ]; then
@@ -1215,17 +1413,11 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     }
 
     public func hasTrustedNonterminalOwnedJob() -> Bool {
+        guard !providerCanWriteTrustedState else { return true }
         do {
-            return try store.listTrustedRecords().contains { record in
-                guard !record.isTerminal else { return false }
-                guard let receipt = record.startReceipt else {
-                    // A legacy nonterminal record cannot prove that cleanup is
-                    // safe, so preserve the executor.
-                    return true
-                }
-                // A conflicting task/run receipt on this same task-scoped
-                // executor is corruption, not evidence that stopping is safe.
-                return receipt.containerName == configuration.containerName
+            return try store.withExclusiveAdmissionAndCleanup {
+                try reconcileHostVerifiedTerminalRecords()
+                return hasTrustedNonterminalOwnedJobUnlocked()
             }
         } catch {
             // Cleanup is destructive. Preserve the container when trusted
@@ -1235,9 +1427,92 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     }
 
     @discardableResult
-    public func cleanupExecutorIfIdle() -> Bool {
-        guard !hasTrustedNonterminalOwnedJob() else { return false }
-        return executor.stopManagedContainerIfPresent()
+    public func cleanupExecutorIfIdle(_ cleanup: () -> Void) -> Bool {
+        guard !providerCanWriteTrustedState else { return false }
+        do {
+            return try store.withExclusiveAdmissionAndCleanup {
+                try reconcileHostVerifiedTerminalRecords()
+                guard !hasTrustedNonterminalOwnedJobUnlocked() else { return false }
+                cleanup()
+                return true
+            }
+        } catch {
+            return false
+        }
+    }
+
+    /// Provider-visible result.json is only a completion claim. Promote it to
+    /// the trusted host record after the host independently proves that no
+    /// managed command guardian for this job remains in the container.
+    private func reconcileHostVerifiedTerminalRecords() throws {
+        let trustedRecords = try store.listTrustedRecordsAssumingExclusiveAdmission()
+        for trusted in trustedRecords where !trusted.isTerminal {
+            let runtimeProjection = try store.load(jobID: trusted.jobID)
+            guard runtimeProjection.isTerminal,
+                  hostVerifiesManagedCommandExited(jobID: trusted.jobID) else {
+                continue
+            }
+            try store.saveAssumingExclusiveAdmission(runtimeProjection)
+        }
+    }
+
+    private func hostVerifiesManagedCommandExited(jobID: String) -> Bool {
+        let commandScript = containerJobDirectory(jobID: jobID) + "/command.sh"
+        let result = executor.runDockerCommand(
+            arguments: [
+                "exec", configuration.containerName,
+                "sh", "-c",
+                Self.hostVerificationScript(commandScript: commandScript)
+            ],
+            commandLabel: "workspace_job_reconcile \(jobID)",
+            timeoutSeconds: 10
+        )
+        return result.exitCode == 0
+    }
+
+    /// The verifier itself runs as `sh -c <this script>`, so its own
+    /// /proc cmdline contains the `command_script=` assignment and would
+    /// match the scan forever, permanently blocking trusted-record
+    /// promotion. The scan therefore skips the verifier's own entry.
+    static func hostVerificationScript(commandScript: String) -> String {
+        """
+        command_script=\(shellQuote(commandScript))
+        verifier_cmdline="/proc/$$/cmdline"
+        for cmdline in /proc/[0-9]*/cmdline; do
+          [ "$cmdline" != "$verifier_cmdline" ] || continue
+          [ -r "$cmdline" ] || continue
+          value="$(tr '\\0' ' ' < "$cmdline" 2>/dev/null || true)"
+          case "$value" in
+            *"$command_script"*) exit 73 ;;
+          esac
+        done
+        exit 0
+        """
+    }
+
+    private func hasTrustedNonterminalOwnedJobUnlocked() -> Bool {
+        do {
+            return try store.listTrustedRecordsAssumingExclusiveAdmission().contains { record in
+                guard !record.isTerminal else { return false }
+                // A receipt mismatch is uncertain ownership and therefore also
+                // preserves the executor.
+                return true
+            }
+        } catch {
+            return true
+        }
+    }
+
+    private var providerCanWriteTrustedState: Bool {
+        let trustedPath = URL(fileURLWithPath: configuration.managedJobTrustedStateHostPath)
+            .standardizedFileURL.path
+        return configuration.mounts.contains { mount in
+            guard mount.access.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "ro" else {
+                return false
+            }
+            let mountPath = URL(fileURLWithPath: mount.hostPath).standardizedFileURL.path
+            return trustedPath == mountPath || WorkspaceManagedJobPathContainment.isDescendant(trustedPath, of: mountPath)
+        }
     }
 
     private func containerJobDirectory(jobID: String) -> String {
@@ -1245,7 +1520,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     }
 
     private func wrapperScript(containerJobDirectory: String, timeoutSeconds: TimeInterval?) -> String {
-        let dir = shellQuote(containerJobDirectory)
+        let dir = Self.shellQuote(containerJobDirectory)
         let timeout = max(0, Int((timeoutSeconds ?? 0).rounded(.up)))
         return """
         job_dir=\(dir)
@@ -1305,7 +1580,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           shift 19
           printf '%s\\n' "$1"
         }
-        "$setsid_bin" sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
+        # Keep a stable guardian whose kernel command line names command.sh.
+        # Even when the user command calls exec, host reconciliation can prove
+        # whether this managed process group has actually completed.
+        "$setsid_bin" sh -c 'sh "$1"' astra-managed-job-guardian "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
         command_pid=$!
         printf '%s\\n' "$command_pid" > "$pidfile"
         command_start_time="$(proc_start_time "$command_pid" || true)"
@@ -1404,7 +1682,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         )
     }
 
-    private func shellQuote(_ value: String) -> String {
+    private static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

@@ -44,7 +44,8 @@ let package = Package(
         .target(
             name: "ASTRACore",
             dependencies: ["ASTRALogging"],
-            path: "ASTRACore"
+            path: "ASTRACore",
+            linkerSettings: [.linkedFramework("Security")]
         ),
         // Broker-only policy and verified evidence. Application, UI, model,
         // persistence, and general tool targets must not depend on this target.
@@ -70,12 +71,12 @@ let package = Package(
         ),
         .target(
             name: "RunSupervisorSupport",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "RunBrokerClient"],
             path: "RunSupervisorSupport"
         ),
         .target(
             name: "RunBrokerClient",
-            dependencies: ["ASTRACore"],
+            dependencies: ["ASTRACore", "AstraObjCSupport"],
             path: "RunBrokerKit",
             exclude: [
                 "RunBrokerApplicationCommandHandling.swift",
@@ -93,6 +94,7 @@ let package = Package(
                 "RunBrokerRunLedgerAdapter.swift",
                 "RunBrokerSchedulerContracts.swift",
                 "RunBrokerSecureStore.swift",
+                "RunBrokerSuccessorHandoff.swift",
                 "RunBrokerUnixSocketListener.swift",
             ],
             sources: [
@@ -101,13 +103,16 @@ let package = Package(
                 "RunBrokerAuthentication.swift",
                 "RunBrokerClient.swift",
                 "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
                 "RunBrokerTransport.swift",
                 "RunBrokerUnixSocketConnection.swift",
                 "RunBrokerWireCodec.swift",
-            ]
+            ],
+            linkerSettings: [.linkedFramework("Security")]
         ),
         .target(
             name: "RunBrokerKit",
@@ -119,9 +124,11 @@ let package = Package(
                 "RunBrokerAuthentication.swift",
                 "RunBrokerClient.swift",
                 "RunBrokerClientBootstrap.swift",
+                "RunBrokerCapabilityKeychainStore.swift",
                 "RunBrokerCommands.swift",
                 "RunBrokerProtocol.swift",
                 "RunBrokerResponseAuthentication.swift",
+                "RunBrokerSuccessorManifest.swift",
                 "RunBrokerTransport.swift",
                 "RunBrokerUnixSocketConnection.swift",
                 "RunBrokerWireCodec.swift",
@@ -340,7 +347,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RunSupervisorSupportTests",
-            dependencies: ["RunSupervisorSupport", "ASTRACore"],
+            dependencies: ["RunSupervisorSupport", "RunBrokerClient", "ASTRACore"],
             path: "Tests/RunSupervisorSupportTests"
         ),
         .testTarget(

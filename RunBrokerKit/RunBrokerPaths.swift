@@ -16,7 +16,6 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
     public let socketURL: URL
     public let authenticationDirectory: URL
     public let ledgerDirectoryURL: URL
-    public let capabilitySecretURL: URL
     public let installationIDURL: URL
     public let launchAgentPlistURL: URL
     public let standardOutputURL: URL
@@ -52,8 +51,6 @@ public struct RunBrokerChannelIdentity: Equatable, Sendable {
         self.socketURL = socketDirectory.appendingPathComponent("broker.sock", isDirectory: false)
         self.authenticationDirectory = support.appendingPathComponent("Authentication", isDirectory: true)
         self.ledgerDirectoryURL = support.appendingPathComponent("Ledger", isDirectory: true)
-        self.capabilitySecretURL = authenticationDirectory
-            .appendingPathComponent("capability.key", isDirectory: false)
         self.installationIDURL = authenticationDirectory
             .appendingPathComponent("installation-id", isDirectory: false)
 

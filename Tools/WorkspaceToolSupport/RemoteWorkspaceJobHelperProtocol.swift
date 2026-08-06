@@ -415,7 +415,7 @@ public struct RemoteWorkspaceJobSnapshot: Codable, Equatable, Sendable {
               startedAt.map({ start in completedAt.map({ start <= $0 }) ?? true }) ?? true else {
             throw RemoteWorkspaceJobHelperProtocolError.invalidTimestamps
         }
-        if status == .queued || status == .running {
+        if status == .queued || status == .launching || status == .running {
             guard completedAt == nil else {
                 throw RemoteWorkspaceJobHelperProtocolError.invalidTerminalState
             }

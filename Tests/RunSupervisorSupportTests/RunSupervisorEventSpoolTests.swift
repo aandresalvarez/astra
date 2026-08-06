@@ -182,6 +182,28 @@ struct RunSupervisorEventSpoolTests {
         #expect(try spool.replay(after: terminal.sequence - 1).last == terminal)
     }
 
+    @Test("an uncertain event append poisons every later spool operation")
+    func uncertainAppendPoisonsSpool() throws {
+        let fixture = try makeFixture()
+        let spool = try RunSupervisorEventSpool(
+            directory: fixture.directory,
+            capability: fixture.capability,
+            faultInjector: NoOpRunSupervisorSpoolFaultInjector(),
+            appendFaultInjector: OneShotAppendFaultInjector()
+        )
+
+        #expect(throws: InjectedSpoolCrash.self) {
+            try spool.appendCritical(.supervisorReady)
+        }
+        #expect(throws: RunSupervisorError.corruptCommittedSpool) {
+            try spool.appendCritical(.providerLaunchFailed)
+        }
+        #expect(throws: RunSupervisorError.corruptCommittedSpool) {
+            try spool.replay(after: 0)
+        }
+        #expect(!spool.waitForOutputCapacity(deadline: .distantFuture))
+    }
+
     @Test("symlink spool and public run directories are rejected without touching targets")
     func symlinkAndModeAttacks() throws {
         let fixture = try makeFixture()
@@ -508,6 +530,19 @@ private final class OneShotSpoolFaultInjector: RunSupervisorSpoolFaultInjecting,
         lock.lock()
         defer { lock.unlock() }
         guard checkpoint == target, !fired else { return }
+        fired = true
+        throw InjectedSpoolCrash()
+    }
+}
+
+private final class OneShotAppendFaultInjector: RunSupervisorSpoolAppendFaultInjecting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func checkpoint(_ checkpoint: RunSupervisorSpoolAppendCheckpoint) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !fired else { return }
         fired = true
         throw InjectedSpoolCrash()
     }

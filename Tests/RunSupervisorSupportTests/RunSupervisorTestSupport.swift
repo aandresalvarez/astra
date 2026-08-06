@@ -20,6 +20,7 @@ enum RunSupervisorTestSupport {
         arguments: [String] = [],
         workingDirectory: String = "/tmp",
         environment: [String: String] = ["PATH": "/bin:/usr/bin"],
+        supervisionPolicy: ExecutionSupervisionPolicySnapshot? = nil,
         identitySeed: UInt8 = 1,
         authorityEpoch: UInt64 = 1,
         capability: RunSupervisorCapability? = nil
@@ -51,6 +52,7 @@ enum RunSupervisorTestSupport {
                 configurationRevision: "test-revision"
             ),
             declaredEffects: [.computeOnly],
+            supervisionPolicy: supervisionPolicy,
             createdAt: fixedDate
         )
         return .init(

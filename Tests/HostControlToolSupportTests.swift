@@ -899,7 +899,7 @@ struct HostControlToolSupportTests {
         #expect(startResult.status == .running)
         #expect(startResult.startReceipt?.taskID == UUID(uuidString: workspaceTaskID))
         #expect(startResult.startReceipt?.runID == UUID(uuidString: workspaceRunID))
-        #expect(startResult.startReceipt?.invocationID == "number:6")
+        #expect(startResult.startReceipt?.invocationID.hasSuffix("|number:6") == true)
         #expect(!startText.contains("dbt build"))
         executor.cleanup()
 

@@ -21,7 +21,6 @@ struct RunBrokerPathAndInstallerTests {
         )
         #expect(prod.launchAgentLabel != dev.launchAgentLabel)
         #expect(prod.socketURL != dev.socketURL)
-        #expect(prod.capabilitySecretURL != dev.capabilitySecretURL)
         #expect(prod.installationIDURL != dev.installationIDURL)
         #expect(prod.installerLockURL != dev.installerLockURL)
         #expect(prod.ledgerDirectoryURL != dev.ledgerDirectoryURL)
@@ -79,8 +78,13 @@ struct RunBrokerPathAndInstallerTests {
             launchController: controller,
             healthChecker: health,
             secureStore: fixture.secureStore,
+            capabilityStore: fixture.capabilityStore,
             userID: getuid(),
-            diagnostics: NoOpRunBrokerDiagnostics()
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
         let newerSource = try fixture.sourceExecutable(name: "sources/v2", bytes: "newer")
         let olderSource = try fixture.sourceExecutable(name: "sources/v1", bytes: "older")
@@ -344,12 +348,17 @@ struct RunBrokerPathAndInstallerTests {
             launchController: fixture.launchController,
             healthChecker: fixture.healthChecker,
             secureStore: fixture.secureStore,
+            capabilityStore: fixture.capabilityStore,
             userID: getuid(),
             stagingIdentifier: {
                 _ = unlink(supervisor.path)
                 return "partial-cohort"
             },
-            diagnostics: NoOpRunBrokerDiagnostics()
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
 
         #expect(throws: RunBrokerInstallationError.sourceIsNotRegularExecutable) {
@@ -423,6 +432,92 @@ struct RunBrokerPathAndInstallerTests {
                 .appendingPathComponent("1/astra-run-supervisor").path
         ))
         #expect(fixture.launchController.reloadCount == 2)
+        let trustedNames = Set(fixture.capabilityStore.lastTrustedApplicationURLs.map {
+            $0.deletingLastPathComponent().lastPathComponent + "/" + $0.lastPathComponent
+        })
+        #expect(trustedNames.contains("2/astra-run-broker"))
+        #expect(trustedNames.contains("2/astra-run-supervisor"))
+        #expect(trustedNames.contains("1/astra-run-broker"))
+        #expect(trustedNames.contains("1/astra-run-supervisor"))
+    }
+
+    @Test("Existing installation never rotates authority when exact-code Keychain access is unavailable")
+    func existingInstallationRequiresTrustedCapabilityHandoff() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/v1", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/v2", bytes: "two")
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: "1"),
+            identity: fixture.identity
+        )
+        fixture.capabilityStore.makeUnavailable()
+
+        #expect(throws: RunBrokerInstallationError.capabilityHandoffRequired) {
+            try fixture.installer.install(
+                payload: try fixture.payload(source: source2, version: "2"),
+                identity: fixture.identity
+            )
+        }
+        #expect(fixture.capabilityStore.provisionCount == 1)
+        #expect(fixture.launchController.reloadCount == 1)
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.identity.currentPayloadURL.path
+            ) == "Versions/1"
+        )
+    }
+
+    @Test("Verified predecessor handoff reloads the original authority and completes upgrade")
+    func verifiedHandoffCompletesUpgrade() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source1 = try fixture.sourceExecutable(name: "sources/handoff-v1", bytes: "one")
+        let source2 = try fixture.sourceExecutable(name: "sources/handoff-v2", bytes: "two")
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source1, version: "1"),
+            identity: fixture.identity)
+        fixture.capabilityStore.makeUnavailable()
+        let installer = RunBrokerInstaller(
+            launchController: fixture.launchController,
+            healthChecker: fixture.healthChecker,
+            secureStore: fixture.secureStore,
+            capabilityStore: fixture.capabilityStore,
+            userID: getuid(),
+            durabilitySynchronizer: fixture.durabilitySynchronizer,
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in fixture.capabilityStore.makeAvailable() },
+            pinnedUpdatePublicKey: nil)
+
+        _ = try installer.install(
+            payload: try fixture.payload(source: source2, version: "2"),
+            identity: fixture.identity)
+
+        #expect(fixture.capabilityStore.provisionCount == 2)
+        #expect(fixture.launchController.reloadCount == 2)
+        #expect(try FileManager.default.destinationOfSymbolicLink(
+            atPath: fixture.identity.currentPayloadURL.path) == "Versions/2")
+    }
+
+    @Test("Installer synchronizes cohort, selector, and plist metadata before reporting success")
+    func durablePublicationOrdering() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.sourceExecutable(name: "sources/durable", bytes: "durable")
+
+        _ = try fixture.installer.install(
+            payload: try fixture.payload(source: source, version: "1"),
+            identity: fixture.identity
+        )
+
+        let events = fixture.durabilitySynchronizer.events
+        #expect(events.count == 5)
+        #expect(events[0].hasPrefix("directory:.installing-"))
+        #expect(events[1] == "directory:Versions")
+        #expect(events[2] == "directory:RunBroker")
+        #expect(events[3] == "file:\(fixture.identity.launchAgentPlistURL.lastPathComponent)")
+        #expect(events[4] == "directory:LaunchAgents")
+        #expect(fixture.launchController.reloadCount == 1)
     }
 
     @Test("Failed post-reload health check rolls selector back and reloads prior payload")
@@ -490,7 +585,7 @@ struct RunBrokerPathAndInstallerTests {
         let fixture = try InstallerFixture()
         defer { fixture.cleanup() }
         let source = try fixture.sourceExecutable(name: "sources/v1", bytes: "one")
-        _ = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        _ = try fixture.secureStore.loadOrCreateInstallationID(identity: fixture.identity)
         try fixture.secureStore.ensurePrivateDirectory(fixture.identity.versionsDirectory)
         let outside = fixture.root.appendingPathComponent("outside-version", isDirectory: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
@@ -557,38 +652,19 @@ struct RunBrokerPathAndInstallerTests {
         }
     }
 
-    @Test("Capability material is regular 0600 and symlink substitution fails closed")
-    func secureSecretFiles() throws {
+    @Test("Capability material is redacted and never assigned a filesystem path")
+    func capabilityIsRedactedAndNotFileBacked() throws {
         let fixture = try InstallerFixture()
         defer { fixture.cleanup() }
-        let store = RunBrokerSecureStore(
-            expectedUserID: getuid(),
-            random: FixedInstallerRandom()
-        )
-        _ = try store.loadOrCreate(identity: fixture.identity)
-        var info = stat()
-        #expect(lstat(fixture.identity.capabilitySecretURL.path, &info) == 0)
-        #expect((info.st_mode & S_IFMT) == S_IFREG)
-        #expect(UInt16(info.st_mode & 0o777) == 0o600)
-        let secrets = try store.loadOrCreate(identity: fixture.identity)
-        #expect(String(describing: secrets.capabilitySecret) == "<redacted run broker capability>")
-        #expect(String(reflecting: secrets.capabilitySecret) == "<redacted run broker capability>")
+        let secret = try RunBrokerCapabilitySecret(bytes: Data(repeating: 0xA5, count: 32))
+        #expect(String(describing: secret) == "<redacted run broker capability>")
+        #expect(String(reflecting: secret) == "<redacted run broker capability>")
         #expect(
-            Mirror(reflecting: secrets.capabilitySecret).children
+            Mirror(reflecting: secret).children
                 .map { String(describing: $0.value) }
                 == ["<redacted run broker capability>"]
         )
-
-        try FileManager.default.removeItem(at: fixture.identity.capabilitySecretURL)
-        let outside = fixture.root.appendingPathComponent("outside")
-        try Data(repeating: 1, count: 32).write(to: outside)
-        try FileManager.default.createSymbolicLink(
-            at: fixture.identity.capabilitySecretURL,
-            withDestinationURL: outside
-        )
-        #expect(throws: (any Error).self) {
-            try store.loadOrCreate(identity: fixture.identity)
-        }
+        #expect(!String(describing: fixture.identity).contains("capability.key"))
     }
 
     @Test("Existing installation ID must use the exact bounded canonical form")
@@ -605,9 +681,8 @@ struct RunBrokerPathAndInstallerTests {
         for malformedValue in malformedValues {
             let fixture = try InstallerFixture()
             defer { fixture.cleanup() }
-            _ = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+            _ = try fixture.secureStore.loadOrCreateInstallationID(identity: fixture.identity)
             try FileManager.default.removeItem(at: fixture.identity.installationIDURL)
-            try FileManager.default.removeItem(at: fixture.identity.capabilitySecretURL)
             let malformedData = Data(malformedValue.utf8)
             try malformedData.write(to: fixture.identity.installationIDURL)
             try FileManager.default.setAttributes(
@@ -616,12 +691,9 @@ struct RunBrokerPathAndInstallerTests {
             )
 
             #expect(throws: RunBrokerSecureFileError.invalidInstallationID) {
-                try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+                try fixture.secureStore.loadOrCreateInstallationID(identity: fixture.identity)
             }
             #expect(try Data(contentsOf: fixture.identity.installationIDURL) == malformedData)
-            #expect(!FileManager.default.fileExists(
-                atPath: fixture.identity.capabilitySecretURL.path
-            ))
         }
     }
 }
@@ -631,7 +703,9 @@ private final class InstallerFixture {
     let identity: RunBrokerChannelIdentity
     let launchController = FakeLaunchController()
     let healthChecker = FakeHealthChecker()
+    let durabilitySynchronizer = RecordingInstallationDurabilitySynchronizer()
     let secureStore: RunBrokerSecureStore
+    let capabilityStore = InMemoryRunBrokerCapabilityStore()
     let installer: RunBrokerInstaller
 
     init() throws {
@@ -656,9 +730,15 @@ private final class InstallerFixture {
             launchController: launchController,
             healthChecker: healthChecker,
             secureStore: secureStore,
+            capabilityStore: capabilityStore,
             userID: getuid(),
             stagingIdentifier: { UUID().uuidString },
-            diagnostics: NoOpRunBrokerDiagnostics()
+            durabilitySynchronizer: durabilitySynchronizer,
+            diagnostics: NoOpRunBrokerDiagnostics(),
+            successorAuthorizer: { _, _ in
+                throw RunBrokerInstallationError.capabilityHandoffRequired
+            },
+            pinnedUpdatePublicKey: nil
         )
     }
 
@@ -705,6 +785,96 @@ private final class InstallerFixture {
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+}
+
+private final class InMemoryRunBrokerCapabilityStore:
+    RunBrokerCapabilitySecretStoring,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var secrets: [RunBrokerInstallationID: RunBrokerCapabilitySecret] = [:]
+    private var trustedApplicationURLs: [URL] = []
+    private var unavailable = false
+    private var provisions = 0
+
+    var provisionCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return provisions
+    }
+
+    func makeUnavailable() {
+        lock.lock()
+        unavailable = true
+        lock.unlock()
+    }
+
+    func makeAvailable() {
+        lock.lock()
+        unavailable = false
+        lock.unlock()
+    }
+
+    var lastTrustedApplicationURLs: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return trustedApplicationURLs
+    }
+
+    func load(
+        channel: RunBrokerChannel,
+        installationID: RunBrokerInstallationID
+    ) throws -> RunBrokerCapabilitySecret {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !unavailable, let secret = secrets[installationID] else {
+            throw RunBrokerCapabilityKeychainError.unavailable
+        }
+        return secret
+    }
+
+    func provision(
+        _ secret: RunBrokerCapabilitySecret,
+        channel: RunBrokerChannel,
+        installationID: RunBrokerInstallationID,
+        trustedApplicationURLs: [URL]
+    ) throws {
+        guard trustedApplicationURLs.count >= 2 else {
+            throw RunBrokerCapabilityKeychainError.provisioningFailed
+        }
+        lock.lock()
+        secrets[installationID] = secret
+        self.trustedApplicationURLs = trustedApplicationURLs
+        provisions += 1
+        lock.unlock()
+    }
+}
+
+private final class RecordingInstallationDurabilitySynchronizer:
+    RunBrokerInstallationDurabilitySynchronizing,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func synchronizeFile(at url: URL) throws {
+        record("file:\(url.lastPathComponent)")
+    }
+
+    func synchronizeDirectory(at url: URL) throws {
+        record("directory:\(url.lastPathComponent)")
+    }
+
+    private func record(_ event: String) {
+        lock.lock()
+        recorded.append(event)
+        lock.unlock()
+    }
 }
 
 private final class FakeLaunchController: RunBrokerLaunchControlling, @unchecked Sendable {

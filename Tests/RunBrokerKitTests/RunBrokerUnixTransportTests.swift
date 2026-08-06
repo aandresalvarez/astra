@@ -6,11 +6,29 @@ import ASTRACore
 
 @Suite("RunBroker Unix socket transport")
 struct RunBrokerUnixTransportTests {
+    @Test("Listener and accepted broker sockets are closed across exec")
+    func socketDescriptorsAreCloseOnExec() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+
+        #expect(listener.hasCloseOnExec)
+        let client = try connectRawSocket(to: fixture.identity.socketURL)
+        defer { Darwin.close(client) }
+        let connection = try #require(listener.accept() as? RunBrokerUnixSocketConnection)
+        defer { connection.close() }
+        #expect(connection.hasCloseOnExec)
+    }
+
     @Test("Authenticated client and server exchange a framed health request")
     func endToEndHealth() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -73,7 +91,7 @@ struct RunBrokerUnixTransportTests {
     func sameUIDReplacementCannotForgeResponses() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -145,7 +163,7 @@ struct RunBrokerUnixTransportTests {
     func authenticatedApplicationResponseIsCommandCorrelated() throws {
         let fixture = try SocketFixture()
         defer { fixture.cleanup() }
-        let secrets = try fixture.secureStore.loadOrCreate(identity: fixture.identity)
+        let secrets = try fixture.secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -403,6 +421,66 @@ struct RunBrokerUnixTransportTests {
         withExtendedLifetime(listener) {}
     }
 
+    @Test("Stale-socket removal and bind are serialized under the bind lease")
+    func staleRemovalIsLeaseSerialized() throws {
+        let fixture = try SocketFixture()
+        defer { fixture.cleanup() }
+        try fixture.secureStore.ensurePrivateDirectory(fixture.identity.supportDirectory)
+        try fixture.secureStore.ensurePrivateDirectory(fixture.identity.socketDirectory)
+
+        // A crashed broker's endpoint: a bound socket whose listener is gone.
+        let staleDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        #expect(staleDescriptor >= 0)
+        var address = try runBrokerUnixAddress(path: fixture.identity.socketURL.path)
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(staleDescriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        #expect(bound == 0)
+        #expect(chmod(fixture.identity.socketURL.path, 0o600) == 0)
+        Darwin.close(staleDescriptor)
+        var stale = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &stale) == 0)
+
+        // A concurrent broker is mid-claim: it observed the same refused
+        // stale socket and holds the bind lease while it unlinks and binds.
+        let leasePath = fixture.identity.socketURL.path + ".lock"
+        let concurrentClaim = open(leasePath, O_WRONLY | O_CREAT | O_CLOEXEC, 0o600)
+        #expect(concurrentClaim >= 0)
+        #expect(flock(concurrentClaim, LOCK_EX | LOCK_NB) == 0)
+
+        #expect(throws: RunBrokerTransportError.socketAlreadyActive) {
+            try RunBrokerUnixSocketListener(
+                identity: fixture.identity,
+                secureStore: fixture.secureStore,
+                expectedUserID: getuid()
+            )
+        }
+        // The contended claim never unlinked the pathname out from under the
+        // lease holder.
+        var afterContended = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &afterContended) == 0)
+        #expect(afterContended.st_dev == stale.st_dev)
+        #expect(afterContended.st_ino == stale.st_ino)
+
+        #expect(flock(concurrentClaim, LOCK_UN) == 0)
+        Darwin.close(concurrentClaim)
+
+        // With the lease free the same claim replaces the stale endpoint.
+        let listener = try RunBrokerUnixSocketListener(
+            identity: fixture.identity,
+            secureStore: fixture.secureStore,
+            expectedUserID: getuid()
+        )
+        var live = stat()
+        #expect(lstat(fixture.identity.socketURL.path, &live) == 0)
+        #expect(live.st_ino != stale.st_ino)
+        let client = try connectRawSocket(to: fixture.identity.socketURL)
+        Darwin.close(client)
+        withExtendedLifetime(listener) {}
+    }
+
     @Test("Connector rejects paths exceeding sockaddr_un capacity")
     func socketPathBound() {
         let connector = RunBrokerUnixSocketConnector(
@@ -416,6 +494,10 @@ struct RunBrokerUnixTransportTests {
 }
 
 private final class SocketFixture {
+    struct Secrets {
+        let installationID: RunBrokerInstallationID
+        let capabilitySecret: RunBrokerCapabilitySecret
+    }
     let root: URL
     let identity: RunBrokerChannelIdentity
     let secureStore: RunBrokerSecureStore
@@ -438,11 +520,11 @@ private final class SocketFixture {
     func cleanup() { try? FileManager.default.removeItem(at: root) }
 
     func runtime() throws -> (
-        secrets: RunBrokerInstallationSecrets,
+        secrets: Secrets,
         authenticator: RunBrokerRequestAuthenticator,
         endpoint: RunBrokerRequestEndpoint
     ) {
-        let secrets = try secureStore.loadOrCreate(identity: identity)
+        let secrets = try secrets()
         let authenticator = RunBrokerRequestAuthenticator(
             secret: secrets.capabilitySecret,
             random: SocketSequenceRandom()
@@ -467,7 +549,7 @@ private final class SocketFixture {
     }
 
     func client(
-        secrets: RunBrokerInstallationSecrets,
+        secrets: Secrets,
         authenticator: RunBrokerRequestAuthenticator
     ) -> RunBrokerClient {
         RunBrokerClient(
@@ -478,6 +560,13 @@ private final class SocketFixture {
             authenticator: authenticator,
             channel: .development,
             installationID: secrets.installationID
+        )
+    }
+
+    func secrets() throws -> Secrets {
+        .init(
+            installationID: try secureStore.loadOrCreateInstallationID(identity: identity),
+            capabilitySecret: try .init(bytes: Data(repeating: 0x77, count: 32))
         )
     }
 }

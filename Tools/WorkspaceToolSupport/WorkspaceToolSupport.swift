@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import MCPServerKit
+import CryptoKit
 
 public struct WorkspaceDockerMount: Codable, Equatable, Sendable {
     public var hostPath: String
@@ -28,6 +29,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     public var containerEnvironment: [String: String]
     public var jobRootHostPath: String
     public var jobRootContainerPath: String
+    public var managedJobTrustedStateHostPath: String
     public var dockerClientConfigPath: String
     public var diagnosticsHostPath: String
     public var subagentParentID: String?
@@ -44,6 +46,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         containerEnvironment: [String: String] = [:],
         jobRootHostPath: String? = nil,
         jobRootContainerPath: String? = nil,
+        managedJobTrustedStateHostPath: String? = nil,
         dockerClientConfigPath: String? = nil,
         diagnosticsHostPath: String? = nil,
         subagentParentID: String? = nil
@@ -63,6 +66,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         self.containerEnvironment = normalizedEnvironment
         self.jobRootHostPath = Self.clean(jobRootHostPath) ?? Self.defaultJobRootHostPath(taskID: taskID, mounts: mounts)
         self.jobRootContainerPath = Self.clean(jobRootContainerPath) ?? Self.defaultJobRootContainerPath(taskID: taskID, mounts: mounts)
+        self.managedJobTrustedStateHostPath = Self.clean(managedJobTrustedStateHostPath)
+            ?? Self.defaultManagedJobTrustedStateHostPath(
+                taskID: taskID,
+                runID: runID,
+                containerName: containerName,
+                jobRootHostPath: self.jobRootHostPath
+            )
         self.dockerClientConfigPath = Self.clean(dockerClientConfigPath)
             ?? Self.defaultDockerClientConfigPath(jobRootHostPath: self.jobRootHostPath, runID: runID)
         self.diagnosticsHostPath = Self.clean(diagnosticsHostPath)
@@ -103,6 +113,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             containerEnvironment: decodedContainerEnvironment,
             jobRootHostPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_HOST"]),
             jobRootContainerPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_CONTAINER"]),
+            managedJobTrustedStateHostPath: clean(env["ASTRA_WORKSPACE_JOB_TRUSTED_STATE_HOST"]),
             dockerClientConfigPath: clean(env["DOCKER_CONFIG"]),
             diagnosticsHostPath: clean(env["ASTRA_WORKSPACE_DIAGNOSTICS_HOST"]),
             subagentParentID: clean(env["ASTRA_WORKSPACE_SUBAGENT_PARENT_ID"])
@@ -239,6 +250,23 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         URL(fileURLWithPath: jobRootHostPath, isDirectory: true)
             .deletingLastPathComponent()
             .appendingPathComponent("diagnostics", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func defaultManagedJobTrustedStateHostPath(
+        taskID: String,
+        runID: String,
+        containerName: String,
+        jobRootHostPath: String
+    ) -> String {
+        let identity = [taskID, runID, containerName, URL(fileURLWithPath: jobRootHostPath).standardizedFileURL.path]
+            .joined(separator: "\u{0}")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return AppChannelStoragePaths.applicationSupportDirectory()
+            .appendingPathComponent("WorkspaceManagedJobs", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
             .standardizedFileURL.path
     }
 
@@ -2666,6 +2694,17 @@ struct DockerProcessInvocation: Equatable, Sendable {
 extension DockerWorkspaceCommandExecutor {
     private func dockerClientEnvironment(_ environment: [String: String]) -> [String: String] {
         var dockerEnvironment = environment.filter { key, _ in key != "PATH" }
+        if configuration.dockerExecutable.hasPrefix("/") {
+            let dockerToolDirectory = URL(fileURLWithPath: configuration.dockerExecutable)
+                .deletingLastPathComponent()
+                .path
+            let inheritedPATH = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            let pathComponents = ([dockerToolDirectory] + inheritedPATH.split(separator: ":").map(String.init))
+            var seen: Set<String> = []
+            dockerEnvironment["PATH"] = pathComponents
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+                .joined(separator: ":")
+        }
         prepareDockerClientConfigDirectory()
         dockerEnvironment["DOCKER_CONFIG"] = configuration.dockerClientConfigPath
         return dockerEnvironment
@@ -2838,8 +2877,10 @@ public final class WorkspaceMCPServer {
     private let executor: WorkspaceCommandExecutor
     private let jobManager: WorkspaceJobManaging?
     private let diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder?
+    private let invocationSessionID: String
     private lazy var server = MCPServer(
         name: "astra-workspace",
+        sessionID: invocationSessionID,
         tools: { [weak self] in
             self?.toolSchemas() ?? []
         },
@@ -2851,11 +2892,13 @@ public final class WorkspaceMCPServer {
     public init(
         executor: WorkspaceCommandExecutor,
         jobManager: WorkspaceJobManaging? = nil,
-        diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder? = nil
+        diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder? = nil,
+        invocationSessionID: String = UUID().uuidString.lowercased()
     ) {
         self.executor = executor
         self.jobManager = jobManager
         self.diagnosticsRecorder = diagnosticsRecorder
+        self.invocationSessionID = invocationSessionID
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -2863,10 +2906,13 @@ public final class WorkspaceMCPServer {
     }
 
     public func cleanup() {
-        guard jobManager?.hasTrustedNonterminalOwnedJob() != true else {
-            return
+        if let jobManager {
+            _ = jobManager.cleanupExecutorIfIdle {
+                executor.cleanup()
+            }
+        } else {
+            executor.cleanup()
         }
-        executor.cleanup()
     }
 
     private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
@@ -3200,7 +3246,12 @@ public enum AstraWorkspaceToolMain {
             let server = WorkspaceMCPServer(
                 executor: executor,
                 jobManager: jobManager,
-                diagnosticsRecorder: recorder
+                diagnosticsRecorder: recorder,
+                // The run identity is supplied by the durable ASTRA client and
+                // remains stable when this MCP subprocess restarts. Combining
+                // it with the type-tagged JSON-RPC id makes retries adopt the
+                // original managed-job receipt instead of launching twice.
+                invocationSessionID: configuration.runID
             )
             defer { server.cleanup() }
             while let line = readLine() {

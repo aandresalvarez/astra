@@ -28,19 +28,69 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
     private let expectedUserID: UInt32
     private let homeDirectoryURL: URL
     private let trustedRootURL: URL
+    private let productionApplicationSupportDirectoryURL: URL
+    private let developmentApplicationSupportDirectoryURL: URL
+    private let capabilitySecretLoader: @Sendable (
+        RunBrokerChannel,
+        RunBrokerInstallationID
+    ) throws -> RunBrokerCapabilitySecret
 
     public init(expectedUserID: UInt32 = getuid()) {
+        let environment = ProcessInfo.processInfo.environment
+        let fileManager = FileManager.default
         self.expectedUserID = expectedUserID
         self.homeDirectoryURL = Self.loginHomeDirectory(expectedUserID: expectedUserID)
         self.trustedRootURL = URL(fileURLWithPath: "/", isDirectory: true)
+        self.productionApplicationSupportDirectoryURL =
+            AppChannelStoragePaths.applicationSupportDirectory(
+                for: .production,
+                environment: environment,
+                fileManager: fileManager
+            )
+        self.developmentApplicationSupportDirectoryURL =
+            AppChannelStoragePaths.applicationSupportDirectory(
+                for: .development,
+                environment: environment,
+                fileManager: fileManager
+            )
+        self.capabilitySecretLoader = { channel, installationID in
+            try RunBrokerCapabilityKeychainStore().load(
+                channel: channel,
+                installationID: installationID
+            )
+        }
     }
 
-    package init(expectedUserID: UInt32, testingHomeDirectoryURL: URL) {
+    package init(
+        expectedUserID: UInt32,
+        testingHomeDirectoryURL: URL,
+        testingDevelopmentApplicationSupportDirectoryURL: URL? = nil,
+        testingProductionApplicationSupportDirectoryURL: URL? = nil,
+        testingCapabilitySecret: RunBrokerCapabilitySecret? = nil
+    ) {
         self.expectedUserID = expectedUserID
         self.homeDirectoryURL = testingHomeDirectoryURL.standardizedFileURL
         self.trustedRootURL = testingHomeDirectoryURL
             .deletingLastPathComponent()
             .standardizedFileURL
+        let applicationSupportBase = testingHomeDirectoryURL
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+        self.productionApplicationSupportDirectoryURL =
+            (testingProductionApplicationSupportDirectoryURL
+                ?? applicationSupportBase.appendingPathComponent("Astra", isDirectory: true))
+            .standardizedFileURL
+        self.developmentApplicationSupportDirectoryURL =
+            (testingDevelopmentApplicationSupportDirectoryURL
+                ?? applicationSupportBase.appendingPathComponent("AstraDev", isDirectory: true))
+            .standardizedFileURL
+        self.capabilitySecretLoader = { channel, installationID in
+            if let testingCapabilitySecret { return testingCapabilitySecret }
+            return try RunBrokerCapabilityKeychainStore().load(
+                channel: channel,
+                installationID: installationID
+            )
+        }
     }
 
     /// Filesystem and credential IO always runs away from the caller's actor.
@@ -50,12 +100,19 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
         let expectedUserID = self.expectedUserID
         let homeDirectoryURL = self.homeDirectoryURL
         let trustedRootURL = self.trustedRootURL
+        let applicationSupportDirectoryURL = switch channel {
+        case .production: productionApplicationSupportDirectoryURL
+        case .development: developmentApplicationSupportDirectoryURL
+        }
+        let capabilitySecretLoader = self.capabilitySecretLoader
         return try await Task.detached(priority: .userInitiated) {
             try Self.loadSynchronously(
                 homeDirectoryURL: homeDirectoryURL,
                 trustedRootURL: trustedRootURL,
+                applicationSupportDirectoryURL: applicationSupportDirectoryURL,
                 channel: channel,
-                expectedUserID: expectedUserID
+                expectedUserID: expectedUserID,
+                capabilitySecretLoader: capabilitySecretLoader
             )
         }.value
     }
@@ -63,19 +120,26 @@ public struct RunBrokerClientBootstrapLoader: Sendable {
     private static func loadSynchronously(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
+        applicationSupportDirectoryURL: URL,
         channel: RunBrokerChannel,
-        expectedUserID: UInt32
+        expectedUserID: UInt32,
+        capabilitySecretLoader: @Sendable (
+            RunBrokerChannel,
+            RunBrokerInstallationID
+        ) throws -> RunBrokerCapabilitySecret
     ) throws -> RunBrokerClientBootstrap {
         let material = try RunBrokerReadOnlyBootstrapPath.validateAndRead(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
+            expectedUserID: expectedUserID,
             channel: channel,
-            expectedUserID: expectedUserID
+            capabilitySecretLoader: capabilitySecretLoader
         )
         let connector = RunBrokerReadOnlyBootstrapConnector(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         return .init(
@@ -136,7 +200,7 @@ private struct RunBrokerReadOnlyBootstrapMaterial: Sendable {
 private struct RunBrokerReadOnlyBootstrapConnector: RunBrokerConnecting {
     let homeDirectoryURL: URL
     let trustedRootURL: URL
-    let channel: RunBrokerChannel
+    let applicationSupportDirectoryURL: URL
     let expectedUserID: UInt32
 
     func connect() throws -> any RunBrokerConnection {
@@ -146,12 +210,11 @@ private struct RunBrokerReadOnlyBootstrapConnector: RunBrokerConnecting {
         try RunBrokerReadOnlyBootstrapPath.validateSocket(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         let supportDirectoryURL = RunBrokerReadOnlyBootstrapPath.supportDirectoryURL(
-            homeDirectoryURL: homeDirectoryURL,
-            channel: channel
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL
         )
         return try RunBrokerUnixSocketConnector(
             socketURL: supportDirectoryURL
@@ -166,19 +229,23 @@ private enum RunBrokerReadOnlyBootstrapPath {
     private static let authentication = "Authentication"
     private static let ipc = "IPC"
     private static let installationID = "installation-id"
-    private static let capability = "capability.key"
     private static let socket = "broker.sock"
 
     static func validateAndRead(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
+        applicationSupportDirectoryURL: URL,
+        expectedUserID: UInt32,
         channel: RunBrokerChannel,
-        expectedUserID: UInt32
+        capabilitySecretLoader: @Sendable (
+            RunBrokerChannel,
+            RunBrokerInstallationID
+        ) throws -> RunBrokerCapabilitySecret
     ) throws -> RunBrokerReadOnlyBootstrapMaterial {
         let support = try openSupportDirectory(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         defer { close(support) }
@@ -209,29 +276,23 @@ private enum RunBrokerReadOnlyBootstrapPath {
               installationText == uuid.uuidString + "\n" else {
             throw RunBrokerClientBootstrapError.invalidInstallationID
         }
-        let capabilityData = try readFile(
-            at: authentication,
-            name: capability,
-            expectedByteCount: RunBrokerAuthenticationPolicy.secretByteCount,
-            maximumByteCount: RunBrokerAuthenticationPolicy.secretByteCount,
-            expectedUserID: expectedUserID
-        )
+        let parsedInstallationID = RunBrokerInstallationID(rawValue: uuid)
         return try .init(
-            installationID: .init(rawValue: uuid),
-            capabilitySecret: .init(bytes: capabilityData)
+            installationID: parsedInstallationID,
+            capabilitySecret: capabilitySecretLoader(channel, parsedInstallationID)
         )
     }
 
     static func validateSocket(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
-        channel: RunBrokerChannel,
+        applicationSupportDirectoryURL: URL,
         expectedUserID: UInt32
     ) throws {
         let support = try openSupportDirectory(
             homeDirectoryURL: homeDirectoryURL,
             trustedRootURL: trustedRootURL,
-            channel: channel,
+            applicationSupportDirectoryURL: applicationSupportDirectoryURL,
             expectedUserID: expectedUserID
         )
         defer { close(support) }
@@ -241,38 +302,43 @@ private enum RunBrokerReadOnlyBootstrapPath {
     }
 
     static func supportDirectoryURL(
-        homeDirectoryURL: URL,
-        channel: RunBrokerChannel
+        applicationSupportDirectoryURL: URL
     ) -> URL {
-        homeDirectoryURL
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent(channel.appChannel.appSupportDirectoryName, isDirectory: true)
+        applicationSupportDirectoryURL
             .appendingPathComponent("RunBroker", isDirectory: true)
     }
 
     private static func openSupportDirectory(
         homeDirectoryURL: URL,
         trustedRootURL: URL,
-        channel: RunBrokerChannel,
+        applicationSupportDirectoryURL: URL,
         expectedUserID: UInt32
     ) throws -> Int32 {
         let rootPath = trustedRootURL.standardizedFileURL.path
         let homePath = homeDirectoryURL.standardizedFileURL.path
+        let applicationSupportPath = applicationSupportDirectoryURL.standardizedFileURL.path
         let prefix = rootPath == "/" ? "/" : rootPath + "/"
         guard homePath.hasPrefix(prefix), homePath != rootPath else {
             throw RunBrokerClientBootstrapError.unsafeDirectory(homePath)
         }
         let relativeHome = String(homePath.dropFirst(prefix.count))
         let homeComponents = relativeHome.split(separator: "/").map(String.init)
+        let homePrefix = homePath + "/"
         guard !homeComponents.isEmpty,
-              homeComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-            throw RunBrokerClientBootstrapError.unsafeDirectory(homePath)
+              homeComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              applicationSupportPath.hasPrefix(homePrefix) else {
+            throw RunBrokerClientBootstrapError.unsafeDirectory(applicationSupportPath)
         }
-        let controlled = [
-            "Library", "Application Support",
-            channel.appChannel.appSupportDirectoryName, "RunBroker",
-        ]
+        let relativeApplicationSupport = String(applicationSupportPath.dropFirst(homePrefix.count))
+        let applicationSupportComponents = relativeApplicationSupport
+            .split(separator: "/")
+            .map(String.init)
+        guard !applicationSupportComponents.isEmpty,
+              applicationSupportComponents.allSatisfy({
+                  !$0.isEmpty && $0 != "." && $0 != ".."
+              }) else {
+            throw RunBrokerClientBootstrapError.unsafeDirectory(applicationSupportPath)
+        }
         var descriptor = Darwin.open(
             rootPath,
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
@@ -287,7 +353,7 @@ private enum RunBrokerReadOnlyBootstrapPath {
                 expectedUserID: expectedUserID,
                 requiresUserOwner: rootPath != "/"
             )
-            let components = homeComponents + controlled
+            let components = homeComponents + applicationSupportComponents + ["RunBroker"]
             for (index, component) in components.enumerated() {
                 let next = openat(
                     descriptor,

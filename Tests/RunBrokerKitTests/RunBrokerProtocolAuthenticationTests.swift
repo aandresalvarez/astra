@@ -177,6 +177,61 @@ struct RunBrokerProtocolAuthenticationTests {
         let expiring = RunBrokerReplayProtector(capacity: 2, retention: 1)
         try expiring.consume(nonce: Data([4]), now: now)
         try expiring.consume(nonce: Data([4]), now: now.addingTimeInterval(2))
+
+        let requestBound = RunBrokerReplayProtector(capacity: 1, retention: 100)
+        try requestBound.consume(
+            nonce: Data([5]),
+            now: now,
+            expiresAt: now.addingTimeInterval(1)
+        )
+        try requestBound.consume(nonce: Data([6]), now: now.addingTimeInterval(2))
+    }
+
+    @Test("Projection delivery cannot saturate control-command replay protection")
+    func projectionReplayProtectionIsPartitioned() throws {
+        let secret = try RunBrokerCapabilitySecret(bytes: Data(repeating: 0xA5, count: 32))
+        let installationID = RunBrokerInstallationID(rawValue: uuid(1))
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let endpoint = RunBrokerRequestEndpoint(
+            channel: .development,
+            installationID: installationID,
+            brokerVersion: "partitioned-replay",
+            authenticator: .init(secret: secret),
+            replayProtector: .init(capacity: 1),
+            projectionReplayProtector: .init(capacity: 1),
+            peerPolicy: .init(expectedUserID: 501),
+            scheduler: .init(
+                ledger: UnavailableRunBrokerMonitorLedger(),
+                monitor: UnavailableRunBrokerExternalOperationMonitor()
+            ),
+            applicationHandler: RejectIfCalledApplicationHandler()
+        )
+        func request(nonce: UInt8, command: RunBrokerCommand) throws -> RunBrokerRequestEnvelope {
+            try RunBrokerRequestAuthenticator(
+                secret: secret,
+                random: FixedRandom(bytes: Data(repeating: nonce, count: 16))
+            ).authenticatedRequest(
+                channel: .development,
+                installationID: installationID,
+                command: command,
+                now: now
+            )
+        }
+        let peer = RunBrokerPeerIdentity(effectiveUserID: 501, processID: 42)
+
+        let firstProjection = try request(
+            nonce: 1,
+            command: .application(.nextProjectionMessage)
+        )
+        #expect(endpoint.handle(firstProjection, peer: peer, now: now).error?.code != .replayProtectionSaturated)
+        let saturatedProjection = try request(
+            nonce: 2,
+            command: .application(.nextProjectionMessage)
+        )
+        #expect(endpoint.handle(saturatedProjection, peer: peer, now: now).error?.code == .replayProtectionSaturated)
+
+        let health = try request(nonce: 3, command: .health)
+        #expect(endpoint.handle(health, peer: peer, now: now).result != nil)
     }
 
     @Test("Response MAC binds exact response bytes to the originating request transcript")
@@ -387,6 +442,103 @@ struct RunBrokerProtocolAuthenticationTests {
                 requiresCodeIdentity: true
             ).verify(peer)
         }
+    }
+
+    @Test("Only the path-free sentinel handoff bypasses request MAC verification")
+    func signedSuccessorHandoffIsNarrowlyPreMAC() throws {
+        let fixture = try authFixture()
+        let handoff = RecordingSuccessorHandoffHandler()
+        let endpoint = RunBrokerRequestEndpoint(
+            channel: .development,
+            installationID: fixture.installationID,
+            brokerVersion: "handoff",
+            authenticator: fixture.authenticator,
+            peerPolicy: .init(expectedUserID: 501),
+            scheduler: .init(
+                ledger: UnavailableRunBrokerMonitorLedger(),
+                monitor: UnavailableRunBrokerExternalOperationMonitor()),
+            successorHandoffHandler: handoff)
+        let sentinel = try RunBrokerRequestAuthentication(
+            issuedAtMilliseconds: 0,
+            nonce: Data(repeating: 0, count: RunBrokerAuthenticationPolicy.nonceByteCount),
+            mac: Data(repeating: 0, count: RunBrokerAuthenticationPolicy.macByteCount))
+        let peer = RunBrokerPeerIdentity(effectiveUserID: 501, processID: 42)
+        let accepted = RunBrokerRequestEnvelope(
+            protocolVersion: .current, requestID: uuid(200), idempotencyKey: uuid(201),
+            channel: .development, installationID: fixture.installationID,
+            command: .authorizeSignedSuccessor, authentication: sentinel)
+        #expect(endpoint.handle(accepted, peer: peer, now: fixture.now).result == .accepted)
+        #expect(handoff.peers == [peer])
+        #expect(endpoint.handle(accepted, peer: peer, now: fixture.now).error?.code == .authenticationFailed)
+        #expect(handoff.peers.count == 1)
+
+        let wrongInstallation = RunBrokerRequestEnvelope(
+            protocolVersion: .current, requestID: uuid(202), idempotencyKey: uuid(203),
+            channel: .development, installationID: .init(rawValue: uuid(204)),
+            command: .authorizeSignedSuccessor, authentication: sentinel)
+        #expect(endpoint.handle(wrongInstallation, peer: peer, now: fixture.now).error?.code == .authenticationFailed)
+        #expect(handoff.peers.count == 1)
+
+        let unauthenticatedHealth = RunBrokerRequestEnvelope(
+            protocolVersion: .current, requestID: uuid(205), idempotencyKey: uuid(206),
+            channel: .development, installationID: fixture.installationID,
+            command: .health, authentication: sentinel)
+        #expect(endpoint.handle(unauthenticatedHealth, peer: peer, now: fixture.now).error?.code == .authenticationFailed)
+    }
+
+    @Test("Production peer verifier requires the trusted team and exact ASTRA identifier")
+    func productionPeerCodeIdentity() throws {
+        let identities: [Int32: RunBrokerCodeSigningIdentity] = [
+            10: .init(
+                identifier: "com.coral.ASTRA",
+                teamIdentifier: "TEAM123",
+                cdHash: Data(repeating: 0x10, count: 20)
+            ),
+            11: .init(
+                identifier: "com.attacker.tool",
+                teamIdentifier: "TEAM123",
+                cdHash: Data(repeating: 0x11, count: 20)
+            ),
+            12: .init(
+                identifier: "com.coral.ASTRA",
+                teamIdentifier: "OTHER",
+                cdHash: Data(repeating: 0x12, count: 20)
+            ),
+        ]
+        let verifier = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: "TEAM123",
+            allowedIdentifiers: ["com.coral.ASTRA", "com.coral.ASTRA.dev"],
+            identity: { identities[$0] }
+        )
+        #expect(verifier.verify(processID: 10) == .verified)
+        #expect(verifier.verify(processID: 11) == .rejected)
+        #expect(verifier.verify(processID: 12) == .rejected)
+        #expect(verifier.verify(processID: 13) == .rejected)
+
+        let policy = RunBrokerPeerIdentityPolicy(
+            expectedUserID: 501,
+            requiresCodeIdentity: true,
+            codeIdentityVerifier: verifier
+        )
+        try policy.verify(.init(effectiveUserID: 501, processID: 10))
+        #expect(throws: RunBrokerAuthenticationError.peerCodeIdentityRejected) {
+            try policy.verify(.init(effectiveUserID: 501, processID: 11))
+        }
+
+        let unavailable = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: nil,
+            allowedIdentifiers: ["com.coral.ASTRA"],
+            identity: { _ in nil }
+        )
+        #expect(unavailable.verify(processID: 10) == .unavailable)
+        #expect(!unavailable.requiresDeveloperIDIdentity)
+
+        let developerID = DarwinRunBrokerPeerCodeIdentityVerifier(
+            trustedTeamIdentifier: "TEAM123",
+            allowedIdentifiers: ["com.coral.ASTRA"],
+            identity: { _ in nil }
+        )
+        #expect(developerID.requiresDeveloperIDIdentity)
     }
 
     @Test("Application launch fields are bounded, strict-coded, MAC-bound, and redacted")
@@ -743,6 +895,20 @@ private final class RejectIfCalledApplicationHandler:
         callCount += 1
         lock.unlock()
         throw RunBrokerApplicationEndpointError.requestRejected
+    }
+}
+
+private final class RecordingSuccessorHandoffHandler:
+    RunBrokerSuccessorHandoffHandling, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recorded: [RunBrokerPeerIdentity] = []
+    var peers: [RunBrokerPeerIdentity] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
+    func authorize(peer: RunBrokerPeerIdentity) throws {
+        lock.lock(); recorded.append(peer); lock.unlock()
     }
 }
 

@@ -32,6 +32,9 @@ public enum RunSupervisorEventKind: String, Codable, Sendable {
     case providerLaunchFailed = "provider_launch_failed"
     case outputBackpressureStarted = "output_backpressure_started"
     case outputBackpressureReleased = "output_backpressure_released"
+    case outputQuotaExceeded = "output_quota_exceeded"
+    case hardTimeoutExceeded = "hard_timeout_exceeded"
+    case idleProgressTimeoutExceeded = "idle_progress_timeout_exceeded"
     case recoveryTailQuarantined = "recovery_tail_quarantined"
 
     public var isOutput: Bool { self == .standardOutput || self == .standardError }
@@ -143,7 +146,7 @@ public struct RunSupervisorEventPayload: Codable, Equatable, Sendable {
                     throw RunSupervisorError.invalidSchema
                 }
             }
-        case .recoveryTailQuarantined:
+        case .recoveryTailQuarantined, .outputQuotaExceeded:
             guard let quarantinedByteCount, quarantinedByteCount > 0,
                   data == nil, exitCode == nil, cancellationIntent == nil,
                   providerPID == nil,
@@ -152,6 +155,8 @@ public struct RunSupervisorEventPayload: Codable, Equatable, Sendable {
             }
         case .supervisorReady, .standardInputAccepted, .standardInputClosed,
              .providerLaunchFailed, .outputBackpressureStarted, .outputBackpressureReleased:
+            guard empty else { throw RunSupervisorError.invalidSchema }
+        case .hardTimeoutExceeded, .idleProgressTimeoutExceeded:
             guard empty else { throw RunSupervisorError.invalidSchema }
         }
     }

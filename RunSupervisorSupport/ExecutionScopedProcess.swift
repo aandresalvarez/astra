@@ -43,6 +43,7 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
     private var processID: pid_t = 0
     private var processGroupID: pid_t = 0
     private var running = false
+    private var terminationRequested = false
     private var status: Int32 = 0
     private var terminationSignal: Int32?
 
@@ -142,6 +143,14 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
                 descriptorSetupFailureCode = failure
             }
         }
+        if let stdinPipe {
+            let descriptor = stdinPipe.fileHandleForWriting.fileDescriptor
+            let flags = fcntl(descriptor, F_GETFL)
+            if flags < 0 || fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != 0,
+               descriptorSetupFailureCode == nil {
+                descriptorSetupFailureCode = errno
+            }
+        }
     }
 
     private static func setCloseOnExec(_ descriptor: Int32) -> Int32? {
@@ -170,9 +179,33 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
         guard !stdinClosed else {
             throw ExecutionScopedProcessError(operation: "write provider stdin", code: EPIPE)
         }
-        do {
-            try stdinPipe.fileHandleForWriting.write(contentsOf: data)
-        } catch {
+        let descriptor = stdinPipe.fileHandleForWriting.fileDescriptor
+        let deadline = ContinuousClock.now + .seconds(1)
+        var offset = 0
+        while offset < data.count {
+            if currentIDs().terminationRequested {
+                throw ExecutionScopedProcessError(operation: "write provider stdin", code: EPIPE)
+            }
+            let count = data.withUnsafeBytes {
+                Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset)
+            }
+            if count > 0 {
+                offset += count
+                continue
+            }
+            if count < 0, errno == EINTR { continue }
+            if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                guard ContinuousClock.now < deadline else {
+                    throw ExecutionScopedProcessError(operation: "write provider stdin", code: ETIMEDOUT)
+                }
+                var writable = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+                let result = poll(&writable, 1, 25)
+                if result < 0, errno == EINTR { continue }
+                guard result >= 0 else {
+                    throw ExecutionScopedProcessError(operation: "poll provider stdin", code: errno)
+                }
+                continue
+            }
             throw ExecutionScopedProcessError(operation: "write provider stdin", code: EPIPE)
         }
     }
@@ -333,6 +366,7 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
         processID = childPID
         processGroupID = childPID
         running = true
+        terminationRequested = false
         lock.unlock()
 
         logSink(.info, "Provider process containment armed for process group \(childPID)")
@@ -356,6 +390,11 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
             processID: ids.processID,
             signal: SIGTERM
         )
+        if issued {
+            lock.lock()
+            terminationRequested = true
+            lock.unlock()
+        }
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
             guard let self else { return }
@@ -464,10 +503,15 @@ public final class ExecutionScopedProcess: @unchecked Sendable {
         ProcessGroupSpawn.signalProcessGroup(ids.processGroupID, signal: SIGKILL)
     }
 
-    private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
+    private func currentIDs() -> (
+        processID: pid_t,
+        processGroupID: pid_t,
+        isRunning: Bool,
+        terminationRequested: Bool
+    ) {
         lock.lock()
         defer { lock.unlock() }
-        return (processID, processGroupID, running)
+        return (processID, processGroupID, running, terminationRequested)
     }
 
     private func check(_ result: Int32, operation: String) throws {

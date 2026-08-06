@@ -1,7 +1,23 @@
 import Darwin
 import Foundation
+import ASTRACore
 import RunBrokerKit
 import RunSupervisorSupport
+
+package protocol RunBrokerProcessCodeIdentityResolving: Sendable {
+    func resolve(executableURL: URL) -> DarwinProcessCodeIdentity?
+    func resolve(processID: pid_t) -> DarwinProcessCodeIdentity?
+}
+
+package struct DarwinRunBrokerProcessCodeIdentityResolver: RunBrokerProcessCodeIdentityResolving {
+    package init() {}
+    package func resolve(executableURL: URL) -> DarwinProcessCodeIdentity? {
+        DarwinProcessCodeIdentityResolver.resolve(executableURL: executableURL)
+    }
+    package func resolve(processID: pid_t) -> DarwinProcessCodeIdentity? {
+        DarwinProcessCodeIdentityResolver.resolve(processID: processID)
+    }
+}
 
 /// Launches only the supervisor installed beside the currently running broker.
 /// The ASTRA.app bundle is never consulted, so app replacement cannot change a
@@ -9,10 +25,22 @@ import RunSupervisorSupport
 public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sendable {
     private let runRootURL: URL
     private let expectedUserID: uid_t
+    private let codeIdentityResolver: any RunBrokerProcessCodeIdentityResolving
 
     public init(runRootURL: URL, expectedUserID: uid_t = geteuid()) {
         self.runRootURL = runRootURL.standardizedFileURL
         self.expectedUserID = expectedUserID
+        self.codeIdentityResolver = DarwinRunBrokerProcessCodeIdentityResolver()
+    }
+
+    package init(
+        runRootURL: URL,
+        expectedUserID: uid_t,
+        codeIdentityResolver: any RunBrokerProcessCodeIdentityResolving
+    ) {
+        self.runRootURL = runRootURL.standardizedFileURL
+        self.expectedUserID = expectedUserID
+        self.codeIdentityResolver = codeIdentityResolver
     }
 
     public func spawn(
@@ -24,12 +52,29 @@ public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sen
             brokerExecutableURL: installedBrokerExecutableURL,
             expectedUserID: expectedUserID
         )
-        let rootFD = open(runRootURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard rootFD >= 0 else { throw posixError("open run root", errno) }
+        guard let expectedSupervisorIdentity = codeIdentityResolver.resolve(
+            executableURL: cohort.supervisorExecutableURL
+        ) else {
+            throw RunBrokerServiceError.supervisorIdentityMismatch
+        }
+        let openedRootFD = open(runRootURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard openedRootFD >= 0 else { throw posixError("open run root", errno) }
+        let rootFD = try Self.reserveSourceDescriptor(openedRootFD)
+        close(openedRootFD)
         defer { close(rootFD) }
 
         var pipeDescriptors = [Int32](repeating: -1, count: 2)
         guard pipe(&pipeDescriptors) == 0 else { throw posixError("pipe bootstrap", errno) }
+        let bootstrapReadFD: Int32
+        do {
+            bootstrapReadFD = try Self.reserveSourceDescriptor(pipeDescriptors[0])
+        } catch {
+            close(pipeDescriptors[0])
+            close(pipeDescriptors[1])
+            throw error
+        }
+        close(pipeDescriptors[0])
+        pipeDescriptors[0] = bootstrapReadFD
         defer {
             if pipeDescriptors[0] >= 0 { close(pipeDescriptors[0]) }
             if pipeDescriptors[1] >= 0 { close(pipeDescriptors[1]) }
@@ -39,6 +84,12 @@ public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sen
         let actionsResult = posix_spawn_file_actions_init(&actions)
         guard actionsResult == 0 else { throw posixError("spawn actions", actionsResult) }
         defer { posix_spawn_file_actions_destroy(&actions) }
+        // The pipe writer can itself occupy reserved target 3 or 4. Close it
+        // before installing either target so a later close cannot erase one.
+        try check(
+            posix_spawn_file_actions_addclose(&actions, pipeDescriptors[1]),
+            operation: "close bootstrap writer"
+        )
         try check(
             posix_spawn_file_actions_adddup2(&actions, pipeDescriptors[0], 3),
             operation: "dup bootstrap"
@@ -46,10 +97,6 @@ public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sen
         try check(
             posix_spawn_file_actions_adddup2(&actions, rootFD, 4),
             operation: "dup run root"
-        )
-        try check(
-            posix_spawn_file_actions_addclose(&actions, pipeDescriptors[1]),
-            operation: "close bootstrap writer"
         )
 
         let executable = cohort.supervisorExecutableURL.path
@@ -80,6 +127,14 @@ public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sen
             }
         }
         guard spawnResult == 0 else { throw posixError("spawn supervisor", spawnResult) }
+        Self.startReaping(pid)
+        guard Self.spawnedIdentityMatches(
+            expected: expectedSupervisorIdentity,
+            actual: codeIdentityResolver.resolve(processID: pid)
+        ) else {
+            kill(pid, SIGKILL)
+            throw RunBrokerServiceError.supervisorIdentityMismatch
+        }
         close(pipeDescriptors[0])
         pipeDescriptors[0] = -1
         do {
@@ -94,6 +149,32 @@ public struct DarwinRunBrokerSupervisorSpawner: RunBrokerSupervisorSpawning, Sen
         }
         close(pipeDescriptors[1])
         pipeDescriptors[1] = -1
+    }
+
+    package static func reserveSourceDescriptor(_ descriptor: Int32) throws -> Int32 {
+        let reserved = fcntl(descriptor, F_DUPFD_CLOEXEC, 5)
+        guard reserved >= 5 else {
+            throw NSError(
+                domain: "DarwinRunBrokerSupervisorSpawner",
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "reserve spawn source descriptor failed"]
+            )
+        }
+        return reserved
+    }
+
+    package static func startReaping(_ pid: pid_t) {
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) == -1, errno == EINTR {}
+        }
+    }
+
+    package static func spawnedIdentityMatches(
+        expected: DarwinProcessCodeIdentity,
+        actual: DarwinProcessCodeIdentity?
+    ) -> Bool {
+        actual == expected
     }
 
     private func check(_ result: Int32, operation: String) throws {

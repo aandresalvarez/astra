@@ -287,11 +287,6 @@ struct RunLedgerJournalTests {
                 transition: .executionCompleted,
                 backendCapabilities: [.observe, .cancel]
             ),
-            .operationTombstoned(
-                operationID: operationID,
-                authority: authority,
-                reason: .completed
-            ),
         ]
         for (index, event) in events.enumerated() {
             try ledger.append(fixture.envelope(

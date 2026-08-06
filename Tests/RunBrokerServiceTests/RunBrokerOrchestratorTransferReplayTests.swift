@@ -213,10 +213,10 @@ struct RunBrokerOrchestratorTransferReplayTests {
         _ = try fixture.orchestrator().start(fixture.request())
         try transferAuthority(fixture)
 
-        // A spool re-read after a lost acknowledgement re-sends evidence that
-        // is already journaled (recorded under epoch 1). Identical supervisor
-        // content must be recognized, not misread as a conflict because the
-        // broker-side recording authority has since advanced.
+        // A live supervisor whose acknowledgement was lost re-sends evidence
+        // that is already journaled (recorded under epoch 1). Identical
+        // supervisor content must be recognized, not misread as a conflict
+        // because the broker-side recording authority has since advanced.
         let overlapping = OverlappingReplayTransport(events: fixture.transport.events)
         let orchestrator = RunBrokerOrchestrator(
             ledger: fixture.ledger,
@@ -230,6 +230,38 @@ struct RunBrokerOrchestratorTransferReplayTests {
         #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
             .control.observedExecution == .running)
     }
+
+    @Test("overlapping offline spool replay after a transfer recognizes through terminal truth")
+    func overlappingOfflineReplayAfterTransferReachesTerminal() throws {
+        let fixture = try BrokerFixture()
+        fixture.transport.events = [
+            fixture.event(1, .supervisorReady),
+            fixture.event(2, .providerStarted),
+        ]
+        _ = try fixture.orchestrator().start(fixture.request())
+        try transferAuthority(fixture)
+
+        // The supervisor exits after releasing ownership; the offline spool
+        // re-read starts before the lost acknowledgement's cursor and now
+        // carries the terminal tail. Recognition of the already-journaled
+        // epoch-1 prefix must compose with fresh terminal evidence derived
+        // under the successor instead of colliding into in-doubt.
+        let overlapping = OverlappingReplayTransport(
+            events: fixture.transport.events + [fixture.event(3, .providerExited, exitCode: 0)],
+            source: .offlineAuthenticatedSpool
+        )
+        let orchestrator = RunBrokerOrchestrator(
+            ledger: fixture.ledger,
+            vault: fixture.vault,
+            spawner: fixture.spawner,
+            transport: overlapping,
+            installedBrokerExecutableURL: URL(fileURLWithPath: "/tmp/astra-run-broker")
+        )
+        let outcome = try orchestrator.reconcile(executionID: fixture.manifest.executionID)
+        #expect(outcome.state == .terminal)
+        #expect(try fixture.ledger.projection().executions[fixture.manifest.executionID]?
+            .control.observedExecution == .completed)
+    }
 }
 
 /// Replays the full spool once regardless of the durable cursor, as a spool
@@ -237,10 +269,15 @@ struct RunBrokerOrchestratorTransferReplayTests {
 private final class OverlappingReplayTransport: RunBrokerSupervisorTransporting, @unchecked Sendable {
     private let lock = NSLock()
     private let events: [RunSupervisorEvent]
+    private let source: RunBrokerSupervisorReplaySource
     private var replayedOnce = false
 
-    init(events: [RunSupervisorEvent]) {
+    init(
+        events: [RunSupervisorEvent],
+        source: RunBrokerSupervisorReplaySource = .liveAuthenticated
+    ) {
         self.events = events
+        self.source = source
     }
 
     func presence(
@@ -261,7 +298,7 @@ private final class OverlappingReplayTransport: RunBrokerSupervisorTransporting,
         replayedOnce = true
         return .init(
             identity: identity,
-            source: .offlineAuthenticatedSpool,
+            source: source,
             events: batch,
             lastSequence: events.last?.sequence ?? sequence
         )

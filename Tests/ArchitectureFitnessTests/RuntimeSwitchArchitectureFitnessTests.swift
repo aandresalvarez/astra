@@ -12,7 +12,7 @@ struct RuntimeSwitchArchitectureFitnessTests {
         )
         let targets = try SwiftPMTargetParser.parse(packageText)
         let client = try #require(targets.first { $0.name == "RunBrokerClient" })
-        #expect(client.dependencies == ["ASTRACore"])
+        #expect(client.dependencies == ["AstraObjCSupport", "ASTRACore"])
         #expect(client.path == "RunBrokerKit")
         #expect(!client.dependencies.contains("ASTRARunLedger"))
         #expect(!client.dependencies.contains("RunBrokerPolicy"))

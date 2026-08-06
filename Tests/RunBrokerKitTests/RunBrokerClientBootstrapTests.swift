@@ -61,6 +61,24 @@ struct RunBrokerClientBootstrapTests {
         }
     }
 
+    @Test("development bootstrap uses the resolved channel Application Support directory")
+    func resolvedDevelopmentApplicationSupportDirectory() async throws {
+        let fixture = try ClientBootstrapFixture(
+            channel: .development,
+            applicationSupportSubdirectory: "Disposable/AstraDev"
+        )
+        defer { fixture.cleanup() }
+
+        let bootstrap = try await fixture.loader.load(channel: .development)
+
+        #expect(bootstrap.installationID == fixture.installationID)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.home
+                .appendingPathComponent("Library/Application Support/AstraDev/RunBroker")
+                .path
+        ))
+    }
+
     @Test("missing and symlinked components fail closed without creation")
     func missingAndSymlinkedPathsFailClosed() async throws {
         let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
@@ -99,7 +117,7 @@ struct RunBrokerClientBootstrapTests {
         #expect(try fixture.snapshot() == symlinkBefore)
     }
 
-    @Test("wrong credential mode and non-socket endpoint fail closed")
+    @Test("filesystem capability is ignored and non-socket endpoint fails closed")
     func modeAndEndpointTypeFailClosed() async throws {
         let credentialFixture = try ClientBootstrapFixture()
         defer { credentialFixture.cleanup() }
@@ -109,12 +127,8 @@ struct RunBrokerClientBootstrapTests {
         guard chmod(key.path, 0o644) == 0 else {
             throw ClientBootstrapFixtureError.systemCall("chmod-key", errno)
         }
-        await #expect(throws: RunBrokerClientBootstrapError.wrongPermissions(
-            expected: 0o600,
-            actual: 0o644
-        )) {
-            _ = try await credentialFixture.loader.load(channel: .development)
-        }
+        #expect(try await credentialFixture.loader.load(channel: .development).installationID
+            == credentialFixture.installationID)
 
         let endpointFixture = try ClientBootstrapFixture()
         defer { endpointFixture.cleanup() }
@@ -132,7 +146,7 @@ struct RunBrokerClientBootstrapTests {
         }
     }
 
-    @Test("hardlinked and oversized credentials fail before allocation")
+    @Test("hardlinked and oversized filesystem capabilities are never authority")
     func hardlinkAndOversizeFailClosed() async throws {
         let hardlinkFixture = try ClientBootstrapFixture()
         defer { hardlinkFixture.cleanup() }
@@ -141,9 +155,8 @@ struct RunBrokerClientBootstrapTests {
         guard link(key.path, alias.path) == 0 else {
             throw ClientBootstrapFixtureError.systemCall("hardlink", errno)
         }
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await hardlinkFixture.loader.load(channel: .development)
-        }
+        #expect(try await hardlinkFixture.loader.load(channel: .development).installationID
+            == hardlinkFixture.installationID)
 
         let oversizedFixture = try ClientBootstrapFixture()
         defer { oversizedFixture.cleanup() }
@@ -153,12 +166,11 @@ struct RunBrokerClientBootstrapTests {
             Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount + 1),
             at: oversized
         )
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await oversizedFixture.loader.load(channel: .development)
-        }
+        #expect(try await oversizedFixture.loader.load(channel: .development).installationID
+            == oversizedFixture.installationID)
     }
 
-    @Test("installation ID canonical form and secret size are exact")
+    @Test("installation ID canonical form is exact and filesystem secret is ignored")
     func exactCredentialFormatsAreRequired() async throws {
         let identifierFixture = try ClientBootstrapFixture()
         defer { identifierFixture.cleanup() }
@@ -178,9 +190,8 @@ struct RunBrokerClientBootstrapTests {
             Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount - 1),
             at: secret
         )
-        await #expect(throws: RunBrokerClientBootstrapError.unsafeCredential("capability.key")) {
-            _ = try await secretFixture.loader.load(channel: .development)
-        }
+        #expect(try await secretFixture.loader.load(channel: .development).installationID
+            == secretFixture.installationID)
     }
 }
 
@@ -191,29 +202,50 @@ private enum ClientBootstrapFixtureError: Error {
 private final class ClientBootstrapFixture {
     let root: URL
     let home: URL
+    let channel: RunBrokerChannel
+    let applicationSupport: URL
     let support: URL
     let authentication: URL
     let installationID: RunBrokerInstallationID
     private var socketDescriptor: Int32 = -1
 
     var loader: RunBrokerClientBootstrapLoader {
-        .init(expectedUserID: getuid(), testingHomeDirectoryURL: home)
+        .init(
+            expectedUserID: getuid(),
+            testingHomeDirectoryURL: home,
+            testingDevelopmentApplicationSupportDirectoryURL:
+                channel == .development ? applicationSupport : nil,
+            testingProductionApplicationSupportDirectoryURL:
+                channel == .production ? applicationSupport : nil,
+            testingCapabilitySecret: try? RunBrokerCapabilitySecret(
+                bytes: Data(repeating: 0xA5, count: RunBrokerAuthenticationPolicy.secretByteCount)
+            )
+        )
     }
 
-    init(channel: RunBrokerChannel = .development) throws {
+    init(
+        channel: RunBrokerChannel = .development,
+        applicationSupportSubdirectory: String? = nil
+    ) throws {
         guard let installationUUID = UUID(
             uuidString: "A0000000-0000-0000-0000-000000000001"
         ) else {
             throw ClientBootstrapFixtureError.systemCall("invalid-fixture-uuid", EINVAL)
         }
+        self.channel = channel
         installationID = .init(rawValue: installationUUID)
         root = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("rbc-\(UUID().uuidString.prefix(8))", isDirectory: true)
         home = root.appendingPathComponent("home", isDirectory: true)
-        support = home
+        let applicationSupportBase = home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent(channel.appChannel.appSupportDirectoryName, isDirectory: true)
+        applicationSupport = applicationSupportBase
+            .appendingPathComponent(
+                applicationSupportSubdirectory ?? channel.appChannel.appSupportDirectoryName,
+                isDirectory: true
+            )
+        support = applicationSupport
             .appendingPathComponent("RunBroker", isDirectory: true)
         authentication = support.appendingPathComponent("Authentication", isDirectory: true)
         let ipc = support.appendingPathComponent("IPC", isDirectory: true)

@@ -19,11 +19,14 @@ struct DockerImageAvailability: Equatable, Sendable {
 }
 
 enum DockerImageInventoryError: LocalizedError, Equatable, Sendable {
+    case cliMissing
     case unavailable(String)
     case unsafeRemoteContext(String)
 
     var errorDescription: String? {
         switch self {
+        case .cliMissing:
+            return "Docker CLI was not found. Install or reopen Docker Desktop, then refresh."
         case .unavailable(let detail):
             return detail
         case .unsafeRemoteContext(let detail):
@@ -33,6 +36,7 @@ enum DockerImageInventoryError: LocalizedError, Equatable, Sendable {
 }
 
 enum DockerImageAvailabilityError: LocalizedError, Equatable, Sendable {
+    case cliMissing
     case unavailable(String)
     case unsafeRemoteContext(String)
     case missingImage(String)
@@ -40,6 +44,8 @@ enum DockerImageAvailabilityError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .cliMissing:
+            return "Docker CLI was not found. Install or reopen Docker Desktop, then retry."
         case .unavailable(let detail):
             return detail.isEmpty ? "Docker is not available." : detail
         case .unsafeRemoteContext(let detail):
@@ -62,40 +68,58 @@ protocol DockerImageAvailabilityChecking {
 
 struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvailabilityChecking {
     private let runner: any BinaryRunner
-    private let environment: [String: String]
+    private let environmentProvider: @Sendable () -> [String: String]
+    private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String]? = nil,
+        environmentProvider: @escaping @Sendable () -> [String: String] = {
+            RuntimeProcessEnvironment.enriched()
+        },
+        resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
+            DockerRuntimeResolver.resolve(environment: $0)
+        }
     ) {
         self.runner = runner
-        self.environment = environment
+        if let environment {
+            self.environmentProvider = { environment }
+        } else {
+            self.environmentProvider = environmentProvider
+        }
+        self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> {
+        let environment = environmentProvider()
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
+            return .failure(.cliMissing)
+        }
+
         let contextResult = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "context", "show"],
+            path: dockerRuntime.executablePath,
+            args: ["context", "show"],
             timeout: 3,
-            environment: nil
+            environment: dockerRuntime.environment
         )
-        let context = contextResult.isSuccess
-            ? contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            : nil
+        guard contextResult.isSuccess else {
+            return .failure(.unavailable(Self.failureDetail(contextResult)))
+        }
+        let context = contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))
         }
 
         let result = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "image", "ls", "--format", "{{.Repository}}\t{{.Tag}}\t{{.ID}}"],
+            path: dockerRuntime.executablePath,
+            args: ["image", "ls", "--format", "{{.Repository}}\t{{.Tag}}\t{{.ID}}"],
             timeout: 5,
-            environment: nil
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -112,7 +136,12 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
             return .failure(.invalidImageReference(image))
         }
 
-        switch await localDockerContext() {
+        let environment = environmentProvider()
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
+            return .failure(.cliMissing)
+        }
+
+        switch await localDockerContext(dockerRuntime: dockerRuntime) {
         case .failure(let error):
             return .failure(error)
         case .success:
@@ -120,10 +149,10 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
         }
 
         let result = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            path: dockerRuntime.executablePath,
+            args: ["image", "inspect", "--format", "{{.Id}}", image],
             timeout: 5,
-            environment: nil
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             return .failure(Self.availabilityError(for: image, result: result))
@@ -155,20 +184,21 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private func localDockerContext() async -> Result<Void, DockerImageAvailabilityError> {
+    private func localDockerContext(dockerRuntime: DockerRuntimeResolution) async -> Result<Void, DockerImageAvailabilityError> {
         let contextResult = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "context", "show"],
+            path: dockerRuntime.executablePath,
+            args: ["context", "show"],
             timeout: 3,
-            environment: nil
+            environment: dockerRuntime.environment
         )
-        let context = contextResult.isSuccess
-            ? contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            : nil
+        guard contextResult.isSuccess else {
+            return .failure(.unavailable(Self.failureDetail(contextResult)))
+        }
+        let context = contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))
@@ -206,6 +236,20 @@ struct DockerImageInventoryService: DockerImageInventoryListing, DockerImageAvai
         text.split(separator: "\n")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? ""
+    }
+
+    private static func failureDetail(_ result: RunResult) -> String {
+        switch result.outcome {
+        case .timedOut:
+            return "Docker context check timed out."
+        case .cancelled:
+            return "Docker context check was cancelled."
+        case .launchFailed:
+            return shortDetail(result.launchError ?? "Docker could not launch.")
+        case .exited:
+            let detail = shortDetail(result.stderr.isEmpty ? result.stdout : result.stderr)
+            return detail.isEmpty ? "Docker exited with code \(result.exitCode ?? -1)." : detail
+        }
     }
 
     private static func looksLikeDockerUnavailable(_ lower: String) -> Bool {

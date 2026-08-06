@@ -1,10 +1,135 @@
 import Darwin
 import Foundation
+import ASTRACore
+import RunBrokerClient
 import Testing
 @testable import RunSupervisorSupport
 
 @Suite("Run supervisor Unix control socket", .serialized)
 struct RunSupervisorUnixSocketTests {
+    @Test("successor broker proof is bound to its exact live code identity")
+    func successorBrokerProofIsIdentityBound() throws {
+        let successor = DarwinProcessCodeIdentity(
+            identifier: "com.coral.astra-run-broker",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x51, count: 20)
+        )
+        let provider = DarwinProcessCodeIdentity(
+            identifier: successor.identifier,
+            teamIdentifier: successor.teamIdentifier,
+            cdHash: Data(repeating: 0x61, count: 20)
+        )
+        let cohortCapability = try RunBrokerCapabilitySecret(
+            bytes: Data(repeating: 0x71, count: RunBrokerAuthenticationPolicy.secretByteCount)
+        )
+        let executionCapability = try RunSupervisorCapability(bytes: Data(repeating: 0x81, count: 32))
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: RunBrokerExecutionID(rawValue: UUID()),
+            action: .init(kind: .status),
+            capability: executionCapability
+        )
+        let authorized = try RunSupervisorBrokerCohortAuthentication.binding(
+            request: request,
+            peerIdentity: successor,
+            capability: cohortCapability
+        )
+
+        #expect(DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in successor }
+        ).authenticate(request: authorized, processID: 42))
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in provider }
+        ).authenticate(request: authorized, processID: 42))
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: cohortCapability,
+            identity: { _ in successor }
+        ).authenticate(request: request, processID: 42))
+        let wrongCapability = try RunBrokerCapabilitySecret(
+            bytes: Data(repeating: 0x91, count: RunBrokerAuthenticationPolicy.secretByteCount)
+        )
+        #expect(!DarwinRunSupervisorSuccessorBrokerAuthenticator(
+            capability: wrongCapability,
+            identity: { _ in successor }
+        ).authenticate(request: authorized, processID: 42))
+    }
+
+    @Test("exact broker code identity is required in addition to capability")
+    func exactBrokerIdentityRequired() throws {
+        let expected = DarwinProcessCodeIdentity(
+            identifier: "com.coral.astra-run-broker",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x31, count: 20)
+        )
+        let provider = DarwinProcessCodeIdentity(
+            identifier: "com.coral.provider",
+            teamIdentifier: nil,
+            cdHash: Data(repeating: 0x41, count: 20)
+        )
+        let verifier = DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: expected,
+            identity: { processID in processID == 10 ? expected : provider }
+        )
+        #expect(verifier.verify(processID: 10))
+        #expect(!verifier.verify(processID: 11))
+        #expect(!DarwinRunSupervisorPeerCodeIdentityVerifier(
+            expectedIdentity: nil,
+            identity: { _ in expected }
+        ).verify(processID: 10))
+
+        let fixture = try makeFixture()
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: .init(
+                executionID: fixture.payload.manifest.executionID,
+                capability: fixture.payload.capability
+            ),
+            peerVerifier: DarwinRunSupervisorPeerCodeIdentityVerifier(
+                expectedIdentity: expected,
+                identity: { _ in provider }
+            )
+        )
+        try server.start { _ in
+            Issue.record("identity-rejected peer reached the control handler")
+            return .init(accepted: true, lastSequence: 0)
+        }
+        defer { server.stop() }
+        let request = try RunSupervisorControlAuthentication.makeRequest(
+            executionID: fixture.payload.manifest.executionID,
+            action: .init(kind: .acknowledge, acknowledgeThrough: 1),
+            capability: fixture.payload.capability
+        )
+        let response = try DarwinRunSupervisorControlClient().send(
+            request,
+            directory: fixture.directory
+        )
+        #expect(!response.accepted)
+        #expect(response.errorCode == "unauthenticated")
+    }
+
+    @Test("listener and accepted control sockets are closed across exec")
+    func socketDescriptorsAreCloseOnExec() throws {
+        let fixture = try makeFixture()
+        let server = try DarwinRunSupervisorSocketServer(
+            directory: fixture.directory,
+            authenticator: .init(
+                executionID: fixture.payload.manifest.executionID,
+                capability: fixture.payload.capability
+            )
+        )
+        try server.start { _ in .init(accepted: true, lastSequence: 0) }
+        defer { server.stop() }
+
+        #expect(server.listenerHasCloseOnExec)
+        let client = try connectRawClient(directory: fixture.directory)
+        defer { close(client) }
+        #expect(RunSupervisorTestSupport.waitUntil(timeout: 2) {
+            server.activeClientCount == 1
+        })
+        #expect(server.activeClientCloseOnExecStates == [true])
+    }
+
     @Test("socket authenticates a request and rejects nonce replay")
     func authenticatedRequest() throws {
         let fixture = try makeFixture()

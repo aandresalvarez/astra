@@ -255,6 +255,38 @@ struct RunLedgerMigrationTests {
         #expect(try ledger.outbox().count == seed.outbox.count)
         #expect(duration < 20)
     }
+
+    @Test("A conflicting exclusive writer cannot migrate the legacy store")
+    func exclusiveWriterConflictPreventsMigration() throws {
+        let fixture = try LedgerFixture()
+        defer { fixture.cleanup() }
+        _ = try seedLegacyStore(fixture: fixture, acknowledgedCount: 0)
+        let descriptor = try RunLedgerStorageSecurity.acquireExclusiveWriterLock(
+            directory: fixture.configuration.ledgerDirectoryURL
+        )
+        defer { RunLedgerStorageSecurity.releaseExclusiveWriterLock(descriptor) }
+
+        let exclusiveConfiguration = RunLedgerConfiguration(
+            ledgerDirectoryURL: fixture.configuration.ledgerDirectoryURL,
+            installationID: fixture.configuration.installationID,
+            busyTimeoutMilliseconds: fixture.configuration.busyTimeoutMilliseconds,
+            exclusiveWriter: true
+        )
+        #expect(throws: RunLedgerError.exclusiveWriterConflict(
+            "Another process already holds the exclusive ledger writer lock"
+        )) {
+            try RunLedger(configuration: exclusiveConfiguration)
+        }
+
+        #expect(sqliteInt(
+            fixture.configuration.databaseURL,
+            sql: "PRAGMA user_version"
+        ) == 1)
+        #expect(sqliteInt(
+            fixture.configuration.databaseURL,
+            sql: "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'outbox_v1_migration_source'"
+        ) == 0)
+    }
 }
 
 private struct MigrationSeed {

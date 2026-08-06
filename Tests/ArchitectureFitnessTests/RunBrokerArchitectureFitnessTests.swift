@@ -17,6 +17,26 @@ struct RunBrokerArchitectureFitnessTests {
                 "ASTRA app source imports broker authority modules: \(forbiddenImports.sorted())"
             )
         }
+        let supervisorImporters = try swiftFiles(root.appendingPathComponent("Astra"))
+            .filter { file in
+                importedModules(in: try String(contentsOf: file, encoding: .utf8))
+                    .contains("RunSupervisorSupport")
+            }
+            .map { $0.path.replacingOccurrences(of: root.path + "/", with: "") }
+        #expect(supervisorImporters == ["Astra/Services/Runtime/AgentProcessSupport.swift"])
+        let processSupport = try text(
+            "Astra/Services/Runtime/AgentProcessSupport.swift",
+            root: root
+        )
+        #expect(processSupport.contains(
+            "package typealias AgentExecutionScopedProcess = ExecutionScopedProcess"
+        ))
+        for forbiddenSupervisorSurface in [
+            "RunSupervisorService", "RunSupervisorEventSpool", "RunSupervisorBootstrap",
+            "RunSupervisorUnixSocket",
+        ] {
+            #expect(!processSupport.contains(forbiddenSupervisorSurface))
+        }
 
         let package = try text("Package.swift", root: root)
         let appTarget = try target(named: "ASTRA", in: package)

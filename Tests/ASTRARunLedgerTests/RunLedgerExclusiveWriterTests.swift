@@ -67,6 +67,34 @@ struct RunLedgerExclusiveWriterTests {
         try reopened.close()
     }
 
+    @Test("A conflicting writer cannot initialize storage before its lease is rejected")
+    func conflictRejectedBeforeSchemaInitialization() throws {
+        let fixture = try LedgerFixture(createLedgerDirectory: true)
+        defer { fixture.cleanup() }
+        let descriptor = try RunLedgerStorageSecurity.acquireExclusiveWriterLock(
+            directory: fixture.configuration.ledgerDirectoryURL
+        )
+        defer { RunLedgerStorageSecurity.releaseExclusiveWriterLock(descriptor) }
+
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.configuration.databaseURL.path
+        ))
+        #expect(throws: RunLedgerError.exclusiveWriterConflict(
+            "Another process already holds the exclusive ledger writer lock"
+        )) {
+            try RunLedger(configuration: exclusive(fixture.configuration))
+        }
+
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.configuration.databaseURL.path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: RunLedgerStorageSecurity.initializationMarkerURL(
+                for: fixture.configuration.databaseURL
+            ).path
+        ))
+    }
+
     private func exclusive(_ base: RunLedgerConfiguration) -> RunLedgerConfiguration {
         .init(
             ledgerDirectoryURL: base.ledgerDirectoryURL,

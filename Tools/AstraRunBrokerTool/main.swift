@@ -78,17 +78,21 @@ private func run() throws -> Never {
         secureStore: secureStore,
         expectedUserID: getuid()
     )
-    let secrets = try secureStore.loadOrCreate(identity: identity)
-    guard secrets.installationID == arguments.installationID else {
+    let installationID = try secureStore.loadOrCreateInstallationID(identity: identity)
+    guard installationID == arguments.installationID else {
         throw BrokerMainError.installationIdentityMismatch
     }
+    let capabilitySecret = try RunBrokerCapabilityKeychainStore().load(
+        channel: arguments.channel,
+        installationID: installationID
+    )
 
     // One canonical ledger instance is shared by the scheduler, durable run
     // orchestrator, status reader, and projection outbox. No adapter owns a
     // second mutable database connection or projection cursor.
     let canonicalLedger = try RunLedger(configuration: .init(
         ledgerDirectoryURL: identity.ledgerDirectoryURL,
-        installationID: secrets.installationID,
+        installationID: installationID,
         exclusiveWriter: true
     ))
     let monitorLedger = RunBrokerRunLedgerAdapter(ledger: canonicalLedger)
@@ -98,7 +102,10 @@ private func run() throws -> Never {
     try ensurePrivateDirectory(runRoot)
     let trustedRoot = try RunSupervisorTrustedRoot(path: runRoot.path)
     let vault = DarwinRunBrokerCapabilityVault(directoryURL: capabilityDirectory)
-    let supervisorTransport = DarwinRunBrokerSupervisorTransport(trustedRoot: trustedRoot)
+    let supervisorTransport = DarwinRunBrokerSupervisorTransport(
+        trustedRoot: trustedRoot,
+        client: DarwinRunSupervisorControlClient(brokerCapabilitySecret: capabilitySecret)
+    )
     let orchestrator = RunBrokerOrchestrator(
         ledger: canonicalLedger,
         vault: vault,
@@ -117,9 +124,15 @@ private func run() throws -> Never {
         orchestrator: orchestrator,
         vault: vault
     )
+    applicationService.startExecutionReconciliation(logger: BrokerStderrLogger())
     applicationService.startRuntimeSwitchReconciliation(logger: BrokerStderrLogger())
-    let authenticator = RunBrokerRequestAuthenticator(secret: secrets.capabilitySecret)
-    let peerPolicy = RunBrokerPeerIdentityPolicy(expectedUserID: getuid())
+    let authenticator = RunBrokerRequestAuthenticator(secret: capabilitySecret)
+    let codeIdentityVerifier = DarwinRunBrokerPeerCodeIdentityVerifier()
+    let peerPolicy = RunBrokerPeerIdentityPolicy(
+        expectedUserID: getuid(),
+        requiresCodeIdentity: codeIdentityVerifier.requiresDeveloperIDIdentity,
+        codeIdentityVerifier: codeIdentityVerifier
+    )
     let endpoint = RunBrokerRequestEndpoint(
         channel: arguments.channel,
         installationID: arguments.installationID,
@@ -127,7 +140,12 @@ private func run() throws -> Never {
         authenticator: authenticator,
         peerPolicy: peerPolicy,
         scheduler: scheduler,
-        applicationHandler: applicationService
+        applicationHandler: applicationService,
+        successorHandoffHandler: DarwinRunBrokerSuccessorHandoffHandler(
+            channel: arguments.channel,
+            installationID: installationID,
+            currentBrokerExecutableURL: cohort.brokerExecutableURL
+        )
     )
     return try RunBrokerServer(
         listener: listener,

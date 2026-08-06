@@ -404,7 +404,13 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 0, stdout: "sha256:abc\n", stderr: "")
         ])
-        let service = DockerImageInventoryService(runner: runner, environment: [:])
+        let service = DockerImageInventoryService(
+            runner: runner,
+            environment: [:],
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
+        )
 
         let availability = try await service.checkImageAvailability("astra/test:latest").get()
 
@@ -412,9 +418,10 @@ struct ExecutionEnvironmentTests {
         #expect(availability.imageID == "sha256:abc")
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/test:latest"]
+            ["context", "show"],
+            ["image", "inspect", "--format", "{{.Id}}", "astra/test:latest"]
         ])
+        #expect(calls.map(\.path) == ["/usr/local/bin/docker", "/usr/local/bin/docker"])
     }
 
     @Test("Docker image availability reports missing image")
@@ -423,15 +430,21 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 1, stdout: "", stderr: "Error response from daemon: No such image: astra/missing:latest\n")
         ])
-        let service = DockerImageInventoryService(runner: runner, environment: [:])
+        let service = DockerImageInventoryService(
+            runner: runner,
+            environment: [:],
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
+        )
 
         let availability = await service.checkImageAvailability("astra/missing:latest")
 
         #expect(availability.failure == .missingImage("astra/missing:latest"))
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/missing:latest"]
+            ["context", "show"],
+            ["image", "inspect", "--format", "{{.Id}}", "astra/missing:latest"]
         ])
     }
 
@@ -530,11 +543,12 @@ struct ExecutionEnvironmentTests {
             image: "astra/test:latest",
             runtimeExecutablePath: "/usr/local/bin/claude",
             providerPlacement: .container,
-            environmentKeyAllowlist: ["FOO"]
+            environmentKeyAllowlist: ["FOO", "PATH"]
         )
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(environment)
         let base = makeBasePlan(currentDirectory: root, environment: [
             "FOO": "bar",
+            "PATH": "/container/bin:/usr/bin",
             "SECRET": "nope"
         ])
 
@@ -542,17 +556,23 @@ struct ExecutionEnvironmentTests {
             base: base,
             environment: DockerExecutionPlanner.snapshotForRun(task: task, currentDirectory: root),
             task: task,
-            runID: UUID()
+            runID: UUID(),
+            dockerRuntime: DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
         )
         let plan = try result.get()
 
-        #expect(plan.executablePath == "/usr/bin/env")
-        #expect(plan.arguments.prefix(3) == ["docker", "run", "--rm"])
+        #expect(plan.executablePath == "/Applications/Docker.app/Contents/Resources/bin/docker")
+        #expect(plan.arguments.prefix(2) == ["run", "--rm"])
+        #expect(plan.environment["PATH"] == "/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin")
         #expect(plan.arguments.contains("astra/test:latest"))
         let imageIndex = try #require(plan.arguments.firstIndex(of: "astra/test:latest"))
         #expect(imageIndex > 0)
         #expect(plan.arguments[imageIndex - 1] == "--")
         #expect(plan.arguments.contains("/usr/local/bin/claude"))
+        #expect(plan.arguments.contains("PATH=/container/bin:/usr/bin"))
         #expect(plan.arguments.contains("--workdir"))
         #expect(plan.arguments.contains("/workspace"))
         #expect(plan.environment["FOO"] == "bar")
@@ -616,8 +636,14 @@ struct ExecutionEnvironmentTests {
                 credentialProjections: [projection]
             ),
             currentDirectory: root,
-            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
+            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113"),
+            dockerRuntime: DockerRuntimeResolver.resolution(
+                executablePath: "/Applications/Docker.app/Contents/Resources/bin/docker",
+                environment: ["PATH": "/usr/bin:/bin"]
+            )
         )
+        #expect(mcpVariables["ASTRA_WORKSPACE_DOCKER_EXECUTABLE"] == "/Applications/Docker.app/Contents/Resources/bin/docker")
+        #expect(mcpVariables["PATH"] == nil)
         let mounts = try jsonArray(mcpVariables["ASTRA_WORKSPACE_DOCKER_MOUNTS"])
         let credentialMount = try #require(mounts.first { $0["role"] as? String == "credential" })
         #expect(credentialMount["hostPath"] as? String == gcloudPath)
@@ -626,6 +652,21 @@ struct ExecutionEnvironmentTests {
         let containerEnvironment = try #require(jsonDictionary(mcpVariables["ASTRA_WORKSPACE_DOCKER_ENV"]) as? [String: String])
         #expect(containerEnvironment["CLOUDSDK_CONFIG"] == "/root/.config/gcloud")
         #expect(containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
+    }
+
+    @Test("Docker workspace executable falls back to the bare docker command when the CLI could not be resolved")
+    func dockerWorkspaceExecutableFallsBackToBareCommandWhenUnresolved() throws {
+        let root = try makeTempDir("docker-executable-fallback")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let task = AgentTask(title: "Run", goal: "Run", workspace: Workspace(name: "Docker", primaryPath: root))
+        let mcpVariables = DockerWorkspaceMCPProjection.environmentVariables(
+            task: task,
+            environment: WorkspaceExecutionEnvironment(id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest"),
+            currentDirectory: root,
+            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113"),
+            dockerRuntime: .environmentLookup
+        )
+        #expect(mcpVariables["ASTRA_WORKSPACE_DOCKER_EXECUTABLE"] == "docker")
     }
 
     @Test("Docker credential readiness blocks BigQuery workspaces when host ADC is not projected")
@@ -1118,7 +1159,14 @@ struct ExecutionEnvironmentTests {
             .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
             .exited(code: 0, stdout: "built\n", stderr: "")
         ])
-        let service = DockerImageBuildService(runner: runner, environment: [:], timeout: 42)
+        let service = DockerImageBuildService(
+            runner: runner,
+            environment: [:],
+            timeout: 42,
+            resolveDockerRuntime: {
+                DockerRuntimeResolver.resolution(executablePath: "/usr/local/bin/docker", environment: $0)
+            }
+        )
         let request = DockerImageBuildRequest(
             image: "astra-demo:latest",
             dockerfilePath: "/tmp/demo/Dockerfile",
@@ -1131,9 +1179,10 @@ struct ExecutionEnvironmentTests {
         #expect(summary.image == "astra-demo:latest")
         let calls = await runner.recordedCalls()
         #expect(calls.map(\.args) == [
-            ["docker", "context", "show"],
-            ["docker", "build", "-t", "astra-demo:latest", "-f", "/tmp/demo/Dockerfile", "/tmp/demo"]
+            ["context", "show"],
+            ["build", "-t", "astra-demo:latest", "-f", "/tmp/demo/Dockerfile", "/tmp/demo"]
         ])
+        #expect(calls.map(\.path) == ["/usr/local/bin/docker", "/usr/local/bin/docker"])
         #expect(calls.map(\.timeout) == [3, 42])
     }
 

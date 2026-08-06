@@ -17,6 +17,14 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
         diagnostics: any RunBrokerDiagnosing = StandardErrorRunBrokerDiagnostics()
     ) throws {
         try secureStore.ensurePrivateDirectory(identity.socketDirectory)
+        // The stale probe, unlink, and bind below are one indivisible
+        // ownership claim. Two brokers racing it can both observe
+        // ECONNREFUSED on the same stale inode, and the slower unlink would
+        // then remove the socket the winner had just bound, leaving the
+        // surviving broker unreachable. The kernel releases the lease if the
+        // holder dies mid-claim.
+        let bindLease = try Self.acquireBindLease(identity.socketURL)
+        defer { Darwin.close(bindLease) }
         try Self.removeStaleSocketIfSafe(identity.socketURL, expectedUserID: expectedUserID)
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -25,6 +33,7 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
         }
         var createdSocketIdentity: (device: dev_t, inode: ino_t)?
         do {
+            try Self.setCloseOnExec(descriptor, operation: "fcntl-listener-close-on-exec")
             var address = try runBrokerUnixAddress(path: identity.socketURL.path)
             let bindStatus = withUnsafePointer(to: &address) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -75,6 +84,7 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
                 throw RunBrokerTransportError.systemCall(operation: "accept", code: errno)
             }
             do {
+                try Self.setCloseOnExec(accepted, operation: "fcntl-client-close-on-exec")
                 return try RunBrokerUnixSocketConnection(descriptor: accepted)
             } catch {
                 Darwin.close(accepted)
@@ -85,6 +95,19 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
 
     deinit {
         Darwin.close(descriptor)
+        // The inode-guarded unlink below still races a concurrent claimant
+        // between lstat and unlink, so it runs under the same bind lease as
+        // startup. On contention the claimant owns the pathname and this
+        // cleanup is skipped; an orphaned socket is recovered as stale by the
+        // next claim.
+        let bindLease: Int32
+        do {
+            bindLease = try Self.acquireBindLease(socketURL)
+        } catch {
+            diagnostics.record(.socketCleanupSkipped, error: error)
+            return
+        }
+        defer { Darwin.close(bindLease) }
         var info = stat()
         if lstat(socketURL.path, &info) == 0 {
             if (info.st_mode & S_IFMT) == S_IFSOCK,
@@ -98,6 +121,45 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
                 )
             }
         }
+    }
+
+    package var hasCloseOnExec: Bool {
+        let flags = fcntl(descriptor, F_GETFD)
+        return flags >= 0 && (flags & FD_CLOEXEC) != 0
+    }
+
+    /// An exclusive OS lease over the socket pathname's claim protocol. The
+    /// sidecar lock file is deliberately never unlinked: removing it would let
+    /// two claimants hold "the same" lease through different inodes.
+    private static func acquireBindLease(_ socketURL: URL) throws -> Int32 {
+        let leasePath = socketURL.path + ".lock"
+        // O_NONBLOCK keeps a same-UID FIFO substitution from wedging the
+        // claim in open; the fstat type check then rejects it outright.
+        let descriptor = open(
+            leasePath,
+            O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+            0o600
+        )
+        guard descriptor >= 0 else {
+            throw RunBrokerTransportError.systemCall(operation: "open-bind-lease", code: errno)
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            Darwin.close(descriptor)
+            throw RunBrokerTransportError.unsafeSocketPath
+        }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            Darwin.close(descriptor)
+            guard code == EWOULDBLOCK else {
+                throw RunBrokerTransportError.systemCall(operation: "flock-bind-lease", code: code)
+            }
+            // A concurrent broker is mid-claim; exactly one endpoint owner
+            // can exist, so the loser fails ownership the same way it would
+            // against an already-listening broker.
+            throw RunBrokerTransportError.socketAlreadyActive
+        }
+        return descriptor
     }
 
     private static func removeStaleSocketIfSafe(
@@ -174,5 +236,12 @@ public final class RunBrokerUnixSocketListener: RunBrokerListening, @unchecked S
             return
         }
         unlink(url.path)
+    }
+
+    private static func setCloseOnExec(_ descriptor: Int32, operation: String) throws {
+        let flags = fcntl(descriptor, F_GETFD)
+        guard flags >= 0, fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+            throw RunBrokerTransportError.systemCall(operation: operation, code: errno)
+        }
     }
 }

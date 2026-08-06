@@ -1,6 +1,12 @@
 import ASTRACore
 import Darwin
 import Foundation
+import OSLog
+
+private let runSupervisorServiceLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.coral.ASTRA",
+    category: "RunSupervisorService"
+)
 
 public enum RunSupervisorServiceOutcome: Equatable, Sendable {
     case launched(exitCode: Int32)
@@ -25,6 +31,7 @@ public final class RunSupervisorService: @unchecked Sendable {
     private var spool: RunSupervisorEventSpool?
     private var controlState = ExecutionControlState()
     private var immediateTerminationIssued = false
+    private var lifecycleEventObserver: (@Sendable (RunSupervisorEventKind) -> Void)?
 
     public init(
         root: RunSupervisorTrustedRoot,
@@ -44,6 +51,14 @@ public final class RunSupervisorService: @unchecked Sendable {
         self.clock = clock
         self.spoolMaximumBytes = spoolMaximumBytes
         self.spoolCriticalReserveBytes = spoolCriticalReserveBytes
+    }
+
+    /// Deterministic synchronization seam for lifecycle race regressions.
+    /// Install before `run`; production leaves it nil.
+    func observePersistedLifecycleEvents(
+        _ observer: @escaping @Sendable (RunSupervisorEventKind) -> Void
+    ) {
+        stateLock.withLock { lifecycleEventObserver = observer }
     }
 
     public func run(_ payload: RunSupervisorBootstrapPayload) throws -> RunSupervisorServiceOutcome {
@@ -164,33 +179,59 @@ public final class RunSupervisorService: @unchecked Sendable {
             throw error
         }
         let outputPersistenceError = RunSupervisorErrorBox()
-        try fileSystem.writeDiscovery(
-            .init(
-                identity: discovery.identity,
-                manifestSHA256: discovery.manifestSHA256,
-                launchAuthenticator: discovery.launchAuthenticator,
-                capabilitySHA256: discovery.capabilitySHA256,
-                socketName: discovery.socketName,
-                supervisorPIDDiagnostic: getpid(),
-                providerPIDDiagnostic: ownedProcess.processIdentifierDiagnostic,
-                createdAt: discovery.createdAt
-            ),
-            in: directory
-        )
+        let timeoutWatchdog = payload.manifest.supervisionPolicy.map {
+            RunSupervisorTimeoutWatchdog(policy: $0)
+        }
+        timeoutWatchdog?.start { [weak self, weak ownedProcess] reason in
+            guard let self, let ownedProcess else { return }
+            self.enforceTimeout(reason, process: ownedProcess)
+        }
+        defer { timeoutWatchdog?.cancel() }
+        do {
+            try fileSystem.writeDiscovery(
+                .init(
+                    identity: discovery.identity,
+                    manifestSHA256: discovery.manifestSHA256,
+                    launchAuthenticator: discovery.launchAuthenticator,
+                    capabilitySHA256: discovery.capabilitySHA256,
+                    socketName: discovery.socketName,
+                    supervisorPIDDiagnostic: getpid(),
+                    providerPIDDiagnostic: ownedProcess.processIdentifierDiagnostic,
+                    createdAt: discovery.createdAt
+                ),
+                in: directory
+            )
+        } catch {
+            // The PID is diagnostic only. Provider ownership and recovery are
+            // already durable through discovery identity plus spool evidence.
+            runSupervisorServiceLogger.warning(
+                "Skipping non-authoritative provider PID discovery update: \(String(describing: error), privacy: .public)"
+            )
+        }
         let outputGroup = DispatchGroup()
+        // Each read becomes one durable spool event. A buffer larger than the
+        // admitted per-event byte limit would manufacture an oversized event
+        // that the broker must classify as an output-quota violation, so
+        // reads never exceed the policy's maximumOutputEventBytes.
+        let outputReadLimit = payload.manifest.supervisionPolicy
+            .map { Int(min($0.maximumOutputEventBytes, 8_192)) } ?? 8_192
         startOutputReader(
             ownedProcess.stdoutFileHandle,
             kind: .standardOutput,
             spool: spool,
+            readLimit: outputReadLimit,
             group: outputGroup,
-            persistenceError: outputPersistenceError
+            persistenceError: outputPersistenceError,
+            progress: { timeoutWatchdog?.recordProgress() }
         )
         startOutputReader(
             ownedProcess.stderrFileHandle,
             kind: .standardError,
             spool: spool,
+            readLimit: outputReadLimit,
             group: outputGroup,
-            persistenceError: outputPersistenceError
+            persistenceError: outputPersistenceError,
+            progress: { timeoutWatchdog?.recordProgress() }
         )
         terminated.wait()
         providerCompleted = true
@@ -218,6 +259,12 @@ public final class RunSupervisorService: @unchecked Sendable {
         case .handshake, .status:
             break
         case .replay:
+            // A replay head is lifecycle truth, not merely a spool snapshot.
+            // Serialize it with recordTermination so callers can never observe
+            // cancellationConfirmed as the advertised end of the spool while
+            // providerExited is being appended by the same terminal record.
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
             // One maximum-sized output event plus the authenticated envelope
             // remains below the bounded 64 KiB control frame. Returning four
             // would double-base64-expand the envelope beyond that limit.
@@ -226,11 +273,16 @@ public final class RunSupervisorService: @unchecked Sendable {
         case .acknowledge:
             try spool.acknowledge(through: action.acknowledgeThrough!)
         case .writeStandardInput:
-            lifecycleEventLock.lock()
-            defer { lifecycleEventLock.unlock() }
             stateLock.lock(); let process = self.process; stateLock.unlock()
             guard let process else { throw RunSupervisorError.alreadyRunningOrInDoubt }
             try process.writeStandardInputLine(action.standardInputLine!)
+            lifecycleEventLock.lock()
+            defer { lifecycleEventLock.unlock() }
+            stateLock.lock(); let currentProcess = self.process; stateLock.unlock()
+            guard let currentProcess,
+                  (currentProcess as AnyObject) === (process as AnyObject) else {
+                throw RunSupervisorError.alreadyRunningOrInDoubt
+            }
             _ = try spool.appendCritical(.standardInputAccepted)
         case .closeStandardInput:
             lifecycleEventLock.lock()
@@ -302,6 +354,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                     .cancellationConfirmed,
                     payload: .init(cancellationIntent: .immediate)
                 )
+                notifyLifecycleEventPersisted(.cancellationConfirmed)
             } else if termination.exitCode == 0 {
                 reduce(.executionCompleted, capabilities: [.cancel])
             } else {
@@ -315,9 +368,44 @@ public final class RunSupervisorService: @unchecked Sendable {
                     terminationReason: termination.reason
                 )
             )
+            notifyLifecycleEventPersisted(.providerExited)
         } catch {
             throw RunSupervisorError.terminalPersistenceFailed
         }
+    }
+
+    private func notifyLifecycleEventPersisted(_ kind: RunSupervisorEventKind) {
+        let observer = stateLock.withLock { lifecycleEventObserver }
+        observer?(kind)
+    }
+
+    private func enforceTimeout(
+        _ reason: RunSupervisorTimeoutWatchdog.Reason,
+        process timedProcess: any RunSupervisorOwnedProcess
+    ) {
+        lifecycleEventLock.lock()
+        defer { lifecycleEventLock.unlock() }
+        stateLock.lock()
+        let currentProcess = process
+        let spool = self.spool
+        stateLock.unlock()
+        guard let currentProcess,
+              (currentProcess as AnyObject) === (timedProcess as AnyObject),
+              let spool else { return }
+        runSupervisorServiceLogger.warning(
+            "Provider supervision timeout exceeded: \(reason.rawValue, privacy: .public)"
+        )
+        do {
+            _ = try spool.appendCritical(reason.eventKind)
+        } catch {
+            // The watchdog must still enforce the immutable safety limit when
+            // storage is degraded. Surface the lost audit evidence explicitly;
+            // normal operation always journals the typed cause before effect.
+            runSupervisorServiceLogger.error(
+                "Unable to persist supervision timeout before termination: \(String(describing: error), privacy: .public)"
+            )
+        }
+        _ = timedProcess.terminateImmediately()
     }
 
     private func reduce(
@@ -337,8 +425,10 @@ public final class RunSupervisorService: @unchecked Sendable {
         _ handle: FileHandle,
         kind: RunSupervisorEventKind,
         spool: RunSupervisorEventSpool,
+        readLimit: Int,
         group: DispatchGroup,
-        persistenceError: RunSupervisorErrorBox
+        persistenceError: RunSupervisorErrorBox,
+        progress: @escaping @Sendable () -> Void
     ) {
         group.enter()
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -348,7 +438,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                 return
             }
             let descriptor = handle.fileDescriptor
-            var buffer = [UInt8](repeating: 0, count: 8_192)
+            var buffer = [UInt8](repeating: 0, count: readLimit)
             while true {
                 let count = buffer.withUnsafeMutableBytes { bytes in
                     Darwin.read(descriptor, bytes.baseAddress, bytes.count)
@@ -365,6 +455,7 @@ public final class RunSupervisorService: @unchecked Sendable {
                 while true {
                     do {
                         _ = try spool.appendOutput(kind, data: data)
+                        progress()
                         break
                     } catch RunSupervisorError.spoolBackpressured {
                         _ = spool.waitForOutputCapacity(deadline: self.clock.now().addingTimeInterval(1))
@@ -396,6 +487,73 @@ private final class RunSupervisorTerminationBox: @unchecked Sendable {
         guard termination == nil else { return false }
         termination = value
         return true
+    }
+}
+
+private final class RunSupervisorTimeoutWatchdog: @unchecked Sendable {
+    enum Reason: String, Sendable {
+        case hard = "hard_timeout"
+        case idle = "idle_progress_timeout"
+
+        var eventKind: RunSupervisorEventKind {
+            switch self {
+            case .hard: .hardTimeoutExceeded
+            case .idle: .idleProgressTimeoutExceeded
+            }
+        }
+    }
+
+    private let policy: ExecutionSupervisionPolicySnapshot
+    private let queue = DispatchQueue(label: "com.coral.ASTRA.run-supervisor-timeout")
+    private var hardTimer: DispatchSourceTimer?
+    private var idleTimer: DispatchSourceTimer?
+    private var fired = false
+
+    init(policy: ExecutionSupervisionPolicySnapshot) {
+        self.policy = policy
+    }
+
+    func start(_ handler: @escaping @Sendable (Reason) -> Void) {
+        queue.sync {
+            guard hardTimer == nil, idleTimer == nil else { return }
+            let hard = DispatchSource.makeTimerSource(queue: queue)
+            hard.schedule(deadline: .now() + TimeInterval(policy.hardTimeoutSeconds))
+            hard.setEventHandler { [weak self] in self?.fire(.hard, handler: handler) }
+            hardTimer = hard
+
+            let idle = DispatchSource.makeTimerSource(queue: queue)
+            idle.schedule(deadline: .now() + TimeInterval(policy.idleProgressTimeoutSeconds))
+            idle.setEventHandler { [weak self] in self?.fire(.idle, handler: handler) }
+            idleTimer = idle
+            hard.resume()
+            idle.resume()
+        }
+    }
+
+    func recordProgress() {
+        queue.async { [weak self] in
+            guard let self, !fired else { return }
+            idleTimer?.schedule(
+                deadline: .now() + TimeInterval(policy.idleProgressTimeoutSeconds)
+            )
+        }
+    }
+
+    func cancel() {
+        queue.sync {
+            hardTimer?.cancel()
+            idleTimer?.cancel()
+            hardTimer = nil
+            idleTimer = nil
+        }
+    }
+
+    private func fire(_ reason: Reason, handler: @escaping @Sendable (Reason) -> Void) {
+        guard !fired else { return }
+        fired = true
+        hardTimer?.cancel()
+        idleTimer?.cancel()
+        handler(reason)
     }
 }
 

@@ -671,6 +671,47 @@ fi
 
 finalize_run_broker_payload_metadata
 
+generate_run_broker_successor_manifest() {
+  local signer="${ASTRA_SPARKLE_SIGN_UPDATE:-}"
+  if [[ -z "$signer" ]]; then
+    return
+  fi
+  if [[ ! -x "$signer" ]]; then
+    echo "FAIL: ASTRA_SPARKLE_SIGN_UPDATE is not executable: $signer" >&2
+    exit 3
+  fi
+  if [[ -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+    echo "FAIL: signed successor manifest requires ASTRA_SPARKLE_PUBLIC_ED_KEY." >&2
+    exit 3
+  fi
+
+  local unsigned_copy executable_digest broker_digest supervisor_digest manifest signature
+  unsigned_copy="$(mktemp)"
+  /usr/bin/ditto "$APP_BINARY" "$unsigned_copy"
+  /usr/bin/codesign --remove-signature "$unsigned_copy"
+  executable_digest="$(/usr/bin/shasum -a 256 "$unsigned_copy" | /usr/bin/awk '{print $1}')"
+  /bin/rm -f "$unsigned_copy"
+  broker_digest="$(/usr/bin/shasum -a 256 "$RUN_BROKER_EXECUTABLE" | /usr/bin/awk '{print $1}')"
+  supervisor_digest="$(/usr/bin/shasum -a 256 "$RUN_SUPERVISOR_EXECUTABLE" | /usr/bin/awk '{print $1}')"
+  manifest="$APP_RESOURCES/RunBrokerSuccessorManifest.json"
+  /usr/bin/printf '{"brokerSHA256":"%s","build":"%s","bundleIdentifier":"%s","channel":"%s","executableSHA256":"%s","schemaVersion":1,"supervisorSHA256":"%s","version":"%s"}' \
+    "$broker_digest" "$APP_BUILD" "$BUNDLE_ID" "$ASTRA_CHANNEL" "$executable_digest" \
+    "$supervisor_digest" "$APP_VERSION" > "$manifest"
+  signature="$($signer -p "$manifest")"
+  if [[ -z "$signature" ]]; then
+    echo "FAIL: Sparkle sign_update returned an empty successor signature." >&2
+    exit 3
+  fi
+  /usr/bin/printf '%s' "$signature" | /usr/bin/base64 -D \
+    > "$APP_RESOURCES/RunBrokerSuccessorManifest.sig"
+  if [[ "$(/usr/bin/wc -c < "$APP_RESOURCES/RunBrokerSuccessorManifest.sig" | /usr/bin/tr -d ' ')" != "64" ]]; then
+    echo "FAIL: successor manifest signature is not 64 bytes." >&2
+    exit 3
+  fi
+}
+
+generate_run_broker_successor_manifest
+
 # Sign only the outer app after finalizing payload metadata. Every nested code
 # object is already signed for the active mode above; omitting --deep here is
 # what guarantees the broker bytes hashed into Info.plist remain unchanged.

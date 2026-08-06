@@ -154,6 +154,13 @@ final class MemoryCapabilityVault: RunBrokerCapabilityVaulting, @unchecked Senda
         records[record.identity.executionID] = record
         lock.unlock()
     }
+
+
+    func remove(executionID: RunBrokerExecutionID) {
+        lock.lock()
+        records.removeValue(forKey: executionID)
+        lock.unlock()
+    }
 }
 
 final class RecordingSpawner: RunBrokerSupervisorSpawning, @unchecked Sendable {
@@ -175,6 +182,8 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
     var source: RunBrokerSupervisorReplaySource = .liveAuthenticated
     var identityOverride: RunSupervisorIdentity?
     var replayError: Error?
+    var replayBatchLimit = 4
+    var immediateTerminationError: Error?
     var onImmediateTermination: (() -> Void)?
     private(set) var acknowledgements: [UInt64] = []
     private(set) var replayCursors: [UInt64] = []
@@ -199,7 +208,7 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
         defer { lock.unlock() }
         if let replayError { throw replayError }
         replayCursors.append(sequence)
-        let batch = Array(events.filter { $0.sequence > sequence }.prefix(4))
+        let batch = Array(events.filter { $0.sequence > sequence }.prefix(replayBatchLimit))
         return .init(
             identity: identityOverride ?? identity,
             source: source,
@@ -226,7 +235,9 @@ final class RecordingTransport: RunBrokerSupervisorTransporting, @unchecked Send
         onImmediateTermination?()
         lock.lock()
         immediateTerminationCount += 1
+        let error = immediateTerminationError
         lock.unlock()
+        if let error { throw error }
     }
 }
 

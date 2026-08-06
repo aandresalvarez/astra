@@ -175,6 +175,88 @@ struct RunBrokerApplicationServiceTests {
             .forceChallenge?.issuedAt == brokerTestDate)
     }
 
+    @Test("archived force confirmation accepts only the exact destructive identity")
+    func archivedForceConfirmationRequiresExactIdentity() throws {
+        let requestID = RuntimeSwitchRequestID(rawValue: brokerUUID(200))
+        let digest = RuntimeSwitchRequestDigest(value: try ExecutionLaunchArgumentsSHA256(
+            hexValue: String(repeating: "ab", count: 32)
+        ))
+        let actor = try RuntimeSwitchActorID(rawValue: "operator-archive")
+        let session = brokerUUID(201)
+        let challenge = try RuntimeForceSwitchChallenge(
+            challengeID: .init(rawValue: brokerUUID(202)),
+            requestID: requestID,
+            requestDigest: digest,
+            actorID: actor,
+            sessionID: session,
+            issuedAt: brokerTestDate,
+            expiresAt: brokerTestDate.addingTimeInterval(300)
+        )
+        let effectID = RuntimeSwitchEffectID(rawValue: brokerUUID(203))
+        let confirmationID = RunBrokerRuntimeSwitchService.confirmationID(for: effectID)
+        func response(
+            requestID candidateRequestID: RuntimeSwitchRequestID = requestID,
+            requestDigest candidateDigest: RuntimeSwitchRequestDigest = digest,
+            challengeID: RuntimeForceChallengeID = challenge.challengeID,
+            actorID: RuntimeSwitchActorID = actor,
+            sessionID: UUID = session,
+            confirmedAt: Date = brokerTestDate,
+            effectID candidateEffectID: RuntimeSwitchEffectID = effectID
+        ) -> RunBrokerApplicationForceConfirmation {
+            .init(
+                requestID: candidateRequestID,
+                requestDigest: candidateDigest,
+                challengeID: challengeID,
+                actorID: actorID,
+                sessionID: sessionID,
+                confirmedAt: confirmedAt,
+                effectID: candidateEffectID
+            )
+        }
+        func matches(_ candidate: RunBrokerApplicationForceConfirmation) -> Bool {
+            RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+                candidate,
+                challenge: challenge,
+                recordedEffectID: effectID,
+                recordedConfirmationID: confirmationID,
+                recordedConfirmedAt: brokerTestDate
+            )
+        }
+
+        #expect(matches(response()))
+        #expect(!matches(response(requestID: .init(rawValue: brokerUUID(204)))))
+        #expect(!matches(response(
+            requestDigest: .init(value: try ExecutionLaunchArgumentsSHA256(
+                hexValue: String(repeating: "cd", count: 32)
+            ))
+        )))
+        #expect(!matches(response(challengeID: .init(rawValue: brokerUUID(205)))))
+        #expect(!matches(response(actorID: try .init(rawValue: "other-operator"))))
+        #expect(!matches(response(sessionID: brokerUUID(206))))
+        #expect(!matches(response(effectID: .init(rawValue: brokerUUID(207)))))
+        // The confirmed-at instant is authenticated confirmation evidence: a
+        // retry with any other timestamp is a different destructive command.
+        #expect(!matches(response(confirmedAt: brokerTestDate.addingTimeInterval(1))))
+        let mismatchedConfirmationIdentity = RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+            response(),
+            challenge: challenge,
+            recordedEffectID: effectID,
+            recordedConfirmationID: .init(rawValue: brokerUUID(208)),
+            recordedConfirmedAt: brokerTestDate
+        )
+        #expect(!mismatchedConfirmationIdentity)
+        // An archived record journaled before the timestamp was persisted has
+        // no value to compare and must fail exact replay closed.
+        let missingRecordedConfirmedAt = RunBrokerRuntimeSwitchService.isExactArchivedConfirmation(
+            response(),
+            challenge: challenge,
+            recordedEffectID: effectID,
+            recordedConfirmationID: confirmationID,
+            recordedConfirmedAt: nil
+        )
+        #expect(!missingRecordedConfirmedAt)
+    }
+
     @Test("production broker context advertises only end-to-end runtime features")
     func brokerContextDoesNotOverclaimRuntimeControl() throws {
         let fixture = try BrokerFixture()
@@ -689,6 +771,33 @@ struct RunBrokerApplicationServiceTests {
         ) == .projectionAcknowledged)
     }
 
+    @Test("projection acknowledgement preserves ledger health failures")
+    func projectionAcknowledgementDoesNotCollapseHealthErrors() throws {
+        let fixture = try BrokerFixture()
+        try fixture.admitOnly()
+        let service = applicationService(fixture)
+        guard case .projectionMessage(let message?) = try service.handle(
+            .nextProjectionMessage,
+            idempotencyKey: brokerUUID(116),
+            now: brokerTestDate
+        ) else {
+            Issue.record("Expected projection message")
+            return
+        }
+        try fixture.ledger.close()
+
+        #expect(throws: RunLedgerError.closed) {
+            _ = try service.handle(
+                .acknowledgeProjection(.init(
+                    sequence: message.sequence,
+                    messageID: message.messageID
+                )),
+                idempotencyKey: brokerUUID(117),
+                now: brokerTestDate
+            )
+        }
+    }
+
     @Test("only exact local supervisor immediate control performs an audited effect")
     func externalOperationControlMatrix() throws {
         let fixture = try BrokerFixture()
@@ -733,28 +842,14 @@ struct RunBrokerApplicationServiceTests {
             binding: localBinding,
             cancellationIntent: .immediate
         )
-        fixture.transport.onImmediateTermination = {
-            let control = try! fixture.ledger.projection().executions[fixture.manifest.executionID]!.control
-            #expect(control.desiredCancellation == .immediate)
-            fixture.transport.events.append(
-                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
-            )
-            fixture.transport.events.append(
-                fixture.event(4, .terminationStarted, cancellationIntent: .immediate)
+        #expect(throws: RunBrokerApplicationEndpointError.externalOperationBlocked) {
+            _ = try service.handle(
+                .externalOperation(.control(immediate)),
+                idempotencyKey: brokerUUID(88),
+                now: brokerTestDate.addingTimeInterval(3)
             )
         }
-        let firstControlResponse = try service.handle(
-            .externalOperation(.control(immediate)),
-            idempotencyKey: brokerUUID(88),
-            now: brokerTestDate.addingTimeInterval(3)
-        )
-        guard case .externalOperation(let allowed) = firstControlResponse else {
-            Issue.record("Expected external-operation response")
-            return
-        }
-        #expect(allowed.cancellation.kind == .allowed)
-        #expect(allowed.cancellation.auditRequirement == .immediateTermination)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         guard case .externalOperation(let observed) = try service.handle(
             .externalOperation(.observe(immediate)),
@@ -797,17 +892,18 @@ struct RunBrokerApplicationServiceTests {
                 now: brokerTestDate
             )
         }
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
-        // A response-lost retry has a later wall clock but the same durable
-        // mutation identity. Reconcile the supervisor's pre-effect spool and
-        // return the same result without issuing termination twice.
-        #expect(try service.handle(
-            .externalOperation(.control(immediate)),
-            idempotencyKey: brokerUUID(88),
-            now: brokerTestDate.addingTimeInterval(30)
-        ) == firstControlResponse)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        // A later retry remains non-authoritative: this legacy command has no
+        // durable actor/session challenge confirmation.
+        #expect(throws: RunBrokerApplicationEndpointError.externalOperationBlocked) {
+            _ = try service.handle(
+                .externalOperation(.control(immediate)),
+                idempotencyKey: brokerUUID(88),
+                now: brokerTestDate.addingTimeInterval(30)
+            )
+        }
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         let graceful = RunBrokerApplicationExternalOperationRequest(
             target: localTarget,
@@ -824,7 +920,7 @@ struct RunBrokerApplicationServiceTests {
         }
         #expect(gracefulAssessment.cancellation.kind == .blocked)
         #expect(gracefulAssessment.cancellation.reason == .gracefulCancellationCapabilityMissing)
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
 
         for (index, kind) in [
             ExternalOperationBackendKindID.managedDockerJob,
@@ -862,7 +958,7 @@ struct RunBrokerApplicationServiceTests {
             #expect(assessment.observation.reason == .unverifiedProvenance)
             #expect(assessment.cancellation.kind == .monitoringOnly)
         }
-        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(fixture.transport.immediateTerminationCount == 0)
     }
 
     @Test("direct immediate confirmation uses distinct durable IDs and replays after challenge issuance")
@@ -949,6 +1045,89 @@ struct RunBrokerApplicationServiceTests {
         #expect(try fixture.ledger.event(eventID: .init(
             rawValue: RunBrokerExecutionForceEventIDs.audit(effectID: effectID)
         )) != nil)
+    }
+
+    @Test("server receipt rejects a first confirmation after expiry but preserves consumed replay")
+    func immediateConfirmationUsesServerExpiryForFirstConsumption() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let (request, challenge) = try issueImmediateChallenge(
+            fixture: fixture,
+            service: service,
+            idempotencyKey: brokerUUID(143)
+        )
+        let confirmation = immediateConfirmation(
+            request: request,
+            challenge: challenge,
+            effectID: .init(rawValue: brokerUUID(144))
+        )
+        let afterExpiry = challenge.expiresAt.addingTimeInterval(1)
+
+        #expect(throws: RunBrokerApplicationEndpointError.requestRejected) {
+            _ = try service.handle(
+                .confirmImmediateCancellation(confirmation),
+                idempotencyKey: brokerUUID(145),
+                now: afterExpiry
+            )
+        }
+        #expect(try fixture.ledger.projection().executionForceConsumptions.isEmpty)
+        #expect(fixture.transport.immediateTerminationCount == 0)
+
+        // Model a response-lost confirmation that was durably consumed while
+        // the challenge was live. Its exact replay remains resumable later.
+        try recordConsumption(fixture, confirmation: confirmation)
+        fixture.transport.onImmediateTermination = {
+            fixture.transport.events.append(
+                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
+            )
+        }
+        _ = try applicationService(fixture).handle(
+            .confirmImmediateCancellation(confirmation),
+            idempotencyKey: brokerUUID(146),
+            now: afterExpiry.addingTimeInterval(60)
+        )
+        #expect(fixture.transport.immediateTerminationCount == 1)
+    }
+
+    @Test("broker reconciliation resumes consumed confirmation without an app replay")
+    func brokerRecoveryResumesConsumedUnauditedCancellation() throws {
+        let fixture = try BrokerFixture()
+        let service = try authenticatedControlService(fixture)
+        let (request, challenge) = try issueImmediateChallenge(
+            fixture: fixture,
+            service: service,
+            idempotencyKey: brokerUUID(147)
+        )
+        let effectID = RuntimeSwitchEffectID(rawValue: brokerUUID(148))
+        let confirmation = immediateConfirmation(
+            request: request,
+            challenge: challenge,
+            effectID: effectID
+        )
+        try recordConsumption(fixture, confirmation: confirmation)
+        fixture.transport.onImmediateTermination = {
+            fixture.transport.events.append(
+                fixture.event(3, .cancellationRequested, cancellationIntent: .immediate)
+            )
+        }
+        let broker = fixture.orchestrator(
+            authorizer: AllowExactRunBrokerImmediateTerminationAuthorizer()
+        )
+
+        _ = try broker.reconcile(executionID: fixture.manifest.executionID)
+
+        let auditID = RunBrokerExecutionForceEventIDs.audit(effectID: effectID)
+        #expect(try fixture.ledger.event(eventID: .init(rawValue: auditID)) != nil)
+        #expect(fixture.transport.immediateTerminationCount == 1)
+        #expect(try fixture.ledger.supervisorObservations(
+            for: fixture.manifest.executionID
+        ).contains {
+            $0.kind == .cancellationRequested
+                && $0.cancellationIntent == .immediate
+        })
+
+        _ = try broker.reconcile(executionID: fixture.manifest.executionID)
+        #expect(fixture.transport.immediateTerminationCount == 1)
     }
 
     @Test("consumed confirmation cannot terminate a later execution authority")
@@ -1079,7 +1258,7 @@ struct RunBrokerApplicationServiceTests {
         let fixture = try BrokerFixture()
         #expect(throws: InjectedStartCrash.self) {
             _ = try fixture.orchestrator(
-                fault: PointFaultInjector(point: .afterLedgerAdmission)
+                fault: PointFaultInjector(point: .afterCapabilitySync)
             ).start(fixture.request())
         }
         let service = applicationService(fixture)

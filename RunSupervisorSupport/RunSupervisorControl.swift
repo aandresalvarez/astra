@@ -93,6 +93,7 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
     public let issuedAtMilliseconds: Int64
     public let action: RunSupervisorControlAction
     public let authentication: String
+    public let brokerCohortAuthentication: String?
     package let responseVerificationCapability: RunSupervisorCapability?
 
     public init(
@@ -101,7 +102,8 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         nonce: UUID,
         issuedAtMilliseconds: Int64,
         action: RunSupervisorControlAction,
-        authentication: String
+        authentication: String,
+        brokerCohortAuthentication: String? = nil
     ) {
         self.schemaVersion = 1
         self.protocolVersion = protocolVersion
@@ -110,6 +112,7 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         self.issuedAtMilliseconds = issuedAtMilliseconds
         self.action = action
         self.authentication = authentication
+        self.brokerCohortAuthentication = brokerCohortAuthentication
         self.responseVerificationCapability = nil
     }
 
@@ -120,6 +123,7 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         issuedAtMilliseconds: Int64,
         action: RunSupervisorControlAction,
         authentication: String,
+        brokerCohortAuthentication: String? = nil,
         responseVerificationCapability: RunSupervisorCapability
     ) {
         self.schemaVersion = 1
@@ -129,11 +133,13 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         self.issuedAtMilliseconds = issuedAtMilliseconds
         self.action = action
         self.authentication = authentication
+        self.brokerCohortAuthentication = brokerCohortAuthentication
         self.responseVerificationCapability = responseVerificationCapability
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion, protocolVersion, executionID, nonce, issuedAtMilliseconds, action, authentication
+        case schemaVersion, protocolVersion, executionID, nonce, issuedAtMilliseconds, action,
+             authentication, brokerCohortAuthentication
     }
 
     public init(from decoder: Decoder) throws {
@@ -149,8 +155,19 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
         issuedAtMilliseconds = try container.decode(Int64.self, forKey: .issuedAtMilliseconds)
         action = try container.decode(RunSupervisorControlAction.self, forKey: .action)
         authentication = try container.decode(String.self, forKey: .authentication)
+        brokerCohortAuthentication = try container.decodeIfPresent(
+            String.self,
+            forKey: .brokerCohortAuthentication
+        )
         responseVerificationCapability = nil
-        guard authentication.utf8.count == 64 else { throw RunSupervisorError.invalidSchema }
+        guard authentication.utf8.count == 64,
+              brokerCohortAuthentication.map({ value in
+                  value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+                      (48...57).contains(byte) || (97...102).contains(byte)
+                  }
+              }) ?? true else {
+            throw RunSupervisorError.invalidSchema
+        }
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
@@ -161,6 +178,35 @@ public struct RunSupervisorControlRequest: Codable, Equatable, Sendable {
             && lhs.issuedAtMilliseconds == rhs.issuedAtMilliseconds
             && lhs.action == rhs.action
             && lhs.authentication == rhs.authentication
+            && lhs.brokerCohortAuthentication == rhs.brokerCohortAuthentication
+    }
+}
+
+package extension RunSupervisorControlRequest {
+    func bindingBrokerCohortAuthentication(
+        _ value: String
+    ) -> RunSupervisorControlRequest {
+        if let responseVerificationCapability {
+            return .init(
+                protocolVersion: protocolVersion,
+                executionID: executionID,
+                nonce: nonce,
+                issuedAtMilliseconds: issuedAtMilliseconds,
+                action: action,
+                authentication: authentication,
+                brokerCohortAuthentication: value,
+                responseVerificationCapability: responseVerificationCapability
+            )
+        }
+        return .init(
+            protocolVersion: protocolVersion,
+            executionID: executionID,
+            nonce: nonce,
+            issuedAtMilliseconds: issuedAtMilliseconds,
+            action: action,
+            authentication: authentication,
+            brokerCohortAuthentication: value
+        )
     }
 }
 

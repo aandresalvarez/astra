@@ -740,8 +740,8 @@ enum RunLedgerOutboxProjectionMaterializer {
             targetManifestSHA256: archived.targetManifestSHA256,
             progress: .archived,
             challenge: nil,
-            recordedControlEffectID: nil,
-            recordedReplacementEffectID: nil
+            recordedControlEffectID: archived.controlEffectID,
+            recordedReplacementEffectID: archived.replacementEffectID
         )
     }
 

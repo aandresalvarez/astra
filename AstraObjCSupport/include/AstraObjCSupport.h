@@ -39,6 +39,20 @@ NS_ASSUME_NONNULL_BEGIN
 /// ever falling back to `login.keychain-db`.
 @interface AstraSecureKeychain : NSObject
 
+/// Creates or updates a login-keychain item whose decrypt ACL is restricted to
+/// the exact designated requirements of `trustedApplicationPaths`. This is used
+/// for the RunBroker request capability because POSIX mode 0600 is not a
+/// boundary against an untrusted provider running under the same login UID.
++ (BOOL)provisionRunBrokerSecretData:(NSData *)data
+                          forAccount:(NSString *)account
+                             service:(NSString *)service
+             trustedApplicationPaths:(NSArray<NSString *> *)trustedApplicationPaths;
+
+/// Reads a RunBroker capability provisioned by
+/// `provisionRunBrokerSecretData:...`, or returns nil without prompting.
++ (nullable NSData *)runBrokerSecretDataForAccount:(NSString *)account
+                                            service:(NSString *)service;
+
 /// Save or update `value` under (`service`, `account`) in the dedicated keychain
 /// at `keychainPath`, unlocked with a random password stored in the login
 /// keychain under `bootstrapService`. Returns `NO` on failure.

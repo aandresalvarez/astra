@@ -35,6 +35,29 @@ struct RunSupervisorServiceTests {
         #expect(try spool.replay(after: cursor).allSatisfy { $0.sequence > cursor })
     }
 
+    @Test("provider signal termination survives lifetime watchdog wrapping")
+    func providerSignalTerminationSurvivesWatchdog() throws {
+        let fixture = try makeFixture("signal")
+        let payload = try RunSupervisorTestSupport.payload(
+            executablePath: "/bin/sh",
+            arguments: ["-c", "kill -SEGV $$"],
+            workingDirectory: fixture.rootURL.path,
+            identitySeed: 105
+        )
+        let service = RunSupervisorService(root: fixture.root)
+        #expect(try service.run(payload) == .launched(exitCode: 128 + SIGSEGV))
+
+        let runDirectory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let spool = try RunSupervisorEventSpool(
+            directory: runDirectory,
+            capability: payload.capability
+        )
+        let exited = try #require(try spool.replay(after: 0).last { $0.kind == .providerExited })
+        #expect(exited.payload.exitCode == 128 + SIGSEGV)
+        #expect(exited.payload.terminationReason == .signaled)
+        #expect(exited.payload.terminationSignal == SIGSEGV)
+    }
+
     @Test("stdin is ephemeral and graceful cancellation remains unsupported until explicit immediate termination")
     func stdinGracefulAndImmediateCancellation() async throws {
         let fixture = try makeFixture("control")
@@ -197,6 +220,55 @@ struct RunSupervisorServiceTests {
         ])
     }
 
+    @Test("replay cannot advertise cancellation confirmation as the terminal spool head")
+    func replayIsLinearizedWithTerminalTailPersistence() async throws {
+        let fixture = try makeFixture("terminal-replay-head")
+        let process = SynchronousCancellationProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 138)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: SynchronousCancellationLauncher(process: process)
+        )
+        let confirmationPersisted = DispatchSemaphore(value: 0)
+        let allowProviderExit = DispatchSemaphore(value: 0)
+        service.observePersistedLifecycleEvents { kind in
+            guard kind == .cancellationConfirmed else { return }
+            confirmationPersisted.signal()
+            _ = allowProviderExit.wait(timeout: .now() + 5)
+        }
+        let runTask = Task.detached { try service.run(payload) }
+        let connected = try waitForConnection(payload: payload, root: fixture.root)
+
+        let cancellation = try send(
+            .init(kind: .cancel, cancellationIntent: .immediate),
+            payload: payload,
+            directory: connected.directory
+        )
+        #expect(cancellation.accepted)
+        let reachedConfirmation = await waitForSemaphore(confirmationPersisted, timeout: 5)
+        #expect(reachedConfirmation == .success)
+
+        let replayFinished = ReplayFinishedFlag()
+        let replayTask = Task.detached {
+            let response = try send(
+                .init(kind: .replay, afterSequence: cancellation.lastSequence),
+                payload: payload,
+                directory: connected.directory
+            )
+            replayFinished.markFinished()
+            return response
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!replayFinished.isFinished)
+
+        allowProviderExit.signal()
+        let response = try await replayTask.value
+        let confirmation = try #require(response.events.first)
+        #expect(confirmation.kind == .cancellationConfirmed)
+        #expect(response.lastSequence > confirmation.sequence)
+        #expect(try await runTask.value == .launched(exitCode: 143))
+    }
+
     @Test("an immediate exit persists provider start before output and terminal last")
     func immediateExitPreservesLifecycleOrdering() throws {
         let fixture = try makeFixture("immediate-order")
@@ -282,6 +354,146 @@ struct RunSupervisorServiceTests {
             directory: connected.directory
         ).accepted)
         _ = try await runTask.value
+    }
+
+    @Test("a blocked stdin write does not prevent immediate cancellation")
+    func blockedStdinDoesNotBlockCancellation() async throws {
+        let fixture = try makeFixture("stdin-block")
+        let process = BlockingStdinProcess()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 136)
+        let service = RunSupervisorService(
+            root: fixture.root,
+            launcher: BlockingStdinLauncher(process: process)
+        )
+        let runTask = Task.detached { try service.run(payload) }
+        let connected = try waitForConnection(payload: payload, root: fixture.root)
+        let writeTask = Task.detached {
+            try self.send(
+                .init(kind: .writeStandardInput, standardInputLine: "blocked"),
+                payload: payload,
+                directory: connected.directory
+            )
+        }
+        #expect(process.waitUntilWriteBlocked())
+
+        #expect(try send(
+            .init(kind: .cancel, cancellationIntent: .immediate),
+            payload: payload,
+            directory: connected.directory
+        ).accepted)
+        #expect(try await !writeTask.value.accepted)
+        #expect(try await runTask.value == .launched(exitCode: 143))
+    }
+
+    @Test("hard supervision limit terminates a provider that keeps producing progress")
+    func hardTimeoutIsEnforced() throws {
+        try assertTimeout(
+            policy: .init(hardTimeoutSeconds: 1, idleProgressTimeoutSeconds: 1),
+            script: "while :; do printf x; /bin/sleep 0.1; done",
+            expectedWatchdogEvent: .hardTimeoutExceeded,
+            identitySeed: 141
+        )
+    }
+
+    @Test("idle supervision limit terminates a quiet provider before its hard limit")
+    func idleTimeoutIsEnforced() throws {
+        try assertTimeout(
+            policy: .init(hardTimeoutSeconds: 3, idleProgressTimeoutSeconds: 1),
+            script: "/bin/sleep 10",
+            expectedWatchdogEvent: .idleProgressTimeoutExceeded,
+            identitySeed: 142
+        )
+    }
+
+    private func assertTimeout(
+        policy: ExecutionSupervisionPolicySnapshot,
+        script: String,
+        expectedWatchdogEvent: RunSupervisorEventKind,
+        identitySeed: UInt8
+    ) throws {
+        let fixture = try makeFixture("timeout")
+        let payload = try RunSupervisorTestSupport.payload(
+            executablePath: "/bin/sh",
+            arguments: ["-c", script],
+            supervisionPolicy: policy,
+            identitySeed: identitySeed
+        )
+        let started = Date()
+        let outcome = try RunSupervisorService(root: fixture.root).run(payload)
+        guard case .launched(let exitCode) = outcome else {
+            Issue.record("Expected a newly launched provider")
+            return
+        }
+        #expect(exitCode != 0)
+        // The watchdog fires at the earliest policy deadline. Process-group
+        // termination then permits the normal three-second graceful window
+        // before SIGKILL, so the assertion includes that bounded escalation.
+        let firstDeadline = min(policy.hardTimeoutSeconds, policy.idleProgressTimeoutSeconds)
+        #expect(Date().timeIntervalSince(started) < TimeInterval(firstDeadline) + 4)
+
+        let directory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: directory,
+            capability: payload.capability
+        ).replay(after: 0)
+        let terminal = try #require(events.last { $0.kind == .providerExited })
+        #expect(terminal.payload.terminationReason == .signaled)
+        #expect(terminal.payload.terminationSignal != nil)
+        let watchdog = try #require(events.last { $0.kind == expectedWatchdogEvent })
+        #expect(watchdog.sequence < terminal.sequence)
+        #expect(events.filter {
+            $0.kind == .hardTimeoutExceeded || $0.kind == .idleProgressTimeoutExceeded
+        }.count == 1)
+    }
+
+    @Test("output reads honor an admitted per-event byte limit below the default buffer")
+    func outputReadsHonorSmallPerEventLimit() throws {
+        let fixture = try makeFixture("chunk")
+        let policy = try ExecutionSupervisionPolicySnapshot(
+            hardTimeoutSeconds: 3_600,
+            idleProgressTimeoutSeconds: 300,
+            maximumOutputEventBytes: 1_024,
+            maximumPersistedOutputBytes: 1_048_576
+        )
+        let payload = try RunSupervisorTestSupport.payload(
+            executablePath: "/bin/sh",
+            arguments: ["-c", "head -c 5000 /dev/zero | tr '\\0' x"],
+            workingDirectory: fixture.rootURL.path,
+            supervisionPolicy: policy,
+            identitySeed: 143
+        )
+        let service = RunSupervisorService(root: fixture.root)
+        #expect(try service.run(payload) == .launched(exitCode: 0))
+
+        let runDirectory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: runDirectory,
+            capability: payload.capability
+        ).replay(after: 0)
+        let output = events.filter { $0.kind == .standardOutput }.compactMap(\.payload.data)
+        // A single burst above the admitted limit must be spooled as several
+        // policy-sized events, never one oversized event the broker would
+        // classify as an output-quota violation.
+        #expect(output.allSatisfy { UInt64($0.count) <= policy.maximumOutputEventBytes })
+        #expect(output.reduce(Data(), +) == Data(repeating: UInt8(ascii: "x"), count: 5_000))
+    }
+
+    @Test("a failed diagnostic PID discovery update cannot suppress terminal evidence")
+    func diagnosticDiscoveryFailureStillPersistsTerminalEvidence() throws {
+        let fixture = try makeFixture("pid-write")
+        let fileSystem = FailingSecondDiscoveryWriteFileSystem()
+        let payload = try RunSupervisorTestSupport.payload(identitySeed: 139)
+        let service = RunSupervisorService(root: fixture.root, fileSystem: fileSystem)
+
+        #expect(try service.run(payload) == .launched(exitCode: 0))
+        #expect(fileSystem.writeCount == 2)
+        let directory = try fixture.root.openExecutionDirectory(payload.manifest.executionID)
+        let events = try RunSupervisorEventSpool(
+            directory: directory,
+            capability: payload.capability
+        ).replay(after: 0)
+        #expect(events.contains { $0.kind == .providerStarted })
+        #expect(events.last?.kind == .providerExited)
     }
 
     @Test("close stdin is rejected while no live provider has been installed")
@@ -380,6 +592,24 @@ struct RunSupervisorServiceTests {
     }
 }
 
+private final class ReplayFinishedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    var isFinished: Bool { lock.withLock { finished } }
+    func markFinished() { lock.withLock { finished = true } }
+}
+
+private func waitForSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: TimeInterval
+) async -> DispatchTimeoutResult {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + timeout))
+        }
+    }
+}
+
 private final class CountingLauncher: RunSupervisorProviderLaunching, @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -406,6 +636,85 @@ private struct BrokenStdinLauncher: RunSupervisorProviderLaunching {
     let process: BrokenStdinProcess
     func makeProcess(_ request: RunSupervisorProviderLaunchRequest) throws -> any RunSupervisorOwnedProcess {
         process
+    }
+}
+
+private struct BlockingStdinLauncher: RunSupervisorProviderLaunching {
+    let process: BlockingStdinProcess
+    func makeProcess(_ request: RunSupervisorProviderLaunchRequest) throws -> any RunSupervisorOwnedProcess {
+        process
+    }
+}
+
+private final class BlockingStdinProcess: RunSupervisorOwnedProcess, @unchecked Sendable {
+    private let lock = NSLock()
+    private let stdoutPipe = Pipe()
+    private let stderrPipe = Pipe()
+    private let writeEntered = DispatchSemaphore(value: 0)
+    private let writeRelease = DispatchSemaphore(value: 0)
+    private var handler: (@Sendable (RunSupervisorProcessTermination) -> Void)?
+    private var terminated = false
+
+    init() {
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+    }
+
+    var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
+    var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
+    var processIdentifierDiagnostic: Int32? { 99_997 }
+    func setTerminationHandler(_ handler: @escaping @Sendable (RunSupervisorProcessTermination) -> Void) {
+        lock.withLock { self.handler = handler }
+    }
+    func run() throws {}
+    func writeStandardInputLine(_ line: String) throws {
+        writeEntered.signal()
+        _ = writeRelease.wait(timeout: .now() + 5)
+        throw RunSupervisorError.systemCall("write provider stdin", EPIPE)
+    }
+    func closeStandardInput() throws -> Bool { false }
+    func requestGracefulCancellation() -> Bool { false }
+    func terminateImmediately() -> Bool {
+        let callback: (@Sendable (RunSupervisorProcessTermination) -> Void)? = lock.withLock {
+            guard !terminated else { return nil }
+            terminated = true
+            return handler
+        }
+        guard let callback else { return false }
+        writeRelease.signal()
+        callback(.init(exitCode: 143, signal: SIGTERM))
+        return true
+    }
+    func waitUntilWriteBlocked() -> Bool {
+        writeEntered.wait(timeout: .now() + 5) == .success
+    }
+}
+
+private final class FailingSecondDiscoveryWriteFileSystem: RunSupervisorFileSystem, @unchecked Sendable {
+    private let base = DarwinRunSupervisorFileSystem()
+    private let lock = NSLock()
+    private var writes = 0
+
+    var writeCount: Int { lock.withLock { writes } }
+
+    func readDiscovery(in directory: RunSupervisorRunDirectory) throws -> RunSupervisorDiscoveryRecord? {
+        try base.readDiscovery(in: directory)
+    }
+
+    func writeDiscovery(
+        _ record: RunSupervisorDiscoveryRecord,
+        in directory: RunSupervisorRunDirectory
+    ) throws {
+        let count = lock.withLock { () -> Int in
+            writes += 1
+            return writes
+        }
+        if count == 2 { throw RunSupervisorError.systemCall("injected discovery write", EIO) }
+        try base.writeDiscovery(record, in: directory)
+    }
+
+    func removeControlSocket(in directory: RunSupervisorRunDirectory) throws {
+        try base.removeControlSocket(in: directory)
     }
 }
 

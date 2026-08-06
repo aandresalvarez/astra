@@ -53,26 +53,39 @@ public final class RunLedger: @unchecked Sendable {
         initializationCrashPoint: RunLedgerInitializationCrashPoint?,
         migrationCrashPoint: RunLedgerMigrationCrashPoint?
     ) throws {
-        let opened = try RunLedgerSchema.open(
-            configuration: configuration,
-            createIfMissing: createIfMissing,
-            initializationCrashPoint: initializationCrashPoint,
-            migrationCrashPoint: migrationCrashPoint
-        )
+        let writerLockDescriptor: Int32?
+        if configuration.exclusiveWriter {
+            do {
+                writerLockDescriptor = try RunLedgerStorageSecurity
+                    .acquireExclusiveWriterLockBeforeOpeningLedger(
+                        at: configuration.databaseURL,
+                        createIfMissing: createIfMissing
+                    )
+            } catch {
+                throw RunLedgerSchema.classify(error)
+            }
+        } else {
+            writerLockDescriptor = nil
+        }
+
+        let opened: (RunLedgerSQLiteConnection, RunLedgerIdentity)
+        do {
+            opened = try RunLedgerSchema.open(
+                configuration: configuration,
+                createIfMissing: createIfMissing,
+                initializationCrashPoint: initializationCrashPoint,
+                migrationCrashPoint: migrationCrashPoint
+            )
+        } catch {
+            if let writerLockDescriptor {
+                RunLedgerStorageSecurity.releaseExclusiveWriterLock(writerLockDescriptor)
+            }
+            throw RunLedgerSchema.classify(error)
+        }
         self.configuration = configuration
         connection = opened.0
         identity = opened.1
-        if configuration.exclusiveWriter {
-            do {
-                exclusiveWriterLockDescriptor =
-                    try RunLedgerStorageSecurity.acquireExclusiveWriterLock(
-                        directory: configuration.ledgerDirectoryURL
-                    )
-            } catch {
-                try? connection.close()
-                throw RunLedgerSchema.classify(error)
-            }
-        }
+        exclusiveWriterLockDescriptor = writerLockDescriptor
         do {
             try connection.withLock { database in
                 _ = try assertIntegrity(database: database)

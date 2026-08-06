@@ -64,6 +64,22 @@ struct RunBrokerPackagingContractTests {
         #expect(!app.contains("RunBrokerInstaller"))
     }
 
+    @Test("Release builds generate a Sparkle-signed successor manifest before outer signing")
+    func releasePackagesSignedSuccessorManifest() throws {
+        let root = repositoryRoot()
+        let build = try String(contentsOf: root.appendingPathComponent("script/build_and_run.sh"))
+        let release = try String(contentsOf: root.appendingPathComponent("script/release_update.sh"))
+        let generation = try build.indexOf("generate_run_broker_successor_manifest")
+        let outerSigning = try build.indexOf("# Sign only the outer app")
+        #expect(generation < outerSigning)
+        #expect(build.contains("RunBrokerSuccessorManifest.json"))
+        #expect(build.contains("RunBrokerSuccessorManifest.sig"))
+        #expect(build.contains("$signer -p \"$manifest\""))
+        #expect(build.contains("codesign --remove-signature \"$unsigned_copy\""))
+        #expect(release.contains("SPARKLE_SIGN_UPDATE"))
+        #expect(release.contains("ASTRA_SPARKLE_SIGN_UPDATE=\"$SIGN_UPDATE\""))
+    }
+
     @Test("Broker acquires singleton ownership before credentials, ledger, and recovery")
     func brokerOwnershipPrecedesRecovery() throws {
         let main = try String(
@@ -78,7 +94,7 @@ struct RunBrokerPackagingContractTests {
             "RunBrokerRunLedgerAdapter("
         ))
         let ownership = try main.indexOf("RunBrokerUnixSocketListener(")
-        let credentials = try main.indexOf("secureStore.loadOrCreate(")
+        let credentials = try main.indexOf("secureStore.loadOrCreateInstallationID(")
         let ledger = try main.indexOf("RunLedger(configuration:")
         let recovery = try main.indexOf("try scheduler.recover()")
         let reconciliation = try main.indexOf("startRuntimeSwitchReconciliation(")
@@ -86,6 +102,52 @@ struct RunBrokerPackagingContractTests {
         #expect(ownership < ledger)
         #expect(ownership < recovery)
         #expect(ownership < reconciliation)
+    }
+
+    @Test("same-UID providers cannot obtain the broker request capability from disk")
+    func brokerCapabilityUsesExactCodeKeychainACL() throws {
+        let root = repositoryRoot()
+        let bootstrap = try String(contentsOf: root.appendingPathComponent(
+            "RunBrokerKit/RunBrokerClientBootstrap.swift"
+        ))
+        let broker = try String(contentsOf: root.appendingPathComponent(
+            "Tools/AstraRunBrokerTool/main.swift"
+        ))
+        let keychain = try String(contentsOf: root.appendingPathComponent(
+            "AstraObjCSupport/AstraSecureKeychain.m"
+        ))
+
+        #expect(!bootstrap.contains("name: capability"))
+        #expect(bootstrap.contains("RunBrokerCapabilityKeychainStore().load("))
+        #expect(broker.contains("RunBrokerCapabilityKeychainStore().load("))
+        #expect(!broker.contains("secrets.capabilitySecret"))
+        #expect(keychain.contains("SecTrustedApplicationCreateFromPath("))
+        #expect(keychain.contains("SecAccessCreate("))
+        #expect(keychain.contains("if (paths.count < 2) { return NULL; }"))
+        #expect(keychain.contains("[self disableKeychainUserInteractionSavingPrevious:"))
+        #expect(keychain.contains("SecKeychainItemSetAccess(existing, access)"))
+    }
+
+    @Test("code identity gates supervisor secrets and capability authentication")
+    func supervisorIdentityOrdering() throws {
+        let root = repositoryRoot()
+        let spawner = try String(contentsOf: root.appendingPathComponent(
+            "RunBrokerService/DarwinRunBrokerSupervisorSpawner.swift"
+        ))
+        #expect(try spawner.indexOf("codeIdentityResolver.resolve(processID: pid)")
+            < spawner.indexOf("RunSupervisorFrameIO.writeFrame("))
+
+        let executable = try String(contentsOf: root.appendingPathComponent(
+            "RunSupervisorSupport/RunSupervisorExecutable.swift"
+        ))
+        #expect(try executable.indexOf("resolve(processID: getppid())")
+            < executable.indexOf("RunSupervisorFrameIO.readFrame("))
+
+        let socket = try String(contentsOf: root.appendingPathComponent(
+            "RunSupervisorSupport/RunSupervisorUnixSocket.swift"
+        ))
+        #expect(try socket.indexOf("peerVerifier.verify(processID: processID)")
+            < socket.indexOf("authenticator.authenticate(request, peerUID: uid)"))
     }
 
     private func repositoryRoot() -> URL {

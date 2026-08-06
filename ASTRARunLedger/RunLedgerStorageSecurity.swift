@@ -16,6 +16,25 @@ enum RunLedgerStorageSecurity {
     private static let initializationMarkerSuffix = ".initializing"
     private static let exclusiveWriterLockFileName = "run-ledger.writer.lock"
 
+    /// Creates/validates the dedicated directory and claims its writer lease
+    /// before any SQLite connection is opened. Schema open can initialize or
+    /// migrate a store, so acquiring the lease after `RunLedgerSchema.open`
+    /// would allow a losing broker to commit those mutations before reporting
+    /// an exclusivity conflict.
+    static func acquireExclusiveWriterLockBeforeOpeningLedger(
+        at databaseURL: URL,
+        createIfMissing: Bool
+    ) throws -> Int32 {
+        try withInitializationLock(
+            at: databaseURL,
+            createIfMissing: createIfMissing
+        ) {
+            try acquireExclusiveWriterLock(
+                directory: databaseURL.deletingLastPathComponent()
+            )
+        }
+    }
+
     /// Claims the process-lifetime exclusive-writer lock for a ledger
     /// directory and returns the descriptor that holds it. The caller must
     /// keep the descriptor open for as long as writer exclusivity is required

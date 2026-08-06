@@ -30,6 +30,36 @@ public protocol RunBrokerPostReloadHealthChecking: Sendable {
     ) throws
 }
 
+public protocol RunBrokerInstallationDurabilitySynchronizing: Sendable {
+    func synchronizeFile(at url: URL) throws
+    func synchronizeDirectory(at url: URL) throws
+}
+
+public struct SystemRunBrokerInstallationDurabilitySynchronizer:
+    RunBrokerInstallationDurabilitySynchronizing
+{
+    public init() {}
+
+    public func synchronizeFile(at url: URL) throws {
+        try synchronize(at: url, flags: O_RDONLY | O_NOFOLLOW | O_CLOEXEC, operation: "fsync-file")
+    }
+
+    public func synchronizeDirectory(at url: URL) throws {
+        try synchronize(at: url, flags: O_RDONLY | O_DIRECTORY | O_CLOEXEC, operation: "fsync-directory")
+    }
+
+    private func synchronize(at url: URL, flags: Int32, operation: String) throws {
+        let descriptor = open(url.path, flags)
+        guard descriptor >= 0 else {
+            throw RunBrokerInstallationError.systemCall(operation: "open-\(operation)", code: errno)
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw RunBrokerInstallationError.systemCall(operation: operation, code: errno)
+        }
+    }
+}
+
 public struct SystemRunBrokerLaunchController: RunBrokerLaunchControlling {
     private let diagnostics: any RunBrokerDiagnosing
 
@@ -86,6 +116,7 @@ extension RunBrokerInstaller {
         guard rename(temporary.path, identity.currentPayloadURL.path) == 0 else {
             throw RunBrokerInstallationError.systemCall(operation: "rename", code: errno)
         }
+        try durabilitySynchronizer.synchronizeDirectory(at: identity.supportDirectory)
     }
 
     func currentSelectorTarget(_ selector: URL) throws -> String? {
@@ -122,6 +153,7 @@ extension RunBrokerInstaller {
             if unlink(identity.currentPayloadURL.path) != 0, errno != ENOENT {
                 throw RunBrokerInstallationError.systemCall(operation: "unlink", code: errno)
             }
+            try durabilitySynchronizer.synchronizeDirectory(at: identity.supportDirectory)
             return
         }
         let version = String(previousTarget.dropFirst("Versions/".count))
@@ -135,11 +167,15 @@ extension RunBrokerInstaller {
         guard let data else {
             if fileManager.fileExists(atPath: url.path) {
                 try fileManager.removeItem(at: url)
+                try durabilitySynchronizer.synchronizeDirectory(
+                    at: url.deletingLastPathComponent()
+                )
             }
             return
         }
         try data.write(to: url, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try synchronizePublishedFile(url)
     }
 
     func readExistingPlist(_ url: URL) throws -> Data? {
@@ -190,6 +226,11 @@ extension RunBrokerInstaller {
     func createPrivateDirectory(_ url: URL) throws {
         try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+    }
+
+    func synchronizePublishedFile(_ url: URL) throws {
+        try durabilitySynchronizer.synchronizeFile(at: url)
+        try durabilitySynchronizer.synchronizeDirectory(at: url.deletingLastPathComponent())
     }
 
     /// LaunchAgents is an external user directory, not broker-owned state. An

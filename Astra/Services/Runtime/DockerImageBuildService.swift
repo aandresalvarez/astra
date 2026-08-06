@@ -12,6 +12,7 @@ struct DockerImageBuildSummary: Equatable, Sendable {
 }
 
 enum DockerImageBuildError: LocalizedError, Equatable, Sendable {
+    case cliMissing
     case unavailable(String)
     case unsafeRemoteContext(String)
     case failed(String)
@@ -21,6 +22,8 @@ enum DockerImageBuildError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .cliMissing:
+            return "Docker CLI was not found. Install or reopen Docker Desktop, then build again."
         case .unavailable:
             return "Docker is not connected. Start Docker Desktop, then build again."
         case .unsafeRemoteContext(let detail):
@@ -43,43 +46,61 @@ protocol DockerImageBuilding {
 
 struct DockerImageBuildService: DockerImageBuilding {
     private let runner: any BinaryRunner
-    private let environment: [String: String]
+    private let environmentProvider: @Sendable () -> [String: String]
     private let timeout: TimeInterval
+    private let resolveDockerRuntime: @Sendable ([String: String]) -> DockerRuntimeResolution?
 
     init(
         runner: any BinaryRunner = ProcessBinaryRunner(),
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        timeout: TimeInterval = 30 * 60
+        environment: [String: String]? = nil,
+        environmentProvider: @escaping @Sendable () -> [String: String] = {
+            RuntimeProcessEnvironment.enriched()
+        },
+        timeout: TimeInterval = 30 * 60,
+        resolveDockerRuntime: @escaping @Sendable ([String: String]) -> DockerRuntimeResolution? = {
+            DockerRuntimeResolver.resolve(environment: $0)
+        }
     ) {
         self.runner = runner
-        self.environment = environment
+        if let environment {
+            self.environmentProvider = { environment }
+        } else {
+            self.environmentProvider = environmentProvider
+        }
         self.timeout = timeout
+        self.resolveDockerRuntime = resolveDockerRuntime
     }
 
     func buildImage(_ request: DockerImageBuildRequest) async -> Result<DockerImageBuildSummary, DockerImageBuildError> {
+        let environment = environmentProvider()
+        guard let dockerRuntime = resolveDockerRuntime(environment) else {
+            return .failure(.cliMissing)
+        }
+
         let contextResult = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "context", "show"],
+            path: dockerRuntime.executablePath,
+            args: ["context", "show"],
             timeout: 3,
-            environment: nil
+            environment: dockerRuntime.environment
         )
-        let context = contextResult.isSuccess
-            ? contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            : nil
+        guard contextResult.isSuccess else {
+            return .failure(Self.error(from: contextResult))
+        }
+        let context = contextResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let readiness = DockerReadinessService.evaluate(
             dockerStatus: .healthy(path: "docker", version: ""),
             dockerContext: context,
-            dockerHost: environment["DOCKER_HOST"]
+            dockerHost: dockerRuntime.environment["DOCKER_HOST"]
         )
         guard readiness.state != .unsafeRemoteContext else {
             return .failure(.unsafeRemoteContext(readiness.issue ?? "Docker is using a remote context."))
         }
 
         let result = await runner.run(
-            path: "/usr/bin/env",
-            args: ["docker", "build", "-t", request.image, "-f", request.dockerfilePath, request.sourcePath],
+            path: dockerRuntime.executablePath,
+            args: ["build", "-t", request.image, "-f", request.dockerfilePath, request.sourcePath],
             timeout: timeout,
-            environment: nil
+            environment: dockerRuntime.environment
         )
         guard result.isSuccess else {
             return .failure(Self.error(from: result))

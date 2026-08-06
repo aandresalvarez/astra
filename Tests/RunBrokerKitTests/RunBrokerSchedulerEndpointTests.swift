@@ -25,6 +25,45 @@ struct RunBrokerSchedulerEndpointTests {
         #expect(try scheduler.status() == [first, second])
     }
 
+    @Test("Status refreshes deadlines removed by an external terminal ledger transition")
+    func statusRefreshesExternalTerminalRemoval() throws {
+        let now = Date(timeIntervalSince1970: 15_000)
+        let due = deadline(60, dueAt: now.addingTimeInterval(10), attempt: 0)
+        let ledger = FakeMonitorLedger(deadlines: [due])
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: ledger,
+            monitor: FakeMonitor(),
+            timer: FakeOneShotTimer(),
+            clock: FixedClock(now: now)
+        )
+        try scheduler.recover()
+
+        ledger.deadlines[due.operationID] = nil
+
+        #expect(try scheduler.status().isEmpty)
+    }
+
+    @Test("Wake does not monitor a deadline removed by an external terminal transition")
+    func wakeRefreshesExternalTerminalRemoval() throws {
+        let now = Date(timeIntervalSince1970: 16_000)
+        let due = deadline(61, dueAt: now, attempt: 0)
+        let ledger = FakeMonitorLedger(deadlines: [due])
+        let monitor = FakeMonitor()
+        let scheduler = RunBrokerMonitorScheduler(
+            ledger: ledger,
+            monitor: monitor,
+            timer: FakeOneShotTimer(),
+            clock: FixedClock(now: now)
+        )
+        try scheduler.recover()
+
+        ledger.deadlines[due.operationID] = nil
+        try scheduler.wake()
+
+        #expect(monitor.monitored.isEmpty)
+        #expect(ledger.attemptKeys.isEmpty)
+    }
+
     @Test("Retry uses bounded deterministic exponential backoff and one-shot rearm")
     func deterministicBackoff() throws {
         let now = Date(timeIntervalSince1970: 20_000)
@@ -103,6 +142,40 @@ struct RunBrokerSchedulerEndpointTests {
         )
         #expect(abs(value.dueAt.timeIntervalSince1970 - 1.234) < 0.000_001)
         #expect(abs(value.recordedAt.timeIntervalSince1970 - 0.987) < 0.000_001)
+    }
+
+    @Test("Untrusted monitor timestamps outside Int64 milliseconds fail decoding without trapping")
+    func monitorTimestampBoundsFailClosed() throws {
+        let valid = deadline(53, dueAt: Date(timeIntervalSince1970: 10), attempt: 0)
+        let encoded = try JSONEncoder().encode(valid)
+
+        let roundedPastInt64 = Date(
+            timeIntervalSince1970: Double(Int64.max) / 1_000
+        ).timeIntervalSinceReferenceDate
+        for (key, value) in [
+            ("dueAt", 1e300),
+            ("recordedAt", -1e300),
+            ("dueAt", roundedPastInt64),
+        ] {
+            var object = try #require(
+                JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+            )
+            object[key] = value
+            let malformed = try JSONSerialization.data(withJSONObject: object)
+            #expect(throws: DecodingError.self) {
+                _ = try JSONDecoder().decode(RunBrokerMonitorDeadline.self, from: malformed)
+            }
+        }
+
+        let removal = RunBrokerMonitorRemoval(expected: valid, occurredAt: valid.recordedAt)
+        var removalObject = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(removal)) as? [String: Any]
+        )
+        removalObject["occurredAt"] = 1e300
+        let malformedRemoval = try JSONSerialization.data(withJSONObject: removalObject)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(RunBrokerMonitorRemoval.self, from: malformedRemoval)
+        }
     }
 
     @Test("Concurrent upsert fences stale in-flight monitor completion")

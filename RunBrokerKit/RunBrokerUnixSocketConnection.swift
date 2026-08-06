@@ -97,6 +97,14 @@ public final class RunBrokerUnixSocketConnection: RunBrokerConnection, @unchecke
 
     deinit { close() }
 
+    package var hasCloseOnExec: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard descriptor >= 0 else { return false }
+        let flags = fcntl(descriptor, F_GETFD)
+        return flags >= 0 && (flags & FD_CLOEXEC) != 0
+    }
+
     private func liveDescriptor() throws -> Int32 {
         lock.lock()
         defer { lock.unlock() }

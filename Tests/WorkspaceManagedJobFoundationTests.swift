@@ -23,8 +23,8 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(executor.cleanedUp)
     }
 
-    @Test("Cleanup preserves a same-container receipt owned by a conflicting task")
-    func cleanupPreservesConflictingSameContainerReceipt() throws {
+    @Test("Cleanup preserves a mismatched nonterminal receipt as uncertain ownership")
+    func cleanupPreservesMismatchedNonterminalReceipt() throws {
         let root = temporaryDirectory("conflict")
         defer { try? FileManager.default.removeItem(at: root) }
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
@@ -38,7 +38,7 @@ struct WorkspaceManagedJobFoundationTests {
             taskID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
             runID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             invocationID: "number:77",
-            containerName: "astra-shared-container"
+            containerName: "corrupt-or-stale-container"
         )
         let configuration = WorkspaceToolConfiguration(
             dockerExecutable: "/usr/bin/false",
@@ -50,7 +50,8 @@ struct WorkspaceManagedJobFoundationTests {
             runID: foundationRunID,
             mounts: [],
             jobRootHostPath: jobRoot.path,
-            jobRootContainerPath: "/workspace/jobs"
+            jobRootContainerPath: "/workspace/jobs",
+            managedJobTrustedStateHostPath: jobRoot.path
         )
         let manager = DockerWorkspaceJobManager(
             configuration: configuration,
@@ -79,7 +80,7 @@ struct WorkspaceManagedJobFoundationTests {
         let decoded = try structuredJobResult(response)
 
         #expect(textObject == structuredObject)
-        #expect(decoded.startReceipt?.invocationID == "string-base64:dHJ1c3RlZC1pbnZvY2F0aW9u")
+        #expect(decoded.startReceipt?.invocationID.hasSuffix("|string-base64:dHJ1c3RlZC1pbnZvY2F0aW9u") == true)
         #expect(decoded.startReceipt?.requestFingerprint.hasPrefix("sha256:") == true)
         #expect(!text.contains(secret))
         #expect(!text.contains("printf"))
@@ -94,6 +95,33 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(throws: (any Error).self) {
             _ = try JSONDecoder().decode(WorkspaceManagedJobStructuredResult.self, from: untrustedData)
         }
+    }
+
+    @Test("Workspace MCP restart reuses the client-durable invocation identity")
+    func workspaceMCPRestartAdoptsOriginalInvocation() throws {
+        let fixture = try makeDockerFixture("mcp-restart")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+
+        func makeServer() -> WorkspaceMCPServer {
+            let executor = DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+            return WorkspaceMCPServer(
+                executor: executor,
+                jobManager: DockerWorkspaceJobManager(
+                    configuration: fixture.configuration,
+                    executor: executor
+                ),
+                invocationSessionID: fixture.configuration.runID
+            )
+        }
+        let request = #"{"jsonrpc":"2.0","id":"durable-call-1","method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"printf once"}}}"#
+        let first = try structuredJobResult(parseJSON(try #require(makeServer().handleLine(request))))
+        let retried = try structuredJobResult(parseJSON(try #require(makeServer().handleLine(request))))
+
+        #expect(first.jobID == retried.jobID)
+        #expect(first.startReceipt?.invocationID == retried.startReceipt?.invocationID)
+        let logLines = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
+        #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
     }
 
     @Test("Concurrent identical invocation admits exactly one detached launch")
@@ -155,7 +183,8 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(mismatch.status == .failed)
         #expect(mismatch.message?.contains("reused with a different request") == true)
         let records = try WorkspaceManagedJobStore(
-            rootPath: fixture.configuration.jobRootHostPath
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
         ).listTrustedRecords()
         #expect(records.count == 1)
         #expect(records.first?.jobID == first.jobID)
@@ -182,7 +211,8 @@ struct WorkspaceManagedJobFoundationTests {
         #expect(result.message?.contains("Invalid workspace managed-job request payload") == true)
         #expect(!FileManager.default.fileExists(atPath: fixture.log.path))
         let records = try WorkspaceManagedJobStore(
-            rootPath: fixture.configuration.jobRootHostPath
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
         ).listTrustedRecords()
         #expect(records.isEmpty)
     }
@@ -216,7 +246,384 @@ struct WorkspaceManagedJobFoundationTests {
             )
         }
         #expect(try String(contentsOf: outside, encoding: .utf8) == "do-not-touch")
-        #expect(try store.listTrustedRecords().isEmpty)
+        #expect(throws: (any Error).self) {
+            _ = try store.listTrustedRecords()
+        }
+    }
+
+    @Test("Provider-visible receipt deletion cannot repeat an admitted invocation")
+    func providerVisibleReceiptDeletionCannotRepeatInvocation() throws {
+        let fixture = try makeDockerFixture("provider-receipt-delete")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+        let invocationID = "string-base64:cHJvdmlkZXItY2Fubm90LWVyYXNl"
+
+        let first = manager.start(
+            command: "printf once",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: invocationID
+        )
+        try FileManager.default.removeItem(
+            at: URL(fileURLWithPath: fixture.configuration.jobRootHostPath)
+                .appendingPathComponent(first.jobID, isDirectory: true)
+                .appendingPathComponent("job.json", isDirectory: false)
+        )
+
+        let retry = manager.start(
+            command: "printf once",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: invocationID
+        )
+
+        #expect(retry.jobID == first.jobID)
+        let logLines = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
+        #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
+    }
+
+    @Test("Provider-writable trusted state fails closed before admission or cleanup")
+    func providerWritableTrustedStateFailsClosed() throws {
+        let fixture = try makeDockerFixture("provider-writable-trusted-state")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        var unsafeConfiguration = fixture.configuration
+        unsafeConfiguration.managedJobTrustedStateHostPath = unsafeConfiguration.jobRootHostPath
+        let manager = DockerWorkspaceJobManager(
+            configuration: unsafeConfiguration,
+            executor: DockerWorkspaceCommandExecutor(configuration: unsafeConfiguration)
+        )
+
+        let result = manager.start(
+            command: "printf never",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "number:706"
+        )
+        var cleaned = false
+
+        #expect(result.status == .failed)
+        #expect(result.message?.contains("outside every provider-writable Docker mount") == true)
+        #expect(!manager.cleanupExecutorIfIdle { cleaned = true })
+        #expect(!cleaned)
+        #expect(!FileManager.default.fileExists(atPath: fixture.log.path))
+    }
+
+    @Test("Crash-left queued receipt is adopted without creating a second job")
+    func queuedReceiptIsAdoptedOnRetry() throws {
+        let fixture = try makeDockerFixture("queued-adoption")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let store = WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        )
+        let invocationID = "number:707"
+        let queued = try store.admitInvocation(
+            command: "printf adopted",
+            timeoutSeconds: 7200,
+            label: "adopt",
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: foundationTaskID,
+            runID: foundationRunID,
+            invocationID: invocationID,
+            containerName: fixture.configuration.containerName
+        ).record
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+
+        let adopted = manager.start(
+            command: "printf adopted",
+            timeoutSeconds: 7200,
+            label: "adopt",
+            progressProbe: nil,
+            invocationID: invocationID
+        )
+
+        #expect(adopted.jobID == queued.jobID)
+        #expect(adopted.status == .running)
+        #expect(try store.listTrustedRecords().count == 1)
+        let logLines = try String(contentsOf: fixture.log, encoding: .utf8).split(separator: "\n")
+        #expect(logLines.filter { $0.contains("exec -d") }.count == 1)
+    }
+
+    @Test("An ambiguous detached launch is fenced and never repeated")
+    func ambiguousDetachedLaunchIsNotRepeated() throws {
+        let fixture = try makeDockerFixture("ambiguous-launch")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let store = WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        )
+        let queued = try store.admitInvocation(
+            command: "printf once",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: foundationTaskID,
+            runID: foundationRunID,
+            invocationID: "number:708",
+            containerName: fixture.configuration.containerName
+        ).record
+        var launchCount = 0
+        store.afterLaunchBeforeSaveForTesting = {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        #expect(throws: (any Error).self) {
+            _ = try store.launchQueuedInvocation(jobID: queued.jobID) { fenced in
+                launchCount += 1
+                #expect(fenced.status == .launching)
+                var launched = fenced
+                launched.status = .running
+                return launched
+            }
+        }
+        #expect(try store.load(jobID: queued.jobID).status == .launching)
+
+        store.afterLaunchBeforeSaveForTesting = nil
+        let retry = try store.launchQueuedInvocation(jobID: queued.jobID) { record in
+            launchCount += 1
+            return record
+        }
+        #expect(retry.status == .launching)
+        #expect(launchCount == 1)
+    }
+
+    @Test("Provider metadata projection failure does not override trusted admission")
+    func providerProjectionFailurePreservesTrustedRecord() throws {
+        let fixture = try makeDockerFixture("projection-failure")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let store = WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        )
+        store.beforeProviderProjectionWriteForTesting = { _ in
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        let admitted = try store.admitInvocation(
+            command: "printf durable",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker",
+            taskID: foundationTaskID,
+            runID: foundationRunID,
+            invocationID: "number:709",
+            containerName: fixture.configuration.containerName
+        ).record
+
+        #expect(admitted.status == .queued)
+        #expect(try store.listTrustedRecords().map(\.jobID) == [admitted.jobID])
+        let providerMetadata = try store.jobDirectory(jobID: admitted.jobID)
+            .appendingPathComponent("job.json")
+        #expect(!FileManager.default.fileExists(atPath: providerMetadata.path))
+    }
+
+    @Test("Durable trusted receipt is synchronized before detached launch")
+    func trustedReceiptPrecedesDetachedLaunch() throws {
+        let fixture = try makeDockerFixture("receipt-before-launch")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+
+        let result = manager.start(
+            command: "printf durable",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "number:708"
+        )
+
+        #expect(result.status == .running)
+        let trustedRecords = try FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: fixture.configuration.managedJobTrustedStateHostPath),
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "json" }
+        #expect(trustedRecords.count == 1)
+    }
+
+    @Test("Provider-forged terminal result cannot authorize executor cleanup")
+    func providerForgedTerminalResultCannotAuthorizeCleanup() throws {
+        let fixture = try makeDockerFixture("provider-result-forgery")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+        let job = manager.start(
+            command: "sleep 60",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "number:818"
+        )
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-07-21T22:00:00Z"}"#
+            .write(to: URL(fileURLWithPath: job.resultPath), atomically: true, encoding: .utf8)
+        var cleaned = false
+
+        let didClean = manager.cleanupExecutorIfIdle { cleaned = true }
+
+        #expect(!didClean)
+        #expect(!cleaned)
+        #expect(manager.status(jobID: job.jobID).status == .succeeded)
+        #expect(manager.hasTrustedNonterminalOwnedJob())
+    }
+
+    @Test("Host-verified natural completion is persisted before cleanup")
+    func naturalCompletionIsTrustedBeforeCleanup() throws {
+        let fixture = try makeDockerFixture("natural-completion")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.configuration.managedJobTrustedStateHostPath) }
+        let manager = DockerWorkspaceJobManager(
+            configuration: fixture.configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: fixture.configuration)
+        )
+        let job = manager.start(
+            command: "printf complete",
+            timeoutSeconds: 7200,
+            label: nil,
+            progressProbe: nil,
+            invocationID: "number:819"
+        )
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-07-21T22:00:00Z"}"#
+            .write(to: URL(fileURLWithPath: job.resultPath), atomically: true, encoding: .utf8)
+        FileManager.default.createFile(
+            atPath: fixture.root.appendingPathComponent("host-verified-terminal").path,
+            contents: Data()
+        )
+        var cleaned = false
+
+        #expect(manager.cleanupExecutorIfIdle { cleaned = true })
+        #expect(cleaned)
+        let trusted = try WorkspaceManagedJobStore(
+            rootPath: fixture.configuration.jobRootHostPath,
+            trustedStateRootPath: fixture.configuration.managedJobTrustedStateHostPath
+        ).listTrustedRecords()
+        #expect(trusted.count == 1)
+        #expect(trusted.first?.status == .succeeded)
+        #expect(trusted.first?.exitCode == 0)
+    }
+
+    @Test("Host verification skips the verifier's own process entry")
+    func hostVerificationExcludesVerifierProcess() throws {
+        let root = temporaryDirectory("verifier-scan")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fakeProc = root.appendingPathComponent("proc", isDirectory: true)
+        let commandScript = "/workspace/jobs/job-verify/command.sh"
+        // The only test-time edit to the real script is re-rooting /proc
+        // into the fixture so it can execute outside a Linux container.
+        let verifier = DockerWorkspaceJobManager
+            .hostVerificationScript(commandScript: commandScript)
+            .replacingOccurrences(of: "/proc/", with: fakeProc.path + "/")
+        let verifierURL = root.appendingPathComponent("verifier.sh")
+        try verifier.write(to: verifierURL, atomically: true, encoding: .utf8)
+        // Reproduce the container's process table as the verifier sees it:
+        // the shell executing the verifier publishes the whole `sh -c`
+        // script - including the command_script assignment - as its own
+        // cmdline entry.
+        let harnessURL = root.appendingPathComponent("harness.sh")
+        try """
+        #!/bin/sh
+        mkdir -p '\(fakeProc.path)'/$$
+        printf 'sh -c command_script=%s scan' '\(commandScript)' > '\(fakeProc.path)'/$$/cmdline
+        . '\(verifierURL.path)'
+        """.write(to: harnessURL, atomically: true, encoding: .utf8)
+
+        func verifierExitCode(guardianAlive: Bool) throws -> Int32 {
+            try? FileManager.default.removeItem(at: fakeProc)
+            try FileManager.default.createDirectory(at: fakeProc, withIntermediateDirectories: true)
+            if guardianAlive {
+                let guardian = fakeProc.appendingPathComponent("424242", isDirectory: true)
+                try FileManager.default.createDirectory(at: guardian, withIntermediateDirectories: true)
+                try "sh \(commandScript) run".write(
+                    to: guardian.appendingPathComponent("cmdline"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [harnessURL.path]
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+
+        // Only the verifier's own entry mentions the command script: the
+        // guardian has exited and host verification must succeed.
+        #expect(try verifierExitCode(guardianAlive: false) == 0)
+        // A live guardian is still detected.
+        #expect(try verifierExitCode(guardianAlive: true) == 73)
+    }
+
+    @Test("Cleanup exclusion remains held through stop while admission waits")
+    func cleanupExclusionCoversStopAndAdmission() throws {
+        let root = temporaryDirectory("cleanup-admission-race")
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let trustedRoot = root.appendingPathComponent("trusted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cleanupStore = WorkspaceManagedJobStore(
+            rootPath: jobRoot.path,
+            trustedStateRootPath: trustedRoot.path
+        )
+        let admissionStore = WorkspaceManagedJobStore(
+            rootPath: jobRoot.path,
+            trustedStateRootPath: trustedRoot.path
+        )
+        let cleanupEntered = DispatchSemaphore(value: 0)
+        let releaseCleanup = DispatchSemaphore(value: 0)
+        let admissionAttempted = DispatchSemaphore(value: 0)
+        let admissionFinished = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(label: "managed-job-cleanup-race", attributes: .concurrent)
+
+        queue.async {
+            _ = try? cleanupStore.withExclusiveAdmissionAndCleanup {
+                cleanupEntered.signal()
+                releaseCleanup.wait()
+            }
+        }
+        #expect(cleanupEntered.wait(timeout: .now() + 2) == .success)
+        queue.async {
+            admissionAttempted.signal()
+            _ = try? admissionStore.admitInvocation(
+                command: "printf after-cleanup",
+                timeoutSeconds: nil,
+                label: nil,
+                progressProbe: nil,
+                runtime: "docker",
+                taskID: foundationTaskID,
+                runID: foundationRunID,
+                invocationID: "number:991",
+                containerName: "astra-cleanup-race"
+            )
+            admissionFinished.signal()
+        }
+
+        #expect(admissionAttempted.wait(timeout: .now() + 2) == .success)
+        #expect(admissionFinished.wait(timeout: .now() + 0.15) == .timedOut)
+        releaseCleanup.signal()
+        #expect(admissionFinished.wait(timeout: .now() + 2) == .success)
+        #expect(try admissionStore.listTrustedRecords().count == 1)
     }
 
     private func temporaryDirectory(_ suffix: String) -> URL {
@@ -228,10 +635,15 @@ struct WorkspaceManagedJobFoundationTests {
         let root = temporaryDirectory(suffix)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let trustedRoot = root.deletingLastPathComponent()
+            .appendingPathComponent(root.lastPathComponent + "-trusted", isDirectory: true)
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         let quotedJobRoot = jobRoot.path.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedTrustedRoot = trustedRoot.path.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedTerminalMarker = root.appendingPathComponent("host-verified-terminal").path
+            .replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
         printf '%s\\n' "$*" >> '\(quotedLogPath)'
@@ -240,10 +652,16 @@ struct WorkspaceManagedJobFoundationTests {
           rm) exit 0 ;;
           run) echo container-id; exit 0 ;;
           exec)
-            record="$(find '\(quotedJobRoot)' -name job.json -type f | head -1)"
-            grep -q '"status" : "queued"' "$record" || exit 41
-            grep -q '"startReceipt"' "$record" || exit 42
-            exit 0
+            if [ "$2" = "-d" ]; then
+              record="$(find '\(quotedJobRoot)' -name job.json -type f | head -1)"
+              trusted_record="$(find '\(quotedTrustedRoot)' -name '*.json' -type f | head -1)"
+              grep -q '"status" : "launching"' "$record" || exit 41
+              grep -q '"startReceipt"' "$record" || exit 42
+              grep -q '"startReceipt"' "$trusted_record" || exit 43
+              exit 0
+            fi
+            [ -f '\(quotedTerminalMarker)' ] && exit 0
+            exit 73
             ;;
           stop) exit 0 ;;
           *) exit 99 ;;
@@ -265,7 +683,8 @@ struct WorkspaceManagedJobFoundationTests {
                     WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
                 ],
                 jobRootHostPath: jobRoot.path,
-                jobRootContainerPath: "/workspace/jobs"
+                jobRootContainerPath: "/workspace/jobs",
+                managedJobTrustedStateHostPath: trustedRoot.path
             )
         )
     }
