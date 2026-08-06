@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import RunBrokerClient
 import RunBrokerPolicy
+import RunSupervisorSupport
 
 struct RunBrokerCheckpointEvidence: Equatable, Sendable {
     public let checkpointID: RuntimeSwitchCheckpointID
@@ -730,6 +731,15 @@ final class RunBrokerRuntimeSwitchService: @unchecked Sendable {
             authenticator: RunBrokerSupervisorProvenanceAuthenticator(
                 vault: vault,
                 orchestrator: orchestrator,
+                // A runtime switch is only legal before any transfer away
+                // from the source execution, so the source fence's authority
+                // is exactly the manifest's launch authority here.
+                launchIdentity: RunSupervisorIdentity(
+                    installationID: source.installationID,
+                    storeID: source.storeID,
+                    executionID: source.executionID,
+                    authority: source.authority
+                ),
                 expectedManifestSHA256: source.manifestSHA256,
                 expectedCapabilities: capabilities
             )
