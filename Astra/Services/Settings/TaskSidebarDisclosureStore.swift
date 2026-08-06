@@ -10,6 +10,9 @@ struct TaskSidebarDisclosureState: Equatable {
     /// or nothing was ever persisted, in which case the sidebar seeds the
     /// drawer from the restored workspace selection.
     var openWorkspaceID: UUID?
+    /// Which spine the main section uses — the workspace folder list or the
+    /// flat cross-workspace task list. See `SidebarBrowseMode`.
+    var browseMode: SidebarBrowseMode = .default
 }
 
 /// Persists durable task-sidebar disclosure choices without adding another
@@ -20,6 +23,7 @@ enum TaskSidebarDisclosureStore {
         case workspacesExpanded = "taskSidebar.workspacesExpanded"
         case schedulesExpanded = "taskSidebar.schedulesExpanded"
         case openWorkspaceID = "taskSidebar.openWorkspaceID"
+        case browseMode = "taskSidebar.browseMode"
         // Pre-accordion multi-open state; purged on save so stale sets don't
         // linger in defaults after the model change.
         case legacyCollapsedWorkspaceIDs = "taskSidebar.collapsedWorkspaceIDs"
@@ -32,7 +36,10 @@ enum TaskSidebarDisclosureStore {
             isWorkspacesExpanded: bool(.workspacesExpanded, default: true, defaults: defaults),
             isSchedulesExpanded: bool(.schedulesExpanded, default: true, defaults: defaults),
             openWorkspaceID: (defaults.string(forKey: Key.openWorkspaceID.rawValue))
-                .flatMap(UUID.init(uuidString:))
+                .flatMap(UUID.init(uuidString:)),
+            browseMode: SidebarBrowseMode.resolve(
+                defaults.string(forKey: Key.browseMode.rawValue) ?? ""
+            )
         )
     }
 
@@ -40,6 +47,7 @@ enum TaskSidebarDisclosureStore {
         defaults.set(state.isPinnedExpanded, forKey: Key.pinnedExpanded.rawValue)
         defaults.set(state.isWorkspacesExpanded, forKey: Key.workspacesExpanded.rawValue)
         defaults.set(state.isSchedulesExpanded, forKey: Key.schedulesExpanded.rawValue)
+        defaults.set(state.browseMode.rawValue, forKey: Key.browseMode.rawValue)
         if let openWorkspaceID = state.openWorkspaceID {
             defaults.set(openWorkspaceID.uuidString, forKey: Key.openWorkspaceID.rawValue)
         } else {

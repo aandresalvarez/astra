@@ -2159,12 +2159,34 @@ struct WorkspaceRightRailView: View {
     }
 
     private func checkDockerEnvironments() {
-        let candidates = DockerWorkspaceDiscoveryService.candidates(
+        let inputs = WorkspaceGitRepositoryScanInputs(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         )
-        let active = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
-        hasDockerEnvironments = active.isContainerized || !candidates.isEmpty
+        let isContainerized = ExecutionEnvironmentStore
+            .decode(workspace.activeExecutionEnvironmentJSON)
+            .isContainerized
+        hasDockerEnvironments = isContainerized
+        // Discovery stats every workspace path and reads the xattrs of any
+        // Dockerfile it finds. A path the filesystem is slow to answer for — a
+        // TCC-gated folder, a sync provider's placeholder — can hold that call
+        // indefinitely, and it used to hold it on the main thread from
+        // `.onAppear`: the window wedged mid-layout and never drew. Detached,
+        // not `Task {}`, because the scan is synchronous and a task inherited
+        // from this view would run it right back on the main actor.
+        Task.detached {
+            let candidates = DockerWorkspaceDiscoveryService.candidates(
+                primaryPath: inputs.primaryPath,
+                additionalPaths: inputs.additionalPaths
+            )
+            await MainActor.run {
+                guard inputs.matches(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ) else { return }
+                self.hasDockerEnvironments = isContainerized || !candidates.isEmpty
+            }
+        }
     }
 
     private var workspaceDisclosureID: String {
@@ -2319,7 +2341,7 @@ struct WorkspaceRightRailView: View {
 
 }
 
-struct WorkspaceGitRepositoryScanInputs: Equatable {
+struct WorkspaceGitRepositoryScanInputs: Equatable, Sendable {
     let primaryPath: String
     let additionalPaths: [String]
 

@@ -46,4 +46,22 @@ enum SidebarLivenessSignal {
             total.waiting += entry.counts.waiting
         }
     }
+
+    /// Tasks browse mode renders one row per task instead of one per
+    /// workspace, so the same rule applies at task granularity: a live task
+    /// dropped from the flat list — by search, or by a collapsed section —
+    /// hands its signal to the header.
+    static func headerActivityCounts(
+        taskActivities: [TaskActivityPresentation],
+        visibleTaskIDs: Set<UUID>,
+        isSectionExpanded: Bool
+    ) -> SidebarWorkspaceActivityCounts {
+        taskActivities.reduce(into: SidebarWorkspaceActivityCounts()) { total, activity in
+            guard activity.showsPersistentSidebarGlyph else { return }
+            let rowCanSignal = isSectionExpanded && visibleTaskIDs.contains(activity.taskID)
+            guard !rowCanSignal else { return }
+            if activity.isRunning { total.running += 1 }
+            if activity.isWaiting { total.waiting += 1 }
+        }
+    }
 }
