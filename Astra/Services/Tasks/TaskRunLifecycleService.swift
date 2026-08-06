@@ -215,7 +215,7 @@ enum TaskRunLifecycleService {
             // stream can carry a large partial output. Assign only on change.
             let cappedOutput = TaskRunOutputCap.capped(run.output)
             if cappedOutput != run.output {
-                run.output = cappedOutput
+                run.setOutput(cappedOutput)
             }
             summary.runsUpdated += 1
         }

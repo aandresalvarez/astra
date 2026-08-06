@@ -40,7 +40,7 @@ struct TaskWorkerHandoffServiceTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Wrote the initial report."
+        run.setOutput("Wrote the initial report.")
         run.completedAt = Date()
         run.appendFileChange(StoredFileChange(from: FileChange(
             path: "\(root)/report.md",
@@ -112,7 +112,7 @@ struct TaskWorkerHandoffServiceTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Blocked waiting for directory preparation."
+        run.setOutput("Blocked waiting for directory preparation.")
         run.completedAt = Date()
         context.insert(run)
         task.status = .pendingUser
@@ -159,7 +159,7 @@ struct TaskWorkerHandoffServiceTests {
         run.startedAt = Date().addingTimeInterval(-30)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Created the standalone page."
+        run.setOutput("Created the standalone page.")
         run.completedAt = Date().addingTimeInterval(30)
         task.status = .completed
         context.insert(run)

@@ -637,7 +637,8 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         try cancellationCheck()
-        displayText = TaskRunAnswerPresentationPolicy.presentation(rawText: finalText).answerText
+        // `finalText` comes from `joinResponsePayloads`, which normalizes.
+        displayText = TaskRunAnswerPresentationPolicy.presentation(normalizedText: finalText).answerText
         let finalIDs = Set(finalResponseEvents.map(\.id))
         progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
         try cancellationCheck()
@@ -817,7 +818,7 @@ struct TaskThreadSnapshot: Sendable {
             fields: fields,
             responsivenessContext: responsivenessContext,
             admittedAt: DispatchTime.now().uptimeNanoseconds
-        )
+        ).snapshot
     }
 
     static func resetBuildConcurrencyStatsForTesting() async {
@@ -1383,7 +1384,7 @@ actor TaskThreadSnapshotBuildExecutor {
         fields: [String: String],
         responsivenessContext: TaskThreadResponsivenessContext?,
         admittedAt: UInt64
-    ) throws -> TaskThreadSnapshot {
+    ) throws -> TaskThreadSnapshotBuildOutcome {
         let admissionWait = PerformanceTelemetry.elapsedMilliseconds(since: admittedAt)
         let admissionFields = fields.merging([
             "admission_state": Task.isCancelled ? "cancelled" : "entered"
@@ -1407,13 +1408,21 @@ actor TaskThreadSnapshotBuildExecutor {
 #endif
             try Task.checkCancellation()
             let startedAt = DispatchTime.now().uptimeNanoseconds
+            // `build` is synchronous with no suspension points, so it runs
+            // start to finish on one cooperative-pool thread. That makes thread
+            // CPU time meaningful here and lets `cpu_ms` separate "the build got
+            // more expensive" from "the build got descheduled".
+            let startedCPUAt = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             let snapshot = try PerformanceSignposts.buildThreadSnapshot {
                 try TaskThreadSnapshot(cancellableInput: input)
             }
+            let completedAt = DispatchTime.now().uptimeNanoseconds
+            let cpuNanoseconds = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) &- startedCPUAt
             let resultFields = fields.merging([
                 "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
                 "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
-                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count),
+                "cpu_ms": String(format: "%.2f", Double(cpuNanoseconds) / 1_000_000)
             ], uniquingKeysWith: { _, new in new })
             if let responsivenessContext {
                 responsivenessContext.performWithCorrelationFields { correlationFields in
@@ -1432,12 +1441,26 @@ actor TaskThreadSnapshotBuildExecutor {
                     fields: resultFields
                 )
             }
-            return snapshot
+            return TaskThreadSnapshotBuildOutcome(
+                snapshot: snapshot,
+                completedAtUptimeNanoseconds: completedAt,
+                cpuNanoseconds: cpuNanoseconds
+            )
         } catch is CancellationError {
             cancelledBuildCount += 1
             throw CancellationError()
         }
     }
+}
+
+/// The snapshot plus the moment the executor finished producing it. The caller
+/// resumes on the main actor, so a completion timestamp taken there measures
+/// nothing: it is stamped after the hop it is supposed to measure. Stamping it
+/// inside the actor is what makes the main-actor hop observable.
+struct TaskThreadSnapshotBuildOutcome: Sendable {
+    let snapshot: TaskThreadSnapshot
+    let completedAtUptimeNanoseconds: UInt64
+    let cpuNanoseconds: UInt64
 }
 
 /// Privacy-safe transcript shape counts calculated off the main actor as part
@@ -1564,10 +1587,16 @@ struct TaskThreadSnapshotTrigger: Equatable {
         )
     }
 
-    init(task: AgentTask, input: TaskThreadSnapshotInput) {
+    /// `inputRevision` is the task revision the *input* describes, which is not
+    /// the task's live revision: the storage read that produced `input` ran
+    /// across an `await`, and streaming writes land during that suspension.
+    /// Stamping the live revision here would make this trigger claim a
+    /// generation whose content the input does not contain, and the follow-up
+    /// read that does carry it would then compare equal and be discarded.
+    init(task: AgentTask, input: TaskThreadSnapshotInput, inputRevision: Date) {
         let latestRun = input.runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
-        revision = task.updatedAt
+        revision = inputRevision
         usesDurableRevision = true
         eventCount = input.totalEventCount
         // Storage-backed refresh is already driven by the durable task revision

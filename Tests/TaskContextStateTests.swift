@@ -110,7 +110,7 @@ struct TaskContextStateTests {
         task.status = .completed
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "We decided to avoid vector databases and start with a current-state checkpoint."
+        run.setOutput("We decided to avoid vector databases and start with a current-state checkpoint.")
         run.completedAt = Date()
         run.appendFileChange(StoredFileChange(from: FileChange(
             path: "\(root)/Astra/Services/Runtime/AgentPromptBuilder.swift",
@@ -202,7 +202,7 @@ struct TaskContextStateTests {
         let firstRun = TaskRun(task: task)
         firstRun.status = .completed
         firstRun.stopReason = "completed"
-        firstRun.output = "first output"
+        firstRun.setOutput("first output")
         firstRun.completedAt = Date()
         context.insert(firstRun)
         TaskContextStateManager.recordTurn(task: task, run: firstRun, message: "first ask")
@@ -219,7 +219,7 @@ struct TaskContextStateTests {
         let secondRun = TaskRun(task: task)
         secondRun.status = .completed
         secondRun.stopReason = "completed"
-        secondRun.output = "second output"
+        secondRun.setOutput("second output")
         secondRun.completedAt = Date()
         context.insert(secondRun)
         TaskContextStateManager.recordTurn(task: task, run: secondRun, message: "second ask")
@@ -244,7 +244,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .failed
         run.stopReason = "provider_missing_browser_control_tool"
-        run.output = "ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser."
+        run.setOutput("ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser.")
         run.completedAt = Date()
         context.insert(run)
         TaskContextStateManager.recordTurn(task: task, run: run, message: "Inspect the browser")
@@ -290,7 +290,7 @@ struct TaskContextStateTests {
         let completedRun = TaskRun(task: task)
         completedRun.status = .completed
         completedRun.stopReason = "completed"
-        completedRun.output = "You have one open PR to review."
+        completedRun.setOutput("You have one open PR to review.")
         completedRun.completedAt = Date()
         context.insert(completedRun)
         TaskContextStateManager.recordTurn(
@@ -678,7 +678,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Implemented the check, but tests still fail."
+        run.setOutput("Implemented the check, but tests still fail.")
         run.completedAt = Date()
         task.status = .failed
         context.insert(run)
@@ -733,7 +733,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "All regression tests pass."
+        run.setOutput("All regression tests pass.")
         run.completedAt = Date()
         task.status = .completed
         context.insert(run)
@@ -784,7 +784,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Generated and tested artifacts."
+        run.setOutput("Generated and tested artifacts.")
         run.completedAt = Date()
         task.status = .completed
         context.insert(run)
@@ -838,7 +838,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Generated the artifact twice for the same path."
+        run.setOutput("Generated the artifact twice for the same path.")
         run.completedAt = Date()
         task.status = .completed
         context.insert(run)
@@ -937,7 +937,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Generated the plan."
+        run.setOutput("Generated the plan.")
         run.completedAt = Date()
         run.appendFileChange(StoredFileChange(from: FileChange(
             path: configPath,
@@ -992,7 +992,7 @@ struct TaskContextStateTests {
         run.startedAt = Date().addingTimeInterval(-30)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Created .astra/tasks/\(String(task.id.uuidString.prefix(8)))/index.html."
+        run.setOutput("Created .astra/tasks/\(String(task.id.uuidString.prefix(8)))/index.html.")
         run.completedAt = Date().addingTimeInterval(30)
         task.status = .completed
         context.insert(run)
@@ -1102,7 +1102,7 @@ struct TaskContextStateTests {
         run.startedAt = Date().addingTimeInterval(-30)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Created index.html."
+        run.setOutput("Created index.html.")
         run.completedAt = Date().addingTimeInterval(30)
         task.status = .completed
         context.insert(run)
@@ -1202,7 +1202,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Old transcript says: use provider-native session memory as the main source."
+        run.setOutput("Old transcript says: use provider-native session memory as the main source.")
         run.completedAt = Date()
         task.status = .completed
         context.insert(run)
@@ -1361,7 +1361,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Current-state checkpoints are simpler than a search index for the first iteration."
+        run.setOutput("Current-state checkpoints are simpler than a search index for the first iteration.")
         run.completedAt = Date()
         context.insert(run)
         AgentRuntimeRunPersistence.recordSessionTurn(
@@ -1395,7 +1395,7 @@ struct TaskContextStateTests {
         let run = TaskRun(task: task)
         run.status = .completed
         run.stopReason = "completed"
-        run.output = "Diagnostics should include current-state size."
+        run.setOutput("Diagnostics should include current-state size.")
         run.completedAt = Date()
         context.insert(run)
         AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: "measure")

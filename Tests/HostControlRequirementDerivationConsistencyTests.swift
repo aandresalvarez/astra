@@ -139,7 +139,7 @@ struct HostControlRequirementDerivationConsistencyTests {
                 ? AgentRuntimeID.codexCLI.rawValue
                 : AgentRuntimeID.cursorCLI.rawValue
             priorRun.status = .completed
-            priorRun.output = "Prior turn \(index) output"
+            priorRun.setOutput("Prior turn \(index) output")
             harness.context.insert(priorRun)
         }
         task.skillSnapshots = [SkillSnapshotConfig(skill: githubSkill)]
@@ -267,7 +267,7 @@ struct HostControlRequirementDerivationConsistencyTests {
                 ? AgentRuntimeID.codexCLI.rawValue
                 : AgentRuntimeID.copilotCLI.rawValue
             priorRun.status = .completed
-            priorRun.output = "Prior turn \(index) output"
+            priorRun.setOutput("Prior turn \(index) output")
             harness.context.insert(priorRun)
         }
         task.skillSnapshots = [SkillSnapshotConfig(skill: githubSkill)]
@@ -647,7 +647,7 @@ struct HostControlRequirementDerivationConsistencyTests {
                 ? AgentRuntimeID.codexCLI.rawValue
                 : AgentRuntimeID.cursorCLI.rawValue
             priorRun.status = .completed
-            priorRun.output = "Prior turn \(index) output"
+            priorRun.setOutput("Prior turn \(index) output")
             harness.context.insert(priorRun)
         }
         task.skillSnapshots = [SkillSnapshotConfig(skill: githubSkill)]

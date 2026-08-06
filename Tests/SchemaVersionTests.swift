@@ -189,7 +189,10 @@ struct SchemaVersionTests {
     @Test("SchemaV14 declares current models and task-owned canvas preference")
     func v14ModelCountAndCanvasPreferenceField() throws {
         #expect(ASTRASchemaV14.models.count == 18)
-        #expect(ASTRASchemaV14.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV14.models.contains { $0 == ASTRASchemaV14Models.AgentTask.self })
+        #expect(!ASTRASchemaV14.models.contains { $0 == AgentTask.self })
+        // Entities with no relationship edge into the frozen closure stay live,
+        // so their declared V14 shape is still the current declaration.
         #expect(ASTRASchemaV14.models.contains { $0 == FeedbackReport.self })
         #expect(ASTRASchemaV14.models.contains { $0 == PersistentStoreMigrationRecord.self })
 
@@ -316,30 +319,41 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV16.versionIdentifier == Schema.Version(16, 0, 0))
     }
 
+    @Test("SchemaV17 version identifier is 17.0.0")
+    func v17VersionIdentifier() {
+        #expect(ASTRASchemaV17.versionIdentifier == Schema.Version(17, 0, 0))
+        #expect(ASTRASchemaV17.models.count == 19)
+        // V17 is the first schema to declare the live graph again: V14 through
+        // V16 were repointed at the frozen ASTRASchemaV14Models copies so the
+        // new TaskRun column could not move their fingerprints.
+        #expect(ASTRASchemaV17.models.contains { $0 == TaskRun.self })
+        #expect(!ASTRASchemaV16.models.contains { $0 == TaskRun.self })
+    }
+
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 16)
-        #expect(ASTRASchemaV16.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 17)
+        #expect(ASTRASchemaV17.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV16")
+    @Test("Migration plan lists SchemaV1 through SchemaV17")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 16)
+        #expect(ASTRAMigrationPlan.schemas.count == 17)
     }
 
-    @Test("Migration plan has V1 to V16 lightweight stages")
+    @Test("Migration plan has V1 to V17 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 15)
+        #expect(ASTRAMigrationPlan.stages.count == 16)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
         // The isolated V12 recovery plans migrate their colliding-V12 store
-        // forward to current: V12x → V13 → V14 → V15 → V16.
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 5)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 4)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 5)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 4)
+        // forward to current: V12x → V13 → V14 → V15 → V16 → V17.
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 6)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 5)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 6)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 5)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -363,6 +377,31 @@ struct SchemaVersionTests {
         // value prevents another same-version model collision.
         #expect(
             try modelChecksum(for: ASTRASchemaV15.self) == "20EX/Ki6+0dMVN122sYI+u0kxAw7mMDBSRVharTGbbQ="
+        )
+    }
+
+    @Test("Frozen V14 and V16 schema fingerprints survive the V17 column")
+    func frozenV14AndV16FingerprintsMatchPreFreezeShapes() throws {
+        // Captured from V14/V16 while they still listed the live models, before
+        // TaskRun gained hasProtocolEvents. If either moves, the hand-copied
+        // ASTRASchemaV14Models graph drifted - fix the frozen class, never the
+        // pin, or on-disk 14.0.0/16.0.0 stores stop matching their declared
+        // shape in the field.
+        let digest14 = try modelDigest(for: ASTRASchemaV14.self)
+        #expect(
+            digest14 == "DipBbLERxzq7N7/prACgIVPl5Dwng1XSiQRUqtVDldPem/oMEp3K9DfxhFQBvONUFIvMto80If+TRURR/2eCzg==",
+            "Actual V14 digest: \(digest14)"
+        )
+        #expect(
+            try modelChecksum(for: ASTRASchemaV14.self) == "rqjUM9hBjypKSNEXYPGAapCbd8adats4QJxGB60IDYk="
+        )
+        let digest16 = try modelDigest(for: ASTRASchemaV16.self)
+        #expect(
+            digest16 == "ZUDsekDTZWgClMcrVd8q7gdm3qtYmyoOv4EGJtEUO0IyH3mEm1XtiO0RMcxnJqFDj06rZ/DR2vVhmbkorbvU9g==",
+            "Actual V16 digest: \(digest16)"
+        )
+        #expect(
+            try modelChecksum(for: ASTRASchemaV16.self) == "WokCppeQMvPUAheqVXpl7pRrLryBleLBCZOLFO+gHdc="
         )
     }
 
@@ -521,7 +560,9 @@ struct SchemaVersionTests {
                 configurations: [ModelConfiguration(url: storeURL)]
             )
             let context = oldContainer.mainContext
-            let task = AgentTask(title: "V15 task", goal: "Preserve request")
+            let task = ASTRASchemaV14Models.AgentTask()
+            task.title = "V15 task"
+            task.goal = "Preserve request"
             context.insert(task)
             let request = ASTRASchemaV15Models.TaskTurnRequest()
             request.taskID = task.id
@@ -554,6 +595,62 @@ struct SchemaVersionTests {
         #expect(request.tokenBudgetSnapshot == nil)
         #expect(request.executionPolicySnapshot == nil)
         #expect(request.resourceClaims.isEmpty)
+    }
+
+    @MainActor
+    @Test("Populated SchemaV16 store migrates to V17 with an unknown protocol-marker flag")
+    func v16StoreMigratesToUnknownProtocolMarkerFlag() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v16-marker-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let markerOutput = "ASTRA_EVENT {\"v\":1,\"type\":\"plan.step.completed\"}"
+        let runID: UUID
+
+        do {
+            let oldContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV16.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = oldContainer.mainContext
+            let task = ASTRASchemaV14Models.AgentTask()
+            task.title = "V16 task"
+            task.goal = "Preserve recovered plan progress"
+            context.insert(task)
+            let run = ASTRASchemaV14Models.TaskRun()
+            run.task = task
+            run.output = markerOutput
+            context.insert(run)
+            try context.save()
+            runID = run.id
+        }
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let run = try #require(try context.fetch(FetchDescriptor<TaskRun>()).first)
+        #expect(run.id == runID)
+        #expect(run.output == markerOutput)
+        // nil, not false: the lightweight stage cannot scan the blob, and a
+        // defaulted false would drop this run from plan recovery.
+        #expect(run.hasProtocolEvents == nil)
+
+        // The plan reader must still return the never-scanned row alongside
+        // freshly flagged ones, and must exclude proven-clean ones.
+        let markerRun = TaskRun(task: migratedTask)
+        markerRun.setOutput("ASTRA_EVENT y")
+        context.insert(markerRun)
+        let cleanRun = TaskRun(task: migratedTask)
+        cleanRun.setOutput("plain")
+        context.insert(cleanRun)
+        try context.save()
+        let input = try TaskPlanStateReader.read(taskID: migratedTask.id, modelContext: context)
+        #expect(Set(input.recoveryRuns.map(\.id)) == [runID, markerRun.id])
     }
 
     private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {

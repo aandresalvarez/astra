@@ -2,15 +2,32 @@ import Foundation
 import SwiftData
 import ASTRAModels
 
+/// Identifies when the plan projection can actually have changed.
+///
+/// `planEventRevision` counts durable plan-relevant event insertions observed
+/// for the task rather than tracking `task.updatedAt`. Every runtime event
+/// bumps `updatedAt`, so keying the refresh on it re-read the plan rows several
+/// times per second and discarded ~97% of the results. Plan state can only move
+/// when a plan-relevant event lands, when the task status changes, or when
+/// protocol progress arrives in run output — the last of which is handled
+/// separately because it only applies once a plan exists.
 struct TaskPlanStateRefreshTrigger: Equatable {
     let taskID: UUID
     let status: TaskStatus
-    let revision: Date
+    let planEventRevision: Int
 
-    init(task: AgentTask) {
+    init(task: AgentTask, planEventRevision: Int) {
         taskID = task.id
         status = task.status
-        revision = task.updatedAt
+        self.planEventRevision = planEventRevision
+    }
+}
+
+/// Classifies durable event types that can move the plan projection. Mirrors
+/// the event types `TaskPlanStateReader` fetches.
+enum TaskPlanEventRelevance {
+    static func affectsPlanState(eventType: String) -> Bool {
+        TaskPlanService.stateMutationCode(for: eventType) != nil
     }
 }
 

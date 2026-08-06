@@ -100,7 +100,7 @@ struct TaskThreadViewModelTests {
             try await Task.sleep(for: .milliseconds(1))
         }
         #expect(vm.appliedSnapshotReadiness.isReady(for: task.id))
-        run.output = "new streaming output"
+        run.setOutput("new streaming output")
         vm.refreshSnapshot(for: task)
         let expectedRevision = vm.appliedSnapshotRevision + 1
         let deadline = Date().addingTimeInterval(30)
@@ -200,7 +200,7 @@ struct TaskThreadViewModelTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -300,7 +300,7 @@ struct TaskThreadViewModelTests {
 
         vm.reset(for: task)
         for index in 0..<20 {
-            run.output = String(repeating: "x", count: (index + 1) * 1_024)
+            run.setOutput(String(repeating: "x", count: (index + 1) * 1_024))
             let event = TaskEvent(
                 task: task,
                 type: "agent.response",
@@ -332,14 +332,14 @@ struct TaskThreadViewModelTests {
         let task = makeTask(goal: "Streaming response", status: .running)
         let run = TaskRun(task: task)
         run.status = .running
-        run.output = "old"
+        run.setOutput("old")
         task.runs.append(run)
 
         vm.reset(for: task)
         while await barrier.startedCount < 1 { await Task.yield() }
 
         let latestOutput = String(repeating: "latest", count: 1_024)
-        run.output = latestOutput
+        run.setOutput(latestOutput)
         vm.refreshSnapshot(for: task)
         await barrier.waitUntilStarted(2)
         let latest = await awaitSnapshot(vm, where: { $0.latestRun?.output == latestOutput }, timeout: 30)
@@ -425,7 +425,7 @@ struct TaskThreadViewModelTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -460,7 +460,7 @@ struct TaskThreadViewModelTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -488,7 +488,7 @@ struct TaskThreadViewModelTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "run \(i)"
+            run.setOutput("run \(i)")
             task.runs.append(run)
         }
 
@@ -521,7 +521,7 @@ struct TaskThreadViewModelTests {
             run.status = .completed
             run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
-            run.output = "completed run \(i)"
+            run.setOutput("completed run \(i)")
             task.runs.append(run)
 
             let event = TaskEvent(task: task, type: "agent.response", payload: "response \(i)", run: run)
@@ -735,7 +735,7 @@ struct TaskCheckpointPresentationTests {
         run.status = status
         run.startedAt = Date(timeIntervalSince1970: Double(index * 100))
         run.completedAt = completed ?? (status == .running ? nil : Date(timeIntervalSince1970: Double(index * 100 + 20)))
-        run.output = output
+        run.setOutput(output)
         run.tokensUsed = tokens
 
         for path in filePaths {

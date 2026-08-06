@@ -286,7 +286,7 @@ struct TaskRunLifecycleServiceTests {
         let run = TaskRun(task: task)
         run.status = .failed
         run.stopReason = "no_usable_result"
-        run.output = "BRIE full de-identification batch SUCCEEDED."
+        run.setOutput("BRIE full de-identification batch SUCCEEDED.")
         context.insert(run)
         try context.save()
 

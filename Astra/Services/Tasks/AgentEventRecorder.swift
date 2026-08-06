@@ -58,6 +58,10 @@ final class AgentEventRecordingState {
            existing.payload.count + text.count <= maxCoalescedPayloadLength {
             existing.payload += text
             let changedAt = Date()
+            // The incremental transcript read (`TaskThreadHistoryReader.tailPage`)
+            // only refetches rows at or after its cursor. Bumping the timestamp
+            // forward is what keeps this in-place mutation visible to it; drop
+            // the bump and the transcript freezes on the partial message.
             existing.timestamp = changedAt
             task.updatedAt = changedAt
             TaskThreadChangeNotifier.post(taskID: task.id, source: "conversation_chunk_coalesced")
@@ -839,7 +843,7 @@ enum AgentEventRecorder {
         let mayReplace = run.output.isEmpty
             || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
         if !visibleText.isEmpty, mayReplace {
-            run.output = visibleText
+            run.setOutput(visibleText)
             if let taskID = run.task?.id {
                 run.task?.updatedAt = Date()
                 TaskThreadChangeNotifier.post(taskID: taskID, source: "completed_output_replaced")
@@ -858,7 +862,7 @@ enum AgentEventRecorder {
     ) {
         let textToAppend = AgentEventRecordingPresentation.responseTextToAppend(text, after: run.output)
         guard !textToAppend.isEmpty else { return }
-        run.output += textToAppend
+        run.appendOutput(textToAppend)
         // Output now contains streamed deltas; a later `.completed` envelope must
         // not clobber it even if an earlier `.completed` seeded the output.
         recordingState?.clearOutputFromCompletedSummary(for: run)

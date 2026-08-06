@@ -249,7 +249,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         run.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
         run.providerLaunchSignatureJSON = source.providerLaunchSignatureJSON
         run.exitCode = source.exitCode
-        run.output = source.output
+        run.setOutput(source.output)
         run.costUSD = source.costUSD
         run.fileChangesJSON = source.fileChangesJSON
         run.stopReason = source.stopReason

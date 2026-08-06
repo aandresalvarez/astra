@@ -85,7 +85,7 @@ struct ContextContinuityReplayEvalTests {
         run.status = RunStatus.completed
         run.startedAt = Date(timeIntervalSince1970: 100)
         run.completedAt = Date(timeIntervalSince1970: 120)
-        run.output = "Implemented a first attempt."
+        run.setOutput("Implemented a first attempt.")
         run.stopReason = "completed"
         context.insert(run)
         let validationEvent = TaskEvent(
@@ -129,7 +129,7 @@ struct ContextContinuityReplayEvalTests {
         firstRun.status = RunStatus.completed
         firstRun.startedAt = Date(timeIntervalSince1970: 10)
         firstRun.completedAt = Date(timeIntervalSince1970: 20)
-        firstRun.output = "BRANCH_A_KEEP_MARKER"
+        firstRun.setOutput("BRANCH_A_KEEP_MARKER")
         firstRun.stopReason = "completed"
         context.insert(firstRun)
 
@@ -137,7 +137,7 @@ struct ContextContinuityReplayEvalTests {
         secondRun.status = RunStatus.completed
         secondRun.startedAt = Date(timeIntervalSince1970: 30)
         secondRun.completedAt = Date(timeIntervalSince1970: 40)
-        secondRun.output = "BRANCH_B_DROP_MARKER"
+        secondRun.setOutput("BRANCH_B_DROP_MARKER")
         secondRun.stopReason = "completed"
         context.insert(secondRun)
         try context.save()

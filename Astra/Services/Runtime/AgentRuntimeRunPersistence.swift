@@ -113,7 +113,7 @@ enum AgentRuntimeRunPersistence {
         measureFinalizationPhase("output_cap", task: task, run: run, traceID: traceID) {
             let cappedOutput = TaskRunOutputCap.capped(run.output)
             if cappedOutput != run.output {
-                run.output = cappedOutput
+                run.setOutput(cappedOutput)
             }
         }
 

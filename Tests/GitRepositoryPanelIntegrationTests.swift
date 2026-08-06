@@ -6,6 +6,67 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAGitContracts
 
+/// Reports when the panel's detached `gh pr list` lookups actually reach the
+/// service, and can hold one in flight so a test observes the panel between
+/// "the action fired" and "the follow-up probe answered".
+///
+/// Tests wait on this signal instead of a wall clock. The panel's recovery
+/// paths chain several main-actor hops (`selectRepository` -> refresh ->
+/// lookup, `createPullRequest` -> remote -> base -> create -> forced lookup),
+/// and under full-suite load the main actor is saturated enough that any fixed
+/// deadline expires mid-chain and leaves the assertions running against
+/// un-advanced state. A continuation has no deadline to blow past: either the
+/// lookup happens or the test hangs until the runner kills it, which is a
+/// legible failure rather than a fake one.
+private actor PullRequestLookupGate {
+    private var startedCount = 0
+    private var waiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var gatedCall: Int?
+    private var gateWaiter: CheckedContinuation<Void, Never>?
+    private var isGateOpen = false
+
+    /// Called by the fake at lookup entry — ahead of the gate — so a waiter is
+    /// released while the gated probe is still running.
+    func noteStarted() async {
+        startedCount += 1
+        let reached = startedCount
+        let ready = waiters.filter { $0.target <= reached }
+        waiters.removeAll { $0.target <= reached }
+        for waiter in ready { waiter.continuation.resume() }
+
+        guard gatedCall == reached, !isGateOpen else { return }
+        await withCheckedContinuation { gateWaiter = $0 }
+    }
+
+    /// Blocks until the `target`-th lookup has started. Unbounded on purpose.
+    func waitForStart(_ target: Int) async {
+        guard startedCount < target else { return }
+        await withCheckedContinuation { waiters.append((target, $0)) }
+    }
+
+    /// Suspends the numbered lookup inside the service until `openGate()`.
+    func gate(call: Int) {
+        gatedCall = call
+    }
+
+    func openGate() {
+        isGateOpen = true
+        gateWaiter?.resume()
+        gateWaiter = nil
+    }
+}
+
+/// Keeps `createPullRequest` from launching a real browser during tests.
+@MainActor
+private final class RecordingPanelURLLauncher: GitHubAuthorizationURLLaunching, @unchecked Sendable {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) -> Bool {
+        openedURLs.append(url)
+        return true
+    }
+}
+
 @Suite("Git Repository Panel Integration")
 struct GitRepositoryPanelIntegrationTests {
     private final class FakeGitRepositoryOperations: GitRepositoryOperating {
@@ -25,6 +86,11 @@ struct GitRepositoryPanelIntegrationTests {
         var unpushedCount = 0
         var aheadBehind: (ahead: Int, behind: Int)?
         var worktrees: [GitWorktreeInfo] = []
+        var pullRequestLookupResult: GitHubPullRequestLookupResult = .none
+        private(set) var pullRequestLookupCallCount = 0
+        /// Signals each lookup as it reaches the service, and optionally holds
+        /// one in flight. Tests block on this rather than on a clock.
+        let lookupGate = PullRequestLookupGate()
 
         func acquireIndexGuard() -> Bool {
             acquiredIndexGuardCount += 1
@@ -68,7 +134,9 @@ struct GitRepositoryPanelIntegrationTests {
             head: String,
             ghPathOverride: String?
         ) async -> GitHubPullRequestLookupResult {
-            .none
+            pullRequestLookupCallCount += 1
+            await lookupGate.noteStarted()
+            return pullRequestLookupResult
         }
 
         func lookupPullRequestComments(
@@ -586,5 +654,367 @@ struct GitRepositoryPanelIntegrationTests {
             .appendingPathComponent("Astra/Views/Panel.swift")
             .standardizedFileURL
             .path)
+    }
+
+    // MARK: - Pull request lookup breaker
+
+    /// Verbatim `gh pr list` stderr from the recorded production session.
+    private static let samlLookupFailure = """
+    GraphQL: Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization. (repository) Authorize in your web browser: https://github.com/orgs/example/sso?authorization_request=ABC123
+    """
+
+    @MainActor
+    private func makePullRequestLookupPanel(
+        _ label: String,
+        result: GitHubPullRequestLookupResult
+    ) throws -> (WorkspaceGitViewModel, FakeGitRepositoryOperations, String, Workspace) {
+        let repo = try makeTempDir(label)
+        let fakeGit = FakeGitRepositoryOperations()
+        fakeGit.remote = true
+        fakeGit.currentBranch = "feature/login"
+        fakeGit.pullRequestLookupResult = result
+
+        let workspace = Workspace(name: "PR Lookup", primaryPath: repo)
+        // Mirrors a workspace whose code default is the repository itself, so a
+        // panel re-setup resolves the same working path the breaker recorded.
+        workspace.activeWorkingPath = repo
+        let viewModel = WorkspaceGitViewModel(git: fakeGit, urlLauncher: RecordingPanelURLLauncher())
+        viewModel.setWorkspaceForTesting(workspace)
+        // `selectedRepository` is deliberately left unset: its didSet schedules a
+        // background refresh whose own lookup would race the call counter.
+        viewModel.activeWorkingPath = repo
+        viewModel.currentBranch = "feature/login"
+        viewModel.hasRemote = true
+        return (viewModel, fakeGit, repo, workspace)
+    }
+
+    /// Opens the breaker on `feature/login` through the production failure path.
+    @MainActor
+    private func openLookupBreaker(
+        _ viewModel: WorkspaceGitViewModel,
+        _ fakeGit: FakeGitRepositoryOperations
+    ) async {
+        viewModel.refreshOpenPullRequest(force: true)
+        await awaitLookups(viewModel, fakeGit, count: 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    /// Waits until the detached lookup task the view model spawns has reached
+    /// `count` calls *and* the last of them has finished applying its result on
+    /// the main actor. Both halves are signals, not sleeps: the fake reports the
+    /// call, and the view model hands back the very task that applies it.
+    @MainActor
+    private func awaitLookups(
+        _ viewModel: WorkspaceGitViewModel,
+        _ fake: FakeGitRepositoryOperations,
+        count: Int
+    ) async {
+        await awaitLookupStart(fake, count: count)
+        await viewModel.waitForPendingPullRequestLookupForTesting()
+    }
+
+    /// Waits until the `count`-th lookup has *entered* the service. For a gated
+    /// call that is while the probe is still in flight, which is the window the
+    /// publish test needs to inspect.
+    @MainActor
+    private func awaitLookupStart(_ fake: FakeGitRepositoryOperations, count: Int) async {
+        await fake.lookupGate.waitForStart(count)
+    }
+
+    /// Drains the main-actor work the preceding call enqueued — a notification
+    /// hop, plus whatever lookup task it spawned — so a "no additional lookup"
+    /// assertion is a fact rather than a race. A job enqueued on the main actor
+    /// before this one runs before it, and `refreshOpenPullRequest` publishes
+    /// its task handle synchronously, so there is nothing left to sleep for.
+    @MainActor
+    private func settleLookups(_ viewModel: WorkspaceGitViewModel) async {
+        await Task { @MainActor in }.value
+        await viewModel.waitForPendingPullRequestLookupForTesting()
+    }
+
+    @MainActor
+    @Test("Repeated SAML lookup failures stop re-spawning gh on the polling path")
+    func samlLookupFailuresStopPolling() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-saml",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        viewModel.refreshOpenPullRequest(force: true)
+        await awaitLookups(viewModel, fakeGit, count: 1)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+        #expect(viewModel.pullRequestLookupIssue?.contains("Repair access") == true)
+
+        for _ in 0..<10 {
+            viewModel.expirePullRequestLookupThrottleForTesting()
+            viewModel.refreshOpenPullRequest(force: false)
+            await settleLookups(viewModel)
+        }
+
+        #expect(fakeGit.pullRequestLookupCallCount == 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    @MainActor
+    @Test("Transient lookup failures keep polling")
+    func transientLookupFailuresKeepPolling() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-transient",
+            result: .unavailable("Post \"https://api.github.com/graphql\": dial tcp 140.82.116.6:443: i/o timeout")
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        for attempt in 1...3 {
+            viewModel.expirePullRequestLookupThrottleForTesting()
+            viewModel.refreshOpenPullRequest(force: false)
+            await awaitLookups(viewModel, fakeGit, count: attempt)
+        }
+
+        #expect(fakeGit.pullRequestLookupCallCount == 3)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+        #expect(viewModel.pullRequestLookupIssue?.contains("i/o timeout") == true)
+    }
+
+    @MainActor
+    @Test("Manual retry re-attempts a blocked pull request lookup")
+    func manualRetryReattemptsBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-retry",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        viewModel.refreshOpenPullRequest(force: true)
+        await awaitLookups(viewModel, fakeGit, count: 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+
+        viewModel.retryPullRequestLookup()
+        await awaitLookups(viewModel, fakeGit, count: 2)
+        #expect(fakeGit.pullRequestLookupCallCount == 2)
+
+        fakeGit.pullRequestLookupResult = .found(
+            GitHubPullRequestRef(
+                number: 42,
+                url: "https://github.com/example/repo/pull/42",
+                title: "Add login",
+                isDraft: false,
+                state: "OPEN"
+            )
+        )
+        viewModel.retryPullRequestLookup()
+        await awaitLookups(viewModel, fakeGit, count: 3)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 3)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+        #expect(viewModel.openPullRequest?.number == 42)
+        #expect(viewModel.pullRequestLookupIssue == nil)
+    }
+
+    @MainActor
+    @Test("Switching branches re-probes a blocked pull request lookup")
+    func branchChangeReprobesBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-branch",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        viewModel.refreshOpenPullRequest(force: true)
+        await awaitLookups(viewModel, fakeGit, count: 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+
+        viewModel.currentBranch = "feature/other"
+        viewModel.refreshOpenPullRequest(force: false)
+        await awaitLookups(viewModel, fakeGit, count: 2)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 2)
+    }
+
+    @MainActor
+    @Test("Returning to the app re-probes a blocked pull request lookup")
+    func foregroundingReprobesBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-foreground",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        // The user leaves for the browser, authorizes, and comes back.
+        viewModel.pauseRefresh()
+        viewModel.agePullRequestLookupBreakerForTesting()
+        viewModel.resumeRefresh()
+
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+
+        fakeGit.pullRequestLookupResult = .none
+        viewModel.expirePullRequestLookupThrottleForTesting()
+        viewModel.refreshOpenPullRequest(force: false)
+        await awaitLookups(viewModel, fakeGit, count: 2)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 2)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    @MainActor
+    @Test("Re-opening the panel re-probes a blocked pull request lookup")
+    func panelSetupReprobesBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, workspace) = try makePullRequestLookupPanel(
+            "pr-breaker-setup",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        // The repository rail goes offscreen while the user authorizes, then
+        // comes back. `setup` clears `isRefreshPaused` itself, so a scene-phase
+        // resume afterwards can no longer be the thing that re-arms.
+        viewModel.pauseRefresh()
+        viewModel.agePullRequestLookupBreakerForTesting()
+        viewModel.setup(for: workspace)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+        viewModel.resumeRefresh()
+
+        fakeGit.pullRequestLookupResult = .none
+        viewModel.expirePullRequestLookupThrottleForTesting()
+        viewModel.refreshOpenPullRequest(force: false)
+        await awaitLookups(viewModel, fakeGit, count: 2)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 2)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    @MainActor
+    @Test("Switching tasks inside a visible panel does not re-arm a blocked lookup")
+    func taskSwitchKeepsBlockedLookupPaused() async throws {
+        let (viewModel, fakeGit, repo, workspace) = try makePullRequestLookupPanel(
+            "pr-breaker-task-switch",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        // The panel never went offscreen: only the sidebar selection moved. It
+        // drives `setup` from `.task(id:)` over a signature that includes the
+        // selected task, so this is what every click in the task list looks
+        // like. Age the breaker past the foreground delay first, so the only
+        // thing standing between this task switch and a fresh `gh` spawn is
+        // the 900s cooldown itself.
+        viewModel.agePullRequestLookupBreakerForTesting()
+        let nextTask = AgentTask(title: "Another", goal: "Work", workspace: workspace)
+        viewModel.setup(for: workspace, selectedTask: nextTask)
+
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+
+        // And the cooldown still suppresses the poll, which is the behaviour
+        // the caption promises: browsing tasks with a lapsed credential must
+        // not degrade the 900s floor to the 60s foreground delay.
+        viewModel.expirePullRequestLookupThrottleForTesting()
+        viewModel.refreshOpenPullRequest(force: false)
+        await settleLookups(viewModel)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    @MainActor
+    @Test("Selecting another repository clears the blocked lookup state")
+    func repositoryChangeClearsBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-repo-change",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        let other = try makeTempDir("pr-breaker-repo-change-other")
+        defer {
+            try? FileManager.default.removeItem(atPath: repo)
+            try? FileManager.default.removeItem(atPath: other)
+        }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        fakeGit.pullRequestLookupResult = .none
+        viewModel.selectRepository(GitRepositoryInfo(name: "Other", path: other))
+
+        // The paused caption belongs to the repository that failed; pointing
+        // the panel somewhere else must drop it in the same turn, before the
+        // forced lookup for the new repository has answered.
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+
+        await awaitLookups(viewModel, fakeGit, count: 2)
+        #expect(fakeGit.pullRequestLookupCallCount >= 2)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+    }
+
+    @MainActor
+    @Test("Publishing a pull request clears the blocked lookup before the follow-up probe answers")
+    func publishClearsBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-publish",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        // Branch is published and clean, so the panel can create the PR.
+        viewModel.hasUpstream = true
+        await fakeGit.lookupGate.gate(call: 2)
+
+        viewModel.createPullRequest(with: PRSuggestion(title: "Add login", body: "Body"))
+        // Entry-only: the follow-up probe is held inside the service, so the
+        // panel is inspected mid-flight rather than after it answers.
+        await awaitLookupStart(fakeGit, count: 2)
+
+        // The PR now demonstrably exists, so the panel must stop telling the
+        // user its pull-request check is paused while the probe runs.
+        #expect(viewModel.openPullRequest?.number == 1)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+
+        await fakeGit.lookupGate.openGate()
+        await viewModel.waitForPendingPullRequestLookupForTesting()
+    }
+
+    @MainActor
+    @Test("A verified GitHub access repair re-probes only the repaired repository")
+    func accessRepairReprobesBlockedLookup() async throws {
+        let (viewModel, fakeGit, repo, _) = try makePullRequestLookupPanel(
+            "pr-breaker-repair",
+            result: .unavailable(Self.samlLookupFailure)
+        )
+        let unrelated = try makeTempDir("pr-breaker-repair-unrelated")
+        defer {
+            try? FileManager.default.removeItem(atPath: repo)
+            try? FileManager.default.removeItem(atPath: unrelated)
+        }
+        await openLookupBreaker(viewModel, fakeGit)
+
+        // Repairing some other checkout says nothing about this credential.
+        NotificationCenter.default.post(
+            name: .gitHubRepositoryAccessRepaired,
+            object: unrelated
+        )
+        await settleLookups(viewModel)
+        #expect(fakeGit.pullRequestLookupCallCount == 1)
+        #expect(viewModel.pullRequestLookupAuthBlocked)
+
+        fakeGit.pullRequestLookupResult = .found(
+            GitHubPullRequestRef(
+                number: 42,
+                url: "https://github.com/example/repo/pull/42",
+                title: "Add login",
+                isDraft: false,
+                state: "OPEN"
+            )
+        )
+        NotificationCenter.default.post(
+            name: .gitHubRepositoryAccessRepaired,
+            object: repo
+        )
+        await awaitLookups(viewModel, fakeGit, count: 2)
+
+        #expect(fakeGit.pullRequestLookupCallCount == 2)
+        #expect(!viewModel.pullRequestLookupAuthBlocked)
+        #expect(viewModel.openPullRequest?.number == 42)
     }
 }

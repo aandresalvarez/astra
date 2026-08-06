@@ -5,6 +5,13 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+/// `Thread.sleep` called directly from an `async` body is a warning today and
+/// an error under the Swift 6 language mode, but blocking the main thread is
+/// exactly what the apply-hop test needs to reproduce.
+private func blockCallingMainThread(forSeconds seconds: TimeInterval) {
+    Thread.sleep(forTimeInterval: seconds)
+}
+
 private final class SnapshotBuildCancellationBarrier: @unchecked Sendable {
     private let entered = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
@@ -23,7 +30,7 @@ extension TaskThreadSnapshotTests {
     func snapshotPrecomputesTranscriptMetrics() {
         let task = makeTask(goal: "Goal\n```swift\nlet value = 1\n```\n| Name |")
         let run = TaskRun(task: task)
-        run.output = "| Result |\n| --- |\n| done |"
+        run.setOutput("| Result |\n| --- |\n| done |")
 
         let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [], runs: [run])
 
@@ -42,11 +49,11 @@ extension TaskThreadSnapshotTests {
         let firstRun = TaskRun(task: task)
         firstRun.startedAt = Date(timeIntervalSince1970: 110)
         firstRun.completedAt = Date(timeIntervalSince1970: 130)
-        firstRun.output = "First run output"
+        firstRun.setOutput("First run output")
 
         let secondRun = TaskRun(task: task)
         secondRun.startedAt = Date(timeIntervalSince1970: 140)
-        secondRun.output = "Second run output"
+        secondRun.setOutput("Second run output")
 
         let userFollowUp = makeEvent(
             task: task,
@@ -99,7 +106,7 @@ extension TaskThreadSnapshotTests {
         run.startedAt = Date(timeIntervalSince1970: 110)
         run.completedAt = Date(timeIntervalSince1970: 111)
         run.stopReason = "completed"
-        run.output = ""
+        run.setOutput("")
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -301,7 +308,7 @@ extension TaskThreadSnapshotTests {
     func taskRunSnapshotPrecomputesVPNWarningMarkers() {
         let task = makeTask()
         let run = TaskRun(task: task)
-        run.output = #"API Error: 403 {"message":"Request is prohibited by organization's policy.","details":[{"reason":"SECURITY_POLICY_VIOLATED","metadata":{"vpcServiceControlsUniqueIdentifier":"abc123"}}]}"#
+        run.setOutput(#"API Error: 403 {"message":"Request is prohibited by organization's policy.","details":[{"reason":"SECURITY_POLICY_VIOLATED","metadata":{"vpcServiceControlsUniqueIdentifier":"abc123"}}]}"#)
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -388,7 +395,7 @@ extension TaskThreadSnapshotTests {
     func taskRunSnapshotHidesProtocolMarkerFragments() {
         let task = makeTask()
         let run = TaskRun(task: task)
-        run.output = """
+        run.setOutput("""
         ● I'll build a clean page.
            tepID":"step-1","status":"running"}
         ✓ Create .astra/tasks/3BAB3C9D/index.html (+124)
@@ -396,7 +403,7 @@ extension TaskThreadSnapshotTests {
            with index.html and styles.css in black and white design. All placeholder content is clearly
            marked for customization.","verifiedBy":"File system verification"}
         Final response.
-        """
+        """)
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -848,7 +855,7 @@ extension TaskThreadSnapshotTests {
         let task = makeTask(status: .failed)
         let run = TaskRun(task: task)
         run.status = .failed
-        run.output = ""
+        run.setOutput("")
         let events = [
             makeEvent(
                 task: task,
@@ -969,7 +976,7 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.startedAt = Date(timeIntervalSince1970: 110)
         run.status = .running
-        run.output = ""
+        run.setOutput("")
 
         let toolUse = makeEvent(
             task: task,
@@ -1005,11 +1012,11 @@ extension TaskThreadSnapshotTests {
         run.startedAt = Date(timeIntervalSince1970: 110)
         run.completedAt = Date(timeIntervalSince1970: 150)
         run.status = .completed
-        run.output = [
+        run.setOutput([
             "Reading the saved Spanish letter.",
             "Translating the Spanish letter and saving the Portuguese version.",
             "Traduzida e guardada.\n\nPortuguês (texto):\nQuerida Rosa"
-        ].joined()
+        ].joined())
 
         let events = [
             makeEvent(
@@ -1085,7 +1092,7 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.completedAt = Date(timeIntervalSince1970: 120)
         run.status = .completed
-        run.output = "Direct final answer"
+        run.setOutput("Direct final answer")
         let event = makeEvent(
             task: task,
             type: "agent.response",
@@ -1112,7 +1119,7 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.completedAt = Date(timeIntervalSince1970: 130)
         run.status = .completed
-        run.output = "I checked death.Now the results are ready."
+        run.setOutput("I checked death.Now the results are ready.")
 
         let events = [
             makeEvent(
@@ -1156,13 +1163,13 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.completedAt = Date(timeIntervalSince1970: 130)
         run.status = .completed
-        run.output = """
+        run.setOutput("""
         ### What passed across all runs (death-specific)
 
         | Model/Test | Status | Details |
         |---|---|---|
         | `lpch_deaths` | PASS | 15.1k rows (prod) |
-        """
+        """)
 
         let events = [
             makeEvent(
@@ -1211,9 +1218,9 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.completedAt = Date(timeIntervalSince1970: 130)
         run.status = .completed
-        run.output = """
+        run.setOutput("""
         Let me check initial progress after a moment. Let me check initial progress after a moment. Build is running and already at model 296/2476. Let me wait and check progress again. Good progress at ~548/2476. Let me continue monitoring. Now at ~716/2476. Let me keep polling. Good progress, tests are passing. Let me continue monitoring. The final death model built successfully and all tests passed.
-        """ + String(repeating: " Let me continue monitoring. Good progress.", count: 20)
+        """ + String(repeating: " Let me continue monitoring. Good progress.", count: 20))
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -1237,9 +1244,9 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.completedAt = Date(timeIntervalSince1970: 130)
         run.status = .completed
-        run.output = """
+        run.setOutput("""
         New output just appeared at 16:06:20. New output just appeared at 16:06:20. `stg_common__flowsheets` completed — **10.2 billion rows**, 3.3 TiB processed in 23 minutes. Now `observation_1_src_prepped` and a measurement unit test are starting. The build is progressing through the remaining upstream models. Still need `person_4_filtered` before `death_4_filtered` can run. Good progress — measurement unit tests are passing. `observation_1_src_prepped` is building in parallel. Let me keep monitoring. Measurement unit tests are all passing sequentially. `observation_1_src_prepped` is still building in parallel. Let me keep polling. All measurement unit tests passed. Now `tmp__meas_1_src_prepped` is starting to build (the actual table, very large). `tmp__observation_1_src_prepped` is still running in parallel. These are deep upstream models — still several stages before `person_4_filtered` → `death_4_filtered`. Let me keep waiting. Both `tmp__meas_1_src_prepped` and `tmp__observation_1_src_prepped` are still building — these are massive tables with prod data. Let me check the latest tail. `tmp__meas_1_src_prepped` has been building for ~7 minutes — measurement tables are among the largest in the pipeline. Continuing to wait. 12 minutes on `tmp__meas_1_src_prepped` and `tmp__observation_1_src_prepped` — these are the two largest tables in the pipeline. Heartbeat alive at 16:20. 16 minutes on `tmp__meas_1_src_prepped` / `tmp__observation_1_src_prepped`. These are the biggest models in the whole pipeline — measurement alone can be 1B+ rows at prod scale. Heartbeat alive at 16:24. 18 minutes on `tmp__meas_1_src_prepped` — still building. This model processes the full measurement staging table which was 955M rows. At prod scale with BigQuery joins and transformations, this can easily take 20-30 minutes. Heartbeat is still alive. 22+ minutes on `tmp__meas_1_src_prepped` — this is the single largest model in the pipeline. Let me check for any new output. Still building. Let me continue polling. Still building. Let me continue polling. New output at 16:37:43! New output at 16:37:43! `tmp__observation_1_src_prepped` completed — **7.2 billion rows**, 2.1 TiB, took ~31 minutes. `tmp__observation_2_src_mapped` is now starting. `tmp__meas_1_src_prepped` is still building (~29 min so far). Progress is moving — once these complete, the pipeline will move through the `_2_src_mapped` → `_3_all_with_keys` → `_4_filtered` stages, eventually reaching `person_4_filtered` → `death_4_filtered`.
-        """ + String(repeating: " Let me keep monitoring. Heartbeat is alive.", count: 12)
+        """ + String(repeating: " Let me keep monitoring. Heartbeat is alive.", count: 12))
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -1262,7 +1269,7 @@ extension TaskThreadSnapshotTests {
         let task = makeTask(goal: "Original goal", status: .running)
         let run = TaskRun(task: task)
         run.status = .running
-        run.output = "Reading the file before answering."
+        run.setOutput("Reading the file before answering.")
         let event = makeEvent(
             task: task,
             type: "agent.response",
@@ -1288,7 +1295,7 @@ extension TaskThreadSnapshotTests {
         let task = makeTask(goal: "Original goal", status: .running)
         let run = TaskRun(task: task)
         run.status = .running
-        run.output = "Reading the file before answering."
+        run.setOutput("Reading the file before answering.")
 
         let first = makeEvent(
             task: task,
@@ -1407,7 +1414,7 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.startedAt = Date(timeIntervalSince1970: 110)
         run.completedAt = Date(timeIntervalSince1970: 120)
-        run.output = ""
+        run.setOutput("")
 
         let payload = AstraRunProtocolParsedEvent.valid(.complete(
             summary: "Implementation complete.",
@@ -1452,7 +1459,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: baseTimestamp)
             run.completedAt = Date(timeIntervalSince1970: baseTimestamp + 5)
-            run.output = "Run output \(index)"
+            run.setOutput("Run output \(index)")
             runs.append(run)
 
             events.append(makeEvent(
@@ -1513,7 +1520,7 @@ extension TaskThreadSnapshotTests {
         let run = TaskRun(task: task)
         run.startedAt = Date(timeIntervalSince1970: 10)
         run.completedAt = Date(timeIntervalSince1970: 20)
-        run.output = "Done"
+        run.setOutput("Done")
 
         let events = [
             makeEvent(
@@ -1598,6 +1605,39 @@ extension TaskThreadSnapshotTests {
         #expect(stats.cancelled == 1)
     }
 
+    /// The build completion timestamp used to be taken on the main actor after
+    /// the caller resumed, so the wait it was meant to measure was always zero
+    /// and the multi-second hops in production carried no telemetry at all.
+    /// Stamping it inside the executor is what makes the hop observable.
+    @Test("The executor stamps build completion before the caller reaches the main actor")
+    @MainActor
+    func executorStampsBuildCompletionBeforeTheMainActorHop() async throws {
+        let executor = TaskThreadSnapshotBuildExecutor()
+        let input = TaskThreadSnapshotInput(goal: "Hop", createdAt: .now, events: [], runs: [])
+        let build = Task.detached {
+            try await executor.build(
+                input: input,
+                fields: [:],
+                responsivenessContext: nil,
+                admittedAt: DispatchTime.now().uptimeNanoseconds
+            )
+        }
+        // Occupy the main actor while the detached build runs and finishes, so
+        // its result cannot be delivered here until the block ends.
+        blockCallingMainThread(forSeconds: 0.3)
+        let outcome = try await build.value
+
+        let hopMilliseconds = PerformanceTelemetry.elapsedMilliseconds(
+            since: outcome.completedAtUptimeNanoseconds
+        )
+        #expect(hopMilliseconds >= 100, "hop measured \(hopMilliseconds) ms")
+        #expect(outcome.snapshot.conversationItems.count == 1)
+        // `cpu_ms` separates "the build got more expensive" from "the build got
+        // descheduled". It is only meaningful because `build` has no suspension
+        // points, so it never migrates threads mid-measurement.
+        #expect(outcome.cpuNanoseconds > 0)
+    }
+
     @Test("Huge single item in one window does not block another window executor")
     func productionSnapshotExecutorsAreWindowIsolated() async throws {
         let barrier = SnapshotBuildCancellationBarrier()
@@ -1638,7 +1678,7 @@ extension TaskThreadSnapshotTests {
             admittedAt: DispatchTime.now().uptimeNanoseconds
         )
 
-        #expect(replacement.conversationItems.count == 1)
+        #expect(replacement.snapshot.conversationItems.count == 1)
         obsolete.cancel()
         barrier.releaseBuild()
         do {
@@ -1654,7 +1694,7 @@ extension TaskThreadSnapshotTests {
         let executor = TaskThreadSnapshotBuildExecutor()
         let task = makeTask(goal: "Huge run output")
         let run = TaskRun(task: task)
-        run.output = String(repeating: "ordinary streamed output without protocol markers\n", count: 1_000_000)
+        run.setOutput(String(repeating: "ordinary streamed output without protocol markers\n", count: 1_000_000))
         task.runs.append(run)
         let obsolete = Task {
             try await executor.build(
@@ -1676,7 +1716,7 @@ extension TaskThreadSnapshotTests {
         )
         let replacementDuration = replacementStartedAt.duration(to: .now)
 
-        #expect(replacement.conversationItems.count == 1)
+        #expect(replacement.snapshot.conversationItems.count == 1)
         #expect(replacementDuration < .milliseconds(250))
         do {
             _ = try await obsolete.value
@@ -1702,7 +1742,7 @@ extension TaskThreadSnapshotTests {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
             run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
-            run.output = "run \(runIndex)"
+            run.setOutput("run \(runIndex)")
             runs.append(run)
 
             for resultIndex in 0..<20 {

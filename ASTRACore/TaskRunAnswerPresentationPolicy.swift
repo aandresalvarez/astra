@@ -18,8 +18,22 @@ public enum TaskRunAnswerPresentationPolicy {
     public static let conversationChunkCoalescingCap = 4_096
 
     public static func presentation(rawText: String) -> TaskRunAnswerPresentation {
+        presentation(rawText: rawText, visible: normalizedVisibleText(rawText))
+    }
+
+    /// `joinedResponsePayloads` already returns normalized text. Feeding its
+    /// result back through `presentation(rawText:)` runs the whole
+    /// normalization pass -- sentence repair, blank-line collapse and the
+    /// markdown reflow -- a second time over the same string, which doubles the
+    /// per-run cost of every transcript rebuild while a task streams.
+    /// Normalization is idempotent, so callers that already hold joined output
+    /// use this entry point instead.
+    public static func presentation(normalizedText: String) -> TaskRunAnswerPresentation {
+        presentation(rawText: normalizedText, visible: normalizedText)
+    }
+
+    private static func presentation(rawText: String, visible: String) -> TaskRunAnswerPresentation {
         let raw = rawText
-        let visible = normalizedVisibleText(raw)
         guard !visible.isEmpty else {
             return TaskRunAnswerPresentation(answerText: "", progressMessages: [], rawText: raw)
         }
@@ -96,6 +110,16 @@ public enum TaskRunAnswerPresentationPolicy {
         return prefix + "..."
     }
 
+    /// Compiling an `NSRegularExpression` costs several times more than running
+    /// an already compiled one, and `normalizedVisibleText` applies the two
+    /// sentence-boundary patterns once per line of every transcript rebuild.
+    /// Compile each pattern once for the process instead of once per line.
+    private static let sentenceBoundaryRegex = try? NSRegularExpression(pattern: #"([.!?])([A-Z`#])"#)
+    private static let boldSentenceBoundaryRegex = try? NSRegularExpression(pattern: #"([.!?])(\*\*[A-Za-z])"#)
+    private static let repeatedNewlineRegex = try? NSRegularExpression(pattern: #"\n{3,}"#)
+    private static let whitespaceRunRegex = try? NSRegularExpression(pattern: #"\s+"#)
+    private static let sentenceSplitRegex = try? NSRegularExpression(pattern: #"([.!?])\s+"#)
+
     private static func normalizedVisibleText(_ text: String) -> String {
         var result = text
             .components(separatedBy: .newlines)
@@ -103,11 +127,11 @@ public enum TaskRunAnswerPresentationPolicy {
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         result = transformUnfencedLines(in: result) { line in
-            var transformed = replace(pattern: #"([.!?])([A-Z`#])"#, in: line, template: "$1 $2")
-            transformed = replace(pattern: #"([.!?])(\*\*[A-Za-z])"#, in: transformed, template: "$1\n\n$2")
+            var transformed = replace(regex: sentenceBoundaryRegex, in: line, template: "$1 $2")
+            transformed = replace(regex: boldSentenceBoundaryRegex, in: transformed, template: "$1\n\n$2")
             return transformed
         }
-        result = replace(pattern: #"\n{3,}"#, in: result, template: "\n\n")
+        result = replace(regex: repeatedNewlineRegex, in: result, template: "\n\n")
         return MarkdownRenderPreparation.prepareForDisplay(result)
     }
 
@@ -195,7 +219,7 @@ public enum TaskRunAnswerPresentationPolicy {
         if text.contains("\n") {
             return dedupedSegments(text.components(separatedBy: "\n"), joinedBy: "\n")
         }
-        let repaired = replace(pattern: #"([.!?])\s+"#, in: text, template: "$1\n")
+        let repaired = replace(regex: sentenceSplitRegex, in: text, template: "$1\n")
         return dedupedSegments(repaired.components(separatedBy: "\n"), joinedBy: " ")
     }
 
@@ -222,7 +246,7 @@ public enum TaskRunAnswerPresentationPolicy {
         if paragraphSegments.count > 1 {
             return paragraphSegments
         }
-        let repaired = replace(pattern: #"([.!?])\s+"#, in: text, template: "$1\n")
+        let repaired = replace(regex: sentenceSplitRegex, in: text, template: "$1\n")
         return repaired
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -252,14 +276,13 @@ public enum TaskRunAnswerPresentationPolicy {
     }
 
     private static func comparisonKey(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        replace(regex: whitespaceRunRegex, in: text, template: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
     }
 
-    private static func replace(pattern: String, in text: String, template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+    private static func replace(regex: NSRegularExpression?, in text: String, template: String) -> String {
+        guard let regex else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }

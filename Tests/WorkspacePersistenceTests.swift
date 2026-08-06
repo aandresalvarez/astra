@@ -135,7 +135,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     run.inputTokens = 100
     run.outputTokens = 23
     run.exitCode = 0
-    run.output = "Build complete"
+    run.setOutput("Build complete")
     run.costUSD = 0.12
     run.stopReason = "completed"
     context.insert(run)
@@ -1722,7 +1722,7 @@ struct WorkspacePersistenceTests {
         for index in 0..<15 {
             let run = TaskRun(task: task)
             run.startedAt = Date(timeIntervalSince1970: TimeInterval(index))
-            run.output = String(repeating: "\(index)", count: 12_000)
+            run.setOutput(String(repeating: "\(index)", count: 12_000))
             context.insert(run)
 
             let event = TaskEvent(
@@ -2493,7 +2493,7 @@ struct WorkspacePersistenceTests {
         run.tokensUsed = 321
         run.inputTokens = 200
         run.outputTokens = 121
-        run.output = "Here is the scheduled follow-up output."
+        run.setOutput("Here is the scheduled follow-up output.")
         run.costUSD = 0.42
         run.stopReason = "completed"
         context.insert(run)

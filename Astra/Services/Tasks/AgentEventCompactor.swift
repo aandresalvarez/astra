@@ -132,6 +132,12 @@ enum AgentEventCompactor {
             modelContext.delete(event)
         }
 
+        // One backdated insert plus `toCompact.count` deletes. When those two
+        // cancel out in the total (reachable whenever the preserve rules leave a
+        // single compactable row), the transcript's incremental tail read cannot
+        // detect this from counts and would keep rendering the deleted rows.
+        TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
+
         AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
             "event": "activity_compacted",
             "compacted_count": String(toCompact.count),

@@ -152,7 +152,7 @@ public enum SessionScanner {
             run.completedAt = session.lastActivity
             run.tokensUsed = session.totalTokens
             run.exitCode = 0
-            run.output = session.userMessages.joined(separator: "\n---\n")
+            run.setOutput(session.userMessages.joined(separator: "\n---\n"))
             run.typedStopReason = .completed
             modelContext.insert(run)
 

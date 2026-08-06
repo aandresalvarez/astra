@@ -204,9 +204,11 @@ struct TaskGitPullRequestPublishCoordinatorTests {
 
     @Test("A failed proposal save removes the event and fails before approval is exposed")
     func proposalPersistenceFailureFailsClosed() throws {
-        let schema = Schema(versionedSchema: ASTRASchemaV14.self)
+        // `ASTRASchema.current`, not a pinned historical version: the frozen
+        // versions bind the `AgentTask` entity to their own model classes, so
+        // inserting a live `AgentTask` into such a container traps on fetch.
         let container = try ModelContainer(
-            for: schema,
+            for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
