@@ -211,6 +211,7 @@ final class TaskThreadViewModel {
     private(set) var historyFullReadCountForTesting = 0
     private let snapshotBuilder: SnapshotBuilder?
     private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
+    private let mainActorStallSampler = TaskThreadMainActorStallSampler()
 
     // Debug-only, like `setWorkspaceForTesting` and
     // `agePullRequestLookupBreakerForTesting`. `historyFlushResultOverride`
@@ -279,6 +280,11 @@ final class TaskThreadViewModel {
             supersedeHistoryReadWorker()
             hasPendingRequestedRefresh = false
             supersedeSnapshotWorker()
+            // Dropped here rather than left to the idle backstop so switching
+            // tasks can never leave a 20 Hz probe behind. `refreshSnapshot`
+            // below restarts it if the incoming task is live.
+            mainActorStallSampler.stop()
+            _ = mainActorStallSampler.consumeTelemetryFields()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
             initialSnapshotResponsivenessTraceID = responsivenessContext?.traceID
@@ -425,6 +431,13 @@ final class TaskThreadViewModel {
         let isLive = resolvedTrigger.status == .running
             || resolvedTrigger.status == .queued
             || resolvedTrigger.latestRunStatus == .running
+        // The probe only exists to explain the streaming tail, so it lives
+        // exactly as long as the stream does.
+        if isLive {
+            mainActorStallSampler.start()
+        } else {
+            mainActorStallSampler.stop()
+        }
         let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
         let minimumInterval = Self.liveSnapshotMinimumInterval
         let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
@@ -493,6 +506,11 @@ final class TaskThreadViewModel {
                 let buildStartedAt = DispatchTime.now().uptimeNanoseconds
                 self.snapshotBuildCountForTesting += 1
                 let builtSnapshot: TaskThreadSnapshot
+                // Stamped by the executor before it returns, so the gap between
+                // it and the apply below is the real main-actor hop. Stamping it
+                // here, after resumption, measures the hop as zero by
+                // construction — which is what it used to report.
+                let buildCompletedAt: UInt64
                 do {
                     if let snapshotBuilder = self.snapshotBuilder {
                         builtSnapshot = try await snapshotBuilder(
@@ -500,6 +518,7 @@ final class TaskThreadViewModel {
                             request.fields,
                             request.responsivenessContext
                         )
+                        buildCompletedAt = DispatchTime.now().uptimeNanoseconds
                     } else {
                         // Capture executor admission immediately before the
                         // actor await. Request scheduling and live throttling
@@ -509,12 +528,14 @@ final class TaskThreadViewModel {
                             "thread_snapshot_executor_admission_started",
                             0
                         )
-                        builtSnapshot = try await self.snapshotBuildExecutor.build(
+                        let outcome = try await self.snapshotBuildExecutor.build(
                             input: request.input,
                             fields: request.fields,
                             responsivenessContext: request.responsivenessContext,
                             admittedAt: executorAdmissionStartedAt
                         )
+                        builtSnapshot = outcome.snapshot
+                        buildCompletedAt = outcome.completedAtUptimeNanoseconds
                     }
                 } catch is CancellationError {
                     break
@@ -530,7 +551,6 @@ final class TaskThreadViewModel {
                     )
                     continue
                 }
-                let buildCompletedAt = DispatchTime.now().uptimeNanoseconds
                 guard !Task.isCancelled else { break }
                 self.applySnapshotIfCurrent(
                     builtSnapshot,
@@ -561,11 +581,26 @@ final class TaskThreadViewModel {
         buildStartedAt: UInt64,
         buildCompletedAt: UInt64
     ) {
+        // Measured before the revision guard so a superseded generation cannot
+        // hide a hop that already happened.
+        let applyHopMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt)
+        let buildMilliseconds = Double(buildCompletedAt &- buildStartedAt) / 1_000_000
         guard request.revision == snapshotRevision else { return }
+        // The task-open trace is cancelled after the first apply, so anything
+        // reported only inside `performIfActive` is invisible for the entire
+        // streaming lifetime — where the multi-second hops actually live. Emit
+        // the unconditional event first, then the trace-correlated copy.
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_apply_hop",
+            start: buildCompletedAt,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: request.fields,
+            taskID: request.taskID
+        )
         request.responsivenessContext?.performIfActive { traceFields in
             PerformanceTelemetry.log(
-                "task_open_snapshot_main_actor_apply_wait",
-                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt),
+                "task_open_snapshot_apply_hop",
+                durationMilliseconds: applyHopMilliseconds,
                 fields: request.fields.merging(traceFields, uniquingKeysWith: { _, new in new }),
                 taskID: request.taskID
             )
@@ -597,8 +632,14 @@ final class TaskThreadViewModel {
                 level: .debug,
                 fields: request.fields.merging([
                     "throttle_delay_ms": String(format: "%.2f", request.delay * 1_000),
-                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount)
-                ], uniquingKeysWith: { _, new in new }),
+                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount),
+                    // Cadence is build + hop + apply. Carrying the split on the
+                    // same line makes every sample self-decomposing instead of
+                    // needing a join against the preceding build line.
+                    "build_ms": String(format: "%.2f", buildMilliseconds),
+                    "apply_hop_ms": String(format: "%.2f", applyHopMilliseconds)
+                ], uniquingKeysWith: { _, new in new })
+                .merging(mainActorStallSampler.consumeTelemetryFields(), uniquingKeysWith: { _, new in new }),
                 taskID: request.taskID
             )
             deferredLiveSnapshotCount = 0

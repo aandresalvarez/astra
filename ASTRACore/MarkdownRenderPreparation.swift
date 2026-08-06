@@ -162,7 +162,7 @@ public enum MarkdownRenderPreparation {
 
     private static func reflowedLine(_ line: String) -> [String] {
         guard line.contains("## ") || line.contains(": ")
-            || firstMatchRange(#"^\s*1[.)]\s"#, in: line) != nil else {
+            || firstMatchRange(leadingNumberedItemRegex, in: line) != nil else {
             return [line]
         }
         let headingChunks = headingSplit(line)
@@ -176,13 +176,26 @@ public enum MarkdownRenderPreparation {
         return lines
     }
 
+    /// Compiling an `NSRegularExpression` costs several times more than running
+    /// an already compiled one, and the reflow pass applies these patterns
+    /// several times per line of every transcript rebuild. Compile each pattern
+    /// once for the process instead of once per call.
+    private static let headingSplitRegex = try? NSRegularExpression(pattern: #"(?<=\s)#{2,6}\s+(?=[A-Z0-9])"#)
+    private static let headingRemainderCutRegex = try? NSRegularExpression(pattern: #"\s(?:[-*+]|\d{1,2}[.)])\s"#)
+    private static let leadingNumberedItemRegex = try? NSRegularExpression(pattern: #"^\s*1[.)]\s"#)
+    private static let colonBulletTriggerRegex = try? NSRegularExpression(pattern: #":\s+-\s"#)
+    private static let colonNumberedTriggerRegex = try? NSRegularExpression(pattern: #":\s+1[.)]\s"#)
+    private static let bulletMarkerRunRegex = try? NSRegularExpression(pattern: #"\s-\s+"#)
+    private static let numberedMarkerRunRegex = try? NSRegularExpression(pattern: #"\s\d+[.)]\s+"#)
+    private static let repeatedNewlineRegex = try? NSRegularExpression(pattern: #"\n{3,}"#)
+
     /// Splits a line before every mid-line `##`–`######` run that is preceded
     /// by whitespace and followed by spaced, capitalized-or-numbered content.
     /// Single `#` is left alone ("issue # 5" must not become a heading), and
     /// the content gate keeps prose mentions of hash syntax intact ("C macros
     /// use ## token pasting" — lowercase continuation, not a heading).
     private static func headingSplit(_ line: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"(?<=\s)#{2,6}\s+(?=[A-Z0-9])"#) else { return [line] }
+        guard let regex = headingSplitRegex else { return [line] }
         let nsLine = line as NSString
         let candidates = regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
         guard !candidates.isEmpty else { return [line] }
@@ -217,8 +230,7 @@ public enum MarkdownRenderPreparation {
     /// first embedded list marker so the remainder renders as its own block.
     /// Pristine heading lines (single chunk at line start) are never cut.
     private static func headingRemainderCut(_ chunk: String, isRecoveredHeading: Bool) -> [String] {
-        guard isRecoveredHeading,
-              let regex = try? NSRegularExpression(pattern: #"\s(?:[-*+]|\d{1,2}[.)])\s"#) else {
+        guard isRecoveredHeading, let regex = headingRemainderCutRegex else {
             return [chunk]
         }
         let nsChunk = chunk as NSString
@@ -249,32 +261,32 @@ public enum MarkdownRenderPreparation {
     private static func listRunSplit(_ chunk: String) -> [String] {
         let nsChunk = chunk as NSString
         let codeSpans = InlineCodeSpanIndex(nsChunk)
-        if let bulletTrigger = firstMatchRange(#":\s+-\s"#, in: chunk),
+        if let bulletTrigger = firstMatchRange(colonBulletTriggerRegex, in: chunk),
            !codeSpans.contains(bulletTrigger.location) {
             return splitMarkerRun(
                 chunk,
                 codeSpans: codeSpans,
-                markerPattern: #"\s-\s+"#,
+                markerRegex: bulletMarkerRunRegex,
                 searchStart: bulletTrigger.location + 1,
                 firstExpectedNumber: nil,
                 minimumItemLength: bulletRunMinimumItemLength
             )
         }
-        if let numberTrigger = firstMatchRange(#":\s+1[.)]\s"#, in: chunk),
+        if let numberTrigger = firstMatchRange(colonNumberedTriggerRegex, in: chunk),
            !codeSpans.contains(numberTrigger.location) {
             return splitMarkerRun(
                 chunk,
                 codeSpans: codeSpans,
-                markerPattern: #"\s\d+[.)]\s+"#,
+                markerRegex: numberedMarkerRunRegex,
                 searchStart: numberTrigger.location + 1,
                 firstExpectedNumber: 1
             )
         }
-        if let leadingNumber = firstMatchRange(#"^\s*1[.)]\s"#, in: chunk) {
+        if let leadingNumber = firstMatchRange(leadingNumberedItemRegex, in: chunk) {
             return splitMarkerRun(
                 chunk,
                 codeSpans: codeSpans,
-                markerPattern: #"\s\d+[.)]\s+"#,
+                markerRegex: numberedMarkerRunRegex,
                 searchStart: leadingNumber.location + leadingNumber.length - 1,
                 firstExpectedNumber: 2
             )
@@ -291,12 +303,12 @@ public enum MarkdownRenderPreparation {
     private static func splitMarkerRun(
         _ chunk: String,
         codeSpans: InlineCodeSpanIndex,
-        markerPattern: String,
+        markerRegex: NSRegularExpression?,
         searchStart: Int,
         firstExpectedNumber: Int?,
         minimumItemLength: Int? = nil
     ) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: markerPattern) else { return [chunk] }
+        guard let regex = markerRegex else { return [chunk] }
         let nsChunk = chunk as NSString
         guard searchStart < nsChunk.length else { return [chunk] }
         let searchRange = NSRange(location: searchStart, length: nsChunk.length - searchStart)
@@ -400,8 +412,8 @@ public enum MarkdownRenderPreparation {
         }
     }
 
-    private static func firstMatchRange(_ pattern: String, in text: String) -> NSRange? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    private static func firstMatchRange(_ regex: NSRegularExpression?, in text: String) -> NSRange? {
+        guard let regex else { return nil }
         let nsText = text as NSString
         return regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length))?.range
     }
@@ -642,7 +654,7 @@ public enum MarkdownRenderPreparation {
     }
 
     private static func collapseExtraBlankLines(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"\n{3,}"#) else { return text }
+        guard let regex = repeatedNewlineRegex else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "\n\n")
     }

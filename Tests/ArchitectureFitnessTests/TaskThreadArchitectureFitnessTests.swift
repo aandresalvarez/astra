@@ -250,6 +250,85 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
     }
 
+    /// `NSRegularExpression(pattern:)` compiles an ICU program every call, and
+    /// the transcript derivation applies these patterns once per line of every
+    /// run on every streaming rebuild. Compiling them per call cost 2x the
+    /// whole derivation in release measurements, and it is invisible to Swift
+    /// optimization because the work happens inside Foundation.
+    @Test("Transcript presentation compiles its regexes once, not per line")
+    func transcriptPresentationCompilesItsRegexesOnce() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        var offenders: [String] = []
+        for path in [
+            "ASTRACore/MarkdownRenderPreparation.swift",
+            "ASTRACore/TaskRunAnswerPresentationPolicy.swift"
+        ] {
+            for (index, line) in try source(path, root: root).components(separatedBy: "\n").enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.hasPrefix("//") else { continue }
+                let compiles = trimmed.contains("NSRegularExpression(pattern:")
+                    || trimmed.contains("options: .regularExpression")
+                // Only a `static let` at type scope compiles once for the
+                // process. A local `let` inside a function recompiles per call.
+                guard compiles, !trimmed.hasPrefix("private static let"),
+                      !trimmed.hasPrefix("static let") else { continue }
+                offenders.append("\(path):\(index + 1): \(trimmed)")
+            }
+        }
+        #expect(offenders.isEmpty, "Regexes on the snapshot build path must be hoisted: \(offenders)")
+    }
+
+    /// The build path normalizes once, in `joinedResponsePayloads`. Routing the
+    /// result back through `presentation(rawText:)` re-runs sentence repair,
+    /// blank-line collapse and the markdown reflow over the same string.
+    @Test("Joined response payloads are not normalized a second time")
+    func joinedResponsePayloadsAreNotNormalizedTwice() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let snapshot = try source("Astra/Views/TaskThreadSnapshot.swift", root: root)
+        #expect(snapshot.contains("presentation(normalizedText: finalText)"))
+        #expect(!snapshot.contains("presentation(rawText: finalText)"))
+    }
+
+    /// `LogSanitizer` rewrites any `[A-Za-z0-9_-]{40,}` run as
+    /// `[redacted-token]`, so a telemetry event name that long is written to
+    /// the log without its own name. That silently deleted
+    /// `task_open_snapshot_main_actor_apply_wait` (exactly 40 characters) from
+    /// every production log it ever appeared in.
+    @Test("Telemetry event names stay under the log sanitizer's redaction length")
+    func telemetryEventNamesStayUnderTheRedactionLength() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let enumerator = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"),
+            includingPropertiesForKeys: nil
+        )
+        let pattern = try NSRegularExpression(
+            pattern: #"PerformanceTelemetry\.(?:log|logIfNeeded|measure)\(\s*"([A-Za-z0-9_\-]{40,})""#
+        )
+        var offenders: [String] = []
+        for case let url as URL in enumerator ?? FileManager.DirectoryEnumerator() {
+            guard url.pathExtension == "swift" else { continue }
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for match in pattern.matches(in: text, range: range) {
+                guard let nameRange = Range(match.range(at: 1), in: text) else { continue }
+                offenders.append("\(url.lastPathComponent): \(text[nameRange])")
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "Event names of 40+ characters are redacted out of the log entirely: \(offenders)"
+        )
+    }
+
     private func source(_ relativePath: String, root: URL) throws -> String {
         try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }

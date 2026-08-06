@@ -293,7 +293,7 @@ struct UIStressThreadSnapshotTests {
         case .success:
             // A race where the build wins is legal; it must still be a
             // complete, well-formed snapshot.
-            #expect((try? outcome.get())?.sortedRuns.count == 50)
+            #expect((try? outcome.get())?.snapshot.sortedRuns.count == 50)
         }
     }
 
@@ -308,13 +308,13 @@ struct UIStressThreadSnapshotTests {
         try await withThrowingTaskGroup(of: Int.self) { group in
             for _ in 0..<24 {
                 group.addTask {
-                    let snapshot = try await executor.build(
+                    let outcome = try await executor.build(
                         input: input,
                         fields: [:],
                         responsivenessContext: nil,
                         admittedAt: DispatchTime.now().uptimeNanoseconds
                     )
-                    return snapshot.sortedEvents.count
+                    return outcome.snapshot.sortedEvents.count
                 }
             }
             var results: [Int] = []

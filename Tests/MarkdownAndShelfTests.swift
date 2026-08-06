@@ -270,6 +270,38 @@ struct MarkdownTextViewTests {
         #expect(joined == "Final answer is visible.")
     }
 
+    /// The transcript build joins a run's response payloads (which normalizes)
+    /// and then presents the result (which normalized it again). Dropping the
+    /// second pass halves the per-run cost of every streaming rebuild, and it
+    /// is only sound because normalization is idempotent. This is the guard on
+    /// that assumption: every shape the reflow touches must survive.
+    @Test("Presenting already-joined text matches presenting it raw", arguments: [
+        "Sentence one.Sentence two.Sentence three.",
+        "Point made.**Bold lead** follows immediately.",
+        "Here is what I found: - stale module map - wrong header path",
+        "Steps: 1) clean 2) regenerate 3) rebuild",
+        "Prose text ## Glued Heading follows here",
+        "### Heading\n| a | b |\n|---|---|\n| 1 | 2 |",
+        "```swift\nlet x = 1  // fenced.Not transformed.\n    let y = 2\n```",
+        "    indented code.Untouched.\n\nRegular prose.Transformed.",
+        "Line one.\n\n\n\n\nLine two after five newlines.",
+        "ASTRA_EVENT {\"type\":\"agent.response\"}\nVisible answer.Second sentence.",
+        "Repeated segment.\n\nRepeated segment.\n\nDistinct tail.",
+        "## Summary\nThe explicit answer section wins over the body above it.",
+        "Trailing whitespace runs   collapse   in   the   comparison key.",
+        "Mixed\r\nline\r\nendings.Should still normalize.",
+        ""
+    ])
+    func presentingAlreadyJoinedTextMatchesPresentingItRaw(source: String) {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([source])
+
+        let viaRaw = TaskRunAnswerPresentationPolicy.presentation(rawText: joined)
+        let viaNormalized = TaskRunAnswerPresentationPolicy.presentation(normalizedText: joined)
+
+        #expect(viaRaw.answerText == viaNormalized.answerText)
+        #expect(viaRaw.progressMessages == viaNormalized.progressMessages)
+    }
+
     @Test("Display preparation preserves fenced table-looking text")
     func displayPreparationPreservesFencedTableLookingText() {
         let source = """

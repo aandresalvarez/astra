@@ -5,6 +5,13 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+/// `Thread.sleep` called directly from an `async` body is a warning today and
+/// an error under the Swift 6 language mode, but blocking the main thread is
+/// exactly what the apply-hop test needs to reproduce.
+private func blockCallingMainThread(forSeconds seconds: TimeInterval) {
+    Thread.sleep(forTimeInterval: seconds)
+}
+
 private final class SnapshotBuildCancellationBarrier: @unchecked Sendable {
     private let entered = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
@@ -1598,6 +1605,39 @@ extension TaskThreadSnapshotTests {
         #expect(stats.cancelled == 1)
     }
 
+    /// The build completion timestamp used to be taken on the main actor after
+    /// the caller resumed, so the wait it was meant to measure was always zero
+    /// and the multi-second hops in production carried no telemetry at all.
+    /// Stamping it inside the executor is what makes the hop observable.
+    @Test("The executor stamps build completion before the caller reaches the main actor")
+    @MainActor
+    func executorStampsBuildCompletionBeforeTheMainActorHop() async throws {
+        let executor = TaskThreadSnapshotBuildExecutor()
+        let input = TaskThreadSnapshotInput(goal: "Hop", createdAt: .now, events: [], runs: [])
+        let build = Task.detached {
+            try await executor.build(
+                input: input,
+                fields: [:],
+                responsivenessContext: nil,
+                admittedAt: DispatchTime.now().uptimeNanoseconds
+            )
+        }
+        // Occupy the main actor while the detached build runs and finishes, so
+        // its result cannot be delivered here until the block ends.
+        blockCallingMainThread(forSeconds: 0.3)
+        let outcome = try await build.value
+
+        let hopMilliseconds = PerformanceTelemetry.elapsedMilliseconds(
+            since: outcome.completedAtUptimeNanoseconds
+        )
+        #expect(hopMilliseconds >= 100, "hop measured \(hopMilliseconds) ms")
+        #expect(outcome.snapshot.conversationItems.count == 1)
+        // `cpu_ms` separates "the build got more expensive" from "the build got
+        // descheduled". It is only meaningful because `build` has no suspension
+        // points, so it never migrates threads mid-measurement.
+        #expect(outcome.cpuNanoseconds > 0)
+    }
+
     @Test("Huge single item in one window does not block another window executor")
     func productionSnapshotExecutorsAreWindowIsolated() async throws {
         let barrier = SnapshotBuildCancellationBarrier()
@@ -1638,7 +1678,7 @@ extension TaskThreadSnapshotTests {
             admittedAt: DispatchTime.now().uptimeNanoseconds
         )
 
-        #expect(replacement.conversationItems.count == 1)
+        #expect(replacement.snapshot.conversationItems.count == 1)
         obsolete.cancel()
         barrier.releaseBuild()
         do {
@@ -1676,7 +1716,7 @@ extension TaskThreadSnapshotTests {
         )
         let replacementDuration = replacementStartedAt.duration(to: .now)
 
-        #expect(replacement.conversationItems.count == 1)
+        #expect(replacement.snapshot.conversationItems.count == 1)
         #expect(replacementDuration < .milliseconds(250))
         do {
             _ = try await obsolete.value
