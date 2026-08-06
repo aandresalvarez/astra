@@ -381,6 +381,12 @@ struct TaskSidebarView: View {
     @State private var showsAllPinnedTasks = false
     @State private var showsAllUnreadTasks = false
     @State private var isWorkspacesExpanded = true
+    // Persisted through `TaskSidebarDisclosureStore` alongside the other
+    // sidebar disclosure choices, which is what that store exists for.
+    @State private var browseMode = SidebarBrowseMode.default
+    // Gates writes back to the store until `onAppear` has read it. See
+    // `persistSidebarDisclosure`.
+    @State private var hasLoadedSidebarDisclosure = false
     // Single-open accordion intent + per-query search-reveal dismissals.
     // All writes funnel through `setAccordionState` so the "Show more"
     // expansion of a drawer that just closed is always retired with it.
@@ -396,9 +402,6 @@ struct TaskSidebarView: View {
     @State private var taskDragWatchdog = SidebarDragReleaseWatchdog()
     @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
-    @State private var isWorkspacesFilterHovered = false
-    @State private var isWorkspacesSortHovered = false
-    @State private var isWorkspacesHeaderHovered = false
     @State private var isSchedulesAddHovered = false
     @State private var isSchedulesHeaderHovered = false
     @State private var renamingTask: AgentTask?
@@ -466,12 +469,22 @@ struct TaskSidebarView: View {
         workspaceSortModeRaw = mode.rawValue
     }
 
-    private func rebuildTaskIndex() {
-        taskIndex = SidebarTaskIndex(
+    /// `animated` covers the rebuilds that reorder a list already on screen —
+    /// a run starting, a result landing, the selection releasing a held unread
+    /// rank. First build and search rebuilds stay instant: one has nothing to
+    /// move from, and the other fires on every keystroke.
+    private func rebuildTaskIndex(animated: Bool = false) {
+        let rebuilt = SidebarTaskIndex(
             tasks: tasks,
             searchText: searchText,
-            taskActivities: taskActivities
+            taskActivities: taskActivities,
+            stickyUnreadTaskID: taskIndex.heldUnreadRank(forSelected: selectedTask?.id)
         )
+        guard animated, let animation = disclosureAnimation else {
+            taskIndex = rebuilt
+            return
+        }
+        withAnimation(animation) { taskIndex = rebuilt }
     }
 
     private func rebuildSchedules() {
@@ -570,14 +583,23 @@ struct TaskSidebarView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        SidebarActivitySection(
-                            tasks: taskIndex.activeTasks,
-                            counts: taskIndex.activityCounts,
-                            row: topLevelTaskRow
-                        )
+                        // Activity and Unreads answer "what needs me, across
+                        // every workspace" without holding several drawers
+                        // open. Tasks mode has no drawers and is already that
+                        // list, so both docks would render the rows directly
+                        // beneath them a second time.
+                        if browseMode.showsCrossWorkspaceDocks {
+                            SidebarActivitySection(
+                                tasks: taskIndex.activeTasks,
+                                counts: taskIndex.activityCounts,
+                                row: topLevelTaskRow
+                            )
+                        }
                         pinnedSection(using: taskIndex)
-                        unreadSection(using: taskIndex)
-                        workspaceSection(using: taskIndex)
+                        if browseMode.showsCrossWorkspaceDocks {
+                            unreadSection(using: taskIndex)
+                        }
+                        browseSection(using: taskIndex)
                         if workspaceAvailability.showsRoutinesSection { schedulesSection }
                     }
                     .padding(.bottom, 12)
@@ -640,7 +662,7 @@ struct TaskSidebarView: View {
             endTaskDrag()
             endWorkspaceDrag()
         }
-        .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
+        .onChange(of: sidebarTasksVersion) { rebuildTaskIndex(animated: true) }
         .onChange(of: searchText) {
             rebuildTaskIndex()
             setAccordionState(WorkspaceSidebarAccordion.searchChanged(in: accordion))
@@ -1003,12 +1025,26 @@ struct TaskSidebarView: View {
             }
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
-            taskOptionsMenu(for: task, isVisible: showsHoverChrome)
+            // Pinning used to live only on drawer rows. Tasks mode has no
+            // drawers, so without it here the flat list is the one place you
+            // can see a task and not be able to pin it — and Activity and
+            // Unreads, which share this row, had the same hole.
+            taskOptionsMenu(for: task, includePinToggle: true, isVisible: showsHoverChrome)
                 .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
+        .onDrag {
+            beginTaskDrag()
+            return NSItemProvider(object: task.id.uuidString as NSString)
+        } preview: {
+            SidebarTaskDragChip(title: task.title)
+        }
         .contextMenu {
+            pinToggleButton(for: task)
+
+            Divider()
+
             taskContextMenu(for: task)
         }
     }
@@ -1158,7 +1194,89 @@ struct TaskSidebarView: View {
         }
     }
 
-    // MARK: - Workspace Section
+    // MARK: - Browse Section
+
+    /// The rail's main section. Both modes render one `Section` with the same
+    /// header, so switching swaps the rows without moving the chrome above
+    /// them. Disclosure state is shared: collapsing in one mode stays
+    /// collapsed in the other, because it is the same section either way.
+    @ViewBuilder
+    private func browseSection(using taskIndex: SidebarTaskIndex) -> some View {
+        switch browseMode {
+        case .workspaces: workspaceSection(using: taskIndex)
+        case .tasks: allTasksSection(using: taskIndex)
+        }
+    }
+
+    private func browseSectionHeader(
+        count: Int,
+        activityCounts: SidebarWorkspaceActivityCounts
+    ) -> some View {
+        SidebarBrowseSectionHeader(
+            mode: browseMode,
+            count: count,
+            activityCounts: activityCounts,
+            isExpanded: isWorkspacesExpanded,
+            showsListControls: workspaceAvailability.showsListControls,
+            sortMode: workspaceSortModeBinding,
+            showsStarredOnly: showStarredWorkspacesOnly,
+            onToggleExpanded: {
+                withAnimation(disclosureAnimation) {
+                    isWorkspacesExpanded.toggle()
+                }
+                persistSidebarDisclosure()
+            },
+            onSwitchMode: {
+                withAnimation(disclosureAnimation) {
+                    browseMode = browseMode.toggled
+                }
+                persistSidebarDisclosure()
+            },
+            onToggleStarredOnly: { showStarredWorkspacesOnly.toggle() }
+        )
+    }
+
+    // MARK: - Tasks Mode
+
+    /// Every task in one flat column — the Activity dock's row shape (title
+    /// over workspace) applied to the whole store, so a thread can be found
+    /// without knowing which folder holds it.
+    private func allTasksSection(using taskIndex: SidebarTaskIndex) -> some View {
+        let visibleTasks = taskIndex.allTasks
+        // Same liveness invariant as the workspace header, at task
+        // granularity: work whose own row is off the list signals here.
+        let headerActivityCounts = SidebarLivenessSignal.headerActivityCounts(
+            taskActivities: Array(taskActivities.values),
+            visibleTaskIDs: Set(visibleTasks.map(\.id)),
+            isSectionExpanded: isWorkspacesExpanded
+        )
+
+        return Section {
+            if isWorkspacesExpanded && visibleTasks.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(SidebarBrowseModePresentation.emptyTitle(isSearchActive: !searchText.isEmpty))
+                        .font(Stanford.body(14))
+                    Text(SidebarBrowseModePresentation.emptySubtitle(isSearchActive: !searchText.isEmpty))
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.textSecondary)
+                }
+                .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
+                .padding(.vertical, 10)
+            } else if isWorkspacesExpanded {
+                // Rows stay direct children of the enclosing `LazyVStack` —
+                // wrapping them in a container would build every row up
+                // front, and this list is deliberately uncapped.
+                ForEach(visibleTasks) { task in
+                    topLevelTaskRow(for: task)
+                        .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
+                }
+            }
+        } header: {
+            browseSectionHeader(count: visibleTasks.count, activityCounts: headerActivityCounts)
+        }
+    }
+
+    // MARK: - Workspaces Mode
 
     private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
         PerformanceTelemetry.measure(
@@ -1239,91 +1357,10 @@ struct TaskSidebarView: View {
                 }
             }
         } header: {
-            HStack(spacing: 10) {
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isWorkspacesExpanded.toggle()
-                    }
-                    persistSidebarDisclosure()
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("Workspaces")
-                            .font(Stanford.caption(14))
-                            .foregroundStyle(.secondary)
-                        if !visibleWorkspaces.isEmpty {
-                            SidebarCountBadge(count: visibleWorkspaces.count)
-                        }
-                        if !headerActivityCounts.isEmpty {
-                            WorkspaceActivityIndicator(counts: headerActivityCounts)
-                        }
-                        // Hover-only disclosure cue. Lives next to the
-                        // label rather than at the right edge so the
-                        // chevron clearly belongs to the section name.
-                        // Rotation tracks expansion state; opacity
-                        // tracks header hover so the section reads as
-                        // pure typography at rest but signals
-                        // "collapsible" the moment the cursor lands.
-                        Image(systemName: "chevron.right")
-                            .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(isWorkspacesExpanded ? 90 : 0))
-                            .opacity(isWorkspacesHeaderHovered ? 1 : 0)
-                            .animation(disclosureAnimation, value: isWorkspacesExpanded)
-                            .animation(hoverAnimation, value: isWorkspacesHeaderHovered)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover { isWorkspacesHeaderHovered = $0 }
-
-                Spacer()
-
-                if workspaceAvailability.showsListControls {
-                    Menu {
-                        Picker("Sort workspaces", selection: workspaceSortModeBinding) {
-                            ForEach(WorkspaceSidebarSortMode.allCases) { mode in
-                                Label(mode.title, systemImage: mode.systemImage)
-                                    .tag(mode)
-                            }
-                        }
-                    } label: {
-                        SidebarWorkspaceSortIcon(
-                            mode: workspaceSortMode,
-                            isHovered: isWorkspacesSortHovered
-                        )
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .onHover { isWorkspacesSortHovered = $0 }
-                    .help("Sort workspaces: \(workspaceSortMode.title)")
-                    .accessibilityLabel("Sort workspaces, current: \(workspaceSortMode.title)")
-                    .accessibilityHint("Choose name, recently used, or manual order.")
-
-                    Button {
-                        withAnimation(disclosureAnimation) {
-                            showStarredWorkspacesOnly.toggle()
-                        }
-                    } label: {
-                        SidebarWorkspaceStarIcon(
-                            role: .filter(isEnabled: showStarredWorkspacesOnly),
-                            isHovered: isWorkspacesFilterHovered
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { isWorkspacesFilterHovered = $0 }
-                    .help(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
-                    .accessibilityLabel(WorkspaceSidebarFilterPresentation.helpText(isEnabled: showStarredWorkspacesOnly))
-                    .accessibilityHint(WorkspaceSidebarFilterPresentation.accessibilityHint)
-                    .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
-                }
-            }
-            .padding(.horizontal, 10)
-            // See Routines section — 20pt top creates visual rhythm
-            // between top-level sections (Pinned / Workspaces / Routines).
-            .padding(.top, 20)
-            .padding(.bottom, 4)
-            .textCase(nil)
+            browseSectionHeader(
+                count: visibleWorkspaces.count,
+                activityCounts: headerActivityCounts
+            )
         }
     }
 
@@ -1808,18 +1845,30 @@ struct TaskSidebarView: View {
         isPinnedExpanded = state.isPinnedExpanded
         isWorkspacesExpanded = state.isWorkspacesExpanded
         isSchedulesExpanded = state.isSchedulesExpanded
+        browseMode = state.browseMode
         // Nothing persisted (first run, or the accordion migration) seeds
         // the open drawer from the restored selection, so launch shows the
         // working context instead of a wall of closed folders.
         accordion.openWorkspaceID = state.openWorkspaceID ?? selectedWorkspace?.id
+        hasLoadedSidebarDisclosure = true
     }
 
     private func persistSidebarDisclosure() {
+        // Persisting is also reached from events the user never triggered —
+        // `setAccordionState` writes whenever selection restoration or a
+        // search reveal moves the open drawer — and one of those landing
+        // before `onAppear` reads the store would save this view's initial
+        // `@State` over the saved state. That was invisible while every
+        // persisted field defaulted to the common case; `browseMode` does
+        // not, so a single early write drops the user back to the folder
+        // list without them touching anything.
+        guard hasLoadedSidebarDisclosure else { return }
         TaskSidebarDisclosureStore.save(TaskSidebarDisclosureState(
             isPinnedExpanded: isPinnedExpanded,
             isWorkspacesExpanded: isWorkspacesExpanded,
             isSchedulesExpanded: isSchedulesExpanded,
-            openWorkspaceID: accordion.openWorkspaceID
+            openWorkspaceID: accordion.openWorkspaceID,
+            browseMode: browseMode
         ))
     }
 
@@ -1902,38 +1951,24 @@ struct TaskSidebarView: View {
             beginTaskDrag()
             return NSItemProvider(object: task.id.uuidString as NSString)
         } preview: {
-            // Drag chip — was a thin material rectangle. Now sits on
-            // `cardBackground` with a hairline border + soft shadow so
-            // it reads as a proper "card lifted off the surface" rather
-            // than a translucent overlay.
-            let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-            HStack(spacing: 7) {
-                Image(systemName: "pin.fill")
-                    .font(Stanford.ui(11, weight: .medium))
-                    .foregroundStyle(Stanford.poppy)
-                Text(task.title)
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .background(shape.fill(Stanford.cardBackground))
-            .overlay(shape.strokeBorder(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1))
-            .shadow(color: Color.black.opacity(0.18), radius: 8, y: 4)
+            SidebarTaskDragChip(title: task.title)
         }
         .contextMenu {
-            Button {
-                withAnimation(disclosureAnimation) {
-                    togglePinned(for: task)
-                }
-            } label: {
-                Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
-            }
+            pinToggleButton(for: task)
 
             Divider()
 
             taskContextMenu(for: task)
+        }
+    }
+
+    private func pinToggleButton(for task: AgentTask) -> some View {
+        Button {
+            withAnimation(disclosureAnimation) {
+                togglePinned(for: task)
+            }
+        } label: {
+            Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
         }
     }
 
@@ -1960,13 +1995,7 @@ struct TaskSidebarView: View {
 
                 Section {
                     if includePinToggle {
-                        Button {
-                            withAnimation(disclosureAnimation) {
-                                togglePinned(for: task)
-                            }
-                        } label: {
-                            Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
-                        }
+                        pinToggleButton(for: task)
 
                         Divider()
                     }
@@ -2213,6 +2242,11 @@ struct TaskSidebarView: View {
     /// the drawer you're "in" opens and the stale one closes. Goes through
     /// `selectionChanged` so a drawer the user just dismissed stays closed.
     private func handleSelectedTaskChanged() {
+        // Releases the previous task's held unread rank. Selecting a task the
+        // reader has nothing to mark read changes no task field, so without
+        // this the outgoing row would keep its borrowed rank until some
+        // unrelated edit happened to rebuild the index.
+        rebuildTaskIndex(animated: true)
         guard let workspaceID = selectedTask?.workspace?.id else { return }
         setAccordionState(WorkspaceSidebarAccordion.selectionChanged(workspaceID, in: accordion))
     }

@@ -12,7 +12,7 @@ struct TaskSidebarDisclosureStoreTests {
         #expect(TaskSidebarDisclosureStore.load(defaults: defaults) == TaskSidebarDisclosureState())
     }
 
-    @Test("persists section disclosure and the single open workspace drawer")
+    @Test("persists section disclosure, the single open workspace drawer, and the browse mode")
     func persistsDisclosureState() throws {
         let defaults = try freshDefaults()
         defer { TaskSidebarDisclosureStore.clear(defaults: defaults) }
@@ -20,12 +20,22 @@ struct TaskSidebarDisclosureStoreTests {
             isPinnedExpanded: false,
             isWorkspacesExpanded: true,
             isSchedulesExpanded: false,
-            openWorkspaceID: UUID()
+            openWorkspaceID: UUID(),
+            browseMode: .tasks
         )
 
         TaskSidebarDisclosureStore.save(state, defaults: defaults)
 
         #expect(TaskSidebarDisclosureStore.load(defaults: defaults) == state)
+    }
+
+    @Test("an unreadable stored browse mode loads as the workspace list")
+    func unreadableBrowseModeFallsBackToWorkspaces() throws {
+        let defaults = try freshDefaults()
+        defer { TaskSidebarDisclosureStore.clear(defaults: defaults) }
+        defaults.set("kanban", forKey: "taskSidebar.browseMode")
+
+        #expect(TaskSidebarDisclosureStore.load(defaults: defaults).browseMode == .workspaces)
     }
 
     @Test("saving a nil open drawer clears the persisted ID")
