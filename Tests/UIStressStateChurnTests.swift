@@ -85,7 +85,13 @@ struct UIStressStateChurnTests {
             viewModel.requestSnapshotRefresh(for: task)
         }
 
-        let settled = await waitUntil(timeout: .seconds(8)) {
+        // 8 s was enough when the burst only had to clear a 120 ms debounce.
+        // `TaskThreadLiveSnapshotPacer` can now hold a live update for up to its
+        // 2 s ceiling, and a full `RUN_UI_STRESS=1` run starves main-actor hops
+        // for seconds on top of that, so the budget matches the other thread
+        // suites. What is being asserted is that the trailing update is never
+        // *lost*, not how quickly it lands.
+        let settled = await waitUntil(timeout: .seconds(30)) {
             viewModel.snapshot?.sortedEvents.contains { $0.payload == "storm message 199" } ?? false
         }
         #expect(settled, "final storm message must reach the applied snapshot (no lost trailing update)")

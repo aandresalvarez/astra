@@ -608,7 +608,23 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         threadViewModel.requestSnapshotRefresh(for: task)
                         schedulePlanStateCacheRefreshForRecoveredProgress()
-                        runtimeHealthNow = Date()
+                        // `runtimeHealthNow` reaches `body` through
+                        // `runtimeHealth`, and this closure runs at the raw
+                        // stream rate: a fresh `Date()` each time invalidated
+                        // the whole body outside every debounce, paying two
+                        // SwiftData fetches, the O(events) filter+sort in
+                        // `TaskRuntimeHealth.evaluate`, and the O(output)
+                        // grapheme walk in `threadScrollSignature` per pass.
+                        // Its only consumer compares against a five-minute
+                        // `TaskRuntimeHealth.quietThreshold`, so whole seconds
+                        // is enough, and leaving it uncoalesced would make
+                        // `TaskThreadLiveSnapshotPacer` -- which sizes its
+                        // interval from measured main-actor occupancy --
+                        // throttle the transcript for this body's cost.
+                        let second = Date().timeIntervalSinceReferenceDate.rounded(.down)
+                        if runtimeHealthNow.timeIntervalSinceReferenceDate != second {
+                            runtimeHealthNow = Date(timeIntervalSinceReferenceDate: second)
+                        }
                         logRuntimeHealthIfNeeded(reason: "snapshot")
                     }
                 },
