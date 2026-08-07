@@ -15,6 +15,16 @@ private struct RightRailScrollMetrics: Equatable {
     var contentMinY: CGFloat = 0
     var contentHeight: CGFloat = 0
     var viewportHeight: CGFloat = 0
+
+    /// Both edges are quantized here rather than in the view so the sink can
+    /// store the two booleans instead of the continuous metrics. See the
+    /// `onPreferenceChange` that reads them.
+    var showsTopShadow: Bool { contentMinY < -2 }
+
+    var showsBottomShadow: Bool {
+        guard contentHeight > viewportHeight + 2 else { return false }
+        return contentHeight + contentMinY > viewportHeight + 2
+    }
 }
 
 private struct RightRailScrollMetricsPreferenceKey: PreferenceKey {
@@ -259,7 +269,8 @@ struct WorkspaceRightRailView: View {
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
-    @State private var scrollMetrics = RightRailScrollMetrics()
+    @State private var showsTopRailScrollShadow = false
+    @State private var showsBottomRailScrollShadow = false
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
     @State private var hasGitRepositories = false
@@ -338,8 +349,21 @@ struct WorkspaceRightRailView: View {
                     }
                 }
                 .coordinateSpace(name: workspaceRightRailScrollCoordinateSpace)
+                // Quantize before storing. `metrics` moves on every scroll tick
+                // and only these two booleans are ever read from it, so keeping
+                // the raw value in `@State` invalidated this whole body — the
+                // capability panels included — from a preference this body
+                // publishes, on every tick. Writing only on a threshold
+                // crossing removes the edge for the scroll itself; the shadows
+                // are overlays, so the remaining crossing cannot resize the
+                // content that produced the metrics.
                 .onPreferenceChange(RightRailScrollMetricsPreferenceKey.self) { metrics in
-                    scrollMetrics = metrics
+                    if showsTopRailScrollShadow != metrics.showsTopShadow {
+                        showsTopRailScrollShadow = metrics.showsTopShadow
+                    }
+                    if showsBottomRailScrollShadow != metrics.showsBottomShadow {
+                        showsBottomRailScrollShadow = metrics.showsBottomShadow
+                    }
                 }
                 .overlay(alignment: .top) {
                     rightRailScrollShadow(edge: .top)
@@ -353,10 +377,6 @@ struct WorkspaceRightRailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
-    }
-
-    private var showsTopRailScrollShadow: Bool {
-        scrollMetrics.contentMinY < -2
     }
 
     private var contentPadding: CGFloat {
@@ -381,11 +401,6 @@ struct WorkspaceRightRailView: View {
 
     private var disclosureAnimation: Animation? {
         AstraMotion.disclosure(reduceMotion: reduceMotion)
-    }
-
-    private var showsBottomRailScrollShadow: Bool {
-        guard scrollMetrics.contentHeight > scrollMetrics.viewportHeight + 2 else { return false }
-        return scrollMetrics.contentHeight + scrollMetrics.contentMinY > scrollMetrics.viewportHeight + 2
     }
 
     private func rightRailScrollShadow(edge: RightRailScrollShadowEdge) -> some View {
