@@ -247,6 +247,126 @@ struct TaskTurnIntentAdmissionTests {
         )
     }
 
+    /// Regression for task B129DA53: approving a Jira credential prompt
+    /// "for similar requests in this task" resumed the run with the Jira
+    /// connector pruned out of scope, so `mcp__astra_host__jira` failed with
+    /// "No Jira connector is projected into ASTRA_CONNECTORS". The resume
+    /// envelope's generated prose had become the turn's activation text, and it
+    /// shares no token with Jira — while unrelated capabilities matched it on
+    /// generic words. An approval must never subtract authority.
+    @Test("Approving a credential prompt keeps the approved connector in the resumed run's scope")
+    func permissionResumeKeepsApprovedConnectorInScope() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira resume", primaryPath: "/tmp/astra-permission-resume")
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Read Jira tickets",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__jira; do not use Bash."
+        )
+        let jira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira issues",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.skill = jiraSkill
+        jira.workspace = workspace
+
+        // The decoy that actually won in production: its prose shares generic
+        // tokens ("run", "task", "operation") with the approval sentence.
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Run Google Cloud operations for this task",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__gcloud to run the requested operation for this task."
+        )
+        let gcloud = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Run cloud operations for this task",
+            baseURL: "https://cloudresourcemanager.googleapis.com",
+            authMethod: "bearer"
+        )
+        gcloud.skill = gcloudSkill
+        gcloud.workspace = workspace
+
+        let task = AgentTask(
+            title: "Jira tickets",
+            goal: "Answer questions about the user's work",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        task.skills = [jiraSkill, gcloudSkill]
+        context.insert(workspace)
+        context.insert(jiraSkill)
+        context.insert(jira)
+        context.insert(gcloudSkill)
+        context.insert(gcloud)
+        context.insert(task)
+
+        let userTurn = TaskEvent(
+            task: task,
+            type: TaskEventTypes.Conversation.userMessage.rawValue,
+            payload: "can you see my open tickets in Jira SS project? user alvaro1?"
+        )
+        userTurn.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(userTurn)
+        try context.save()
+
+        // Exactly what approveSimilarRuntimePermissionForTask submits.
+        let grants: [PermissionGrant] = [
+            .credential(label: "JIRA_API_TOKEN"),
+            .credential(label: "JIRA_EMAIL")
+        ]
+        let resumeMessage = PermissionBroker.resumeMessage(
+            providerID: .claudeCode,
+            grants: grants,
+            fallback: nil,
+            scopeDescription: "task-scoped runtime permission for similar requests in this task"
+        )
+        #expect(!resumeMessage.lowercased().contains("jira"))
+
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: resumeMessage,
+            executionPolicy: .default,
+            for: task,
+            into: context
+        ) else {
+            Issue.record("Expected the permission resume to persist")
+            return
+        }
+
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        let intent = try #require(request.executionPolicySnapshot?.turnIntentSnapshot)
+        #expect(intent.activationText == "can you see my open tickets in Jira SS project? user alvaro1?")
+
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: resumeMessage,
+            turnIntentSnapshot: intent,
+            runtime: .claudeCode
+        )
+        #expect(snapshot.providerLaunch.connectors.map(\.id).contains(jira.id))
+
+        // The connector must survive all the way to the run-scoped broker, which
+        // is what actually answers mcp__astra_host__jira.
+        let requiredTools = HostControlPlaneMCPProjection.requiredToolNames(
+            capabilityScope: snapshot.providerLaunch
+        )
+        #expect(requiredTools.contains("jira"))
+
+        let brokeredTools = Set(requiredTools)
+        let brokeredConnectors = snapshot.providerLaunch.connectors.filter {
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                    .map(brokeredTools.contains) == true
+        }
+        #expect(brokeredConnectors.map(\.id) == [jira.id])
+    }
+
     @Test("Candidate admission is invariant across requested runtime and evaluation order")
     func candidateAdmissionIsOrderInvariant() throws {
         let fixture = try makeJiraAdmissionFixture()

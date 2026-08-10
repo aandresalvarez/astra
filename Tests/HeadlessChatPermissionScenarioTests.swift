@@ -617,6 +617,144 @@ extension HeadlessChatScenarioTests {
         #expect(source.executionPolicyOverride != nil)
     }
 
+    /// End-to-end regression for task B129DA53. The unit-level guard lives in
+    /// TaskTurnIntentAdmissionTests; this drives the real coordinator, queue,
+    /// and provider launch so the durable record of what the resumed run was
+    /// actually given is the thing under assertion.
+    @Test("Approving a connector credential resumes with that connector still in scope")
+    func uiApproveSimilarKeepsApprovedConnectorInResumedRunScope() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-jira-resume","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Listed the open SS tickets"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Listed the open SS tickets","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Answer questions about the user's work",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let workspace = try #require(task.workspace)
+
+        // Workspace-local skills, deliberately not named after the bundled
+        // "Jira Agent"/"GCloud Agent" packages: a package-name match would drag
+        // the catalog's credential integrity check — and this machine's real
+        // Keychain — into a scenario about capability activation.
+        let jiraSkill = Skill(
+            name: "SS Ticket Reader",
+            skillDescription: "Read Jira tickets",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__jira; do not use Bash."
+        )
+        let jira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira issues",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.skill = jiraSkill
+        jira.workspace = workspace
+
+        // The decoy that won in production: its prose shares generic tokens
+        // ("run", "task", "operation") with the generated approval sentence.
+        let gcloudSkill = Skill(
+            name: "Cloud Ops Runner",
+            skillDescription: "Run Google Cloud operations for this task",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__gcloud to run the requested operation for this task."
+        )
+        let gcloud = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Run cloud operations for this task",
+            baseURL: "https://cloudresourcemanager.googleapis.com",
+            authMethod: "bearer"
+        )
+        gcloud.skill = gcloudSkill
+        gcloud.workspace = workspace
+
+        task.skills = [jiraSkill, gcloudSkill]
+        harness.context.insert(jiraSkill)
+        harness.context.insert(jira)
+        harness.context.insert(gcloudSkill)
+        harness.context.insert(gcloud)
+
+        let userTurn = TaskEvent(
+            task: task,
+            type: TaskEventTypes.Conversation.userMessage.rawValue,
+            payload: "can you see my open tickets in Jira SS project? user alvaro1?"
+        )
+        userTurn.timestamp = Date(timeIntervalSince1970: 1)
+        harness.context.insert(userTurn)
+
+        task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+        harness.context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: .credential(label: "JIRA_API_TOKEN"),
+                reason: "The Jira connector credentials require user approval before egress.",
+                grants: [.credential(label: "JIRA_API_TOKEN"), .credential(label: "JIRA_EMAIL")]
+            ),
+            run: blockedRun
+        ))
+        try harness.context.save()
+
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        let continuation = coordinator.approveSimilarRuntimePermissionForTask(task)
+        _ = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status != .pendingUser }
+        await continuation?.value
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let resumedRun = try #require(runs.last)
+        #expect(runs.count == 2)
+        #expect(resumedRun.id != blockedRun.id)
+
+        // What the resumed run was actually launched with, read back from its
+        // own durable record rather than re-derived by the test.
+        let signatureJSON = try #require(resumedRun.providerLaunchSignatureJSON)
+        let signature = try JSONDecoder().decode(
+            ProviderLaunchSignaturePayload.self,
+            from: Data(signatureJSON.utf8)
+        )
+        let scopedConnectors = signature.scopedConnectorDescriptors.joined(separator: " ").lowercased()
+        #expect(scopedConnectors.contains("jira"))
+        #expect(!scopedConnectors.contains("gcloud"))
+        #expect(signature.scopedSkillNames == ["SS Ticket Reader"])
+        #expect(signature.allowedTools.contains(
+            HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
+        ))
+        #expect(!signature.allowedTools.contains(
+            HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")
+        ))
+        #expect(resumedRun.status == .completed)
+        #expect(resumedRun.output == "Listed the open SS tickets")
+    }
+
     @Test("UI approval resumes a Claude ASTRA ask-first shell pause")
     func uiApprovalResumesClaudeAstraAskFirstShellPause() async throws {
         let harness = try HeadlessChatHarness()
