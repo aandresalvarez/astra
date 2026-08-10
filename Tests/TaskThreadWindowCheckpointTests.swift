@@ -7,27 +7,16 @@ import ASTRACore
 
 private actor SnapshotBuildBarrier {
     private var firstContinuation: CheckedContinuation<Void, Never>?
-    private var startWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private(set) var startedCount = 0
 
     func build(input: TaskThreadSnapshotInput) async -> TaskThreadSnapshot {
         startedCount += 1
-        let readyWaiters = startWaiters.filter { startedCount >= $0.count }
-        startWaiters.removeAll { startedCount >= $0.count }
-        readyWaiters.forEach { $0.continuation.resume() }
         if startedCount == 1 {
             await withCheckedContinuation { continuation in
                 firstContinuation = continuation
             }
         }
         return TaskThreadSnapshot(input: input)
-    }
-
-    func waitUntilStarted(_ count: Int) async {
-        guard startedCount < count else { return }
-        await withCheckedContinuation { continuation in
-            startWaiters.append((count, continuation))
-        }
     }
 
     func releaseFirst() {
@@ -72,9 +61,23 @@ private final class SnapshotExecutorStartSignal: @unchecked Sendable {
 @Suite("TaskThreadViewModel", .serialized)
 struct TaskThreadViewModelTests {
 
+    /// Was "Live throttle is excluded from executor admission telemetry", which
+    /// asserted `queueWait >= 100`: the old 120 ms floor slept *inside* the
+    /// snapshot worker, so the wait it caused was charged to
+    /// `task_open_snapshot_queue_wait`. Note what it took to observe that at
+    /// all -- a direct `refreshSnapshot` call with no `modelContext`. On the
+    /// production storage-backed path the floor compared `lastSnapshotApplyAt`
+    /// against a moment that always arrived at least a debounce, a save and a
+    /// store read later, so it was structurally unreachable and logged
+    /// `throttle_delay_ms=0.00` forever. This test was the only coverage it had,
+    /// and it exercised a call sequence production never runs.
+    ///
+    /// Pacing now happens in `requestSnapshotRefresh`, upstream of the save, the
+    /// read and the build, so no deliberate delay passes through the worker at
+    /// all and a direct refresh -- always a user action -- is never paced.
     @MainActor
-    @Test("Live throttle is excluded from executor admission telemetry")
-    func liveThrottleIsExcludedFromExecutorAdmissionTelemetry() async throws {
+    @Test("A direct refresh reaches the executor without a deliberate wait")
+    func aDirectRefreshReachesTheExecutorWithoutADeliberateWait() async throws {
         let capture = SnapshotTelemetryCapture()
         let context = TaskThreadResponsivenessContext(
             traceID: "separate-snapshot-waits",
@@ -89,12 +92,10 @@ struct TaskThreadViewModelTests {
         task.runs.append(run)
 
         vm.reset(for: task, responsivenessContext: context)
-        // Poll tightly here: the assertion below intentionally measures a
-        // nearly full 120 ms cadence window, while the general readiness
-        // helper's 100 ms polling interval would consume most of that window.
-        // Cold/full-suite load can delay the first build substantially. Keep
-        // the tight poll (so it does not consume the 120 ms cadence window),
-        // but give readiness the same generous budget as the shared helper.
+        // Poll tightly rather than through the shared readiness helper, whose
+        // 100 ms interval is the same order as the wait being measured.
+        // Cold/full-suite load can delay the first build substantially, so the
+        // budget stays generous.
         let initialDeadline = Date().addingTimeInterval(30)
         while !vm.appliedSnapshotReadiness.isReady(for: task.id), Date() < initialDeadline {
             try await Task.sleep(for: .milliseconds(1))
@@ -108,12 +109,20 @@ struct TaskThreadViewModelTests {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        let queueWait = try #require(capture.latest("task_open_snapshot_queue_wait"))
+        _ = try #require(capture.latest("task_open_snapshot_queue_wait"))
         let queueIndex = try #require(capture.lastIndex(of: "task_open_snapshot_queue_wait"))
         let admissionStartIndex = try #require(capture.lastIndex(of: "thread_snapshot_executor_admission_started"))
         let admissionEndIndex = try #require(capture.lastIndex(of: "thread_snapshot_executor_admission_wait"))
-        #expect(queueWait >= 100, "the live cadence throttle should remain visible in queue wait")
-        #expect(queueIndex < admissionStartIndex, "executor admission must start only after throttle queue wait ends")
+        // Deliberately not a wall-clock bound on `queueWait`. It now spans a
+        // single main-actor hop, but the hop is only as fast as the host: this
+        // suite has been observed at 7,896 ms of genuine queueing while the full
+        // test run saturates the main actor, so any threshold tight enough to
+        // catch a reintroduced 120 ms sleep would fail on load instead. The
+        // pacer's own accounting is the load-independent statement of the same
+        // contract -- a direct refresh is a user action and is never paced.
+        #expect(vm.livePacerForTesting.consumeTelemetryFields()["throttle_delay_ms"] == "0.00",
+                "a direct refresh is a user action and must never be paced")
+        #expect(queueIndex < admissionStartIndex, "executor admission must start only after queue wait ends")
         #expect(admissionStartIndex < admissionEndIndex, "executor admission telemetry must close after it starts")
     }
 
@@ -322,9 +331,22 @@ struct TaskThreadViewModelTests {
         #expect(vm.appliedSnapshotRevision == 1)
     }
 
+    /// Was "Refresh during an active build preempts it and applies only the
+    /// latest snapshot", which required the replacement to *start* while the
+    /// obsolete build was still suspended -- only possible because every new
+    /// request cancelled the worker and a fresh one began immediately. That is
+    /// the livelock: the build is cancellation-aware, so a 369 ms build under a
+    /// request every ~180 ms never completed and the transcript froze.
+    ///
+    /// The invariant the old test was really protecting is that an obsolete
+    /// build never reaches the screen, and that survives without cancellation:
+    /// the revision guard in `applySnapshotIfCurrent` drops it, and the worker
+    /// then picks the newest request out of the last-wins pending slot. The
+    /// build count is the cost of that trade -- one wasted build here, versus
+    /// none ever finishing before.
     @MainActor
-    @Test("Refresh during an active build preempts it and applies only the latest snapshot")
-    func refreshDuringActiveBuildPreemptsObsoleteSnapshot() async {
+    @Test("An obsolete build finishes and is dropped rather than cancelled")
+    func refreshDuringActiveBuildDropsObsoleteSnapshot() async {
         let barrier = SnapshotBuildBarrier()
         let vm = TaskThreadViewModel(snapshotBuilder: { input, _, _ in
             await barrier.build(input: input)
@@ -341,17 +363,21 @@ struct TaskThreadViewModelTests {
         let latestOutput = String(repeating: "latest", count: 1_024)
         run.setOutput(latestOutput)
         vm.refreshSnapshot(for: task)
-        await barrier.waitUntilStarted(2)
-        let latest = await awaitSnapshot(vm, where: { $0.latestRun?.output == latestOutput }, timeout: 30)
-
-        let startedCount = await barrier.startedCount
-        #expect(startedCount == 2, "replacement must start while the obsolete build remains suspended")
-        #expect(latest?.latestRun?.output == latestOutput)
-        #expect(vm.appliedSnapshotRevision == 1)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(
+            await barrier.startedCount == 1,
+            "the replacement must queue behind the in-flight build, not race it"
+        )
+        #expect(vm.appliedSnapshotRevision == 0, "nothing may be applied while the first build is parked")
 
         await barrier.releaseFirst()
-        try? await Task.sleep(for: .milliseconds(50))
-        #expect(vm.snapshot?.latestRun?.output == latestOutput)
+        let latest = await awaitSnapshot(vm, where: { $0.latestRun?.output == latestOutput }, timeout: 30)
+
+        #expect(await barrier.startedCount == 2, "the newest request must be built once the worker is free")
+        #expect(latest?.latestRun?.output == latestOutput)
+        // Two builds, one apply: the obsolete generation was dropped by the
+        // revision guard rather than painted and then replaced.
+        #expect(vm.snapshotBuildCountForTesting == 2)
         #expect(vm.appliedSnapshotRevision == 1)
     }
 

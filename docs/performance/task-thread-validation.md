@@ -64,6 +64,34 @@ is scheduling, not the work itself. **One hitch with a large maximum means a
 single synchronous call blocked the thread**, and the fix is to move that call
 off the main actor. `main_actor_max_stall_ms` alone cannot tell those apart.
 
+### Reading the live pacing fields
+
+While a task streams, `TaskThreadLiveSnapshotPacer` holds the next transcript
+update until the measured main-actor cost of the previous one is at most half of
+the elapsed period. The cadence line carries the whole control state:
+
+| Field | Meaning |
+| --- | --- |
+| `pace_render_ms` | Main-actor time the previous period actually spent on the transcript: the synchronous apply plus every probe overshoot after it, which is what makes the SwiftUI layout pass visible for the first time. |
+| `pace_period_ms` | Wall time between the last two live applies. |
+| `pace_duty` | `pace_render_ms / pace_period_ms`. The controller drives this towards 0.50. |
+| `pace_target_ms` | The admission period the controller most recently computed, `pace_render_ms / 0.5`, clamped to 2000. |
+| `throttle_delay_ms` | Delay this pacer actually inserted during the window. Same field name as before, but it used to be structurally pinned at `0.00`; a non-zero value now means real back-pressure. |
+| `deferred_snapshot_count` | Updates held during the window, for the same reason. |
+| `pace_reconcile_count` | Re-arms inside one window. Persistently above ~2 means the main actor is busy with work the transcript did not cause. |
+| `pace_state` | `unpaced` (no live apply measured yet, or disarmed by a terminal transition), `debounce` (deadline already passed; the 120 ms coalescing floor is binding), `duty` (the measured duty cycle is holding the update), `ceiling` (the deadline was clamped at 2 s). |
+
+`pace_state=ceiling` is the sample worth chasing. It means observed occupancy
+asked for a period longer than 2 s, which the transcript alone cannot account
+for — look for another main-actor producer rather than tuning the pacer. The
+clamp is also the reason the loop cannot wedge: admission at
+`lastApplyAt + 2 s` is independent of the measurement, so the worst case is a
+transcript refreshing at 0.5 Hz, never one that stops.
+
+`pace_render_ms ≈ 0` with a large `pace_period_ms` means the pacer is inactive
+and the cadence is whatever the debounce and the build cost produce — the
+unchanged pre-existing behaviour for cheap threads.
+
 If an open remains incomplete for five seconds while its view is still alive,
 `task_selection_timeout` records the elapsed time and whether the shell and
 transcript stages were reached before closing the trace. This makes a stuck
@@ -144,6 +172,9 @@ swift test --filter UIResponsivenessDiagnosticsTests
 swift test --filter ScreenTransitionTelemetryTests
 swift test --filter TaskThreadViewModelTests
 swift test --filter TaskThreadSnapshotTests
+swift test --filter TaskThreadSnapshotBackpressureTests
+swift test --filter TaskThreadLiveSnapshotPacerTests
+swift test --filter TaskThreadMainActorStallSamplerTests
 swift test --filter TaskThreadHistoryReaderTests
 swift test --filter TaskPlanServiceTests
 ./script/build_and_run.sh --verify
