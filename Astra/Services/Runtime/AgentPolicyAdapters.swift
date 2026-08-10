@@ -915,10 +915,17 @@ enum TaskPolicyStore {
             )
         }
 
-        // A scoped approval may narrow Auto, but never broaden an already
-        // narrower task/workspace selection. Treat restricted/interactive
-        // one-run overrides as an execution cap so legacy global Auto cannot
-        // silently turn an exact approval into unrestricted provider authority.
+        // An explicit restricted/interactive override is an execution cap: a
+        // launch that deliberately asks for a narrower policy must not be
+        // widened by a legacy global Auto default.
+        //
+        // This deliberately no longer covers permission *approvals*. Those pass
+        // `permissionPolicyOverride: nil` (see
+        // `AgentRuntimeExecutionPolicy.approvedRuntimePermission`) precisely so
+        // they land here as additive authority instead of tripping this cap:
+        // approving one prompt on an Auto task used to demote the whole run to
+        // `review`, which re-enabled the brokered enforcement tier the user had
+        // switched off — and the very next tool call was killed by it.
         guard executionPolicy.permissionPolicyOverride != nil,
               executionPolicy.permissionPolicyOverride != .autonomous,
               baseResolution.level == .autonomous else {
@@ -1030,8 +1037,15 @@ enum AgentPolicyManifestService {
         let policy = policyApprovedTools.isEmpty
             ? basePolicy
             : basePolicy.applyingOneRunAllowedTools(policyApprovedTools)
+        // A one-run approval ADDS tools; it never replaces the run's resolved
+        // tool set. This used to read `executionPolicy.allowedTools(default:)`,
+        // which substitutes the override for the resolved list — so approving a
+        // single credential prompt swapped an Auto run's tools for whatever the
+        // approval carried (the `review` preset), narrowing the run as a side
+        // effect of saying yes. Unioning means an approval can only ever widen.
         let requestedAllowedTools = uniqueStrings(
-            executionPolicy.allowedTools(default: taskCapabilityScope.resolver.resolvedProviderAllowedTools)
+            taskCapabilityScope.resolver.resolvedProviderAllowedTools
+                + (executionPolicy.allowedToolsOverride ?? [])
                 + taskScopedProviderGrants
         )
         let manifestExecutionPolicy = AgentRuntimeExecutionPolicy(
@@ -1128,6 +1142,23 @@ enum AgentPolicyManifestService {
             hostControlTools: hostControlTools
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        // Effective authority must be visible wherever it changes. The run that
+        // motivated this said "Auto" in the picker and ran under `review`
+        // enforcement, and nothing anywhere told the user — the only way to see
+        // it was to read the audit log. If the run does not resolve to what the
+        // task selected, say so in the same place every other policy fact is
+        // reported.
+        if let selectedLevel = TaskPolicyStore.latestSelectedLevel(for: task),
+           selectedLevel != resolution.level {
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "policy.effective-level-differs",
+                severity: .warning,
+                title: "Effective policy differs from the selected policy",
+                message: "This task is set to \(selectedLevel.displayName), but this run resolved to \(resolution.level.displayName) (scope: \(resolution.scope.rawValue)). The run is enforced at the effective level, not the selected one.",
+                affectedCapability: "policy",
+                remediation: "Review any one-run approval or execution override attached to this run; clear it to return the task to \(selectedLevel.displayName)."
+            ))
+        }
         if shouldProjectGitCredentials(
             task: task,
             contextText: contextText,
@@ -1297,6 +1328,7 @@ enum AgentPolicyManifestService {
             "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "policy_level": manifest.policyLevel.rawValue,
+            "selected_policy_level": TaskPolicyStore.latestSelectedLevel(for: task)?.rawValue ?? "none",
             "policy_scope": manifest.policyScope.rawValue,
             "provider_adapter_version": String(manifest.providerRender.adapterVersion),
             "enforcement": manifest.providerRender.enforcementTiers.map(\.rawValue).joined(separator: ","),

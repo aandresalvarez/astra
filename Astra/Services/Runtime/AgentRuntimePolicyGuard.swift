@@ -112,11 +112,7 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
 
 struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
-    private let readablePathRoots: [String]
-    private let writablePathRoots: [String]
-    private let readOnlyInputPathRoots: [String]
-    private let taskOutputPathRoots: [String]
-    private let pathMapper: ExecutionEnvironmentPathMapper?
+    private let boundary: RunBoundary
 
     var providerID: AgentRuntimeID {
         manifest.providerID
@@ -126,24 +122,24 @@ struct AgentRuntimePolicyGuard: Sendable {
         manifest.providerRender.usesBroadProviderPermissions
     }
 
-    init(manifest: RunPermissionManifest, pathMapper: ExecutionEnvironmentPathMapper? = nil) {
+    init(
+        manifest: RunPermissionManifest,
+        pathMapper: ExecutionEnvironmentPathMapper? = nil,
+        homeDirectories: [String] = [NSHomeDirectory()]
+    ) {
+        self.init(
+            manifest: manifest,
+            boundary: RunBoundary(
+                manifest: manifest,
+                pathMapper: pathMapper,
+                homeDirectories: homeDirectories
+            )
+        )
+    }
+
+    init(manifest: RunPermissionManifest, boundary: RunBoundary) {
         self.manifest = manifest
-        self.pathMapper = pathMapper
-        let roots = [manifest.workspacePath] + manifest.additionalPaths
-        let baseRoots = roots
-            .map(Self.standardizedAbsolutePath)
-            .filter { !$0.isEmpty }
-        self.writablePathRoots = baseRoots
-        let readOnlyInputRoots = manifest.additionalReadOnlyPaths
-            .map(Self.standardizedAbsolutePath)
-            .filter { !$0.isEmpty }
-        self.readOnlyInputPathRoots = readOnlyInputRoots
-        self.readablePathRoots = Array(Set(baseRoots + readOnlyInputRoots)).sorted()
-        let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
-        self.taskOutputPathRoots = baseRoots
-            .map { (($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)")) }
-            .map(Self.standardizedAbsolutePath)
-            .filter { !$0.isEmpty }
+        self.boundary = boundary
     }
 
     func hasAppliedApprovalGrants(_ grants: [PermissionGrant]) -> Bool {
@@ -163,12 +159,17 @@ struct AgentRuntimePolicyGuard: Sendable {
         case denied
     }
 
-    func disposition(toolName rawTool: String, command rawCommand: String?) -> CommandDisposition {
+    func disposition(
+        toolName rawTool: String,
+        command rawCommand: String?,
+        path rawPath: String? = nil
+    ) -> CommandDisposition {
         // Don't special-case an empty tool name: pass it through so
         // validateObservedAction returns its "unnamed tool use" deny, instead
         // of returning .ask here (which Auto would auto-approve — a bypass).
         let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Route through the guard's own post-hoc evaluation so the live
         // decision is identical to what would terminate the run otherwise — no
@@ -177,11 +178,18 @@ struct AgentRuntimePolicyGuard: Sendable {
         // violation means the guard would allow; a violation flagged
         // requiresApproval is ask-first; any other violation is a deny the
         // guard would enforce, so it must NOT be auto-approved.
+        //
+        // The path travels with the tool name for the same reason: without it
+        // the live classifier evaluated a *different input* than the post-hoc
+        // guard, so a file tool could be waved through live and then flagged
+        // out-of-boundary from the stream a moment later. One evaluation, one
+        // input.
         let observed = PolicyObservedEvent(
             kind: .toolUse,
             toolName: toolName,
             command: command,
-            summary: command
+            path: (path?.isEmpty == false) ? path : nil,
+            summary: command ?? path
         )
         guard let violation = validateObservedAction(observed, request: nil) else {
             return .allowed
@@ -549,10 +557,10 @@ struct AgentRuntimePolicyGuard: Sendable {
                 detail: summary
             )
         }
-        let pathIsAllowed = isMutationTool(toolName)
-            ? isPathWritable(path)
-            : isPathReadable(path)
-        guard pathIsAllowed else {
+        guard isMutationTool(toolName) else {
+            return isPathReadable(path) ? nil : outOfBoundaryReadViolation(path: path, toolName: toolName)
+        }
+        guard isPathWritable(path) else {
             return AgentRuntimePolicyViolation(
                 reason: "The file path is outside the workspace paths allowed for this run",
                 toolName: toolName,
@@ -560,6 +568,35 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
         return nil
+    }
+
+    /// A read outside the run boundary is a question, not a capital offence.
+    ///
+    /// Two facts make termination the wrong answer here. First, nothing at the
+    /// provider tier ever told the agent a read boundary existed: ASTRA renders
+    /// read permission unqualified (`Read(*)`), because no provider CLI scopes
+    /// reads the way it scopes writes. Enforcing a boundary the agent was never
+    /// given is a rule it cannot follow. Second, by the time this violation is
+    /// parsed out of the provider's stream the read has already completed —
+    /// killing the process prevents nothing and throws away the whole session.
+    ///
+    /// So make it answerable instead: with a live control channel the provider
+    /// is told "no" as a tool result and keeps working; without one the user
+    /// gets an approval card whose `.sandboxPath` grant widens
+    /// `additionalReadOnlyPaths` on the retry. Writes keep the terminal
+    /// violation — those are integrity events, and the write boundary *is*
+    /// declared to the provider.
+    private func outOfBoundaryReadViolation(path: String, toolName: String) -> AgentRuntimePolicyViolation {
+        let request = PermissionRequest.sandboxPath(path: path, access: "read", toolName: toolName)
+        return AgentRuntimePolicyViolation(
+            reason: "The file path is outside the read paths allowed for this run",
+            toolName: toolName,
+            detail: path,
+            violationCategory: "out_of_boundary_read",
+            requiresApproval: true,
+            permissionRequest: request,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        )
     }
 
     private func matchesTaskOutputFileMutation(_ observed: PolicyObservedEvent, toolName: String) -> Bool {
@@ -742,74 +779,31 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isPathReadable(_ rawPath: String) -> Bool {
-        isPath(rawPath, inside: readablePathRoots)
+        boundary.isReadable(rawPath)
     }
 
     private func isPathWritable(_ rawPath: String) -> Bool {
-        isPath(rawPath, inside: writablePathRoots)
+        boundary.isWritable(rawPath)
     }
 
-    /// True when `rawPath` falls under one of the run's explicitly read-only
-    /// input paths (`manifest.additionalReadOnlyPaths`) — regardless of
-    /// whether that same path also happens to sit inside a writable root
-    /// (e.g. an attached context file inside the workspace). Unlike
-    /// `isPathReadable(_:) && !isPathWritable(_:)`, this stays true for
-    /// read-only inputs nested inside a writable workspace, so the
-    /// read-only-input mutation guard can't be bypassed just by attaching a
-    /// file that already lives under the workspace root.
     private func isReadOnlyInputPath(_ rawPath: String) -> Bool {
-        isPath(rawPath, inside: readOnlyInputPathRoots)
-    }
-
-    private func isPath(_ rawPath: String, inside roots: [String]) -> Bool {
-        let candidate = standardizedRunPath(rawPath)
-
-        return roots.contains { root in
-            candidate == root || candidate.hasPrefix(root + "/")
-        }
+        boundary.isReadOnlyInput(rawPath)
     }
 
     private func isPathInTaskOutput(_ rawPath: String) -> Bool {
-        taskOutputRelativePath(rawPath) != nil
+        boundary.isInTaskOutput(rawPath)
     }
 
     private func isWritableTaskOutputFilePath(_ rawPath: String) -> Bool {
-        guard let relativePath = taskOutputRelativePath(rawPath),
+        guard let relativePath = boundary.taskOutputRelativePath(rawPath),
               !relativePath.isEmpty else {
             return false
         }
         return TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath)
     }
 
-    private func taskOutputRelativePath(_ rawPath: String) -> String? {
-        let candidate = standardizedRunPath(rawPath)
-
-        for root in taskOutputPathRoots {
-            if candidate == root {
-                return ""
-            }
-            let prefix = root + "/"
-            if candidate.hasPrefix(prefix) {
-                return String(candidate.dropFirst(prefix.count))
-            }
-        }
-        return nil
-    }
-
     private func standardizedRunPath(_ rawPath: String) -> String {
-        let rawPath = translatedPath(rawPath)
-        if rawPath.hasPrefix("/") {
-            return Self.standardizedAbsolutePath(rawPath)
-        }
-        return Self.standardizedAbsolutePath((manifest.workspacePath as NSString).appendingPathComponent(rawPath))
-    }
-
-    private func translatedPath(_ rawPath: String) -> String {
-        guard rawPath.hasPrefix("/"),
-              let hostPath = pathMapper?.hostPath(forContainerPath: rawPath) else {
-            return rawPath
-        }
-        return hostPath
+        boundary.standardizedRunPath(rawPath)
     }
 
     private func requiresApproval(toolName: String, command: String?) -> Bool {
@@ -1428,28 +1422,6 @@ struct AgentRuntimePolicyGuard: Sendable {
         guard pattern.hasSuffix(" *") else { return nil }
         let root = String(pattern.dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
         return root.isEmpty ? nil : root
-    }
-
-    private static func standardizedAbsolutePath(_ path: String) -> String {
-        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
-        let standardized = URL(fileURLWithPath: path).standardizedFileURL
-        var existingAncestor = standardized
-        var missingComponents: [String] = []
-        let fileManager = FileManager.default
-
-        while !fileManager.fileExists(atPath: existingAncestor.path),
-              existingAncestor.path != "/" {
-            missingComponents.insert(existingAncestor.lastPathComponent, at: 0)
-            existingAncestor.deleteLastPathComponent()
-        }
-
-        var resolved = existingAncestor
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        for component in missingComponents {
-            resolved.appendPathComponent(component)
-        }
-        return resolved.standardizedFileURL.path
     }
 
     private static func wildcardMatch(_ value: String, pattern: String) -> Bool {

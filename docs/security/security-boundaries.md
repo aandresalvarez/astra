@@ -36,6 +36,15 @@ and `~/Documents/Astra Dev/Workspaces`.
 - Agent runtimes can report tool use, file paths, shell commands, and network
   destinations; ASTRA's policy guard must enforce the run manifest across every
   observed URL, not just the first URL in a shell command.
+- A run's filesystem authority is one value, `RunBoundary`, read by both the OS
+  sandbox and the brokered stream guard. Those tiers are inversely activated, so
+  a root granted by one and unknown to the other becomes a boundary the provider
+  was never told about and is then punished for crossing. Out-of-boundary writes
+  stay terminal; out-of-boundary reads are approvable, because ASTRA never
+  declares a read boundary to the provider and the read has already completed by
+  the time the stream is parsed. A permission approval may only add authority —
+  it must not demote a run's policy level or switch its enforcement tier. See
+  `docs/architecture/run-boundary.md`.
 - Capability packages can define skills, connectors, and local tools; package
   IDs, tool commands, default arguments, connector URLs, and browser adapters
   must be treated as untrusted input.
