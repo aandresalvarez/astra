@@ -412,8 +412,7 @@ struct TaskSidebarView: View {
     @State private var workspaceOrderingState = WorkspaceSidebarOrderingStore.load()
     @State private var workspaceDragSession = WorkspaceSidebarDragSessionState()
     @State private var workspaceDragWatchdog = SidebarDragReleaseWatchdog()
-    @State private var selectedWorkspaceRowFrame: CGRect?
-    @State private var workspaceViewportHeight: CGFloat = 0
+    @State private var anchorTracker = WorkspaceSidebarAnchorTracker()
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
     @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
@@ -613,21 +612,25 @@ struct TaskSidebarView: View {
                         )
                     }
                 }
-                .onPreferenceChange(WorkspaceSidebarViewportHeightPreferenceKey.self) {
-                    workspaceViewportHeight = $0
+                // Both sinks write a reference, not view state: the values they
+                // carry are measured inside this body, so a `@State` write here
+                // re-entered layout through the preference that produced it.
+                // See `WorkspaceSidebarAnchorTracker`.
+                .onPreferenceChange(WorkspaceSidebarViewportHeightPreferenceKey.self) { height in
+                    anchorTracker.viewportHeight = height
                 }
-                .onPreferenceChange(WorkspaceSidebarSelectedRowFramePreferenceKey.self) {
-                    selectedWorkspaceRowFrame = $0
+                .onPreferenceChange(WorkspaceSidebarSelectedRowFramePreferenceKey.self) { frame in
+                    anchorTracker.selectedRowFrame = frame
                 }
                 // Sorting, starring, and renaming may move the selected row.
                 // Reapply its prior viewport anchor after layout so the user
                 // can keep tracking the same workspace instead of hunting for it.
                 .onChange(of: workspaceOrderSignature) {
                     guard let selectedWorkspace,
-                          let selectedWorkspaceRowFrame else { return }
+                          let rowFrame = anchorTracker.selectedRowFrame else { return }
                     let anchor = WorkspaceSidebarScrollAnchor.unitPoint(
-                        rowFrame: selectedWorkspaceRowFrame,
-                        viewportHeight: workspaceViewportHeight
+                        rowFrame: rowFrame,
+                        viewportHeight: anchorTracker.viewportHeight
                     )
                     DispatchQueue.main.async {
                         scrollProxy.scrollTo(selectedWorkspace.id, anchor: anchor)

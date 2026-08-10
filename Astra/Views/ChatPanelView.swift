@@ -841,15 +841,14 @@ struct ChatPanelView: View {
         }
     }
 
+    /// Writes only on a flip. `bottomMinY` moves on every scroll tick and every
+    /// streamed chunk, so assigning unconditionally invalidated this body from a
+    /// preference this body publishes. `TaskMainView` already guards its copy.
     private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
-        let wasAtBottom = isChatAtBottom
-        isChatAtBottom = ChatScrollMetrics.isAtBottom(
-            bottomMinY: bottomMinY,
-            viewportHeight: viewportHeight
-        )
-        if isChatAtBottom && !wasAtBottom {
-            hasUnseenChatActivity = false
-        }
+        let isNowAtBottom = ChatScrollMetrics.isAtBottom(bottomMinY: bottomMinY, viewportHeight: viewportHeight)
+        guard isNowAtBottom != isChatAtBottom else { return }
+        isChatAtBottom = isNowAtBottom
+        if isNowAtBottom { hasUnseenChatActivity = false }
     }
 
     private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
