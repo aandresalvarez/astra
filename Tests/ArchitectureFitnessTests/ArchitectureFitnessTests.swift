@@ -1937,7 +1937,8 @@ struct ArchitectureFitnessTests {
             // threshold from the file-access-broker tests added for issue
             // #323's WorkspacePackage subsystem. It's a flat suite, not a
             // companion of one production file, so it owns itself here.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_150, .owner("Architecture fitness test suite")),
+            // 2_150 -> 2_155: three budget raises above, each carrying its reason.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_155, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1950,13 +1951,17 @@ struct ArchitectureFitnessTests {
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
             "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
+            // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
+            // policy observation without a user-visible outcome now audits it.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_160, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Crossed the 2,000-line threshold in PR #374: one renderer per provider, each
             // translating the same policy contract into that CLI's flags. Splitting per
             // provider would hide the cross-provider diff this file exists to make legible,
             // so it owns itself with a tight ceiling instead.
-            "Astra/Services/Runtime/AgentPolicyAdapters.swift": .init(2_050, .owner("Provider policy rendering")),
+            // 2_050 -> 2_060 (run-boundary fix): a run whose effective level
+            // differs from the selected one now says so as a rendered diagnostic.
+            "Astra/Services/Runtime/AgentPolicyAdapters.swift": .init(2_060, .owner("Provider policy rendering")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
@@ -1983,7 +1988,9 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
-            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
+            // for approval now, and each affected case says why that still holds.
+            "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.

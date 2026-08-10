@@ -781,6 +781,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             // channel for approvals; every non-approval violation (denies,
             // out-of-scope paths) still terminates as a backstop.
             if violation.requiresApproval, liveApprovalsActive {
+                // Silently dropping this is right, but silently *losing* it is
+                // not: this is the one branch where ASTRA decides a policy
+                // observation needs no user-visible outcome, so leave a trace.
+                // Reconstructing why a run did or didn't stop should not require
+                // reading the SQLite store.
+                AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: taskID, fields: [
+                    "policy_observation": "deferred_to_live_channel",
+                    "violation_category": violation.violationCategory,
+                    "tool": violation.toolName ?? "unknown"
+                ], level: .debug)
                 return false
             }
             return recordPolicyViolation(violation, process: process)

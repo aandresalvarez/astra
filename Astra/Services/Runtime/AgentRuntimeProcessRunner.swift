@@ -887,7 +887,7 @@ final class AgentRuntimeProcessRunner {
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 taskID: task.id,
                 policyGuard: permissionManifest.map {
-                    AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
+                    AgentRuntimePolicyGuard(manifest: $0, boundary: RunBoundary(manifest: $0, plan: plan))
                 },
                 liveApprovalsActive: plan.interactiveAsk != nil,
                 sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext(
@@ -1283,7 +1283,8 @@ final class AgentRuntimeProcessRunner {
             requestID: control.requestID,
             toolName: control.toolName ?? "Tool",
             inputSummary: control.inputSummary,
-            commandText: control.commandText
+            commandText: control.commandText,
+            pathText: control.pathText
         )
         let heartbeat = Task.detached {
             while !Task.isCancelled {

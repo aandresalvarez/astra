@@ -23,11 +23,12 @@ enum AutoApprovalClassifier {
     static func decide(
         toolName: String,
         command: String?,
+        path: String? = nil,
         permissionPolicy: PermissionPolicy,
         manifest: RunPermissionManifest
     ) -> LiveAskDecision {
         let disposition = AgentRuntimePolicyGuard(manifest: manifest)
-            .disposition(toolName: toolName, command: command)
+            .disposition(toolName: toolName, command: command, path: path)
 
         switch disposition {
         case .denied:

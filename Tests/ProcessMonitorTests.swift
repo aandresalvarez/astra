@@ -1430,7 +1430,8 @@ struct RuntimePolicyGuardTests {
         )
 
         #expect(shouldKill == true)
-        #expect(monitor.policyViolationMessage?.contains("outside the workspace paths") == true)
+        #expect(monitor.policyApprovalRequired)
+        #expect(monitor.policyApprovalMessage?.contains("outside the read paths") == true)
     }
 
     @Test("Runtime support tools do not trip policy")
@@ -3120,7 +3121,7 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalMessage?.contains(".astra/tasks/requestable/index.html") == true)
     }
 
-    @Test("Read outside allowed paths stops the provider when path is observable")
+    @Test("Read outside allowed paths stops the provider for approval when path is observable")
     func outsidePathReadStopsProvider() {
         let manifest = runtimePolicyManifest(allowedTools: ["Read"])
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -3134,8 +3135,14 @@ struct RuntimePolicyGuardTests {
             process: nil
         )
 
+        // The run still stops here — but as a question, not a verdict. The read
+        // already completed before this event was parsed, so terminating
+        // prevents nothing; asking lets the user widen the read scope and the
+        // retry actually succeed. See RunBoundaryFirstPrinciplesTests.
         #expect(shouldKill == true)
-        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired)
+        #expect(monitor.policyApprovalMessage?.contains("/private/tmp/outside.txt") == true)
     }
 
     @Test("Mutating tool without observable path stops the provider")
@@ -3262,8 +3269,12 @@ struct RuntimePolicyGuardTests {
             process: nil
         )
 
+        // The symlink escape is still caught and the run still stops; a read
+        // outside the boundary is now surfaced as an approval rather than a
+        // kill, so the escape cannot proceed unnoticed either way.
         #expect(shouldKill == true)
-        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired)
     }
 
     @Test("Copilot view tool follows read path policy")
