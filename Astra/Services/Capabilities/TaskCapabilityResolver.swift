@@ -528,13 +528,36 @@ struct TaskCapabilityResolver {
             includeSkill(skill)
         }
 
+        // A connector whose credentials the user already approved for this task
+        // is settled business: they were asked about this exact connector, in
+        // this exact task, and said yes. Re-deciding that from the wording of a
+        // later turn is how "you have accessto jita ,, give methe data" — one
+        // transposed letter — silently strips the connector the run has already
+        // been using, and the agent reports it has no access to a tool the user
+        // just authorized. Word overlap is a hint for discovering capabilities;
+        // it is not evidence for revoking an approved one.
+        //
+        // This widens scope, never exposure: the projection still gates every
+        // credential through `connectorCredentialExposurePolicy`, which is
+        // built from these same approved labels.
+        let approvedConnectorIDs = Self.approvedCredentialConnectorIDs(
+            in: TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: runtime,
+                additionalGrants: additionalCredentialGrants
+            )
+        )
+
         let matchedConnectors = connectors.filter { connector in
             Self.matchesConnector(connector, taskText: searchableText)
         }
         let relevantConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
             from: matchedConnectors,
             contextText: searchableText
-        )
+        ) + connectors.filter { connector in
+            approvedConnectorIDs.contains(connector.id)
+                && !matchedConnectors.contains { $0.id == connector.id }
+        }
         for connector in relevantConnectors {
             includeSkill(connector.skill)
         }
@@ -846,6 +869,18 @@ struct TaskCapabilityResolver {
             toolType: "cli",
             command: "astra-browser"
         )
+    }
+
+    /// Connector IDs named by approved credential labels of the form
+    /// `connector:<uuid>:<CREDENTIAL_KEY>`. Labels that are not connector
+    /// scoped (a bare `GCP_PROJECT`, say) carry no connector identity and are
+    /// ignored here.
+    private static func approvedCredentialConnectorIDs(in labels: [String]) -> Set<UUID> {
+        Set(labels.compactMap { label -> UUID? in
+            let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == "connector" else { return nil }
+            return UUID(uuidString: String(parts[1]))
+        })
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {

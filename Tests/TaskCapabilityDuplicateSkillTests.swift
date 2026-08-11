@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -164,5 +165,135 @@ struct TaskCapabilityDuplicateSkillTests {
         )
         #expect(scope.behaviorSkills.map(\.id) == [winning.id])
         #expect(scope.connectors.map(\.id) == [connector.id])
+    }
+
+    /// Builds the shape of the production task that lost its connector: one
+    /// Jira skill owning one Jira connector, plus an unrelated skill.
+    private func makeApprovedConnectorFixture(
+        context: ModelContext,
+        workspaceName: String
+    ) throws -> (task: AgentTask, skill: Skill, connector: Connector, unrelated: Skill) {
+        let workspace = Workspace(name: workspaceName, primaryPath: "/tmp/\(workspaceName)")
+        context.insert(workspace)
+
+        let jiraAgent = Skill(
+            name: "Jira Agent",
+            skillDescription: "Search and read Jira tickets via typed read-only operations"
+        )
+        context.insert(jiraAgent)
+
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.skill = jiraAgent
+        connector.workspace = workspace
+        context.insert(connector)
+
+        let unrelated = Skill(name: "REDCap Agent", skillDescription: "Query REDCap reports")
+        unrelated.workspace = workspace
+        context.insert(unrelated)
+
+        let task = AgentTask(
+            title: "Jira tickets",
+            goal: "can you see my open tickets in Jira SS project?",
+            workspace: workspace
+        )
+        task.skills = [jiraAgent, unrelated]
+        context.insert(task)
+        try context.save()
+        return (task, jiraAgent, connector, unrelated)
+    }
+
+    @Test("A connector approved for the task survives a turn that misspells its name")
+    func approvedConnectorSurvivesTypoedFollowUpTurn() throws {
+        let container = try makeTaskCapabilityDuplicateSkillContainer()
+        let context = container.mainContext
+        let fixture = try makeApprovedConnectorFixture(context: context, workspaceName: "jira-approved")
+
+        // The user was asked about this connector in this task and approved it.
+        let connectorID = fixture.connector.id.uuidString
+        let resolver = TaskCapabilityResolver(
+            task: fixture.task,
+            additionalCredentialGrants: [
+                "connector:\(connectorID):JIRA_API_TOKEN",
+                "connector:\(connectorID):JIRA_EMAIL"
+            ].map { .credential(label: $0) }
+        )
+
+        // "jita" is a typo for "jira": zero token overlap with the connector,
+        // its skill, or its service type.
+        let scope = resolver.activationScope(contextText: "you have accessto jita ,, give methe data")
+        #expect(scope.connectors.map(\.id) == [fixture.connector.id])
+        #expect(scope.behaviorSkills.contains { $0.id == fixture.skill.id })
+
+        // The approval says nothing about unrelated capabilities, so pruning
+        // must still remove them.
+        #expect(!scope.behaviorSkills.contains { $0.id == fixture.unrelated.id })
+    }
+
+    @Test("A connector approved for the task survives a turn that names no capability")
+    func approvedConnectorSurvivesReferentialFollowUpTurn() throws {
+        let container = try makeTaskCapabilityDuplicateSkillContainer()
+        let context = container.mainContext
+        let fixture = try makeApprovedConnectorFixture(context: context, workspaceName: "jira-approved-2")
+
+        let resolver = TaskCapabilityResolver(
+            task: fixture.task,
+            additionalCredentialGrants: [
+                "connector:\(fixture.connector.id.uuidString):JIRA_API_TOKEN"
+            ].map { .credential(label: $0) }
+        )
+        let scope = resolver.activationScope(
+            contextText: "ok but giveme the users email , and other data i need to follow the preoced"
+        )
+        #expect(scope.connectors.map(\.id) == [fixture.connector.id])
+        #expect(scope.behaviorSkills.contains { $0.id == fixture.skill.id })
+    }
+
+    @Test("A durable task approval keeps the connector across later turns")
+    func durablyApprovedConnectorSurvivesLaterTurns() throws {
+        let container = try makeTaskCapabilityDuplicateSkillContainer()
+        let context = container.mainContext
+        let fixture = try makeApprovedConnectorFixture(context: context, workspaceName: "jira-durable")
+        let runtime = AgentRuntimeID.claudeCode
+
+        // Turn 1 approved the credential; the grant is persisted on the task,
+        // not carried in the launch policy of every later turn.
+        _ = TaskRuntimePermissionGrants.record(
+            grants: [
+                .credential(label: "connector:\(fixture.connector.id.uuidString):JIRA_API_TOKEN"),
+                .credential(label: "connector:\(fixture.connector.id.uuidString):JIRA_EMAIL")
+            ],
+            providerID: runtime,
+            task: fixture.task,
+            modelContext: context,
+            source: "test"
+        )
+        try context.save()
+
+        // Turn 3, launched fresh with no per-run grants.
+        let scope = TaskCapabilityResolver(task: fixture.task, runtime: runtime)
+            .activationScope(contextText: "you have accessto jita ,, give methe data")
+        #expect(scope.connectors.map(\.id) == [fixture.connector.id])
+        #expect(scope.behaviorSkills.contains { $0.id == fixture.skill.id })
+    }
+
+    @Test("An unapproved connector is still pruned by an unrelated turn")
+    func unapprovedConnectorRemainsPrunable() throws {
+        let container = try makeTaskCapabilityDuplicateSkillContainer()
+        let context = container.mainContext
+        let fixture = try makeApprovedConnectorFixture(context: context, workspaceName: "jira-unapproved")
+
+        // No grants: nothing has been settled about this connector, so the
+        // turn text is the only evidence available and it says nothing.
+        let scope = TaskCapabilityResolver(task: fixture.task)
+            .activationScope(contextText: "you have accessto jita ,, give methe data")
+        #expect(scope.connectors.isEmpty)
+        #expect(!scope.behaviorSkills.contains { $0.id == fixture.skill.id })
     }
 }
