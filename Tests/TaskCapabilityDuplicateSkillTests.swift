@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
@@ -94,5 +95,74 @@ struct TaskCapabilityDuplicateSkillTests {
         try context.save()
 
         #expect(TaskCapabilityResolver(task: task).allBehaviorSkills.map(\.id) == [current.id])
+    }
+
+    @Test("A connector survives dedupe of the skill copy that owns it")
+    func duplicateSkillDedupeKeepsOwnedConnectorInActivationScope() throws {
+        let container = try makeTaskCapabilityDuplicateSkillContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira Support Tickets", primaryPath: "/tmp/jira-support-tickets")
+        context.insert(workspace)
+
+        // The copy that owns the connector. Installing the package globally and
+        // then again into a workspace leaves two rows for one logical skill.
+        let owning = Skill(
+            name: "Jira Agent",
+            skillDescription: "Search and read Jira tickets via typed read-only operations"
+        )
+        owning.isGlobal = true
+        owning.originPackageID = "jira-workflow"
+        owning.originPackageVersion = "2.2.0"
+        owning.originComponentID = "skill:jira-agent"
+        owning.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        owning.updatedAt = Date(timeIntervalSince1970: 1_000)
+        context.insert(owning)
+
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.isGlobal = true
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.skill = owning
+        context.insert(connector)
+        workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+
+        // Same logical skill, no connectors, newer — so it wins dedupe.
+        let winning = Skill(
+            name: "Jira Agent",
+            skillDescription: "Search and read Jira tickets via typed read-only operations"
+        )
+        winning.originPackageID = "jira-workflow"
+        winning.originPackageVersion = "2.2.0"
+        winning.originComponentID = "skill:jira-agent"
+        winning.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
+        winning.workspace = workspace
+        winning.updatedAt = Date(timeIntervalSince1970: 2_000)
+        context.insert(winning)
+
+        let task = AgentTask(
+            title: "Answer the ticket",
+            goal: "can you see my open tickets in the SS project?",
+            workspace: workspace
+        )
+        task.skills = [owning, winning]
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.id) == [winning.id])
+        #expect(resolver.allConnectors.map(\.id) == [connector.id])
+
+        // A follow-up that never says "Jira" reaches the connector only through
+        // its owning skill. The skill is in scope, so the connector must be too.
+        let scope = resolver.activationScope(
+            contextText: "what are the next steps to address and answer the ticket?"
+        )
+        #expect(scope.behaviorSkills.map(\.id) == [winning.id])
+        #expect(scope.connectors.map(\.id) == [connector.id])
     }
 }

@@ -498,11 +498,29 @@ struct TaskCapabilityResolver {
         }
 
         let searchableText = Self.searchableTaskText(task: task, contextText: contextText)
+        // The inventory keeps one copy of each logical skill, but a resource's
+        // `skill` back-reference still points at whichever copy owns it — and
+        // that can be the copy dedupe discarded (a global "Jira Agent" and a
+        // workspace copy of the same package component both exist; the newer
+        // one wins). Matching ownership on raw object identity then orphans the
+        // resource: the skill is in scope, its connector is unreachable, and no
+        // wording of the request can recover it. Resolve through the logical
+        // identity the user actually sees.
+        let canonicalSkillsByKey = Dictionary(
+            skills.map { (logicalSkillKey($0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        func canonicalSkill(_ skill: Skill?) -> Skill? {
+            guard let skill else { return nil }
+            return canonicalSkillsByKey[logicalSkillKey(skill)] ?? skill
+        }
+
         var includedSkills: [Skill] = []
         var includedSkillIDs = Set<UUID>()
 
         func includeSkill(_ skill: Skill?) {
-            guard let skill, includedSkillIDs.insert(skill.id).inserted else { return }
+            guard let skill = canonicalSkill(skill),
+                  includedSkillIDs.insert(skill.id).inserted else { return }
             includedSkills.append(skill)
         }
 
@@ -525,12 +543,12 @@ struct TaskCapabilityResolver {
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
                 return true
             }
-            guard let skill = connector.skill else { return false }
+            guard let skill = canonicalSkill(connector.skill) else { return false }
             return includedSkillIDs.contains(skill.id)
         }
 
         let includedLocalTools = tools.filter { tool in
-            if let skill = tool.skill {
+            if let skill = canonicalSkill(tool.skill) {
                 return includedSkillIDs.contains(skill.id)
             }
             return Self.matchesLocalTool(tool, taskText: searchableText)
