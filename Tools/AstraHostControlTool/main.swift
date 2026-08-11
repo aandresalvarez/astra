@@ -297,7 +297,7 @@ private enum AstraHostControlBrokerCLI {
         let operation = (values["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
-        guard ["status", "get_issue", "search_jql"].contains(operation) else {
+        guard ["status", "get_issue", "search_jql", "get_comments"].contains(operation) else {
             throw HostControlBrokerCLIError.invalidArguments
         }
         output["operation"] = operation
@@ -392,7 +392,7 @@ private enum AstraHostControlBrokerCLI {
 
     private static let usage = """
     Usage:
-      astra-host-control jira --operation status|search-jql|get-issue [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
+      astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
       astra-host-control ssh --alias NAME
       astra-host-control github|gcloud|bq -- ARGUMENT...
     """

@@ -1161,7 +1161,7 @@ public final class HostControlMCPServer {
                 ]],
                 "isError": !status.ready
             ])
-        case "get_issue", "search_jql":
+        case "get_issue", "search_jql", "get_comments":
             return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
         default:
             return .error(code: -32602, message: "Unsupported Jira operation '\(operation)'")
@@ -1469,11 +1469,11 @@ public final class HostControlMCPServer {
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "operation": ["type": "string", "description": "status, get_issue, or search_jql. Defaults to status."],
+                    "operation": ["type": "string", "description": "status, get_issue, search_jql, or get_comments. Defaults to status."],
                     "alias": ["type": "string", "description": "Optional connector alias."],
-                    "issue_key": ["type": "string", "description": "For get_issue: Jira issue key, for example ASTRA-123."],
+                    "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
-                    "max_results": ["type": "number", "description": "For search_jql: maximum result count from 1 to 100. Defaults to 20."],
+                    "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],
                     "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
                     "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "request")]
                 ],
@@ -1761,16 +1761,28 @@ private struct JiraHTTPRequest {
 }
 
 private enum JiraRequestPolicy {
-    private static let readFields = [
+    /// The vetted field set for a list of issues: enough to identify and
+    /// triage each row, small enough that a page of them survives the
+    /// response byte cap.
+    private static let summaryFields = [
         "summary",
         "status",
         "assignee",
+        "reporter",
         "priority",
         "issuetype",
         "project",
         "created",
         "updated"
-    ].joined(separator: ",")
+    ]
+
+    /// One issue can afford its body. `description` is what a ticket is
+    /// actually *about*; without it "open the ticket and give me the detail"
+    /// returns the same status board the search already returned, and the
+    /// user has to open Jira in a browser to do the work — the one thing the
+    /// connector exists to avoid. It stays out of `summaryFields` because a
+    /// page of descriptions is what blows the cap, not a single one.
+    private static let detailFields = summaryFields + ["description"]
 
     static func readRequest(operation: String, arguments: [String: Any]) throws -> JiraHTTPRequest {
         switch operation {
@@ -1783,7 +1795,7 @@ private enum JiraRequestPolicy {
                 method: "GET",
                 path: "/rest/api/3/issue/\(issueKey)",
                 queryItems: [
-                    URLQueryItem(name: "fields", value: Self.readFields)
+                    URLQueryItem(name: "fields", value: Self.detailFields.joined(separator: ","))
                 ]
             )
         case "search_jql":
@@ -1794,7 +1806,7 @@ private enum JiraRequestPolicy {
             var queryItems = [
                 URLQueryItem(name: "jql", value: jql),
                 URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
-                URLQueryItem(name: "fields", value: Self.readFields)
+                URLQueryItem(name: "fields", value: Self.summaryFields.joined(separator: ","))
             ]
             if let nextPageToken = try nextPageToken(from: arguments["next_page_token"]) {
                 queryItems.append(URLQueryItem(name: "nextPageToken", value: nextPageToken))
@@ -1803,6 +1815,21 @@ private enum JiraRequestPolicy {
                 method: "GET",
                 path: "/rest/api/3/search/jql",
                 queryItems: queryItems
+            )
+        case "get_comments":
+            guard let issueKey = clean(arguments["issue_key"] as? String),
+                  isValidIssueKey(issueKey) else {
+                throw JiraRequestPolicyError("jira get_comments requires an issue_key such as ASTRA-123")
+            }
+            // Oldest first: a support thread reads as a conversation, and the
+            // response is byte-capped, so keeping the head keeps the request.
+            return JiraHTTPRequest(
+                method: "GET",
+                path: "/rest/api/3/issue/\(issueKey)/comment",
+                queryItems: [
+                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
+                    URLQueryItem(name: "orderBy", value: "created")
+                ]
             )
         default:
             throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")

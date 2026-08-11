@@ -37,4 +37,20 @@ struct HostControlCLIRelayPolicyTests {
             command: "env"
         ) == .denied)
     }
+
+    @Test("Relay allows every typed read-only Jira operation")
+    func relayAllowsEveryTypedReadOnlyJiraOperation() {
+        // A read operation the bridge supports but the relay rejects is
+        // invisible: the agent is told the route exists, then denied at the
+        // shell, and reports it has no access.
+        for operation in ["status", "get-issue", "search-jql", "get-comments"] {
+            #expect(
+                HostControlCLIRelayPolicy.allows(
+                    "astra-host-control jira --operation \(operation) --issue-key ASTRA-1"
+                ),
+                "Relay rejects operation \(operation)"
+            )
+        }
+        #expect(!HostControlCLIRelayPolicy.allows("astra-host-control jira --operation add-comment --issue-key ASTRA-1"))
+    }
 }

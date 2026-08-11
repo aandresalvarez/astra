@@ -212,7 +212,7 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.2.0")
+        #expect(package.version == "2.3.0")
         #expect(package.description.contains("credential broker"))
         #expect(package.governance.externalEffects == [.readOnly])
         #expect(package.governance.policyNotes.contains("not projected into provider environments"))

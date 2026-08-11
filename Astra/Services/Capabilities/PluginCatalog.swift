@@ -144,7 +144,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.2.0",
+            version: "2.3.0",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to read ticket metadata from your Jira instance through ASTRA's \
@@ -183,7 +183,8 @@ final class PluginCatalog {
                 READ-ONLY OPERATIONS
                 • Status: operation status
                 • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
-                • Get issue: operation get_issue with issue_key
+                • Get issue: operation get_issue with issue_key — returns the ticket description and reporter alongside its status fields
+                • Get comments: operation get_comments with issue_key and optional max_results, oldest first
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
 
                 If ASTRA does not attach either Jira host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct REST credential use.
@@ -191,6 +192,7 @@ final class PluginCatalog {
                 FORMATTING
                 • Always show: ticket key, summary, status, assignee, priority
                 • For search results, format as a clean table or list
+                • When asked to open a ticket or for its details, call get_issue and report the description and reporter, then get_comments if the thread matters
                 • When summarizing a sprint, group by status (To Do / In Progress / Done)
 
                 RULES

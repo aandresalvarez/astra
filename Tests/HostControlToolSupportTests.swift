@@ -757,6 +757,65 @@ struct HostControlToolSupportTests {
         #expect(!fields.split(separator: ",").contains("key"))
         #expect(!fields.contains("comment"))
         #expect(!fields.contains("attachment"))
+        // A page of issue bodies is what overruns the response byte cap, so a
+        // list stays metadata-only and `get_issue` carries the body.
+        #expect(!fields.contains("description"))
+    }
+
+    @Test("Jira host control get_issue returns the ticket body and its reporter")
+    func jiraHostControlGetIssueReturnsBodyAndReporter() throws {
+        let server = try jiraCaptureServer()
+        defer { endJiraCapture() }
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "get_issue",
+            "issue_key": "ASTRA-123"
+        ])
+
+        #expect(try resultText(response).contains("status_code: 200"))
+        let url = try #require(JiraCaptureURLProtocol.capturedURLs.last)
+        #expect(url.path == "/rest/api/3/issue/ASTRA-123")
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let fields = try #require(components.queryItems?.first { $0.name == "fields" }?.value)
+        // Without these two, "open the ticket and give me the details" returns
+        // the same status board the search already returned.
+        #expect(fields.contains("description"))
+        #expect(fields.contains("reporter"))
+        #expect(fields.contains("summary"))
+        #expect(!fields.contains("attachment"))
+    }
+
+    @Test("Jira host control reads an issue comment thread oldest first")
+    func jiraHostControlGetCommentsReadsThreadOldestFirst() throws {
+        let server = try jiraCaptureServer()
+        defer { endJiraCapture() }
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "get_comments",
+            "issue_key": "ASTRA-123",
+            "max_results": 5
+        ])
+
+        #expect(try resultText(response).contains("status_code: 200"))
+        let url = try #require(JiraCaptureURLProtocol.capturedURLs.last)
+        #expect(url.path == "/rest/api/3/issue/ASTRA-123/comment")
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.queryItems?.first { $0.name == "maxResults" }?.value == "5")
+        #expect(components.queryItems?.first { $0.name == "orderBy" }?.value == "created")
+    }
+
+    @Test("Jira host control get_comments rejects a malformed issue key")
+    func jiraHostControlGetCommentsRejectsMalformedIssueKey() throws {
+        let server = try jiraCaptureServer()
+        defer { endJiraCapture() }
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "get_comments",
+            "issue_key": "../../rest/api/3/myself"
+        ])
+
+        #expect(try errorMessage(response).contains("jira get_comments requires an issue_key"))
+        #expect(JiraCaptureURLProtocol.capturedURLs.isEmpty)
     }
 
     @Test("Jira host control rejects non HTTP base URL schemes")
@@ -1886,6 +1945,29 @@ struct HostControlToolSupportTests {
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
+    }
+
+    /// A Jira server whose requests are answered by `JiraCaptureURLProtocol`
+    /// instead of the network. Pair every call with `endJiraCapture()`.
+    private func jiraCaptureServer() throws -> HostControlMCPServer {
+        JiraCaptureURLProtocol.reset()
+        HostControlURLSessionConfiguration.protocolClassesForTesting = [JiraCaptureURLProtocol.self]
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://jira.example.test","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        return HostControlMCPServer(configuration: HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_EMAIL_ENV": "user@example.com",
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        ))
+    }
+
+    private func endJiraCapture() {
+        HostControlURLSessionConfiguration.protocolClassesForTesting = []
+        JiraCaptureURLProtocol.reset()
     }
 
     private func call(_ server: HostControlMCPServer, id: Int, tool: String, arguments: [String: Any]) throws -> [String: Any] {

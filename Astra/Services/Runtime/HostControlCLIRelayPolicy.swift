@@ -49,7 +49,7 @@ enum HostControlCLIRelayPolicy {
         let operation = (options["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
-        guard ["status", "search_jql", "get_issue"].contains(operation) else {
+        guard ["status", "search_jql", "get_issue", "get_comments"].contains(operation) else {
             return false
         }
         if let value = options["--max-results"],

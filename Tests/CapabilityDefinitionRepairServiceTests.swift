@@ -50,7 +50,7 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(library.installedVersion(of: "jira-workflow") == "2.2.0")
+        #expect(library.installedVersion(of: "jira-workflow") == "2.3.0")
         #expect(skill.allowedTools == package.skills[0].allowedTools)
         #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))

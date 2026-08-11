@@ -1987,7 +1987,8 @@ struct ArchitectureFitnessTests {
             // through `.running` because `.admitted` has no edge to `.completed`.
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
-            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
+            // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
+            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_280, .owner("Host-control MCP tool")),
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
             "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -2021,7 +2022,8 @@ struct ArchitectureFitnessTests {
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).
             "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
+            // 2_100 -> 2_175 on 2026-08-10: URL-capture tests proving get_issue carries the body, a list does not, and get_comments reaches the thread.
+            "Tests/HostControlToolSupportTests.swift": .init(2_175, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
             // New in PR #364: ExecutionEnvironmentSharedMountTests coverage for the
             // shared-workspace mount-downgrade fix pushed this over the 2,000-line
             // threshold. Owns itself since ExecutionEnvironment.swift is still
