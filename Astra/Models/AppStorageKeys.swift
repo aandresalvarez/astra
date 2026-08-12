@@ -20,6 +20,12 @@ public enum AppStorageKeys {
     // ran. Pre-V17 runs carry a nil flag, which readers treat as "might contain
     // markers"; the backfill resolves them to an exact true/false.
     public static let completedRunProtocolMarkerBackfillBuild = "astra.startup.completedRunProtocolMarkerBackfillBuild.v1"
+    // Build number for which the persisted-credential purge last ran. Redaction
+    // at the persistence funnel only protects payloads written after it shipped;
+    // this sweep is what clears credentials already sitting in the store, and it
+    // is build-gated rather than one-shot so a store that gains a leak from an
+    // older build still gets cleaned on the next update.
+    public static let completedPersistedCredentialPurgeBuild = "astra.startup.completedPersistedCredentialPurgeBuild.v1"
     public static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     // Legacy key retained so older preferences remain readable. The guided
     // installer intentionally does not honor a permanent decline: production

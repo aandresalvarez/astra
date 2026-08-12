@@ -935,6 +935,14 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             currentBuild: AppBuildInfo.current.build
         )
+        // Clears credentials that pre-redaction builds wrote into transcripts.
+        // Deferred like the rest: it is remediation of an already-persisted
+        // leak, not a precondition for anything running now, and the funnel
+        // stops new ones regardless of whether this pass has finished.
+        await PersistedCredentialPurgeService.purgeIfNeeded(
+            modelContext: modelContext,
+            currentBuild: AppBuildInfo.current.build
+        )
     }
 
     /// Legacy Skill data backfills, gated on the build number so they run once
