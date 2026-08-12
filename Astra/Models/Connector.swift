@@ -109,17 +109,48 @@ public final class Connector {
 
     /// Save a credential value to Keychain and keep the key in SwiftData only
     /// after the secure write succeeds.
+    ///
+    /// `true` means "stored"; it does not distinguish a Keychain refusal from
+    /// a value this connector is not allowed to hold. Callers that show the
+    /// user why should use `saveCredentialChecked` instead.
     @discardableResult
     public func saveCredential(key: String, value: String, allowUserInteraction: Bool = false) -> Bool {
+        saveCredentialChecked(
+            key: key,
+            value: value,
+            allowUserInteraction: allowUserInteraction
+        ).isSaved
+    }
+
+    /// The admission-controlled write. Every production credential write
+    /// funnels through here so no entry point can bypass the checks — see
+    /// `ConnectorCredentialAdmission` for why (a live Atlassian token was
+    /// stored as a REDCap token and duly sent to REDCap).
+    ///
+    /// `declaredFormat` lets an installer pass the shape its capability
+    /// package declared (`PluginConnector.CredentialHint.format`); when it is
+    /// nil the built-in `ConnectorCredentialFormatRegistry` applies.
+    @discardableResult
+    public func saveCredentialChecked(
+        key: String,
+        value: String,
+        allowUserInteraction: Bool = false,
+        declaredFormat: ConnectorCredentialFormat? = nil
+    ) -> ConnectorCredentialSaveOutcome {
         let upperKey = key.uppercased()
+        let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: nil)
+        guard decision.isAdmitted else {
+            recordCredentialRejection(key: upperKey, verdict: decision.verdict)
+            return .rejected(decision.verdict)
+        }
         let saved = ConnectorSecretSeam.required.saveCredential(
-            value,
+            decision.normalizedValue,
             key: upperKey,
             facts: secretFacts,
             allowUserInteraction: allowUserInteraction
         )
         recordCredentialSaveResult(key: upperKey, saved: saved)
-        return saved
+        return saved ? .saved : .keychainWriteFailed
     }
 
     /// Test seam for credential key normalization and persistence behavior.
@@ -129,15 +160,80 @@ public final class Connector {
     /// `ASTRAModels` cannot depend on `ASTRAPersistence`.
     @discardableResult
     func saveCredential(key: String, value: String, store: SecretStore) -> Bool {
+        saveCredentialChecked(key: key, value: value, store: store).isSaved
+    }
+
+    /// Store-injectable twin of `saveCredentialChecked(key:value:allowUserInteraction:declaredFormat:)`.
+    /// Runs the identical admission pass so tests cannot diverge from
+    /// production on what is storable.
+    @discardableResult
+    func saveCredentialChecked(
+        key: String,
+        value: String,
+        store: SecretStore,
+        declaredFormat: ConnectorCredentialFormat? = nil
+    ) -> ConnectorCredentialSaveOutcome {
         let upperKey = key.uppercased()
-        let ok = ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts, store: store)
+        let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: store)
+        guard decision.isAdmitted else {
+            recordCredentialRejection(key: upperKey, verdict: decision.verdict)
+            return .rejected(decision.verdict)
+        }
+        let ok = ConnectorSecretSeam.required.saveCredential(
+            decision.normalizedValue, key: upperKey, facts: secretFacts, store: store)
         if !ok {
             AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
                 "scope": "connector"
             ], level: .warning)
         }
         recordCredentialSaveResult(key: upperKey, saved: ok)
-        return ok
+        return ok ? .saved : .keychainWriteFailed
+    }
+
+    /// The cross-service reuse rule is the only one that needs the rest of
+    /// the store, and it degrades to "not performed" rather than blocking
+    /// when this connector has not been inserted yet (the install and
+    /// chat-driven creation paths both save before the row exists). The other
+    /// three rules are pure and always run.
+    private func admissionDecision(
+        key: String,
+        value: String,
+        declaredFormat: ConnectorCredentialFormat?,
+        store: SecretStore?
+    ) -> ConnectorCredentialAdmissionDecision {
+        var scan = ConnectorCredentialReuseScan.notPerformed
+        if let context = modelContext {
+            scan = store.map {
+                ConnectorSecurityPolicy.credentialReuseScan(for: value, excluding: self, in: context, store: $0)
+            } ?? ConnectorSecurityPolicy.credentialReuseScan(for: value, excluding: self, in: context)
+        }
+        if scan.wasTruncated {
+            AuditLoggingSeam.required.audit(.connectorSecretAdded, category: "Keychain", fields: [
+                "connector_id": id.uuidString,
+                "service_type": serviceType,
+                "result": "reuse_scan_truncated",
+                "scanned_connector_count": String(scan.scannedConnectorCount)
+            ], level: .warning)
+        }
+        return ConnectorCredentialAdmission.evaluate(
+            key: key,
+            value: value,
+            serviceType: serviceType,
+            declaredFormat: declaredFormat,
+            reuseSites: scan.sites
+        )
+    }
+
+    /// Rejections are audited with the reason but never the value, and never
+    /// the offending connector's name beyond what the audit stream already
+    /// records for this connector.
+    private func recordCredentialRejection(key: String, verdict: ConnectorCredentialAdmissionVerdict) {
+        AuditLoggingSeam.required.audit(.connectorSecretRejected, category: "Keychain", fields: [
+            "connector_id": id.uuidString,
+            "service_type": serviceType,
+            "credential_key": key,
+            "reason": verdict.auditReason
+        ], level: .warning)
     }
 
     /// Records the key only after the Keychain write succeeds — audit logging lives in `ConnectorSecretPersistence`.

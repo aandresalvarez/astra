@@ -9,6 +9,9 @@ struct CapabilityInstaller {
         case blocked([String])
         case persistenceFailed(packageID: String)
         case credentialSaveFailed(packageID: String, key: String)
+        /// The value was refused before it reached the Keychain — retrying
+        /// the same value cannot help, so this must not say "Try again".
+        case credentialRejected(packageID: String, key: String, verdict: ConnectorCredentialAdmissionVerdict)
 
         var errorDescription: String? {
             switch self {
@@ -18,6 +21,10 @@ struct CapabilityInstaller {
                 return "Enabling \(id) could not be saved. Try again."
             case .credentialSaveFailed(let id, let key):
                 return "Enabling \(id) could not save the \(key) credential. Try again."
+            case .credentialRejected(let id, let key, let verdict):
+                let reason = verdict.message(forKey: key)
+                    ?? "\(key) is not a valid credential for this connector."
+                return "Enabling \(id) was stopped: \(reason)"
             }
         }
     }
@@ -546,11 +553,16 @@ struct CapabilityInstaller {
         for hint in hints {
             guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
             let previousValue = connector.currentCredentialValue(forKey: hint.key)
-            guard connector.saveCredential(
+            let outcome = connector.saveCredentialChecked(
                 key: hint.key,
                 value: value,
-                allowUserInteraction: allowCredentialUserInteraction
-            ) else {
+                allowUserInteraction: allowCredentialUserInteraction,
+                declaredFormat: hint.format
+            )
+            guard outcome.isSaved else {
+                // The compensating rollback runs for a rejection too: an
+                // earlier hint in this batch may already have overwritten a
+                // working credential.
                 for saved in savedThisCall {
                     if let previousValue = saved.previousValue {
                         connector.saveCredential(
@@ -561,6 +573,10 @@ struct CapabilityInstaller {
                     } else {
                         connector.removeCredential(forKey: saved.key)
                     }
+                }
+                if let verdict = outcome.rejection {
+                    throw InstallationError.credentialRejected(
+                        packageID: packageID, key: hint.key, verdict: verdict)
                 }
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
             }

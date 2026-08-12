@@ -182,6 +182,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case connectorUpdated = "connector.updated"
     case connectorDeleted = "connector.deleted"
     case connectorSecretAdded = "connector.secret.added"
+    case connectorSecretRejected = "connector.secret.rejected"
     case connectorSecretRemoved = "connector.secret.removed"
     case connectorTested = "connector.tested"
 
