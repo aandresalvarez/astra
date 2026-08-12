@@ -270,6 +270,8 @@ private enum AstraHostControlBrokerCLI {
         switch tool {
         case "jira":
             return Invocation(tool: tool, arguments: try jiraArguments(remaining))
+        case "redcap":
+            return Invocation(tool: tool, arguments: try redcapArguments(remaining))
         case "ssh":
             return Invocation(tool: tool, arguments: try sshArguments(remaining))
         case "github", "gcloud", "bq":
@@ -309,6 +311,46 @@ private enum AstraHostControlBrokerCLI {
             output["max_results"] = parsed
         } else if values["--max-results"] != nil {
             throw HostControlBrokerCLIError.invalidArguments
+        }
+        if let value = values["--timeout-seconds"],
+           let parsed = Double(value),
+           parsed.isFinite,
+           parsed > 0 {
+            output["timeout_seconds"] = parsed
+        } else if values["--timeout-seconds"] != nil {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
+        return output
+    }
+
+    /// Comma-separated on the command line, arrays over the wire. The split
+    /// happens here so the broker only ever sees a typed list — a joined string
+    /// forwarded verbatim would put separator handling inside the request
+    /// builder, which is the part that must not be guessable from outside.
+    private static func redcapArguments(_ arguments: [String]) throws -> [String: Any] {
+        let values = try parsedOptions(
+            arguments,
+            allowed: [
+                "--operation", "--alias", "--fields", "--forms", "--records",
+                "--report-id", "--raw-or-label", "--timeout-seconds"
+            ]
+        )
+        let operation = (values["--operation"] ?? "status").lowercased()
+        guard REDCapHostControlPolicy.readOperations.contains(operation) else {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
+        var output: [String: Any] = ["operation": operation]
+        copy("--alias", to: "alias", from: values, into: &output)
+        copy("--report-id", to: "report_id", from: values, into: &output)
+        copy("--raw-or-label", to: "raw_or_label", from: values, into: &output)
+        for (option, key) in [("--fields", "fields"), ("--forms", "forms"), ("--records", "records")] {
+            guard let list = values[option] else { continue }
+            let entries = list
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !entries.isEmpty else { throw HostControlBrokerCLIError.invalidArguments }
+            output[key] = entries
         }
         if let value = values["--timeout-seconds"],
            let parsed = Double(value),
@@ -393,8 +435,13 @@ private enum AstraHostControlBrokerCLI {
     private static let usage = """
     Usage:
       astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
+      astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]
       astra-host-control ssh --alias NAME
       astra-host-control github|gcloud|bq -- ARGUMENT...
+
+    redcap record and report write their rows to a file under the task
+    directory and print only a receipt; nothing subject-level is returned on
+    stdout.
     """
 }
 

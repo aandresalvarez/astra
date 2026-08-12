@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import HostControlToolSupport
 
 enum HostControlCLIRelayPolicy {
     static let manifestMarker = "__astra_typed_host_control_relay__"
@@ -25,6 +26,8 @@ enum HostControlCLIRelayPolicy {
         switch tokens[1].lowercased() {
         case "jira":
             return allowsJira(Array(tokens.dropFirst(2)))
+        case "redcap":
+            return allowsREDCap(Array(tokens.dropFirst(2)))
         case "ssh":
             return allowsSSH(Array(tokens.dropFirst(2)))
         case "github", "gcloud", "bq":
@@ -57,6 +60,54 @@ enum HostControlCLIRelayPolicy {
             return false
         }
         return validPositiveDouble(options["--timeout-seconds"])
+    }
+
+    /// The operation list is read from the broker rather than restated here.
+    /// This allowlist and the broker's own validation have to agree, and a
+    /// second copy of the list is how they stop agreeing.
+    private static func allowsREDCap(_ arguments: [String]) -> Bool {
+        guard let options = pairedOptions(
+            arguments,
+            allowed: [
+                "--operation", "--alias", "--fields", "--forms", "--records",
+                "--report-id", "--raw-or-label", "--timeout-seconds"
+            ]
+        ) else {
+            return false
+        }
+
+        let operation = (options["--operation"] ?? "status").lowercased()
+        guard REDCapHostControlPolicy.readOperations.contains(operation) else {
+            return false
+        }
+        if let reportID = options["--report-id"], !reportID.allSatisfy(\.isNumber) {
+            return false
+        }
+        if operation == "report", options["--report-id"] == nil {
+            return false
+        }
+        if let rawOrLabel = options["--raw-or-label"],
+           !["raw", "label"].contains(rawOrLabel.lowercased()) {
+            return false
+        }
+        for key in ["--fields", "--forms", "--records"] {
+            guard let list = options[key] else { continue }
+            guard validREDCapIdentifierList(list) else { return false }
+        }
+        return validPositiveDouble(options["--timeout-seconds"])
+    }
+
+    private static func validREDCapIdentifierList(_ value: String) -> Bool {
+        let entries = value.split(separator: ",", omittingEmptySubsequences: false)
+        guard !entries.isEmpty, entries.count <= REDCapRequestPolicy.maximumIdentifiers else {
+            return false
+        }
+        return entries.allSatisfy {
+            String($0).range(
+                of: REDCapRequestPolicy.identifierPattern,
+                options: .regularExpression
+            ) != nil
+        }
     }
 
     private static func allowsSSH(_ arguments: [String]) -> Bool {

@@ -41,7 +41,12 @@ final class PluginCatalog {
         return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
     }()
 
-    private nonisolated static let fallbackBuiltInPackages: [PluginPackage] = [
+    /// Used only when the resource bundle yields nothing, but readable so a
+    /// fitness test can hold it to the same rules as the bundled definitions.
+    /// This copy silently drifted once: it still told the agent to `curl`
+    /// REDCap with the token in an environment variable long after the broker
+    /// took the credential away.
+    nonisolated static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // NOTE: `test-runner` and `read-only-explorer` used to live here as
         // zero-config packages. Both duplicated skills that every workspace
@@ -233,72 +238,70 @@ final class PluginCatalog {
         // ────────────────────────────────────────────
         PluginPackage(
             id: "redcap-workflow",
-            name: "REDCap Workflow",
+            name: "REDCap",
             icon: "tablecells",
             description: "Query and manage Stanford REDCap projects through the API",
             author: "ASTRA",
             category: "Integrations",
             tags: ["redcap", "stanford", "research", "clinical-data", "api"],
-            version: "1.0.0",
+            version: "2.0.0",
             setupGuide: """
-            Connect your workspace to Stanford REDCap using the project API token. \
-            The API endpoint is prefilled as https://redcap.stanford.edu/api/.
+            Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https://redcap.stanford.edu/api/.
+
+            ASTRA holds this token in its host-control broker. Tasks never receive it as an environment variable — they name a REDCap operation and ASTRA makes the call.
 
             What you can do:
-            - Export project metadata, instruments, events, arms, DAGs, reports, and records
-            - Inspect longitudinal event and instrument-event mappings
-            - Import records, metadata, arms, events, DAGs, and instrument-event mappings after explicit confirmation
-            - Download or upload REDCap files when the user asks for that workflow
+            - Read project info, the data dictionary, and user export rights inline
+            - Export records and reports to a file in the task folder
+            - Limit an export by record, field, or instrument
+
+            What you cannot do:
+            - Import, update, or delete anything, or upload files. This capability is read-only.
 
             Setup:
             - Add the project API token as REDCAP_API_TOKEN
-            - Keep tokens out of prompts, logs, files, commits, and shell history
-            - Use the task output folder for exports and summaries, especially when data may include PHI
+            - Record and report exports land in the task output folder; treat them as PHI
             """,
             skills: [PluginSkill(
                 name: "REDCap Agent",
                 icon: "tablecells",
-                description: "Query and manage Stanford REDCap projects via API",
+                description: "Read Stanford REDCap projects through ASTRA's typed broker",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a REDCap API specialist for Stanford REDCap. Use curl via Bash to interact with the REDCap API using form-encoded POST requests.
+                You are a REDCap specialist for Stanford REDCap. Use only ASTRA's typed REDCap host-control tool.
 
                 AUTHENTICATION
-                Use the API token and API endpoint env vars shown for the selected REDCap connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names. Never print, log, echo, save, or commit the token.
+                ASTRA resolves the selected connector's API token and endpoint inside its broker. The token is not in your environment and never will be. Do not ask for it, do not look for REDCAP_API_TOKEN, and do not try to read it out of ASTRA_CONNECTORS — those values are deliberately absent. If a task tells you the token should be in a variable, that instruction is stale; use the broker.
 
-                Base curl pattern:
-                Use the connector-specific runtime example shown in Available Connectors for project info, then change the content field for the operation below.
+                ASTRA HOST-CONTROL
+                Always use the ASTRA host-control route shown in the connector runtime example: `mcp__astra_host__redcap`/`astra_host-redcap` when MCP is attached, or the typed `astra-host-control redcap` command when ASTRA projects its CLI relay. Shell is permitted only to invoke that exact broker command; do not use curl, Python HTTP clients, or direct REDCap API calls. First verify readiness with operation status — it reports whether the selected connector has a base URL and a token without revealing the token.
 
-                COMMON READ OPERATIONS
-                - Project info: content=project&format=json&returnFormat=json
-                - Metadata: content=metadata&format=json&returnFormat=json
-                - Records: content=record&format=json&type=flat&returnFormat=json
-                - Reports: content=report&format=json&report_id=REPORT_ID&returnFormat=json
-                - Events: content=event&format=json&returnFormat=json
-                - Instrument-event mappings: content=formEventMapping&format=json&returnFormat=json
-                - Instruments/forms: content=instrument&format=json&returnFormat=json
-                - Arms: content=arm&format=json&returnFormat=json
-                - DAGs: content=dag&format=json&returnFormat=json
-                - Users: content=user&format=json&returnFormat=json
-                - Logging: content=log&format=json&returnFormat=json
+                READ-ONLY OPERATIONS
+                • Status: operation status
+                • Project info: operation project
+                • Data dictionary: operation metadata, with optional fields or forms
+                • Users and export rights: operation user
+                • Records: operation record, with optional records, fields, forms, and raw_or_label
+                • Report: operation report with report_id, and optional raw_or_label
+                The bridge owns the endpoint, the token, and the form body. Do not request raw content, method, or body inputs.
 
-                WRITE AND DELETE SAFETY
-                - Always confirm with the user before import, update, delete, file upload, DAG/user changes, event changes, or metadata changes.
-                - Prefer a dry-run style explanation first: endpoint, content value, records affected, and the exact file you will send.
-                - For imports, read data from a file in the task output folder or workspace and send it with --data-urlencode data@path when possible.
+                SUBJECT DATA
+                • record and report never return rows to you. The broker writes them to a file in the task directory and returns a receipt: export_path, export_bytes, and record_count.
+                • Read that file when you need the rows, and quote the minimum the user asked for.
+                • Never paste record-level data into chat, a task summary, or a commit. Cite field names, counts, and validation issues instead.
+                • project, metadata, and user carry no subject data and come back inline. Use them for attestations, data-dictionary questions, and access reviews.
 
-                DATA HANDLING
-                - Treat REDCap exports as sensitive research data and potential PHI.
-                - Save exports only to the task output folder unless the user explicitly names another location.
-                - Do not paste large record exports into chat. Summarize schema, counts, fields, and validation issues instead.
-                - Use jq or Python for parsing when output is large. Prefer JSON for structured work.
+                WRITES
+                This capability is read-only. Imports, updates, deletes, file uploads, and DAG, user, event, or metadata changes are not available through the broker. If the user asks for one, say plainly that ASTRA does not expose REDCap writes and stop; do not look for another route.
+
+                If ASTRA does not attach either REDCap host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct API credential use.
 
                 FORMATTING
-                - Report API calls by content value and purpose, not by token.
-                - For project summaries, include project title, purpose, record count if known, instruments, events, arms, and reports discovered.
-                - For data-quality checks, cite field names, event names, record IDs only when needed, and keep examples minimal.
+                • Report calls by operation and purpose, never by token.
+                • For project summaries, include title, purpose, record count if known, instruments, events, arms, and reports discovered.
+                • For data-quality checks, cite field names and event names; include record IDs only when the user needs them.
                 """,
                 environmentKeys: ["REDCAP_API_URL"], environmentValues: ["https://redcap.stanford.edu/api/"]
             )],
@@ -312,27 +315,28 @@ final class PluginCatalog {
                 credentialHints: [
                     .init(
                         key: "REDCAP_API_TOKEN",
-                        hint: "Project API token from REDCap > API. This is stored in Keychain and exposed to tasks through connector-specific env vars and ASTRA_CONNECTORS."
+                        hint: "Project API token from REDCap > API. Stored in Keychain and resolved inside ASTRA's host-control broker. It is deliberately not projected into task environments, so an agent cannot read or echo it.",
+                        format: ConnectorCredentialFormatRegistry.redcapAPIToken
                     )
                 ],
                 configHints: [],
-                notes: "Uses form-encoded POST requests to the Stanford REDCap API. The API token identifies the project and must never be printed or committed."
+                notes: "ASTRA's typed REDCap broker owns the endpoint, the token, and the request body. Record and report exports are written to a file in the task folder rather than returned to the transcript, because REDCap rows can be PHI."
             )],
-            localTools: [
-                PluginLocalTool(
-                    name: "curl - REDCap API",
-                    description: "Call the REDCap API with form-encoded POST requests",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "curl",
-                    arguments: ""
-                )
-            ],
-            templates: [],
-            governance: .builtInApproved(
+            localTools: [], templates: [],
+            // Spelled out rather than `.builtInApproved`, which cannot express
+            // `requiresExplicitUserConsent` - and the bundled definition this
+            // mirrors requires it. A fallback that quietly grants a PHI
+            // capability more freely than the shipped one is the wrong way for
+            // the two to differ.
+            governance: CapabilityGovernance(
+                approvalStatus: .approved,
                 riskLevel: .restricted,
+                visibility: .everyone,
+                requiresAdminApproval: false,
+                requiresExplicitUserConsent: true,
                 dataAccess: [.connectorCredentials, .clinicalData, .externalService, .network],
                 externalEffects: [.readOnly, .externalAPIWrite],
+                approvedBy: "ASTRA",
                 policyNotes: "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time."
             )
         ),

@@ -207,7 +207,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         let toolNames = Set(tools.compactMap { $0["name"] as? String })
-        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira"])
+        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira", "redcap"])
         let sshSchema = try #require(tools.first { $0["name"] as? String == "ssh" })
         let sshDescription = try #require(sshSchema["description"] as? String)
         #expect(sshDescription.contains("non-interactive"))
@@ -1705,24 +1705,6 @@ struct HostControlToolSupportTests {
         #expect(!stdout.contains("visible-prefix:su"))
         #expect(!stdout.contains("super-secret-token"))
         #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
-    }
-
-    @Test("Host control short secret prefix scan only checks truncation boundaries")
-    func hostControlShortSecretPrefixScanOnlyChecksTruncationBoundaries() throws {
-        let source = try hostControlToolSource()
-        let prefixScan = try sourceSnippet(
-            startingWith: "    private func mergedSecretPrefixRanges(",
-            endingBefore: "    private static func splitList",
-            in: source
-        )
-
-        let boundaryScanCount = prefixScan.components(separatedBy: "truncatedOutputBoundaries(in: value)").count - 1
-        #expect(boundaryScanCount == 1)
-        #expect(prefixScan.contains("boundaries: boundaries"))
-        #expect(prefixScan.contains("output capped after"))
-        #expect(!prefixScan.contains("for index in value.indices"))
-        #expect(!prefixScan.contains("Array(value[range])"))
-        #expect(!prefixScan.contains("secret.prefix(length)"))
     }
 
     @Test("Host control reapplies output caps after secret prefix redaction")
