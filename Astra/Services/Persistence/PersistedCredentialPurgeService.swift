@@ -48,12 +48,20 @@ public enum PersistedCredentialPurgeService {
     public static func purgeIfNeeded(
         modelContext: ModelContext,
         currentBuild: String,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        store: SecretStore = SecretStoreSeam.required
     ) async -> Bool {
         guard defaults.string(forKey: AppStorageKeys.completedPersistedCredentialPurgeBuild) != currentBuild else {
             return false
         }
-        guard await purge(modelContext: modelContext).completed else { return false }
+        let outcome = await purge(modelContext: modelContext, store: store)
+        guard outcome.completed else { return false }
+        // A sweep that found no credential to search for has not established
+        // that the store is clean — a Keychain the process could not read looks
+        // exactly the same from here, and spending the build gate on it would
+        // retire the sweep permanently on the strength of a failure. Re-running
+        // costs one connector fetch, so leave the gate open.
+        guard !outcome.skippedNoSecrets else { return false }
         defaults.set(currentBuild, forKey: AppStorageKeys.completedPersistedCredentialPurgeBuild)
         return true
     }
@@ -66,7 +74,9 @@ public enum PersistedCredentialPurgeService {
     ) async -> Outcome {
         let secrets = liveCredentialValues(modelContext: modelContext, store: store)
         guard !secrets.isEmpty else {
-            return Outcome(completed: true, skippedNoSecrets: true)
+            let outcome = Outcome(completed: true, skippedNoSecrets: true)
+            log(stage: "skipped_no_secrets", outcome: outcome)
+            return outcome
         }
 
         var outcome = Outcome(secretsConsidered: secrets.count)
@@ -106,6 +116,12 @@ public enum PersistedCredentialPurgeService {
         outcome.completed = true
         if outcome.eventsRewritten > 0 || outcome.runsRewritten > 0 {
             log(stage: "purged", outcome: outcome, severity: .notable)
+        } else {
+            // Every terminal path says something. This is a containment
+            // measure: "swept the store and found nothing" and "never ran"
+            // are the same silence otherwise, and only one of them means the
+            // transcripts are clean.
+            log(stage: "clean", outcome: outcome)
         }
         return outcome
     }

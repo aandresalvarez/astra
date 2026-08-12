@@ -356,6 +356,57 @@ struct PersistedCredentialPurgeServiceTests {
         #expect(outcome == .init(completed: true, skippedNoSecrets: true))
     }
 
+    /// The build gate exists to stop the sweep repeating, not to retire it. A
+    /// Keychain the process could not read is indistinguishable from a store
+    /// with no credentials, so recording the build on that outcome would mean
+    /// one unreadable launch permanently cancels the containment sweep for
+    /// this build — including for the store that still holds the leak.
+    @MainActor
+    @Test("A sweep that found no credential to search for does not spend the build gate")
+    func purgeIfNeededKeepsGateOpenWhenNoSecretsAreReadable() async throws {
+        let fixture = try Self.makeFixture()
+        let defaults = try #require(UserDefaults(suiteName: "purge-gate-no-secrets"))
+        defaults.removePersistentDomain(forName: "purge-gate-no-secrets")
+
+        let recorded = await PersistedCredentialPurgeService.purgeIfNeeded(
+            modelContext: fixture.context,
+            currentBuild: "10029",
+            defaults: defaults,
+            store: MockSecretStore()
+        )
+
+        #expect(recorded == false)
+        #expect(defaults.string(forKey: AppStorageKeys.completedPersistedCredentialPurgeBuild) == nil)
+    }
+
+    @MainActor
+    @Test("A sweep that ran against real credentials spends the build gate once")
+    func purgeIfNeededRecordsBuildAfterRealSweep() async throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        _ = try Self.seedLeakedStore(fixture, store: store)
+        let defaults = try #require(UserDefaults(suiteName: "purge-gate-real-sweep"))
+        defaults.removePersistentDomain(forName: "purge-gate-real-sweep")
+
+        let first = await PersistedCredentialPurgeService.purgeIfNeeded(
+            modelContext: fixture.context,
+            currentBuild: "10029",
+            defaults: defaults,
+            store: store
+        )
+        #expect(first)
+        #expect(defaults.string(forKey: AppStorageKeys.completedPersistedCredentialPurgeBuild) == "10029")
+
+        // Same build, so the sweep does not run again.
+        let second = await PersistedCredentialPurgeService.purgeIfNeeded(
+            modelContext: fixture.context,
+            currentBuild: "10029",
+            defaults: defaults,
+            store: store
+        )
+        #expect(second == false)
+    }
+
     @MainActor
     @Test("Non-credential connector values are never treated as secrets")
     func purgeIgnoresNonCredentialValues() throws {
