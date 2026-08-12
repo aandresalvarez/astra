@@ -1735,14 +1735,13 @@ final class AgentRuntimeProcessRunner {
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String = "",
         executionPolicy _: AgentRuntimeExecutionPolicy = .default,
-        runtimeRequirements: TaskRuntimeRequirementSet? = nil
+        // Intentionally unread: a brokered connector's credentials are stripped
+        // from the scope the broker owns them for, not from the scope the
+        // runtime managed to deliver the tool to.
+        runtimeRequirements _: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
-        stripBrokeredConnectorEnvironment(
-            from: &taskEnv,
-            capabilityScope: capabilityScope,
-            runtimeRequirements: runtimeRequirements
-        )
+        BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
         if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
@@ -1764,6 +1763,9 @@ final class AgentRuntimeProcessRunner {
                 taskEnv[BrowserAutomationEngineRequirement.environmentKey] = requiredEngine.rawValue
             }
         }
+        // Post-strip, so what the persistence funnel later redacts is exactly
+        // what this launch can leak - no brokered secret the agent never saw.
+        RunSecretRedactionScope.register(taskID: task.id, environment: taskEnv)
         return taskEnv
     }
 
@@ -1790,68 +1792,6 @@ final class AgentRuntimeProcessRunner {
             return [:]
         }
         return environment
-    }
-
-    @MainActor
-    private static func stripBrokeredConnectorEnvironment(
-        from environment: inout [String: String],
-        capabilityScope: TaskCapabilityPromptScope,
-        runtimeRequirements: TaskRuntimeRequirementSet?
-    ) {
-        guard let runtimeRequirements, !runtimeRequirements.hostControlTools.isEmpty else {
-            return
-        }
-        let brokeredTools = Set(runtimeRequirements.hostControlTools)
-        let brokeredConnectors = capabilityScope.connectors.filter {
-            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                    .map(brokeredTools.contains) == true
-        }
-        let brokeredSnapshotConfigKeys = Set(
-            capabilityScope.resolver.detachedSnapshots
-                    .flatMap { $0.connectorSnapshots ?? [] }
-                    .filter {
-                        HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                            && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                                .map(brokeredTools.contains) == true
-                    }
-                    .flatMap(\.configKeys)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-        )
-        guard !brokeredConnectors.isEmpty || !brokeredSnapshotConfigKeys.isEmpty else { return }
-
-        let brokeredProjection = ConnectorRuntimeProjection(connectors: brokeredConnectors)
-        for key in brokeredProjection.declaredEnvironmentBindingKeys()
-            .union(brokeredSnapshotConfigKeys) {
-            environment.removeValue(forKey: key)
-        }
-
-        guard let manifestJSON = environment["ASTRA_CONNECTORS"],
-              let manifestData = manifestJSON.data(using: .utf8),
-              var manifest = try? JSONDecoder().decode(
-                  ConnectorRuntimeProjection.Manifest.self,
-                  from: manifestData
-              ) else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-            return
-        }
-        let brokeredConnectorIDs = Set(brokeredConnectors.map { $0.id.uuidString.lowercased() })
-        manifest.connectors.removeAll {
-            brokeredConnectorIDs.contains($0.id.lowercased())
-        }
-        guard !manifest.connectors.isEmpty else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-            return
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        if let filteredData = try? encoder.encode(manifest),
-           let filteredJSON = String(data: filteredData, encoding: .utf8) {
-            environment["ASTRA_CONNECTORS"] = filteredJSON
-        } else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-        }
     }
 
     @MainActor

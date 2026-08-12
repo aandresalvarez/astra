@@ -1955,13 +1955,6 @@ struct ArchitectureFitnessTests {
             // policy observation without a user-visible outcome now audits it.
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_160, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
-            // Crossed the 2,000-line threshold in PR #374: one renderer per provider, each
-            // translating the same policy contract into that CLI's flags. Splitting per
-            // provider would hide the cross-provider diff this file exists to make legible,
-            // so it owns itself with a tight ceiling instead.
-            // 2_050 -> 2_060 (run-boundary fix): a run whose effective level
-            // differs from the selected one now says so as a rendered diagnostic.
-            "Astra/Services/Runtime/AgentPolicyAdapters.swift": .init(2_060, .owner("Provider policy rendering")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
@@ -1988,7 +1981,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
-            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_280, .owner("Host-control MCP tool")),
+            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_160, .owner("Host-control MCP tool")),
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
             "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),

@@ -1267,10 +1267,11 @@ enum TaskLaunchResourceResolver {
             )
             let routesConnectorThroughHostControl = connectorHostControlTool
                 .map(hostControlTools.contains) == true
-            let brokerOwnsConnectorConfiguration = routesConnectorThroughHostControl
-                && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(
-                    normalizedServiceType
-                )
+            // Matches `BrokeredConnectorEnvironment`: the launch environment
+            // withholds a brokered credential whether or not the tool reached
+            // this runtime, so the plan must not promise one either.
+            let brokerOwnsConnectorConfiguration = HostControlPlaneMCPProjection
+                .brokerOwnsConnectorConfiguration(normalizedServiceType)
             if routesConnectorThroughHostControl {
                 appendConnectorControlPlaneResource(
                     connector,

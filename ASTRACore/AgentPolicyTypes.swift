@@ -1140,6 +1140,14 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var additionalReadOnlyPaths: [String]
     public var environmentKeyNames: [String]
     public var credentialLabels: [String]
+    /// Credentials the run can use but the agent process was never handed: a
+    /// broker holds the value and makes the call. Reported separately because
+    /// "this run can reach Jira" and "this process has the Jira token" are
+    /// different exposures, and reading the first as the second is what made a
+    /// stripped token look leaked. Declared, not loaded — a brokered credential
+    /// is withheld from the agent whether or not it is currently set, so this
+    /// is not always a subset of `credentialLabels`.
+    public var brokeredCredentialLabels: [String]
     public var mcpServers: [MCPServer]
     public var approvalsGranted: [String]
     public var approvalGrants: [PermissionGrant]
@@ -1165,6 +1173,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         case additionalReadOnlyPaths
         case environmentKeyNames
         case credentialLabels
+        case brokeredCredentialLabels
         case mcpServers
         case approvalsGranted
         case approvalGrants
@@ -1190,6 +1199,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         additionalPaths: [String],
         environmentKeyNames: [String],
         credentialLabels: [String],
+        brokeredCredentialLabels: [String] = [],
         mcpServers: [MCPServer] = [],
         approvalsGranted: [String],
         approvalGrants: [PermissionGrant] = [],
@@ -1215,6 +1225,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.additionalReadOnlyPaths = Array(Set(additionalReadOnlyPaths)).sorted()
         self.environmentKeyNames = Array(Set(environmentKeyNames)).sorted()
         self.credentialLabels = Array(Set(credentialLabels)).sorted()
+        self.brokeredCredentialLabels = Array(Set(brokeredCredentialLabels)).sorted()
         self.mcpServers = mcpServers.sorted {
             if $0.packageID != $1.packageID { return $0.packageID < $1.packageID }
             return $0.id < $1.id
@@ -1245,6 +1256,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.additionalReadOnlyPaths = try container.decodeIfPresent([String].self, forKey: .additionalReadOnlyPaths) ?? []
         self.environmentKeyNames = try container.decode([String].self, forKey: .environmentKeyNames)
         self.credentialLabels = try container.decode([String].self, forKey: .credentialLabels)
+        self.brokeredCredentialLabels = try container.decodeIfPresent([String].self, forKey: .brokeredCredentialLabels) ?? []
         self.mcpServers = try container.decodeIfPresent([MCPServer].self, forKey: .mcpServers) ?? []
         self.approvalsGranted = try container.decode([String].self, forKey: .approvalsGranted)
         self.approvalGrants = try container.decodeIfPresent([PermissionGrant].self, forKey: .approvalGrants) ?? []
