@@ -1221,6 +1221,9 @@ struct ChatPanelView: View {
                     .onChange(of: messageText) {
                         // Reset selection when filter changes
                         slashSelectedIndex = 0
+                        // Covers the typing window, which the thread view model's
+                        // streaming-only stall sampler never saw. See the probe.
+                        ComposerTypingStallProbe.shared.noteTyping()
                     }
                     .onKeyPress(.upArrow) {
                         guard showSlashMenu && !slashOptions.isEmpty else { return .ignored }

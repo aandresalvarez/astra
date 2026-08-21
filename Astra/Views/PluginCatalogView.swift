@@ -2115,8 +2115,18 @@ struct PluginInstallSheet: View {
     @State private var isValidatingSetup = false
     @State private var lastValidationTraceID: String?
     @State private var copiedSetupSourceName: String?
+    @State private var copyableSetupSources: [CopyableSetupSource] = []
 
     private let validationPreflightCache = PreflightCache()
+
+    /// A workspace this package's setup can be copied from, carrying the
+    /// already-computed inputs so the menu title and the copy action do not
+    /// each re-run the Keychain sweep that produced them.
+    private struct CopyableSetupSource: Identifiable {
+        let id: UUID
+        let name: String
+        let inputs: OnboardingCapabilityInstallationInputs
+    }
 
     private var requiresValidation: Bool {
         package.requiresSetup || !package.prerequisites.isEmpty
@@ -2166,7 +2176,7 @@ struct PluginInstallSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !copyableSetupSourceWorkspaces.isEmpty {
+                    if !copyableSetupSources.isEmpty {
                         copySetupSection
                     }
 
@@ -2251,6 +2261,12 @@ struct PluginInstallSheet: View {
                 }
             }
         }
+        // Keyed so the sweep runs once per real change to the source
+        // workspaces, rather than three times per keystroke into the credential
+        // fields above.
+        .task(id: copyableSetupSourceKey) {
+            recomputeCopyableSetupSources()
+        }
         .alert("Capability could not be installed", isPresented: Binding(
             get: { installError != nil },
             set: { if !$0 { installError = nil } }
@@ -2325,9 +2341,9 @@ struct PluginInstallSheet: View {
             Spacer()
 
             Menu {
-                ForEach(copyableSetupSourceWorkspaces, id: \.id) { sourceWorkspace in
-                    Button(sourceWorkspace.name) {
-                        copySetup(from: sourceWorkspace)
+                ForEach(copyableSetupSources) { source in
+                    Button(source.name) {
+                        copySetup(from: source)
                     }
                 }
             } label: {
@@ -2342,15 +2358,59 @@ struct PluginInstallSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 9))
     }
 
-    private var copyableSetupSourceWorkspaces: [Workspace] {
-        capabilitySetupSourceWorkspaces.filter { sourceWorkspace in
-            sourceWorkspace.id != workspace.id &&
-            hasCopyableSetupInputs(from: sourceWorkspace)
+    /// Cheap key describing when the copy-from list could have changed. Reads
+    /// only stored scalars on already-materialized rows; see
+    /// `recomputeCopyableSetupSources` for why it must stay cheap.
+    private var copyableSetupSourceKey: String {
+        let sources = capabilitySetupSourceWorkspaces.map {
+            "\($0.id.uuidString)@\($0.updatedAt.timeIntervalSince1970)"
+        }
+        return ([package.id] + sources + globalConnectors.map(\.id.uuidString)).joined(separator: "|")
+    }
+
+    /// Recomputes which workspaces have setup worth copying into this package.
+    ///
+    /// Same fault, and same fix, as `WorkspaceSetupForm` in ContentView: this
+    /// was a computed property evaluated three times per body pass — the
+    /// section's `isEmpty` check, the summary line's `count`, and the menu's
+    /// `ForEach` — each one running `installationInputs` for every workspace,
+    /// which is a synchronous Keychain sweep per workspace. `body` re-runs on
+    /// every keystroke into the credential fields below, so filling in this
+    /// sheet re-swept the entire store per character.
+    ///
+    /// Stays on the main actor: `installationInputs` walks SwiftData models
+    /// bound to the main context. The point is to run it once per real change,
+    /// not to run it elsewhere.
+    @MainActor
+    private func recomputeCopyableSetupSources() {
+        // This sweep is the app's heaviest batch of credential reads, so it is
+        // also where an unopenable keychain shows up first. Drain the pending
+        // failure here as well as at startup: a keychain that breaks *while the
+        // app is running* — a rebuilt binary, a relocked keychain, a declined
+        // prompt — would otherwise never reach the log, which is the exact
+        // blindness this reporting was added to remove.
+        defer { AstraSecureKeychainStore.logPendingKeychainFailure(scope: "capability_install") }
+        let copier = CapabilitySetupCopier()
+        let globals = globalConnectors
+        let currentWorkspaceID = workspace.id
+        copyableSetupSources = capabilitySetupSourceWorkspaces.compactMap { sourceWorkspace in
+            guard sourceWorkspace.id != currentWorkspaceID else { return nil }
+            let inputs = copier.installationInputs(
+                for: package,
+                from: sourceWorkspace,
+                globalConnectors: globals
+            )
+            guard !inputs.credentialInputs.isEmpty
+                    || !inputs.configInputs.isEmpty
+                    || !inputs.baseURLOverrides.isEmpty else {
+                return nil
+            }
+            return CopyableSetupSource(id: sourceWorkspace.id, name: sourceWorkspace.name, inputs: inputs)
         }
     }
 
     private var copySetupSourceSummary: String {
-        let count = copyableSetupSourceWorkspaces.count
+        let count = copyableSetupSources.count
         return count == 1 ? "1 workspace has saved setup" : "\(count) workspaces have saved setup"
     }
 
@@ -2366,31 +2426,16 @@ struct PluginInstallSheet: View {
         return values
     }
 
-    private func copySetup(from sourceWorkspace: Workspace) {
-        let inputs = CapabilitySetupCopier().installationInputs(
-            for: package,
-            from: sourceWorkspace,
-            globalConnectors: globalConnectors
-        )
+    private func copySetup(from source: CopyableSetupSource) {
+        let inputs = source.inputs
         guard !inputs.credentialInputs.isEmpty || !inputs.configInputs.isEmpty || !inputs.baseURLOverrides.isEmpty else {
             return
         }
         credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
         configValues.merge(inputs.configInputs) { _, copied in copied }
         baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }
-        copiedSetupSourceName = sourceWorkspace.name
+        copiedSetupSourceName = source.name
         resetValidation()
-    }
-
-    private func hasCopyableSetupInputs(from sourceWorkspace: Workspace) -> Bool {
-        let inputs = CapabilitySetupCopier().installationInputs(
-            for: package,
-            from: sourceWorkspace,
-            globalConnectors: globalConnectors
-        )
-        return !inputs.credentialInputs.isEmpty ||
-            !inputs.configInputs.isEmpty ||
-            !inputs.baseURLOverrides.isEmpty
     }
 
     private var validationStatusSection: some View {

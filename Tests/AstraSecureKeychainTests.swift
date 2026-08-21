@@ -233,7 +233,13 @@ struct AstraSecureKeychainTests {
         #expect(recoveryBody.contains("moveUnreadableKeychainAsideAtPath"))
         #expect(recoveryBody.contains("removeObjectForKey"))
         #expect(saveBody.contains("recoverUnreadableDedicatedKeychainAtPath"))
-        #expect(saveBody.contains("dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService"))
+        #expect(saveBody.contains("dedicatedKeychainForPath:keychainPath"))
+        // The save path is the only caller that can run with Keychain UI on, and
+        // the flag has to reach the open — the backoff consults it to decide
+        // whether a floor set by a background read may answer a user's click.
+        // Serving the click from that floor is why twelve "Allow & Save" presses
+        // on 2026-08-17 never produced a prompt.
+        #expect(saveBody.contains("userInteractionAllowed:allowUserInteraction"))
     }
 
     @Test("Keychain password and secret items keep app-scoped access")

@@ -4,9 +4,138 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAModels
 
+/// Totals for the samples a threshold hid, per event, over one flush window.
+struct PerformanceTelemetrySuppressedRollup: Equatable {
+    let event: String
+    let count: Int
+    let totalMilliseconds: Double
+    let maxMilliseconds: Double
+    let thresholdMilliseconds: Double
+}
+
+/// Accumulates what the thresholds throw away.
+///
+/// A threshold answers "is this one call slow?" — but the stall that started
+/// this work was hundreds of individually-fast calls. During the worst typing
+/// windows the log was *quiet*, which read as "the app was doing nothing" when
+/// it meant "everything it did came in under 8 ms, several hundred times a
+/// second". A quiet log has to mean no work, or it is worse than no log.
+///
+/// Lock-protected rather than actor-isolated because `PerformanceTelemetry` is
+/// called from every thread in the app, and a diagnostic that forces a hop is
+/// a diagnostic that changes what it measures. Mirrors the `NSLock` idiom used
+/// by `UsageDashboardSummaryMemo` and `WildcardPatternMatcher`.
+final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
+    private struct Bucket {
+        var count = 0
+        var totalMilliseconds: Double = 0
+        var maxMilliseconds: Double = 0
+        var thresholdMilliseconds: Double = 0
+    }
+
+    private let lock = NSLock()
+    private let flushInterval: TimeInterval
+    private var buckets: [String: Bucket] = [:]
+    /// Set by the first sample rather than at construction: the ledger is built
+    /// at process start, so anchoring the window there would make the first
+    /// rollup cover an arbitrary stretch of idle time.
+    private var lastFlushAt: Date?
+
+    init(flushInterval: TimeInterval) {
+        self.flushInterval = flushInterval
+    }
+
+    /// Records one suppressed sample and, when the window has elapsed, hands
+    /// back everything accumulated since the last flush.
+    ///
+    /// The caller logs the result. Doing it this way means no background timer
+    /// to leak and no wakeups while the app is idle: rollups are emitted by the
+    /// same activity that produced them.
+    func record(
+        event: String,
+        milliseconds: Double,
+        thresholdMilliseconds: Double,
+        now: Date = Date()
+    ) -> [PerformanceTelemetrySuppressedRollup] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var bucket = buckets[event] ?? Bucket()
+        bucket.count += 1
+        bucket.totalMilliseconds += milliseconds
+        bucket.maxMilliseconds = max(bucket.maxMilliseconds, milliseconds)
+        bucket.thresholdMilliseconds = thresholdMilliseconds
+        buckets[event] = bucket
+
+        guard let windowStart = lastFlushAt else {
+            lastFlushAt = now
+            return []
+        }
+        guard now.timeIntervalSince(windowStart) >= flushInterval else { return [] }
+        lastFlushAt = now
+        let rollups = buckets
+            .map { name, bucket in
+                PerformanceTelemetrySuppressedRollup(
+                    event: name,
+                    count: bucket.count,
+                    totalMilliseconds: bucket.totalMilliseconds,
+                    maxMilliseconds: bucket.maxMilliseconds,
+                    thresholdMilliseconds: bucket.thresholdMilliseconds
+                )
+            }
+            // Stable order so consecutive lines are comparable by eye, and the
+            // costliest event reads first.
+            .sorted { ($0.totalMilliseconds, $0.event) > ($1.totalMilliseconds, $1.event) }
+        buckets.removeAll(keepingCapacity: true)
+        return rollups
+    }
+}
+
 enum PerformanceTelemetry {
     static let uiFrameThresholdMilliseconds: Double = 8
     static let backgroundThresholdMilliseconds: Double = 20
+    /// Long enough that rollups stay rare next to real events, short enough to
+    /// line up with a "the app felt slow just now" report.
+    static let suppressedRollupIntervalSeconds: TimeInterval = 30
+
+    private static let suppressedLedger = PerformanceTelemetrySuppressedLedger(
+        flushInterval: suppressedRollupIntervalSeconds
+    )
+
+    /// Books a sample a threshold is about to discard, and emits the window's
+    /// totals if this was the last sample in it.
+    private static func noteSuppressed(
+        _ event: String,
+        milliseconds: Double,
+        thresholdMilliseconds: Double,
+        level: LogLevel,
+        taskID: UUID?
+    ) {
+        let rollups = suppressedLedger.record(
+            event: event,
+            milliseconds: milliseconds,
+            thresholdMilliseconds: thresholdMilliseconds
+        )
+        for rollup in rollups {
+            log(
+                "perf_suppressed_rollup",
+                durationMilliseconds: rollup.totalMilliseconds,
+                level: level,
+                fields: [
+                    "suppressed_event": rollup.event,
+                    "suppressed_count": PerformanceTelemetryFields.count(rollup.count),
+                    "max_ms": String(format: "%.2f", rollup.maxMilliseconds),
+                    "mean_ms": String(
+                        format: "%.2f",
+                        rollup.totalMilliseconds / Double(max(rollup.count, 1))
+                    ),
+                    "threshold_ms": String(format: "%.2f", rollup.thresholdMilliseconds),
+                    "window_s": String(format: "%.0f", suppressedRollupIntervalSeconds)
+                ],
+                taskID: taskID
+            )
+        }
+    }
 
     @discardableResult
     static func measure<T>(
@@ -19,7 +148,16 @@ enum PerformanceTelemetry {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-        guard elapsed >= thresholdMilliseconds else { return result }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: nil
+            )
+            return result
+        }
 
         log(
             event,
@@ -42,7 +180,16 @@ enum PerformanceTelemetry {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
         let elapsed = elapsedMilliseconds(since: start)
-        guard elapsed >= thresholdMilliseconds else { return result }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: nil
+            )
+            return result
+        }
 
         log(
             event,
@@ -66,7 +213,16 @@ enum PerformanceTelemetry {
         taskID: UUID? = nil
     ) {
         let elapsed = elapsedMilliseconds(since: start)
-        guard elapsed >= thresholdMilliseconds else { return }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: taskID
+            )
+            return
+        }
         log(event, durationMilliseconds: elapsed, level: level, fields: fields, taskID: taskID)
     }
 

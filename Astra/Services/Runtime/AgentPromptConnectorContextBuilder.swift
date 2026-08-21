@@ -28,12 +28,16 @@ enum AgentPromptConnectorContextBuilder {
             for: runtime ?? task.resolvedRuntimeID
         ).usesHostControlCLIRelay
 
+        var routedMutableService = false
         let connectorDescriptions = capabilityScope.connectors.map { conn in
             let serviceType = conn.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
             let hostControlTool = HostControlPlaneMCPProjection.connectorToolName(serviceType)
             let hostControlRouted = hostControlTool.map(hostControlTools.contains) == true
+            if hostControlRouted, ConnectorMutationOperations.supportsMutation(serviceType: serviceType) {
+                routedMutableService = true
+            }
             return connectorDescription(
                 connector: conn,
                 alias: aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn),
@@ -61,7 +65,7 @@ enum AgentPromptConnectorContextBuilder {
             \(connectorAPIGuidance(
                 dockerRouted: dockerRouted,
                 usesHostControlCLIRelay: usesHostControlCLIRelay
-            ))
+            ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract : "")
             """,
             sourcePointers: connectorSourcePointers(capabilityScope.connectors)
         )

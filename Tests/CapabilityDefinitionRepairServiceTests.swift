@@ -50,7 +50,10 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(library.installedVersion(of: "jira-workflow") == "2.3.0")
+        // Against the catalog, not a literal: this test is about the stale 2.0.0
+        // install being upgraded, and pinning the destination version here just
+        // makes every catalog bump look like a repair-service regression.
+        #expect(library.installedVersion(of: "jira-workflow") == package.version)
         #expect(skill.allowedTools == package.skills[0].allowedTools)
         #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))

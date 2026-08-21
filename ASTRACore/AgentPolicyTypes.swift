@@ -976,6 +976,7 @@ public enum PermissionRequest: Codable, Equatable, Sendable {
     case sandboxPath(path: String, access: String, toolName: String?)
     case providerNativePrompt(toolName: String, context: String?)
     case gitPublish(authorization: GitPublishAuthorization)
+    case connectorMutation(authorization: ConnectorMutationAuthorization)
 }
 
 public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
@@ -987,6 +988,7 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
     case credential(label: String)
     case sandboxPath(path: String, access: String)
     case gitPublish(authorization: GitPublishAuthorization)
+    case connectorMutation(authorization: ConnectorMutationAuthorization)
 
     public var displayName: String {
         switch self {
@@ -1006,6 +1008,8 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
             "sandbox(\(access):\(path))"
         case .gitPublish(let authorization):
             "git-publish(\(authorization.repository):\(authorization.baseBranch)<-\(authorization.headBranch)@\(authorization.expectedHeadSHA))"
+        case .connectorMutation(let authorization):
+            "connector-mutation(\(authorization.serviceType):\(authorization.operation)->\(authorization.target)@\(authorization.requestDigest))"
         }
     }
 }

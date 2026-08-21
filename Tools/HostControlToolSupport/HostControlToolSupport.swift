@@ -1018,9 +1018,43 @@ public final class HostControlMCPServer {
             ])
         case "get_issue", "search_jql", "get_comments":
             return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
+        case "propose_issue":
+            return handleJiraIssueProposal(connector: connector, arguments: arguments)
         default:
             return .error(code: -32602, message: "Unsupported Jira operation '\(operation)'")
         }
+    }
+
+    /// Checks the connector can authenticate, then hands off to
+    /// `JiraIssueProposalPolicy`, which composes and stages the payload without
+    /// reaching the network.
+    ///
+    /// Readiness is checked here, before staging rather than after, because a
+    /// proposal composed against a connector that cannot authenticate is one
+    /// the user would read and approve and only then discover was never
+    /// sendable.
+    private func handleJiraIssueProposal(
+        connector: HostControlConnector,
+        arguments: [String: Any]
+    ) -> MCPServerReply {
+        let status = jiraStatus(connector: connector)
+        guard status.ready else {
+            diagnosticsRecorder?.record(
+                toolName: "jira",
+                summary: "jira propose_issue \(connector.alias) blocked: not configured",
+                result: nil
+            )
+            return .result([
+                "content": [["type": "text", "text": formattedJiraStatus(status)]],
+                "isError": true
+            ])
+        }
+        return JiraIssueProposalPolicy.stage(
+            arguments: arguments,
+            connector: connector,
+            configuration: configuration,
+            diagnostics: diagnosticsRecorder
+        )
     }
 
     private func handleJiraReadRequest(
@@ -1314,18 +1348,32 @@ public final class HostControlMCPServer {
     }
 
     private func jiraSchema() -> [String: Any] {
-        [
+        let description = """
+            Use typed ASTRA-projected Jira connector operations on the host. Reads return data \
+            directly. The one write, propose_issue, only stages a ticket for the user to approve — \
+            this tool never posts to Jira and never exposes the credential, so do not fall back to \
+            curl or a script.
+            """
+        return [
             "name": "jira",
-            "description": "Use typed, read-only ASTRA-projected Jira connector operations on the host. Status never reveals secret values.",
+            "description": description,
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "operation": ["type": "string", "description": "status, get_issue, search_jql, or get_comments. Defaults to status."],
+                    "operation": ["type": "string", "description": "status, get_issue, search_jql, get_comments, or propose_issue. Defaults to status."],
                     "alias": ["type": "string", "description": "Optional connector alias."],
                     "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
                     "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],
                     "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
+                    "project_key": ["type": "string", "description": "For propose_issue: destination project key, for example STAR."],
+                    "issue_type": ["type": "string", "description": "For propose_issue: issue type name as configured in the project, for example Bug."],
+                    "summary": ["type": "string", "description": "For propose_issue: single-line ticket title, at most 255 characters."],
+                    "description": ["type": "string", "description": "For propose_issue: ticket body as Jira wiki markup, at most 32768 characters. Jira renders it; do not send Atlassian Document Format JSON."],
+                    "priority": ["type": "string", "description": "For propose_issue: optional priority name, for example Highest."],
+                    "labels": ["type": "array", "items": ["type": "string"], "description": "For propose_issue: optional labels, at most 20. Each must be a single word without spaces."],
+                    "assignee_account_id": ["type": "string", "description": "For propose_issue: optional Jira account id to assign."],
+                    "parent_key": ["type": "string", "description": "For propose_issue: optional parent issue key, for example STAR-123."],
                     "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "request")]
                 ],
                 "additionalProperties": false
@@ -1598,140 +1646,6 @@ private struct JiraConnectorStatus {
     }
 }
 
-private struct JiraHTTPRequest {
-    var method: String
-    var path: String
-    var queryItems: [URLQueryItem]
-
-    var diagnosticPath: String {
-        if queryItems.isEmpty {
-            return path
-        }
-        return "\(path)?<query>"
-    }
-}
-
-private enum JiraRequestPolicy {
-    /// The vetted field set for a list of issues: enough to identify and
-    /// triage each row, small enough that a page of them survives the
-    /// response byte cap.
-    private static let summaryFields = [
-        "summary",
-        "status",
-        "assignee",
-        "reporter",
-        "priority",
-        "issuetype",
-        "project",
-        "created",
-        "updated"
-    ]
-
-    /// One issue can afford its body. `description` is what a ticket is
-    /// actually *about*; without it "open the ticket and give me the detail"
-    /// returns the same status board the search already returned, and the
-    /// user has to open Jira in a browser to do the work — the one thing the
-    /// connector exists to avoid. It stays out of `summaryFields` because a
-    /// page of descriptions is what blows the cap, not a single one.
-    private static let detailFields = summaryFields + ["description"]
-
-    static func readRequest(operation: String, arguments: [String: Any]) throws -> JiraHTTPRequest {
-        switch operation {
-        case "get_issue":
-            guard let issueKey = clean(arguments["issue_key"] as? String),
-                  isValidIssueKey(issueKey) else {
-                throw JiraRequestPolicyError("jira get_issue requires an issue_key such as ASTRA-123")
-            }
-            return JiraHTTPRequest(
-                method: "GET",
-                path: "/rest/api/3/issue/\(issueKey)",
-                queryItems: [
-                    URLQueryItem(name: "fields", value: Self.detailFields.joined(separator: ","))
-                ]
-            )
-        case "search_jql":
-            guard let jql = clean(arguments["jql"] as? String),
-                  jql.count <= 1_000 else {
-                throw JiraRequestPolicyError("jira search_jql requires a non-empty jql string up to 1000 characters")
-            }
-            var queryItems = [
-                URLQueryItem(name: "jql", value: jql),
-                URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
-                URLQueryItem(name: "fields", value: Self.summaryFields.joined(separator: ","))
-            ]
-            if let nextPageToken = try nextPageToken(from: arguments["next_page_token"]) {
-                queryItems.append(URLQueryItem(name: "nextPageToken", value: nextPageToken))
-            }
-            return JiraHTTPRequest(
-                method: "GET",
-                path: "/rest/api/3/search/jql",
-                queryItems: queryItems
-            )
-        case "get_comments":
-            guard let issueKey = clean(arguments["issue_key"] as? String),
-                  isValidIssueKey(issueKey) else {
-                throw JiraRequestPolicyError("jira get_comments requires an issue_key such as ASTRA-123")
-            }
-            // Oldest first: a support thread reads as a conversation, and the
-            // response is byte-capped, so keeping the head keeps the request.
-            return JiraHTTPRequest(
-                method: "GET",
-                path: "/rest/api/3/issue/\(issueKey)/comment",
-                queryItems: [
-                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
-                    URLQueryItem(name: "orderBy", value: "created")
-                ]
-            )
-        default:
-            throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")
-        }
-    }
-
-    private static func maxResults(from value: Any?) -> Int {
-        let raw: Int?
-        switch value {
-        case let number as NSNumber:
-            raw = number.intValue
-        case let string as String:
-            raw = Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
-        default:
-            raw = nil
-        }
-        return min(max(raw ?? 20, 1), 100)
-    }
-
-    private static func nextPageToken(from value: Any?) throws -> String? {
-        guard let raw = value else { return nil }
-        guard let token = clean(raw as? String),
-              token.count <= 2_000,
-              !token.contains("\n"),
-              !token.contains("\r") else {
-            throw JiraRequestPolicyError("jira search_jql next_page_token must be a non-empty string up to 2000 characters")
-        }
-        return token
-    }
-
-    private static func clean(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func isValidIssueKey(_ value: String) -> Bool {
-        value.range(
-            of: #"^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"#,
-            options: [.regularExpression]
-        ) != nil
-    }
-}
-
-private struct JiraRequestPolicyError: LocalizedError {
-    var errorDescription: String?
-
-    init(_ message: String) {
-        errorDescription = message
-    }
-}
-
 struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
@@ -1861,35 +1775,6 @@ private final class BoundedJiraHTTPDelegate: NSObject, URLSessionDataDelegate, @
             lock.unlock()
         }
         semaphore.signal()
-    }
-}
-
-enum HostControlURLSessionConfiguration {
-    private static let lock = NSLock()
-    private static var testingProtocolClasses: [AnyClass] = []
-
-    static var protocolClassesForTesting: [AnyClass] {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return testingProtocolClasses
-        }
-        set {
-            lock.lock()
-            testingProtocolClasses = newValue
-            lock.unlock()
-        }
-    }
-
-    static func brokeredHTTPConfiguration() -> URLSessionConfiguration {
-        let configuration = URLSessionConfiguration.default
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let customProtocolClasses = protocolClassesForTesting
-        if !customProtocolClasses.isEmpty {
-            configuration.protocolClasses = customProtocolClasses + (configuration.protocolClasses ?? [])
-        }
-        return configuration
     }
 }
 

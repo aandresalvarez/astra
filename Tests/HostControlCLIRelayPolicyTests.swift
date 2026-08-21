@@ -53,4 +53,18 @@ struct HostControlCLIRelayPolicyTests {
         }
         #expect(!HostControlCLIRelayPolicy.allows("astra-host-control jira --operation add-comment --issue-key ASTRA-1"))
     }
+
+    @Test("Relay does not carry issue proposals")
+    func relayDoesNotCarryIssueProposals() {
+        // The broker supports propose_issue; this route deliberately does not.
+        // A ticket body is content the user reviews, and squeezing it through
+        // shell quoting either mangles it or is rejected outright. The MCP tool
+        // takes it as structured arguments.
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation propose-issue --project-key STAR"
+        ))
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation propose_issue --summary Broken"
+        ))
+    }
 }

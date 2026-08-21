@@ -128,6 +128,10 @@ public enum KeychainService {
                 "scope": "connector",
                 "namespace_count": String(services.count)
             ], level: .warning)
+            // The matching `keychain.unavailable` line, which is where the
+            // `status=-25293` actually appears, is drained one layer down in
+            // `AstraSecureKeychainStore.save` — the chokepoint every write
+            // passes through, so no writer can be silent by omission.
         }
         return ok
     }

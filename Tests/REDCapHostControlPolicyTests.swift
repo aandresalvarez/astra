@@ -269,19 +269,12 @@ struct REDCapHostControlPolicyTests {
     /// whatever is already installed.
     private static func beginCapture() {
         REDCapCaptureURLProtocol.reset()
-        HostControlURLSessionConfiguration.protocolClassesForTesting =
-            [REDCapCaptureURLProtocol.self] + withoutCaptureProtocol()
+        HostControlURLSessionConfiguration.registerTestingProtocolClass(REDCapCaptureURLProtocol.self)
     }
 
     private static func endCapture() {
-        HostControlURLSessionConfiguration.protocolClassesForTesting = withoutCaptureProtocol()
+        HostControlURLSessionConfiguration.unregisterTestingProtocolClass(REDCapCaptureURLProtocol.self)
         REDCapCaptureURLProtocol.reset()
-    }
-
-    private static func withoutCaptureProtocol() -> [AnyClass] {
-        HostControlURLSessionConfiguration.protocolClassesForTesting.filter {
-            ObjectIdentifier($0) != ObjectIdentifier(REDCapCaptureURLProtocol.self)
-        }
     }
 
     private func call(_ server: HostControlMCPServer, id: Int, arguments: [String: Any]) throws -> [String: Any] {

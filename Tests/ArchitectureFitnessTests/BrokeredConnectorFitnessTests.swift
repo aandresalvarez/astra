@@ -110,6 +110,95 @@ struct BrokeredConnectorFitnessTests {
         )
     }
 
+    /// The read-only invariant, now that it is no longer "the broker performs
+    /// no writes" but "the broker performs no writes *itself*".
+    ///
+    /// `propose_issue` composes a `POST` and stages it to a file for the user
+    /// to approve; the app sends it. That is safe only for as long as nothing
+    /// in this module can put a non-GET on the wire. There are exactly two
+    /// places that set a method, and both are listed here, so a third fails the
+    /// build rather than quietly turning a proposal into a send.
+    @Test("The broker itself issues only GET, apart from REDCap's form POST")
+    func brokerIssuesOnlyGETApartFromREDCapForms() throws {
+        let root = try repositoryRoot()
+        // REDCap's whole API is one form-POST endpoint — the method is its
+        // calling convention, not a mutation. Jira's method comes from
+        // `JiraHTTPRequest`, which the next test pins to GET.
+        let allowed: Set<String> = [
+            #"REDCapHostControlPolicy.swift: request.httpMethod = "POST""#,
+            "HostControlToolSupport.swift: request.httpMethod = jiraRequest.method"
+        ]
+
+        let assignments = try swiftFiles(under: root.appendingPathComponent("Tools/HostControlToolSupport"))
+            .flatMap { file -> [String] in
+                let name = file.lastPathComponent
+                return try String(contentsOf: file, encoding: .utf8)
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .compactMap { line in
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        guard trimmed.contains("httpMethod") else { return nil }
+                        return "\(name): \(trimmed)"
+                    }
+            }
+
+        #expect(
+            Set(assignments).subtracting(allowed).isEmpty,
+            """
+            A host-control handler sets an HTTP method that is not on the vetted \
+            list: \(Set(assignments).subtracting(allowed).sorted()). A mutation \
+            composed in this module must be staged for approval through \
+            ConnectorMutationStaging, not sent from here.
+            """
+        )
+        #expect(
+            allowed.subtracting(Set(assignments)).isEmpty,
+            "The vetted HTTP method list is stale: \(allowed.subtracting(Set(assignments)).sorted())"
+        )
+    }
+
+    /// Scans the whole module rather than the file the constructions happen to
+    /// live in today. `JiraHTTPRequest` moved out of the server and into
+    /// `JiraHostControlPolicy.swift` once; pinned to a path, this test would
+    /// have gone quietly vacuous instead of following it.
+    @Test("Every Jira request the broker sends is a GET")
+    func everyJiraRequestTheBrokerSendsIsAGET() throws {
+        let root = try repositoryRoot()
+        let source = try swiftFiles(under: root.appendingPathComponent("Tools/HostControlToolSupport"))
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
+        let constructions = source.components(separatedBy: "JiraHTTPRequest(").count - 1
+        let methods = matches(of: #"JiraHTTPRequest\(\s*method:\s*"([A-Z]+)""#, in: source, group: 1)
+
+        #expect(constructions > 0, "Could not find any JiraHTTPRequest construction to check")
+        #expect(
+            methods.count == constructions,
+            """
+            A JiraHTTPRequest is built without a literal method, so the GET-only \
+            guarantee cannot be read off the source: \(constructions) constructions, \
+            \(methods.count) with a literal method.
+            """
+        )
+        #expect(
+            Set(methods) == ["GET"],
+            "A Jira request is built with a non-GET method: \(Set(methods).sorted())"
+        )
+    }
+
+    @Test("The staging seam has no way to send anything")
+    func stagingSeamHasNoWayToSendAnything() throws {
+        let source = try fileText("Tools/HostControlToolSupport/ConnectorMutationStaging.swift")
+        for networking in ["URLRequest", "URLSession", "dataTask", "httpMethod"] {
+            #expect(
+                !source.contains(networking),
+                """
+                ConnectorMutationStaging references \(networking). Staging writes a \
+                file and returns a digest; the moment it can also send, the user's \
+                approval stops being what causes the write.
+                """
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func functionBody(named name: String, in source: String) throws -> String {

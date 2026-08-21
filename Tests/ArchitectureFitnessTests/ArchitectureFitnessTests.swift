@@ -1894,7 +1894,10 @@ struct ArchitectureFitnessTests {
             // that keeps the runtime-permission dock visible over a queued
             // follow-up's waiting dock: the guard and its "why" comment
             // aren't safely compressible without losing the reasoning.
-            "Astra/Views/TaskMainView.swift": .init(6_136, .owner("Task detail and run surface")),
+            // 6_136 -> 6_146: connector-mutation review wiring only (one @State,
+            // one dock case, one context argument, one modifier). The state,
+            // read-back and sheet live in TaskConnectorMutationReview.swift.
+            "Astra/Views/TaskMainView.swift": .init(6_146, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
@@ -1921,7 +1924,10 @@ struct ArchitectureFitnessTests {
             // 3_075 -> 3_076 (PR #374 review follow-up): `attachedFiles` is now read by the
             // cross-file preview extension, and the one line marking that is what keeps a
             // future reader from re-privatising it into a compile error.
-            "Astra/Views/ChatPanelView.swift": .init(3_076, .owner("Composer chat surface")),
+            // 3_076 -> 3_079: arming ComposerTypingStallProbe from the composer's
+            // existing onChange. The rationale lives in the probe rather than here
+            // precisely because this file has no room to spare.
+            "Astra/Views/ChatPanelView.swift": .init(3_079, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
@@ -1938,11 +1944,26 @@ struct ArchitectureFitnessTests {
             // #323's WorkspacePackage subsystem. It's a flat suite, not a
             // companion of one production file, so it owns itself here.
             // 2_150 -> 2_155: three budget raises above, each carrying its reason.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_155, .owner("Architecture fitness test suite")),
+            // 2_155 -> 2_185: the guard against sorting a SwiftData fetch on
+            // AgentTask.queuePosition. That sort cost the app 8.6 GB of SQLite
+            // temp-sorter spill and seconds-long main-thread stalls while the
+            // user typed, and it reads like a harmless default, so it needs a
+            // standing check rather than reviewer memory.
+            // 2_185 -> 2_215: the companion guard keeping the sidebar container
+            // off an unfiltered AgentTask @Query. Reintroducing it would restore
+            // a ~64 ms main-thread read per streamed token while leaving every
+            // other test green, so nothing but this would catch it.
+            // 2_230 -> 2_236: two budget changes for the connector-mutation seam,
+            // each carrying the "why" this registry exists to preserve.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_236, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
-            "Astra/Views/TaskSidebarView.swift": .init(2_510, .owner("Task sidebar")),
+            // 2_510 -> 2_525: the container's switch from an unfiltered @Query to
+            // SidebarTaskStore — the signal-query rationale, the model context,
+            // and the reconcile-after wrapper for the two membership-changing
+            // handlers.
+            "Astra/Views/TaskSidebarView.swift": .init(2_525, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
@@ -1981,7 +2002,12 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
-            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_160, .owner("Host-control MCP tool")),
+            // 2_160 -> 2_040 on 2026-08-19: `propose_issue` pushed this file past
+            // its ceiling, so the whole Jira request policy moved to
+            // JiraHostControlPolicy.swift. Ratcheted down to what is left rather
+            // than banking the headroom — the next Jira operation belongs in that
+            // file too.
+            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_040, .owner("Host-control MCP tool")),
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
             "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -2023,6 +2049,68 @@ struct ArchitectureFitnessTests {
             // under budget.
             "Tests/ExecutionEnvironmentTests.swift": .init(2_100, .owner("Execution environment tests"))
         ]
+    }
+
+    /// `AgentTask.queuePosition` has no `#Index` and holds 0 for every row in
+    /// real stores, so a SwiftData `sort:` on it makes SQLite build a temp
+    /// B-tree and spill the whole result set — including 10+ MB of `goal` text
+    /// — to a temp file on every fetch. That fetch runs on the main thread
+    /// inside the view transaction: production stackshots caught 687 of 711
+    /// main-thread samples inside it while the user was typing, alongside
+    /// `disk writes` diagnostic reports recording 8.6 GB dirtied in under an
+    /// hour. Every consumer re-sorts in Swift, so the ordering bought nothing.
+    ///
+    /// This is easy to reintroduce by reflex — it reads like a harmless
+    /// default — and the damage is invisible in code review, so pin it here.
+    @Test("No SwiftData query sorts on the unindexed, all-zero queuePosition")
+    func noQuerySortsOnQueuePosition() throws {
+        let root = try repositoryRoot()
+        let sources = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"),
+            includingPropertiesForKeys: nil
+        )?.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        #expect(!sources.isEmpty, "Found no Swift sources to scan; the guard would pass vacuously")
+
+        var offenders: [String] = []
+        for source in sources {
+            let text = try String(contentsOf: source, encoding: .utf8)
+            guard text.contains("sort: \\AgentTask.queuePosition") else { continue }
+            offenders.append(source.lastPathComponent)
+        }
+        #expect(
+            offenders.isEmpty,
+            "Sorting a SwiftData fetch on queuePosition spills the table through SQLite's external sorter for no ordering benefit. Sort in Swift instead: \(offenders)"
+        )
+    }
+
+    /// The sidebar's task list comes from `SidebarTaskStore`, not from a
+    /// `@Query`. An unfiltered `@Query private var tasks: [AgentTask]` in the
+    /// container re-read all 726 rows — ~64 ms on the main thread, inside the
+    /// view transaction — on every mutation to any task, which meant on every
+    /// streamed token of any running task. The store keeps a one-row query for
+    /// the invalidation signal and pays for the full read only when membership
+    /// actually changed.
+    ///
+    /// Reintroducing the query would restore the stall silently: the sidebar
+    /// would still be correct, just slow again, and nothing else would fail.
+    @Test("The sidebar container does not hold an unfiltered AgentTask query")
+    func sidebarContainerDoesNotQueryEveryTask() throws {
+        let root = try repositoryRoot()
+        let source = root.appendingPathComponent("Astra/Views/TaskSidebarView.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        #expect(!text.isEmpty, "TaskSidebarView.swift is empty; the guard would pass vacuously")
+
+        #expect(
+            text.contains("SidebarTaskFetch.invalidationSignalDescriptor()"),
+            "The sidebar container must subscribe through the one-row signal query, not an unfiltered fetch"
+        )
+        #expect(
+            !text.contains("@Query private var tasks: [AgentTask]"),
+            """
+            TaskSidebarContainerView is back to querying every AgentTask. That re-reads the \
+            whole table on the main thread for every streamed token; use SidebarTaskStore.
+            """
+        )
     }
 
     private func repositoryRoot() throws -> URL {

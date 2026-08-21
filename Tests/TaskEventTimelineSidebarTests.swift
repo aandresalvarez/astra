@@ -321,8 +321,12 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [task.id])
     }
 
-    @Test("Sidebar task index invalidation ignores searchable text when search is inactive")
-    func sidebarTaskIndexInvalidationIgnoresSearchableTextWithoutSearch() {
+    /// The signature never reads `title` or `goal`, in search or out of it. It
+    /// used to hash both whenever a search was active, which on a real store
+    /// meant hashing 10.85 MB of `goal` text per call — and the call sat on the
+    /// keystroke path. `updatedAt` is what stands in for them.
+    @Test("Sidebar task index invalidation never hashes searchable text")
+    func sidebarTaskIndexInvalidationIgnoresSearchableText() {
         let workspace = makeWorkspace(name: "Slow Workspace")
         let longGoal = String(repeating: "long goal text ", count: 20_000)
         let task = makeTask(
@@ -333,18 +337,20 @@ struct SidebarGroupingTests {
         )
         task.updatedAt = Date(timeIntervalSince1970: 400)
 
-        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
 
         task.title = "Changed title"
         task.goal = String(repeating: "changed goal text ", count: 20_000)
 
-        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
-
-        #expect(before == after)
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) == before)
     }
 
-    @Test("Sidebar task index invalidates searchable text when search is active")
-    func sidebarTaskIndexInvalidationIncludesSearchableTextDuringSearch() {
+    /// The invariant that makes dropping `title` and `goal` safe: every writer
+    /// of either bumps `updatedAt`, which is hashed unconditionally. If a new
+    /// writer ever renames a task without touching `updatedAt`, a search would
+    /// stop re-filtering, and this is the test that should fail.
+    @Test("A rename reaches the sidebar index through updatedAt")
+    func sidebarTaskIndexInvalidationTracksRenamesViaUpdatedAt() {
         let workspace = makeWorkspace(name: "Search Workspace")
         let task = makeTask(
             title: "Deploy report",
@@ -354,14 +360,26 @@ struct SidebarGroupingTests {
         )
         task.updatedAt = Date(timeIntervalSince1970: 400)
 
-        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
 
+        // Exactly what the rename action in `TaskSidebarView` does.
         task.title = "Archive report"
-        task.goal = "Summarize archive updates"
+        task.updatedAt = Date(timeIntervalSince1970: 401)
 
-        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) != before)
+    }
 
-        #expect(before != after)
+    /// Two writes inside the same wall-clock second used to collapse to one
+    /// signature, because the date terms were truncated to whole seconds.
+    @Test("Sub-second updates move the signature")
+    func sidebarTaskIndexInvalidationSeesSubSecondUpdates() {
+        let task = makeTask(title: "Streaming", status: .running)
+        task.updatedAt = Date(timeIntervalSince1970: 400)
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        task.updatedAt = Date(timeIntervalSince1970: 400.25)
+
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) != before)
     }
 
     @Test("TaskThreadSnapshotTrigger ignores unrelated task metadata updates")

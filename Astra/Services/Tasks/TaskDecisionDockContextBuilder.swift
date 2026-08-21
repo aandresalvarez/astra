@@ -65,6 +65,7 @@ enum TaskDecisionDockContextBuilder {
         var pendingReviewState: PendingTaskReviewState
         var runtimePermission: TaskRuntimePermissionState
         var hasGitPublishRequest: Bool = false
+        var pendingConnectorMutationTargets: [String] = []
         var executableApprovedPlan: TaskPlanPayload?
         var skipPermissions: Bool
         // Capability-tiered checkpoint mode for the approved plan; nil falls
@@ -133,6 +134,7 @@ enum TaskDecisionDockContextBuilder {
             runtimePermissionAllowSimilarLabel: input.runtimePermission.decision?.allowSimilarLabel,
             canApproveSimilarRuntimePermission: input.runtimePermission.canApproveSimilarForTask,
             hasGitPublishRequest: input.hasGitPublishRequest,
+            pendingConnectorMutationTargets: input.pendingConnectorMutationTargets,
             hasExecutableApprovedPlan: plan != nil,
             planActionTitle: planActionTitle,
             planActionDetail: planActionDetail,

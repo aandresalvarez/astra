@@ -40,7 +40,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         }
@@ -147,7 +147,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })
@@ -340,7 +340,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })
@@ -713,7 +713,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })

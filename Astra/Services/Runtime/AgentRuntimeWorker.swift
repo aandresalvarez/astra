@@ -1221,6 +1221,16 @@ final class AgentRuntimeWorker {
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
+        // Before the outcome branches, not inside one. A connector mutation the
+        // agent staged is waiting for the user whether the run succeeded, was
+        // cancelled, or failed after staging it — and a proposal ASTRA never
+        // records is a proposal the user is never offered.
+        ConnectorMutationDiscovery.recordStagedMutations(
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled

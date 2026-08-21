@@ -109,7 +109,7 @@ struct CapabilitySetupCopier {
                 if let value = legacyGlobalCredentialValue(
                     for: hint.key,
                     workspace: workspace,
-                    serviceType: pluginConnector.serviceType,
+                    pluginConnector: pluginConnector,
                     globalConnectors: globalConnectors
                 ) {
                     inputs.credentialInputs[hint.key] = value
@@ -200,12 +200,18 @@ struct CapabilitySetupCopier {
     ///   outlived it): only a key that already names this service is
     ///   attributable, so aliases are dropped and an unqualified requested key
     ///   is skipped entirely.
+    ///
+    /// Takes the whole `PluginConnector` rather than just its service type so it
+    /// can ask `connectorMatches` the same question `matchingConnectors` asked,
+    /// instead of re-deriving the answer from a service-type comparison that
+    /// would drift if the matcher changed.
     private func legacyGlobalCredentialValue(
         for key: String,
         workspace: Workspace,
-        serviceType: String,
+        pluginConnector: PluginConnector,
         globalConnectors: [Connector]
     ) -> String? {
+        let serviceType = pluginConnector.serviceType
         let aliasedCandidates = Self.copyKeyCandidates(
             requestedKey: key,
             sourceKeys: Self.legacyCredentialKeyAliases(for: key, serviceType: serviceType),
@@ -214,8 +220,14 @@ struct CapabilitySetupCopier {
         let servicePrefix = Self.normalizedToken(serviceType)
         let isServiceQualifiedKey = !servicePrefix.isEmpty
             && Self.normalizedToken(key).contains(servicePrefix)
+        // Same first-wins dedup `copyKeyCandidates` applies at :295. Without it
+        // this triple is 3 probes for 2 distinct keys on every shipped hint,
+        // because every credential hint in the catalog is already uppercase —
+        // and this branch only runs when the preceding probe missed, so the
+        // repeat is always paid in full.
+        var seenUnattributed = Set<String>()
         let unattributedCandidates = isServiceQualifiedKey
-            ? [key, key.uppercased(), key.lowercased()]
+            ? [key, key.uppercased(), key.lowercased()].filter { seenUnattributed.insert($0).inserted }
             : []
         let wantedServiceType = CapabilityRuntimeResourceMatcher.normalizedServiceType(serviceType)
         let connectorsByID = Dictionary(
@@ -229,6 +241,18 @@ struct CapabilitySetupCopier {
             if let source = connectorsByID[Self.normalizedID(rawID)] {
                 guard CapabilityRuntimeResourceMatcher.normalizedServiceType(source.serviceType)
                     == wantedServiceType else { continue }
+                // If the matcher claims this row, `installationInputs` already
+                // swept it through `credentialValue` — over a superset of these
+                // key candidates and a superset of these entity IDs — and got
+                // nil, which is the only reason control reached here. Repeating
+                // it cannot find anything, and on this user's store that dead
+                // branch was a third of every load the sweep issued. The rows
+                // the matcher does *not* claim (an empty or "custom" package
+                // service type, where `connectorMatches` bails before comparing)
+                // are still worth reading: nothing else has looked at them.
+                if CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: source) {
+                    continue
+                }
                 keyCandidates = aliasedCandidates
             } else {
                 keyCandidates = unattributedCandidates

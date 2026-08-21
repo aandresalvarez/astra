@@ -3613,37 +3613,6 @@ private struct NewWorkspaceSheet: View {
     }
 }
 
-private enum WorkspaceCapabilityValidationState: Equatable {
-    case unchecked
-    case checking
-    case ready(String)
-    case failed(String)
-}
-
-private struct WorkspaceSetupValidationSecretStore: SecretStore {
-    var credentials: [String: String]
-
-    func load(key: String, entityID _: String) -> String? {
-        credentials[key] ?? credentials[key.uppercased()]
-    }
-
-    @discardableResult
-    func save(key _: String, value _: String, entityID _: String, label _: String?) -> Bool {
-        false
-    }
-
-    @discardableResult
-    func delete(key _: String, entityID _: String) -> Bool {
-        false
-    }
-
-    func deleteAll(entityID _: String) {}
-
-    func exists(key: String, entityID _: String) -> Bool {
-        load(key: key, entityID: "") != nil
-    }
-}
-
 struct WorkspaceSetupForm: View {
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.scenePhase) private var scenePhase
@@ -3666,6 +3635,7 @@ struct WorkspaceSetupForm: View {
     @State private var capabilityValidationStates: [String: WorkspaceCapabilityValidationState] = [:]
     @State private var capabilityValidationSignatures: [String: String] = [:]
     @State private var copiedCapabilitySetup: CapabilitySetupCopySummary?
+    @State private var copyableCapabilitySetups: [CopyableCapabilitySetup] = []
 
     private enum Field {
         case name
@@ -3814,6 +3784,15 @@ struct WorkspaceSetupForm: View {
         .onChange(of: capabilityValidationStates) {
             refreshValidationIssues()
         }
+        // Keyed rather than bare `.task`, so the sweep re-runs when the source
+        // workspaces or global connectors actually change — and, because the
+        // key is "collapsed" while the section is shut, is never paid at all by
+        // a user who does not open Capabilities. It deliberately does not
+        // depend on `draft`: typing a workspace name changes nothing this list
+        // is derived from.
+        .task(id: copyableCapabilitySetupKey) {
+            recomputeCopyableCapabilitySetups()
+        }
     }
 
     private var capabilitiesSection: some View {
@@ -3828,7 +3807,7 @@ struct WorkspaceSetupForm: View {
                     availableCapabilityShortcut
                 }
 
-                if !copyableCapabilitySetupSourceWorkspaces.isEmpty {
+                if !copyableCapabilitySetups.isEmpty {
                     copyCapabilitySetupShortcut
                 }
 
@@ -3909,9 +3888,9 @@ struct WorkspaceSetupForm: View {
                 .truncationMode(.tail)
             Spacer()
             Menu {
-                ForEach(copyableCapabilitySetupSourceWorkspaces, id: \.id) { workspace in
-                    Button(copyMenuTitle(for: workspace)) {
-                        copyCapabilitySetup(from: workspace)
+                ForEach(copyableCapabilitySetups) { setup in
+                    Button(setup.menuTitle) {
+                        copyCapabilitySetup(from: setup)
                     }
                 }
             } label: {
@@ -4236,11 +4215,27 @@ struct WorkspaceSetupForm: View {
         return "\(prefix): \(names.joined(separator: ", "))"
     }
 
-    private var copyableCapabilitySetupSourceWorkspaces: [Workspace] {
-        capabilitySetupSourceWorkspaces.filter { workspace in
-            let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
-            return !summary.selectedPackageIDs.isEmpty && !summary.inputsByPackageID.isEmpty
+    /// Cheap key describing when the copy-from list could have changed. Unlike
+    /// `recomputeCopyableCapabilitySetups`, this *is* evaluated on every body
+    /// pass, so it must stay free of relationship traversal and Keychain reads.
+    private var copyableCapabilitySetupKey: String {
+        guard isCapabilitiesExpanded else { return "collapsed" }
+        return CopyableCapabilitySetupResolver.key(
+            sources: capabilitySetupSourceWorkspaces,
+            globalConnectors: globalConnectors
+        )
+    }
+
+    @MainActor
+    private func recomputeCopyableCapabilitySetups() {
+        guard isCapabilitiesExpanded else {
+            copyableCapabilitySetups = []
+            return
         }
+        copyableCapabilitySetups = CopyableCapabilitySetupResolver.resolve(
+            sources: capabilitySetupSourceWorkspaces,
+            globalConnectors: globalConnectors
+        )
     }
 
     private var copyCapabilitySetupText: String {
@@ -4251,16 +4246,8 @@ struct WorkspaceSetupForm: View {
         return "Copied \(label) from \(copiedCapabilitySetup.sourceWorkspaceName)"
     }
 
-    private func copyMenuTitle(for workspace: Workspace) -> String {
-        let names = OnboardingCapabilitySetup.selectedDisplayNames(
-            from: CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors).selectedPackageIDs
-        )
-        guard !names.isEmpty else { return workspace.name }
-        return "\(workspace.name) - \(names.joined(separator: ", "))"
-    }
-
-    private func copyCapabilitySetup(from workspace: Workspace) {
-        let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
+    private func copyCapabilitySetup(from setup: CopyableCapabilitySetup) {
+        let summary = setup.summary
         guard !summary.selectedPackageIDs.isEmpty, !summary.inputsByPackageID.isEmpty else { return }
 
         draft.selectedCapabilityIDs = summary.selectedPackageIDs
@@ -4499,15 +4486,24 @@ struct WorkspaceSetupForm: View {
         capabilityValidationStates[packageID] = .checking
         refreshValidationIssues()
 
+        let traceID = WorkspaceCapabilityValidationTelemetry.makeTraceID()
+        WorkspaceCapabilityValidationTelemetry.started(packageID: packageID, traceID: traceID)
+
         let result = await runCapabilityValidation(for: packageID)
         guard capabilityValidationSignature(for: packageID) == signature else {
             capabilityValidationStates[packageID] = .unchecked
             refreshValidationIssues()
+            WorkspaceCapabilityValidationTelemetry.superseded(packageID: packageID, traceID: traceID)
             return
         }
 
         capabilityValidationStates[packageID] = result
         refreshValidationIssues()
+        WorkspaceCapabilityValidationTelemetry.finished(
+            packageID: packageID,
+            traceID: traceID,
+            state: result
+        )
     }
 
     private func runCapabilityValidation(for packageID: String) async -> WorkspaceCapabilityValidationState {
@@ -4599,6 +4595,13 @@ struct WorkspaceSetupForm: View {
         guard !project.isEmpty else {
             return .failed("Add a GCP project before testing.")
         }
+        // Refuse a value that cannot be a project before spending a subprocess
+        // on it. Without this the field's contents go straight to `gcloud` as
+        // one argument, and the user is shown Google's INVALID_ARGUMENT — a
+        // message about their cloud account for what is a malformed text field.
+        if let reason = GCPProjectIdentifier.rejectionReason(for: project) {
+            return .failed(reason)
+        }
         guard let gcloudPath = healthyPrerequisitePath(for: OnboardingCapabilitySetup.gcloudPackageID, binary: "gcloud") else {
             return .failed("Google Cloud CLI path was not resolved.")
         }
@@ -4613,9 +4616,14 @@ struct WorkspaceSetupForm: View {
             let verifiedProject = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             return .ready(verifiedProject.isEmpty
                 ? "gcloud can access the configured project."
-                : "gcloud can access project \(verifiedProject).")
+                : "gcloud can access project \(GCPProjectIdentifier.displayValue(verifiedProject)).")
         }
-        return .failed("gcloud could not access \(project): \(runResultMessage(result))")
+        // The project is interpolated through the same kind of cleanup the
+        // process output already got from `runResultMessage`. It is the more
+        // dangerous of the two — it is whatever is in the text field.
+        return .failed(
+            "gcloud could not access \(GCPProjectIdentifier.displayValue(project)): \(runResultMessage(result))"
+        )
     }
 
     private func healthyPrerequisitePath(for packageID: String, binary: String) -> String? {

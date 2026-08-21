@@ -379,7 +379,9 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return "Use configured workspace SSH aliases on the host through ASTRA without accepting provider-supplied remote commands."
         case "jira":
-            return "Use typed, read-only Jira connector operations through ASTRA's host control-plane bridge."
+            return "Use typed Jira connector operations through ASTRA's host control-plane bridge. "
+                + "Reads return data; propose_issue only stages a ticket in the task directory for the "
+                + "user to approve, and never posts to Jira."
         case "redcap":
             return "Use typed, read-only REDCap connector operations through ASTRA's host control-plane bridge. "
                 + "Record and report exports are written to a file in the task directory, not returned inline."

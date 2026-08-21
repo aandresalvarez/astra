@@ -52,6 +52,16 @@ enum HostControlCLIRelayPolicy {
         let operation = (options["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
+        // Reads only, and `propose_issue` is left out on purpose — this list is
+        // narrower than the broker's, unlike REDCap's below, which reads its
+        // list from the broker.
+        //
+        // A proposal is a ticket body the user is going to read and approve. As
+        // a shell argument it would arrive through `shellTokens`, which rejects
+        // newlines, `$` and backticks, so any real description fails; the ones
+        // that survive are the ones mangled into a single line. The MCP tool
+        // takes the same content as structured arguments. There is nothing this
+        // route could add except a worse copy of the payload.
         guard ["status", "search_jql", "get_issue", "get_comments"].contains(operation) else {
             return false
         }

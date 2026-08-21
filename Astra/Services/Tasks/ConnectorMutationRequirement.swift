@@ -1,0 +1,158 @@
+import Foundation
+import ASTRAModels
+
+enum ConnectorMutationEventTypes {
+    static let staged = "connector.mutation.staged"
+    static let approved = "connector.mutation.approved"
+    static let receipt = "connector.mutation.receipt"
+    static let failed = "connector.mutation.failed"
+    static let declined = "connector.mutation.declined"
+}
+
+/// The durable record that the agent composed a mutation and ASTRA has not yet
+/// sent it.
+///
+/// The staged file is what the user reviews, but a file is not a state machine:
+/// it says a payload exists, not whether it has been sent, refused, or already
+/// failed. This event is the state. It also survives a relaunch, which matters
+/// because the review can outlive the run that produced it.
+///
+/// It carries a pointer and a scope, never the ticket body. The body stays in
+/// the staged file, where it is read once at review time and once more at
+/// commit time — and `requestDigest` is what makes those two reads provably the
+/// same bytes.
+struct TaskStagedConnectorMutation: Codable, Sendable, Equatable, Identifiable {
+    let version: Int
+    let runID: UUID
+    /// Lowercased connector service type, e.g. `jira`.
+    let serviceType: String
+    /// What ASTRA would do if approved, e.g. `create_issue` — not the
+    /// `propose_issue` the agent called.
+    let operation: String
+    /// The connector's `AgentConnector.id` as a UUID string. Parsed, not
+    /// trusted: commit refuses a value that is not a UUID naming a projected
+    /// connector.
+    let connectorID: String
+    let connectorAlias: String
+    /// Self-describing destination, e.g. `STAR / Bug`.
+    let target: String
+    /// One line of content, for the dock row. The reviewable payload is the
+    /// staged file.
+    let summary: String
+    let stagedPayloadPath: String
+    /// SHA-256 over the staged bytes, lowercase hex. Identity as well as
+    /// integrity: two proposals with the same digest are the same proposal.
+    let requestDigest: String
+
+    var id: String { requestDigest }
+
+    init(
+        runID: UUID,
+        serviceType: String,
+        operation: String,
+        connectorID: String,
+        connectorAlias: String,
+        target: String,
+        summary: String,
+        stagedPayloadPath: String,
+        requestDigest: String
+    ) {
+        version = 1
+        self.runID = runID
+        self.serviceType = serviceType
+        self.operation = operation
+        self.connectorID = connectorID
+        self.connectorAlias = connectorAlias
+        self.target = target
+        self.summary = summary
+        self.stagedPayloadPath = stagedPayloadPath
+        self.requestDigest = requestDigest
+    }
+}
+
+/// Reads pending connector mutations out of durable task events.
+///
+/// Deliberately event-driven rather than filesystem-driven. The staging
+/// directory is the broker's channel into the app and is read exactly once, at
+/// the run boundary; after that the events are the authority. A resolver that
+/// re-scanned the directory would run in a SwiftUI view body — and would also
+/// resurrect a proposal the user already declined, because declining does not
+/// delete the file the user might still want to read.
+enum ConnectorMutationRequirementResolver {
+    /// Every staged mutation that has not since been sent, declined, or failed
+    /// terminally — oldest first, so the user works through them in the order
+    /// the agent composed them.
+    @MainActor
+    static func pendingMutations(task: AgentTask) -> [TaskStagedConnectorMutation] {
+        let ordered = task.events.sorted(by: isChronologicallyOrdered)
+        let decoder = TaskEventPayloadCodec.makeDecoder()
+
+        var pending: [String: TaskStagedConnectorMutation] = [:]
+        var order: [String] = []
+        for event in ordered {
+            switch event.type {
+            case ConnectorMutationEventTypes.staged:
+                guard let data = event.payload.data(using: .utf8),
+                      let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {
+                    continue
+                }
+                if pending.updateValue(staged, forKey: staged.requestDigest) == nil {
+                    order.append(staged.requestDigest)
+                }
+            case ConnectorMutationEventTypes.receipt,
+                 ConnectorMutationEventTypes.declined:
+                // Resolution is keyed by digest for the same reason approval is:
+                // a second proposal in the same task is a different thing, and
+                // sending one must not retire the other.
+                guard let digest = resolvedDigest(in: event.payload) else { continue }
+                pending.removeValue(forKey: digest)
+            default:
+                continue
+            }
+        }
+        return order.compactMap { pending[$0] }
+    }
+
+    @MainActor
+    static func hasPendingMutation(task: AgentTask) -> Bool {
+        !pendingMutations(task: task).isEmpty
+    }
+
+    /// Every digest this task has ever staged, pending or resolved.
+    ///
+    /// What makes rescanning idempotent, and it deliberately includes resolved
+    /// ones: a proposal that was sent or declined must not come back as new
+    /// because the file is still sitting in the staging directory.
+    @MainActor
+    static func recordedDigests(task: AgentTask) -> Set<String> {
+        let decoder = TaskEventPayloadCodec.makeDecoder()
+        return Set(
+            task.events
+                .filter { $0.type == ConnectorMutationEventTypes.staged }
+                .compactMap { event -> String? in
+                    guard let data = event.payload.data(using: .utf8),
+                          let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {
+                        return nil
+                    }
+                    return staged.requestDigest
+                }
+        )
+    }
+
+    /// A failure is not a resolution. A Jira `POST` that returned 503 leaves the
+    /// proposal exactly as reviewable as it was, so the row stays and the user
+    /// can send it again; only a receipt or an explicit decline retires it.
+    private static func resolvedDigest(in payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let digest = object["requestDigest"] as? String ?? object["request_digest"] as? String else {
+            return nil
+        }
+        return digest.isEmpty ? nil : digest
+    }
+
+    private static func isChronologicallyOrdered(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
+        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}

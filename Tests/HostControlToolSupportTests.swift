@@ -719,9 +719,9 @@ struct HostControlToolSupportTests {
     @Test("Jira host control search uses vetted read fields")
     func jiraHostControlSearchUsesVettedReadFields() throws {
         JiraCaptureURLProtocol.reset()
-        HostControlURLSessionConfiguration.protocolClassesForTesting = [JiraCaptureURLProtocol.self]
+        HostControlURLSessionConfiguration.registerTestingProtocolClass(JiraCaptureURLProtocol.self)
         defer {
-            HostControlURLSessionConfiguration.protocolClassesForTesting = []
+            HostControlURLSessionConfiguration.unregisterTestingProtocolClass(JiraCaptureURLProtocol.self)
             JiraCaptureURLProtocol.reset()
         }
 
@@ -1933,7 +1933,7 @@ struct HostControlToolSupportTests {
     /// instead of the network. Pair every call with `endJiraCapture()`.
     private func jiraCaptureServer() throws -> HostControlMCPServer {
         JiraCaptureURLProtocol.reset()
-        HostControlURLSessionConfiguration.protocolClassesForTesting = [JiraCaptureURLProtocol.self]
+        HostControlURLSessionConfiguration.registerTestingProtocolClass(JiraCaptureURLProtocol.self)
         let connectors = """
         {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://jira.example.test","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
         """
@@ -1948,7 +1948,7 @@ struct HostControlToolSupportTests {
     }
 
     private func endJiraCapture() {
-        HostControlURLSessionConfiguration.protocolClassesForTesting = []
+        HostControlURLSessionConfiguration.unregisterTestingProtocolClass(JiraCaptureURLProtocol.self)
         JiraCaptureURLProtocol.reset()
     }
 
