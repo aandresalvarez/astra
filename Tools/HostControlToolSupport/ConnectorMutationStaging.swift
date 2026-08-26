@@ -154,9 +154,22 @@ public enum ConnectorMutationStaging {
         // Named from the run and a per-run sequence rather than a timestamp, so
         // a second proposal in the same run does not overwrite the first and
         // the name stays reproducible in tests.
-        let index = sequence.next(for: "\(configuration.runID)#\(serviceType)#\(operation)")
-        let name = "\(serviceType)-\(operation)-\(configuration.runID)-\(index).json"
-        let url = directory.appendingPathComponent(name)
+        //
+        // The name is also the proposal's identity to the app, which reads the
+        // directory rather than being told what landed in it. So the counter
+        // alone is not enough: it lives in this process, and a broker restarted
+        // mid-run would hand out `1` again and overwrite a proposal the app has
+        // already recorded and the user may be about to approve. Probing for a
+        // free name makes the identity a property of the directory instead.
+        let key = "\(configuration.runID)#\(serviceType)#\(operation)"
+        var url = directory.appendingPathComponent(
+            "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
+        )
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = directory.appendingPathComponent(
+                "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
+            )
+        }
         try data.write(to: url, options: .atomic)
 
         return StagedConnectorMutation(

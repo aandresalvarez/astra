@@ -45,28 +45,74 @@ struct ConnectorMutationCommitFitnessTests {
 
     /// A trusted `requestPath` would let a rewritten envelope aim an
     /// authenticated POST anywhere on the connector's host.
+    ///
+    /// Derivation happens in `resolveProposal`, which is what both the review
+    /// and the send are built from — so the destination the user reads and the
+    /// destination that receives the credential come from the same computation.
     @Test("The outbound route comes from ASTRA's table, not the envelope")
     func routeIsDerivedNotTrusted() throws {
-        let body = try functionBody(startingWith: "func buildRequest(", in: try fileText(Self.coordinatorPath))
+        let source = try fileText(Self.coordinatorPath)
+        let resolved = try functionBody(startingWith: "func resolveProposal(", in: source)
 
         #expect(
-            body.contains("ConnectorMutationOperations.definition("),
-            "buildRequest no longer resolves the route from ConnectorMutationOperations."
+            resolved.contains("ConnectorMutationOperations.definition("),
+            "resolveProposal no longer resolves the route from ConnectorMutationOperations."
         )
         #expect(
-            body.contains("routeMismatch"),
+            resolved.contains("routeMismatch"),
             """
-            buildRequest no longer refuses an envelope whose declared route \
+            resolveProposal no longer refuses an envelope whose declared route \
             disagrees with ASTRA's. Disagreement is the only signal that the \
             envelope was rewritten.
             """
         )
-        for trusted in ["url: staged.requestPath", "path: staged.requestPath", "method: staged.requestMethod"] {
+        // The proposal's own route fields are what the sheet renders and what
+        // `buildRequest` sends, so they have to come from the table too — not
+        // be copied across from the envelope that declared them.
+        for derived in [
+            "requestMethod: definition.method",
+            "requestPath: definition.path",
+            "path: definition.path"
+        ] {
             #expect(
-                !body.contains(trusted),
-                "buildRequest builds the request from the envelope's own route (\(trusted))."
+                resolved.contains(derived),
+                "resolveProposal no longer derives the route from ASTRA's table (\(derived))."
             )
         }
+
+        let built = try functionBody(startingWith: "func buildRequest(", in: source)
+        for trusted in ["staged.requestPath", "staged.requestMethod", "staged.path"] {
+            #expect(
+                !built.contains(trusted),
+                "buildRequest builds the request from a declared route (\(trusted)) rather than the resolved URL."
+            )
+        }
+        #expect(
+            built.contains("proposal.destinationURL"),
+            "buildRequest no longer posts to the destination resolveProposal derived and the user approved."
+        )
+    }
+
+    /// The connector is resolved for the sheet and resolved again here. A
+    /// connector re-pointed, renamed, or swapped while the review sat open
+    /// makes this a different request than the one that was read, and the
+    /// approval does not carry across.
+    @Test("The send path re-resolves the destination and refuses a changed one")
+    func sendRevalidatesTheDestination() throws {
+        let body = try functionBody(startingWith: "func send(", in: try fileText(Self.coordinatorPath))
+
+        #expect(
+            body.contains("resolveProposal("),
+            "send() no longer re-resolves the connector and destination before posting."
+        )
+        #expect(
+            body.contains("connectorChangedSinceReview"),
+            """
+            send() no longer refuses a destination that moved since the review. \
+            Binding the approval to the payload alone lets the same bytes go to \
+            a different host.
+            """
+        )
     }
 
     /// Not a layering preference. `ConnectorMutationHTTPRequest` is the only

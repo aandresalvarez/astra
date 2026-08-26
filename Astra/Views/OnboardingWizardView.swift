@@ -216,7 +216,7 @@ enum OnboardingCapabilitySetup {
             id: redcapPackageID,
             packageID: redcapPackageID,
             title: "REDCap",
-            subtitle: "Query and manage Stanford REDCap projects",
+            subtitle: "Query Stanford REDCap projects",
             icon: "tablecells"
         )
     ]

@@ -82,7 +82,7 @@ private struct TaskConnectorMutationReviewModifier: ViewModifier {
                     },
                     onDecline: {
                         try ConnectorMutationCoordinator(modelContext: modelContext)
-                            .decline(task: task, digest: proposal.requestDigest)
+                            .decline(task: task, proposal: proposal)
                         state.proposal = nil
                         onResolved()
                     },

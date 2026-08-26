@@ -39,10 +39,22 @@ enum ConnectorMutationDiscovery {
             return []
         }
 
-        let candidates = names.filter { $0.hasSuffix(".json") }.sorted()
-        let alreadyRecorded = Set(
-            ConnectorMutationRequirementResolver.recordedDigests(task: task)
-        )
+        // Recorded files are excluded *before* the cap, not after. The staging
+        // directory is append-only — declining leaves the file so the user can
+        // still read it — so a task that accumulates more than the cap would
+        // otherwise re-examine the same first 25 names on every scan, skip them
+        // all as already recorded, and never reach the 26th. That is a proposal
+        // the agent staged and the user is never offered.
+        //
+        // Filtering by name is what makes that affordable: the reader resolves
+        // symlinks, so the comparison is made against the resolved directory to
+        // stay in the same spelling the recorded paths are in.
+        let alreadyRecorded = ConnectorMutationRequirementResolver.recordedStagedPaths(task: task)
+        let resolvedDirectory = directory.resolvingSymlinksInPath()
+        let candidates = names
+            .filter { $0.hasSuffix(".json") }
+            .sorted()
+            .filter { !alreadyRecorded.contains(resolvedDirectory.appendingPathComponent($0).path) }
 
         var recorded: [TaskStagedConnectorMutation] = []
         var unreadable: [String] = []
@@ -58,7 +70,10 @@ enum ConnectorMutationDiscovery {
                 unreadable.append(name)
                 continue
             }
-            guard !alreadyRecorded.contains(staged.digest) else { continue }
+            // Backstop for the name filter above: the reader is the authority on
+            // what a staged path resolves to, so a spelling it normalises
+            // differently must still not record the same file twice.
+            guard !alreadyRecorded.contains(staged.path) else { continue }
             let pending = TaskStagedConnectorMutation(
                 runID: run.id,
                 serviceType: staged.serviceType,
@@ -86,8 +101,9 @@ enum ConnectorMutationDiscovery {
             modelContext.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.System.error,
-                payload: "This run staged \(candidates.count) connector mutations; "
-                    + "ASTRA is only offering the first \(maximumProposalsPerScan) for review.",
+                payload: "This task has \(candidates.count) connector mutations awaiting a first review; "
+                    + "ASTRA is offering \(maximumProposalsPerScan) of them now and will pick up the "
+                    + "rest on the next run.",
                 run: run
             ))
         }

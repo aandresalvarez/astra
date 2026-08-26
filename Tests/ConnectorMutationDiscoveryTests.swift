@@ -49,15 +49,15 @@ struct ConnectorMutationDiscoveryTests {
 
     /// Declining leaves the file in place, on purpose — the user may still want
     /// to read what was proposed. So the next run's scan sees it again, and
-    /// `recordedDigests` is the only thing standing between that and a row the
-    /// user cannot get rid of.
+    /// `recordedStagedPaths` is the only thing standing between that and a row
+    /// the user cannot get rid of.
     @Test("A rescan does not resurrect a proposal the user declined")
     func rescanDoesNotResurrectADeclinedProposal() throws {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }
 
         let reply = try propose(fixture, summary: "Add an age filter to dose_era")
-        let digest = try #require(value(of: "request_digest", in: reply))
+        let stagedPath = try #require(value(of: "staged_path", in: reply))
 
         ConnectorMutationDiscovery.recordStagedMutations(
             task: fixture.task,
@@ -67,7 +67,7 @@ struct ConnectorMutationDiscoveryTests {
         fixture.context.insert(TaskEvent(
             task: fixture.task,
             type: ConnectorMutationEventTypes.declined,
-            payload: #"{"version":1,"requestDigest":"\#(digest)"}"#,
+            payload: #"{"version":2,"stagedPayloadPath":"\#(stagedPath)"}"#,
             run: fixture.run
         ))
         try fixture.context.save()
@@ -82,9 +82,51 @@ struct ConnectorMutationDiscoveryTests {
         #expect(rescanned.isEmpty)
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
         // Still on disk. The scan has to be what stayed quiet, not the file.
-        #expect(FileManager.default.fileExists(
-            atPath: try #require(value(of: "staged_path", in: reply))
+        #expect(FileManager.default.fileExists(atPath: stagedPath))
+    }
+
+    /// The same ticket, asked for twice. The bytes are identical, so the digest
+    /// is too — and identifying a proposal by its digest meant the second one
+    /// was silently swallowed as a replay of a decision the user had already
+    /// made. Two acts of proposing are two decisions.
+    @Test("Re-proposing a declined ticket is offered again")
+    func reProposingADeclinedTicketIsOfferedAgain() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let first = try propose(fixture, summary: "Add an age filter to dose_era")
+        let firstPath = try #require(value(of: "staged_path", in: first))
+        let firstDigest = try #require(value(of: "request_digest", in: first))
+
+        ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            type: ConnectorMutationEventTypes.declined,
+            payload: #"{"version":2,"stagedPayloadPath":"\#(firstPath)"}"#,
+            run: fixture.run
         ))
+        try fixture.context.save()
+
+        // Byte-for-byte the same request, so the same digest.
+        let second = try propose(fixture, summary: "Add an age filter to dose_era")
+        let secondPath = try #require(value(of: "staged_path", in: second))
+        #expect(try #require(value(of: "request_digest", in: second)) == firstDigest)
+        #expect(secondPath != firstPath)
+
+        let rescanned = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(rescanned.map(\.stagedPayloadPath) == [secondPath])
+        let pending = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
+        #expect(pending.map(\.stagedPayloadPath) == [secondPath])
     }
 
     @Test("Two proposals in one run each need their own approval")
@@ -104,6 +146,7 @@ struct ConnectorMutationDiscoveryTests {
 
         let pending = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
         #expect(pending.count == 2)
+        #expect(Set(pending.map(\.stagedPayloadPath)).count == 2)
         #expect(Set(pending.map(\.requestDigest)).count == 2)
         #expect(Set(pending.map(\.target)) == ["STAR / Bug", "STAR / Task"])
     }
@@ -149,10 +192,49 @@ struct ConnectorMutationDiscoveryTests {
         #expect(recorded.count == ConnectorMutationDiscovery.maximumProposalsPerScan)
         let errors = fixture.task.events.filter { $0.type == TaskEventTypes.System.error.rawValue }
         #expect(errors.count == 1)
-        #expect(errors.first?.payload.contains("staged \(overCap) connector mutations") == true)
+        #expect(errors.first?.payload.contains("has \(overCap) connector mutations") == true)
         #expect(
             errors.first?.payload
-                .contains("first \(ConnectorMutationDiscovery.maximumProposalsPerScan)") == true
+                .contains("offering \(ConnectorMutationDiscovery.maximumProposalsPerScan) of them") == true
+        )
+    }
+
+    /// The cap must apply to what is *left*, not to the directory listing.
+    /// Filtering after the cap meant every later scan re-examined the same
+    /// first 25 recorded names, skipped them all, and never reached the 26th —
+    /// a proposal the agent staged and the user would never be shown.
+    @Test("A proposal past the cap is picked up by the next scan")
+    func proposalPastTheCapIsPickedUpByTheNextScan() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let overCap = ConnectorMutationDiscovery.maximumProposalsPerScan + 1
+        var stagedPaths: [String] = []
+        for index in 0..<overCap {
+            let reply = try propose(fixture, summary: "Proposal \(index)")
+            stagedPaths.append(try #require(value(of: "staged_path", in: reply)))
+        }
+
+        let first = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+        #expect(first.count == ConnectorMutationDiscovery.maximumProposalsPerScan)
+
+        let second = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(second.count == 1)
+        let recordedPaths = ConnectorMutationRequirementResolver.recordedStagedPaths(task: fixture.task)
+        #expect(recordedPaths == Set(stagedPaths))
+        #expect(
+            ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == overCap
         )
     }
 

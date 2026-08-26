@@ -83,7 +83,16 @@ public enum PersistedCredentialPurgeService {
         for secret in secrets {
             // Count first. On the overwhelmingly common clean store this is the
             // only query the secret costs, and it never materializes a row.
-            let eventsToFix = (try? modelContext.fetchCount(eventDescriptor(containing: secret))) ?? 0
+            //
+            // A count that *throws* is not a count of zero. Treating it as one
+            // would let the sweep report success over a table it never managed
+            // to query, and `purgeIfNeeded` would then spend the build gate and
+            // never look again — a permanent retirement bought with a failure.
+            // So a failed count ends the sweep with `completed` still false.
+            guard let eventsToFix = try? modelContext.fetchCount(eventDescriptor(containing: secret)) else {
+                log(stage: "event_count_failed", outcome: outcome, severity: .failure)
+                return outcome
+            }
             if eventsToFix > 0 {
                 guard await rewriteEvents(
                     containing: secret,
@@ -97,7 +106,10 @@ public enum PersistedCredentialPurgeService {
                 }
             }
 
-            let runsToFix = (try? modelContext.fetchCount(runDescriptor(containing: secret))) ?? 0
+            guard let runsToFix = try? modelContext.fetchCount(runDescriptor(containing: secret)) else {
+                log(stage: "run_count_failed", outcome: outcome, severity: .failure)
+                return outcome
+            }
             if runsToFix > 0 {
                 guard await rewriteRuns(
                     containing: secret,
@@ -126,8 +138,14 @@ public enum PersistedCredentialPurgeService {
         return outcome
     }
 
-    /// Every credential value reachable from a connector row, in both of the
-    /// Keychain namespaces a connector resolves to.
+    /// Every credential value reachable from a connector row or a skill's
+    /// environment, in both of the Keychain namespaces a connector resolves to.
+    ///
+    /// Skills are swept as well as connectors because they are the *other* way
+    /// a credential reaches a run: `Skill.environmentVariables` is merged into
+    /// the launch environment, so a skill-held token is exactly as echoable as a
+    /// connector-held one, and a sweep that only knew about connectors would
+    /// leave it sitting in the transcripts while reporting the store clean.
     ///
     /// Filtered by key name rather than by value shape: the same projection
     /// carries base URLs and project IDs, and replacing those with a marker
@@ -136,18 +154,37 @@ public enum PersistedCredentialPurgeService {
         modelContext: ModelContext,
         store: SecretStore
     ) -> [String] {
-        let connectors = (try? modelContext.fetch(FetchDescriptor<Connector>())) ?? []
         var values: [String] = []
         var seen = Set<String>()
+        func consider(key: String, value: String) {
+            guard RunSecretRedaction.isSecretKey(key) else { return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= RunSecretRedaction.minimumSecretLength else { return }
+            guard seen.insert(trimmed).inserted else { return }
+            values.append(trimmed)
+        }
+
+        let connectors = (try? modelContext.fetch(FetchDescriptor<Connector>())) ?? []
         for connector in connectors {
             for (key, value) in connector.credentials(store: store) {
-                guard RunSecretRedaction.isSecretKey(key) else { continue }
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard trimmed.count >= RunSecretRedaction.minimumSecretLength else { continue }
-                guard seen.insert(trimmed).inserted else { continue }
-                values.append(trimmed)
+                consider(key: key, value: value)
             }
         }
+
+        // Two different predicates, deliberately. `Skill.isSecretEnvironmentKey`
+        // decides what is *stored* in the Keychain and is the wider of the two —
+        // it matches bare "KEY" and "AUTH", so `PROJECT_KEY` is Keychain-backed.
+        // `consider` then applies the narrower live-redaction rule, so the sweep
+        // rewrites exactly what a run today would have redacted. Widening it
+        // here would make old transcripts hide identifiers that new ones show.
+        let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
+        for skill in skills {
+            for (index, key) in skill.environmentKeys.enumerated()
+            where Skill.isSecretEnvironmentKey(key) {
+                consider(key: key, value: skill.valueForEnvironmentKey(at: index, store: store))
+            }
+        }
+
         // Longest first: a secret containing another must be replaced whole.
         return values.sorted { $0.count > $1.count }
     }

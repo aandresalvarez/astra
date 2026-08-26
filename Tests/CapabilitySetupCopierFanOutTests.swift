@@ -215,3 +215,153 @@ struct CapabilitySetupCopierFanOutTests {
         )
     }
 }
+
+/// The cheap scalar key that decides when the expensive sweep above re-runs.
+/// Getting it wrong is silent: the list simply keeps showing what it decided
+/// once, and the sweep it is protecting never happens again.
+@Suite("Copyable capability setup key")
+@MainActor
+struct CopyableCapabilitySetupKeyTests {
+
+    private func makeContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+    }
+
+    private func makeRedcapPackage() -> PluginPackage {
+        PluginPackage(
+            id: "redcap-workflow",
+            name: "REDCap",
+            icon: "chart.bar.doc.horizontal",
+            description: "d",
+            author: "ASTRA",
+            category: "Research",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [
+                PluginConnector(
+                    name: "REDCap",
+                    serviceType: "redcap",
+                    icon: "network",
+                    description: "REDCap connector",
+                    baseURL: "https://redcap.example.edu/api/",
+                    authMethod: "api_key",
+                    credentialHints: [.init(key: "REDCAP_API_TOKEN", hint: "Token")],
+                    configHints: [],
+                    notes: ""
+                )
+            ],
+            localTools: [],
+            templates: []
+        )
+    }
+
+    /// A global connector is one of the inputs the summary is derived from, so
+    /// a credential filled in on one has to move the key. It neither adds nor
+    /// removes a row, so identity alone could not see it — and the sheet went
+    /// on offering a setup it had already decided was incomplete.
+    @Test("Filling in a global connector's credential moves the key")
+    func globalConnectorTimestampMovesTheKey() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Lab", primaryPath: "/tmp/lab")
+        let connector = Connector(
+            name: "REDCap", serviceType: "redcap", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        context.insert(workspace)
+        context.insert(connector)
+
+        let before = CopyableCapabilitySetupResolver.key(
+            sources: [workspace], globalConnectors: [connector])
+        // What a credential write does: `recordCredentialSaveResult` stamps it.
+        connector.updatedAt = connector.updatedAt.addingTimeInterval(60)
+        let after = CopyableCapabilitySetupResolver.key(
+            sources: [workspace], globalConnectors: [connector])
+
+        #expect(before != after)
+    }
+
+    @Test("The key is stable when nothing the summary reads has changed")
+    func keyIsStableAcrossReads() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Lab", primaryPath: "/tmp/lab")
+        let connector = Connector(
+            name: "REDCap", serviceType: "redcap", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        context.insert(workspace)
+        context.insert(connector)
+
+        #expect(
+            CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [connector])
+                == CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [connector])
+        )
+    }
+
+    /// The list the key protects. Offering the workspace being set up as a
+    /// source to copy from is offering it its own values back, and a workspace
+    /// with nothing saved is a menu row that does nothing.
+    @Test("Install sources exclude the destination and anything with nothing to copy")
+    func installSourcesExcludeTheDestinationAndTheEmpty() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let store = CountingSecretStore()
+
+        let global = Connector(
+            name: "REDCap", serviceType: "redcap",
+            baseURL: "https://redcap.example.edu/api/", authMethod: "api_key")
+        global.isGlobal = true
+        global.credentialKeys = ["REDCAP_API_TOKEN"]
+        context.insert(global)
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "tok-abc",
+            entityID: KeychainSecretStore.connectorEntityID(for: global.id),
+            label: nil
+        )
+
+        // Configured identically, so only the exclusion can tell them apart.
+        let source = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
+        let destination = Workspace(name: "Destination", primaryPath: NSTemporaryDirectory())
+        for workspace in [source, destination] {
+            workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
+            workspace.enabledCapabilityIDs = ["redcap-workflow"]
+            context.insert(workspace)
+        }
+        let empty = Workspace(name: "Empty", primaryPath: NSTemporaryDirectory())
+        context.insert(empty)
+        try context.save()
+
+        let resolved = CopyableCapabilitySetupResolver.installSources(
+            for: makeRedcapPackage(),
+            excluding: destination.id,
+            sources: [source, destination, empty],
+            globalConnectors: [global],
+            copier: CapabilitySetupCopier(secretStore: store)
+        )
+
+        #expect(resolved.map(\.name) == ["Source"])
+        #expect(resolved.first?.inputs.credentialInputs["REDCAP_API_TOKEN"] == "tok-abc")
+    }
+
+    /// Two callers keying on the same rows for different packages must not
+    /// share a key, or installing one would reuse the other's resolved list.
+    @Test("A prefix separates callers that key on something else as well")
+    func prefixSeparatesCallers() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Lab", primaryPath: "/tmp/lab")
+        context.insert(workspace)
+
+        let plain = CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [])
+        let prefixed = CopyableCapabilitySetupResolver.key(
+            prefix: "redcap-workflow", sources: [workspace], globalConnectors: [])
+
+        #expect(plain != prefixed)
+        #expect(prefixed.hasPrefix("redcap-workflow|"))
+    }
+}

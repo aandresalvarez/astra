@@ -147,9 +147,10 @@ public enum ConnectorCredentialAdmissionVerdict: Sendable, Equatable {
 
 public struct ConnectorCredentialAdmissionDecision: Sendable, Equatable {
     public let verdict: ConnectorCredentialAdmissionVerdict
-    /// The value as it should actually be persisted — surrounding whitespace
-    /// removed, because a trailing newline from a copy/paste is the single
-    /// most common way a valid token is stored broken.
+    /// The value as it should actually be persisted. Line breaks and tabs are
+    /// always gone; surrounding spaces survive only where nothing identifies
+    /// the value as a fixed-shape token. See
+    /// `ConnectorCredentialAdmission.storableValue`.
     public let normalizedValue: String
 
     public var isAdmitted: Bool { verdict.isAdmitted }
@@ -172,8 +173,50 @@ public enum ConnectorCredentialAdmission {
         "", "custom", "rest_api", "restapi", "http", "https", "generic", "other", "webhook", "api"
     ]
 
+    /// The canonical form used to *compare* two credential values and to run
+    /// the admission rules against — not the form that gets stored. Fully
+    /// trimmed, so " ATATT…" cannot slip past the vendor fingerprint and two
+    /// connectors holding the same token with different stray whitespace still
+    /// register as the same secret.
     public static func normalized(_ raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        withoutLineBreaks(raw).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The form that is actually persisted.
+    ///
+    /// Line breaks and tabs go unconditionally: nothing issues a credential
+    /// containing one, and a trailing newline off a `cat` or a copied code
+    /// block is the single most common way a valid token is stored broken.
+    ///
+    /// Surrounding *spaces* are different. They are the one kind of whitespace
+    /// that can be part of a real secret — a password may legitimately begin or
+    /// end with one — and stripping them turns a correct paste into an
+    /// authentication failure the user cannot see or explain. So they are
+    /// removed only when something here knows the value is not a password:
+    /// either a declared or built-in format says what shape it must have, or
+    /// its prefix identifies the issuer. With neither signal, ASTRA does not
+    /// know what it is holding, and the safe thing is to store it verbatim.
+    public static func storableValue(
+        _ raw: String,
+        format: ConnectorCredentialFormat?,
+        vendor: ConnectorCredentialVendor?
+    ) -> String {
+        let stripped = withoutLineBreaks(raw)
+        guard format == nil, vendor == nil else {
+            return stripped.trimmingCharacters(in: .whitespaces)
+        }
+        return stripped
+    }
+
+    /// Removes every line break and tab, wherever it appears — including the
+    /// interior, since a credential broken across two lines by a hard-wrapped
+    /// paste is not a two-line credential.
+    static func withoutLineBreaks(_ raw: String) -> String {
+        guard raw.unicodeScalars.contains(where: { CharacterSet.newlines.contains($0) || $0 == "\t" })
+        else { return raw }
+        return String(String.UnicodeScalarView(
+            raw.unicodeScalars.filter { !CharacterSet.newlines.contains($0) && $0 != "\t" }
+        ))
     }
 
     public static func normalizedServiceType(_ raw: String) -> String {
@@ -191,19 +234,29 @@ public enum ConnectorCredentialAdmission {
         declaredFormat: ConnectorCredentialFormat? = nil,
         reuseSites: [ConnectorCredentialReuseSite] = []
     ) -> ConnectorCredentialAdmissionDecision {
-        let value = normalized(rawValue)
         let normalizedService = normalizedServiceType(serviceType)
         let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+
+        // Every *rule* runs against the fully-canonical form, so none of them
+        // is weakened by whitespace the storable form may keep. What changes
+        // with the format is only what gets written to the Keychain — see
+        // `storableValue`.
+        let inspected = normalized(rawValue)
+        let vendor = ConnectorCredentialFormatRegistry.vendor(of: inspected)
+        let format = declaredFormat
+            ?? ConnectorCredentialFormatRegistry.format(serviceType: normalizedService, key: normalizedKey)
+        let value = storableValue(rawValue, format: format, vendor: vendor)
 
         func decide(_ verdict: ConnectorCredentialAdmissionVerdict) -> ConnectorCredentialAdmissionDecision {
             ConnectorCredentialAdmissionDecision(verdict: verdict, normalizedValue: value)
         }
 
-        guard !value.isEmpty else { return decide(.empty) }
+        // Judged on the canonical form deliberately: a value made only of
+        // spaces is not a password someone meant to set, even where spaces are
+        // otherwise significant.
+        guard !inspected.isEmpty else { return decide(.empty) }
 
-        if isPlaceholder(value) { return decide(.placeholder) }
-
-        let vendor = ConnectorCredentialFormatRegistry.vendor(of: value)
+        if isPlaceholder(inspected) { return decide(.placeholder) }
 
         if let vendor,
            !vendorAgnosticServiceTypes.contains(normalizedService),
@@ -211,16 +264,14 @@ public enum ConnectorCredentialAdmission {
             return decide(.foreignVendor(
                 vendor: vendor.name,
                 belongsTo: normalizedService,
-                observedShape: shapeDescription(value, vendor: vendor)
+                observedShape: shapeDescription(inspected, vendor: vendor)
             ))
         }
 
-        let format = declaredFormat
-            ?? ConnectorCredentialFormatRegistry.format(serviceType: normalizedService, key: normalizedKey)
-        if let format, !format.admits(value) {
+        if let format, !format.admits(inspected) {
             return decide(.formatMismatch(
                 expectation: format.expectation,
-                observedShape: shapeDescription(value, vendor: vendor)
+                observedShape: shapeDescription(inspected, vendor: vendor)
             ))
         }
 

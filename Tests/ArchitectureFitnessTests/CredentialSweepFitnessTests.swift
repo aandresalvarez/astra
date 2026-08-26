@@ -160,6 +160,74 @@ struct CredentialSweepFitnessTests {
         )
     }
 
+    @Test("A count query that fails leaves the credential purge unfinished")
+    func failedCountQueriesDoNotCompleteThePurge() throws {
+        let source = try fileText("Astra/Services/Persistence/PersistedCredentialPurgeService.swift")
+        let purgeBody = try body(
+            from: "static func purge(",
+            until: "\n    static func liveCredentialValues(",
+            in: source
+        )
+
+        // The sweep's two count queries are the cheap path: on a clean store
+        // they are the only queries a secret costs. That makes them the easiest
+        // place to lose the distinction between "this table holds none of this
+        // secret" and "this table could not be read". A count coerced to zero
+        // skips the rewrite, the loop finishes, `completed` goes true, and
+        // `purgeIfNeeded` stamps the build gate — retiring the sweep forever on
+        // the strength of a query that never ran. So each count must be a
+        // `guard let try?` that returns with `completed` still false.
+        var searchStart = purgeBody.startIndex
+        var countSites: [Range<String.Index>] = []
+        while let site = purgeBody.range(
+            of: "modelContext.fetchCount(",
+            range: searchStart..<purgeBody.endIndex
+        ) {
+            countSites.append(site)
+            searchStart = site.upperBound
+        }
+        #expect(
+            countSites.count == 2,
+            "purge no longer counts events and runs separately; this guard is scanning for something that moved."
+        )
+        for site in countSites {
+            #expect(
+                String(purgeBody[..<site.lowerBound].suffix(60)).contains("guard let"),
+                """
+                A count in purge is not bound by `guard let`. A count that throws \
+                is not a count of zero, and the difference is whether the sweep \
+                reports success over a table it never queried.
+                """
+            )
+        }
+        #expect(
+            !purgeBody.contains("?? 0"),
+            "purge coerces a failed query to zero. That is the failure this sweep exists to not have."
+        )
+
+        // Each failed count must also say so and stop. `continue` would move to
+        // the next secret and still finish the loop, which reaches
+        // `completed = true` by another road.
+        for stage in ["event_count_failed", "run_count_failed"] {
+            let branch = try body(from: "\(stage)\"", until: "\n            if ", in: purgeBody)
+            #expect(
+                branch.prefix(200).contains("return outcome"),
+                "The \(stage) branch does not end the sweep; a failed count must leave `completed` false."
+            )
+        }
+
+        let completion = try #require(
+            purgeBody.range(of: "outcome.completed = true"),
+            "purge no longer marks its own completion; this guard cannot tell which paths reach it."
+        )
+        for site in countSites {
+            #expect(
+                site.upperBound < completion.lowerBound,
+                "A count query now runs after the sweep has declared itself complete."
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func body(

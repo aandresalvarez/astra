@@ -154,11 +154,34 @@ public enum RunSecretRedactionScope {
         /// Most-recently-registered first within each task, so the cap drops
         /// the oldest values.
         var secretsByTaskID: [UUID: [String]] = [:]
-        /// Least-recently-registered first.
+        /// Least-recently-*used* first, where a use is a registration or a
+        /// redaction pass. Registration order alone was wrong: a long task
+        /// registers once at launch and then redacts for hours, so sixteen
+        /// short tasks starting after it would evict the live one and every
+        /// credential it echoed from then on would persist in the clear.
+        /// Reading keeps a task alive, which is the property that matters —
+        /// a scope stops being touched exactly when its task stops writing.
         var order: [UUID] = []
         /// Non-empty iff at least one task has secrets, so the common case
         /// (no connectors, or none with credentials) costs one bool read.
         var isEmpty: Bool { secretsByTaskID.isEmpty }
+
+        /// Moves `taskID` to the most-recently-used end. Called on every read,
+        /// so it is deliberately a no-op when it is already there — `order`
+        /// holds at most `retainedTaskLimit` entries and the streaming path
+        /// hits this on every chunk.
+        mutating func touch(_ taskID: UUID) {
+            guard order.last != taskID else { return }
+            order.removeAll { $0 == taskID }
+            order.append(taskID)
+        }
+
+        /// Reads a task's secrets and marks it used in one lock acquisition.
+        mutating func use(_ taskID: UUID) -> [String] {
+            guard !isEmpty, let secrets = secretsByTaskID[taskID], !secrets.isEmpty else { return [] }
+            touch(taskID)
+            return secrets
+        }
     }
 
     private static let storage = OSAllocatedUnfairLock(initialState: State())
@@ -184,8 +207,7 @@ public enum RunSecretRedactionScope {
                 .filter { seen.insert($0).inserted }
                 .prefix(retainedSecretsPerTask)
                 .map { $0 }
-            state.order.removeAll { $0 == taskID }
-            state.order.append(taskID)
+            state.touch(taskID)
             while state.order.count > retainedTaskLimit {
                 let evicted = state.order.removeFirst()
                 state.secretsByTaskID.removeValue(forKey: evicted)
@@ -210,7 +232,7 @@ public enum RunSecretRedactionScope {
     }
 
     public static func secrets(for taskID: UUID) -> [String] {
-        storage.withLock { $0.secretsByTaskID[taskID] ?? [] }
+        storage.withLock { $0.use(taskID) }
     }
 
     /// The redaction pass itself. Returns `text` untouched — without copying —
@@ -218,9 +240,7 @@ public enum RunSecretRedactionScope {
     /// and every test that never launched one.
     public static func redact(_ text: String, taskID: UUID?) -> String {
         guard !text.isEmpty, let taskID else { return text }
-        let secrets = storage.withLock { state -> [String] in
-            state.isEmpty ? [] : (state.secretsByTaskID[taskID] ?? [])
-        }
+        let secrets = storage.withLock { $0.use(taskID) }
         guard !secrets.isEmpty else { return text }
         return RunSecretRedaction.redact(text, secrets: secrets)
     }
@@ -243,9 +263,7 @@ public enum RunSecretRedactionScope {
         taskID: UUID?
     ) -> (dropFromExisting: Int, append: String) {
         guard !addition.isEmpty, let taskID else { return (0, addition) }
-        let secrets = storage.withLock { state -> [String] in
-            state.isEmpty ? [] : (state.secretsByTaskID[taskID] ?? [])
-        }
+        let secrets = storage.withLock { $0.use(taskID) }
         guard !secrets.isEmpty else { return (0, addition) }
 
         let window = (secrets.map(\.count).max() ?? 0) - 1

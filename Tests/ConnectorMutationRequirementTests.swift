@@ -13,7 +13,8 @@ struct ConnectorMutationRequirementTests {
         let context = container.mainContext
         let (task, run) = makeTask(context: context)
 
-        stage(digest: String(repeating: "a", count: 64), at: 1_000, task: task, run: run, context: context)
+        let staged = "/tmp/jira-create_issue-run-1.json"
+        stage(path: staged, at: 1_000, task: task, run: run, context: context)
         try context.save()
 
         let pending = ConnectorMutationRequirementResolver.pendingMutations(task: task)
@@ -23,7 +24,7 @@ struct ConnectorMutationRequirementTests {
 
         resolve(
             type: ConnectorMutationEventTypes.receipt,
-            digest: String(repeating: "a", count: 64),
+            path: staged,
             at: 1_001,
             task: task,
             run: run,
@@ -41,12 +42,12 @@ struct ConnectorMutationRequirementTests {
         let container = try makeContainer()
         let context = container.mainContext
         let (task, run) = makeTask(context: context)
-        let digest = String(repeating: "b", count: 64)
+        let staged = "/tmp/jira-create_issue-run-1.json"
 
-        stage(digest: digest, at: 2_000, task: task, run: run, context: context)
+        stage(path: staged, at: 2_000, task: task, run: run, context: context)
         resolve(
             type: ConnectorMutationEventTypes.failed,
-            digest: digest,
+            path: staged,
             at: 2_001,
             task: task,
             run: run,
@@ -58,18 +59,18 @@ struct ConnectorMutationRequirementTests {
     }
 
     @Test("Resolving one proposal leaves a second one pending")
-    func resolutionIsScopedToItsDigest() throws {
+    func resolutionIsScopedToItsStagedFile() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let (task, run) = makeTask(context: context)
-        let first = String(repeating: "c", count: 64)
-        let second = String(repeating: "d", count: 64)
+        let first = "/tmp/jira-create_issue-run-1.json"
+        let second = "/tmp/jira-create_issue-run-2.json"
 
-        stage(digest: first, at: 3_000, target: "STAR / Bug", task: task, run: run, context: context)
-        stage(digest: second, at: 3_001, target: "STAR / Task", task: task, run: run, context: context)
+        stage(path: first, at: 3_000, target: "STAR / Bug", task: task, run: run, context: context)
+        stage(path: second, at: 3_001, target: "STAR / Task", task: task, run: run, context: context)
         resolve(
             type: ConnectorMutationEventTypes.declined,
-            digest: first,
+            path: first,
             at: 3_002,
             task: task,
             run: run,
@@ -78,7 +79,38 @@ struct ConnectorMutationRequirementTests {
         try context.save()
 
         let pending = ConnectorMutationRequirementResolver.pendingMutations(task: task)
-        #expect(pending.map(\.requestDigest) == [second])
+        #expect(pending.map(\.stagedPayloadPath) == [second])
+    }
+
+    /// The collapse that path identity exists to prevent. Two proposals whose
+    /// bytes are identical — the user declined a ticket and then asked for the
+    /// same one again — are two decisions, not one, and declining the first
+    /// must not silently answer for the second.
+    @Test("Two proposals with identical content are two separate reviews")
+    func identicalContentStillYieldsTwoReviews() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let (task, run) = makeTask(context: context)
+        let sharedDigest = String(repeating: "c", count: 64)
+        let first = "/tmp/jira-create_issue-run-1.json"
+        let second = "/tmp/jira-create_issue-run-2.json"
+
+        stage(path: first, digest: sharedDigest, at: 3_100, task: task, run: run, context: context)
+        resolve(
+            type: ConnectorMutationEventTypes.declined,
+            path: first,
+            at: 3_101,
+            task: task,
+            run: run,
+            context: context
+        )
+        stage(path: second, digest: sharedDigest, at: 3_102, task: task, run: run, context: context)
+        try context.save()
+
+        let pending = ConnectorMutationRequirementResolver.pendingMutations(task: task)
+        #expect(pending.map(\.stagedPayloadPath) == [second])
+        #expect(pending.first?.requestDigest == sharedDigest)
+        #expect(ConnectorMutationRequirementResolver.recordedStagedPaths(task: task) == [first, second])
     }
 
     @Test("Pending proposals come back in the order they were staged")
@@ -86,32 +118,32 @@ struct ConnectorMutationRequirementTests {
         let container = try makeContainer()
         let context = container.mainContext
         let (task, run) = makeTask(context: context)
-        let first = String(repeating: "e", count: 64)
-        let second = String(repeating: "f", count: 64)
+        let first = "/tmp/jira-create_issue-run-1.json"
+        let second = "/tmp/jira-create_issue-run-2.json"
 
-        stage(digest: second, at: 4_001, task: task, run: run, context: context)
-        stage(digest: first, at: 4_000, task: task, run: run, context: context)
+        stage(path: second, at: 4_001, task: task, run: run, context: context)
+        stage(path: first, at: 4_000, task: task, run: run, context: context)
         try context.save()
 
         #expect(
-            ConnectorMutationRequirementResolver.pendingMutations(task: task).map(\.requestDigest)
+            ConnectorMutationRequirementResolver.pendingMutations(task: task).map(\.stagedPayloadPath)
                 == [first, second]
         )
     }
 
     /// Declining does not delete the staged file, so a rescan sees it again.
-    /// `recordedDigests` is what stops that turning into a resurrected row.
-    @Test("Recorded digests include proposals that were already resolved")
-    func recordedDigestsSurviveResolution() throws {
+    /// `recordedStagedPaths` is what stops that turning into a resurrected row.
+    @Test("Recorded staged paths include proposals that were already resolved")
+    func recordedStagedPathsSurviveResolution() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let (task, run) = makeTask(context: context)
-        let digest = String(repeating: "9", count: 64)
+        let staged = "/tmp/jira-create_issue-run-1.json"
 
-        stage(digest: digest, at: 5_000, task: task, run: run, context: context)
+        stage(path: staged, at: 5_000, task: task, run: run, context: context)
         resolve(
             type: ConnectorMutationEventTypes.declined,
-            digest: digest,
+            path: staged,
             at: 5_001,
             task: task,
             run: run,
@@ -120,7 +152,7 @@ struct ConnectorMutationRequirementTests {
         try context.save()
 
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: task).isEmpty)
-        #expect(ConnectorMutationRequirementResolver.recordedDigests(task: task) == [digest])
+        #expect(ConnectorMutationRequirementResolver.recordedStagedPaths(task: task) == [staged])
     }
 
     // MARK: - Helpers
@@ -133,8 +165,12 @@ struct ConnectorMutationRequirementTests {
         return (task, run)
     }
 
+    /// A proposal is identified by the file the broker staged it in, so the
+    /// helpers take a path and derive a plausible digest from it rather than
+    /// the other way round.
     private func stage(
-        digest: String,
+        path: String,
+        digest: String? = nil,
         at timestamp: TimeInterval,
         target: String = "STAR / Bug",
         task: AgentTask,
@@ -152,8 +188,8 @@ struct ConnectorMutationRequirementTests {
                 connectorAlias: "jira",
                 target: target,
                 summary: "Add an age filter to dose_era",
-                stagedPayloadPath: "/tmp/\(digest).json",
-                requestDigest: digest
+                stagedPayloadPath: path,
+                requestDigest: digest ?? Self.digest(for: path)
             ),
             run: run
         )
@@ -163,7 +199,7 @@ struct ConnectorMutationRequirementTests {
 
     private func resolve(
         type: String,
-        digest: String,
+        path: String,
         at timestamp: TimeInterval,
         task: AgentTask,
         run: TaskRun,
@@ -172,11 +208,18 @@ struct ConnectorMutationRequirementTests {
         let event = TaskEvent(
             task: task,
             type: type,
-            payload: #"{"version":1,"requestDigest":"\#(digest)"}"#,
+            payload: #"{"version":2,"stagedPayloadPath":"\#(path)"}"#,
             run: run
         )
         event.timestamp = Date(timeIntervalSince1970: timestamp)
         context.insert(event)
+    }
+
+    /// Any stable 64-hex string will do: these tests are about identity, and
+    /// identity is the path. The digest only has to be well-formed.
+    private static func digest(for path: String) -> String {
+        String(String(UInt64(bitPattern: Int64(path.hashValue)), radix: 16).padding(
+            toLength: 64, withPad: "0", startingAt: 0))
     }
 
     private func makeContainer() throws -> ModelContainer {

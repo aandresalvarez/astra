@@ -219,8 +219,25 @@ public final class Connector {
             key: key,
             value: value,
             serviceType: serviceType,
-            declaredFormat: declaredFormat,
+            declaredFormat: declaredFormat ?? packageDeclaredFormat(key: key),
             reuseSites: scan.sites
+        )
+    }
+
+    /// The format the capability package that installed this connector
+    /// declares for `key`.
+    ///
+    /// Only the installer passes `declaredFormat` explicitly, so without this
+    /// every *later* write — rotating a token in Configure › Connectors, a
+    /// repair, a copied setup — evaluated a third-party credential against no
+    /// format at all and stored a value the package had said was invalid. The
+    /// package is the authority and stays the authority; the row only carries
+    /// the origin needed to ask it again.
+    private func packageDeclaredFormat(key: String) -> ConnectorCredentialFormat? {
+        ConnectorDeclaredCredentialFormatSeam.declaredFormat(
+            originPackageID: originPackageID,
+            originComponentID: originComponentID,
+            key: key
         )
     }
 

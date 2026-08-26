@@ -141,6 +141,32 @@ struct RunSecretRedactionTests {
         #expect(!RunSecretRedactionScope.secrets(for: taskIDs[overflow - 1]).isEmpty)
     }
 
+    @Test("A task that is still redacting outlives newer registrations")
+    func evictionTracksUseNotRegistration() {
+        // The shape that broke: a long task registers once at launch and then
+        // redacts for hours. Ordering by registration alone meant sixteen short
+        // tasks started after it evicted the live one, and every credential it
+        // echoed from then on was persisted in the clear.
+        let limit = RunSecretRedactionScope.retainedTaskLimit
+        let longLived = UUID()
+        let newcomers = (0..<limit).map { _ in UUID() }
+        defer { ([longLived] + newcomers).forEach { RunSecretRedactionScope.forget(taskID: $0) } }
+
+        RunSecretRedactionScope.register(taskID: longLived, secrets: [atlassianShaped])
+        for (index, taskID) in newcomers.dropLast().enumerated() {
+            RunSecretRedactionScope.register(taskID: taskID, secrets: ["secret-value-\(index)-padding"])
+        }
+
+        // Its only sign of life is that it is still producing output.
+        #expect(!RunSecretRedactionScope.redact("bearer \(atlassianShaped)", taskID: longLived)
+            .contains(atlassianShaped))
+
+        RunSecretRedactionScope.register(taskID: newcomers[limit - 1], secrets: [redcapShaped])
+
+        #expect(!RunSecretRedactionScope.secrets(for: longLived).isEmpty)
+        #expect(RunSecretRedactionScope.secrets(for: newcomers[0]).isEmpty)
+    }
+
     // MARK: - The seam between chunks
 
     @Test("A secret split across two streamed chunks is still caught")
@@ -405,6 +431,49 @@ struct PersistedCredentialPurgeServiceTests {
             store: store
         )
         #expect(second == false)
+    }
+
+    /// A skill holds Keychain-backed environment values of its own, and they
+    /// reach a run's environment exactly the way a connector's do. Sweeping
+    /// only connectors left a leaked skill token in the transcripts it had
+    /// already reached.
+    @MainActor
+    @Test("A skill's Keychain-held token is swept out of the transcripts too")
+    func purgeSweepsSkillSecrets() async throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        let skill = Skill(name: "REDCap export")
+        fixture.context.insert(skill)
+        // Assigned rather than written through `setEnvironmentValue`, which
+        // saves to the real Keychain: the seam it uses takes no store.
+        skill.environmentKeys = ["REDCAP_API_TOKEN", "PROJECT_KEY"]
+        skill.environmentValues = ["", ""]
+        let entityID = KeychainSecretStore.skillEntityID(for: skill.id)
+        #expect(store.save(key: "REDCAP_API_TOKEN", value: redcapShaped, entityID: entityID, label: nil))
+        #expect(store.save(key: "PROJECT_KEY", value: "STAR-PROJECT-2026", entityID: entityID, label: nil))
+
+        let task = AgentTask(title: "Export", goal: "Export the cohort")
+        fixture.context.insert(task)
+        let event = TaskEvent(task: task, type: "tool.result", payload: "placeholder")
+        event.payload = "curl -H 'token: \(redcapShaped)' for STAR-PROJECT-2026"
+        fixture.context.insert(event)
+        try fixture.context.save()
+
+        // Two predicates, deliberately. `Skill.isSecretEnvironmentKey` decides
+        // what is *stored* in the Keychain and is the wider of the two, so
+        // `PROJECT_KEY` is held there; `RunSecretRedaction.isSecretKey` decides
+        // what a run redacts, and it does not treat a project key as a
+        // credential. Sweeping the wider set would make old transcripts hide
+        // identifiers that today's transcripts show.
+        let values = PersistedCredentialPurgeService.liveCredentialValues(
+            modelContext: fixture.context, store: store)
+        #expect(values == [redcapShaped])
+
+        let outcome = await PersistedCredentialPurgeService.purge(
+            modelContext: fixture.context, store: store)
+        #expect(outcome.eventsRewritten == 1)
+        #expect(!event.payload.contains(redcapShaped))
+        #expect(event.payload.contains("STAR-PROJECT-2026"))
     }
 
     @MainActor

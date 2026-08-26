@@ -39,12 +39,20 @@ struct TaskStagedConnectorMutation: Codable, Sendable, Equatable, Identifiable {
     /// One line of content, for the dock row. The reviewable payload is the
     /// staged file.
     let summary: String
+    /// Where the envelope lives, and the proposal's identity. The broker gives
+    /// every proposal its own file (run + sequence, probed for a free name), so
+    /// this is unique per act of proposing.
     let stagedPayloadPath: String
-    /// SHA-256 over the staged bytes, lowercase hex. Identity as well as
-    /// integrity: two proposals with the same digest are the same proposal.
+    /// SHA-256 over the staged bytes, lowercase hex.
+    ///
+    /// Integrity, deliberately *not* identity. Digest-as-identity collapsed two
+    /// proposals whose content happened to match: asking twice for the same
+    /// ticket produced one reviewable row, and re-proposing a ticket the user
+    /// had declined was silently swallowed, because the second proposal looked
+    /// like a replay of the first. Content equality is not intent equality.
     let requestDigest: String
 
-    var id: String { requestDigest }
+    var id: String { stagedPayloadPath }
 
     init(
         runID: UUID,
@@ -96,16 +104,17 @@ enum ConnectorMutationRequirementResolver {
                       let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {
                     continue
                 }
-                if pending.updateValue(staged, forKey: staged.requestDigest) == nil {
-                    order.append(staged.requestDigest)
+                if pending.updateValue(staged, forKey: staged.stagedPayloadPath) == nil {
+                    order.append(staged.stagedPayloadPath)
                 }
             case ConnectorMutationEventTypes.receipt,
                  ConnectorMutationEventTypes.declined:
-                // Resolution is keyed by digest for the same reason approval is:
-                // a second proposal in the same task is a different thing, and
-                // sending one must not retire the other.
-                guard let digest = resolvedDigest(in: event.payload) else { continue }
-                pending.removeValue(forKey: digest)
+                // Resolution is keyed by the staged file for the same reason
+                // approval is: a second proposal in the same task is a different
+                // thing even when it says the same words, and sending or
+                // declining one must not retire the other.
+                guard let path = resolvedStagedPath(in: event.payload) else { continue }
+                pending.removeValue(forKey: path)
             default:
                 continue
             }
@@ -118,13 +127,17 @@ enum ConnectorMutationRequirementResolver {
         !pendingMutations(task: task).isEmpty
     }
 
-    /// Every digest this task has ever staged, pending or resolved.
+    /// Every staged file this task has ever recorded, pending or resolved.
     ///
     /// What makes rescanning idempotent, and it deliberately includes resolved
     /// ones: a proposal that was sent or declined must not come back as new
     /// because the file is still sitting in the staging directory.
+    ///
+    /// Paths rather than digests, so the scan can decide what is new from the
+    /// directory listing alone — and so an agent that composes the same ticket
+    /// twice gets two reviews rather than one.
     @MainActor
-    static func recordedDigests(task: AgentTask) -> Set<String> {
+    static func recordedStagedPaths(task: AgentTask) -> Set<String> {
         let decoder = TaskEventPayloadCodec.makeDecoder()
         return Set(
             task.events
@@ -134,7 +147,7 @@ enum ConnectorMutationRequirementResolver {
                           let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {
                         return nil
                     }
-                    return staged.requestDigest
+                    return staged.stagedPayloadPath
                 }
         )
     }
@@ -142,13 +155,13 @@ enum ConnectorMutationRequirementResolver {
     /// A failure is not a resolution. A Jira `POST` that returned 503 leaves the
     /// proposal exactly as reviewable as it was, so the row stays and the user
     /// can send it again; only a receipt or an explicit decline retires it.
-    private static func resolvedDigest(in payload: String) -> String? {
+    private static func resolvedStagedPath(in payload: String) -> String? {
         guard let data = payload.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let digest = object["requestDigest"] as? String ?? object["request_digest"] as? String else {
+              let path = object["stagedPayloadPath"] as? String ?? object["staged_payload_path"] as? String else {
             return nil
         }
-        return digest.isEmpty ? nil : digest
+        return path.isEmpty ? nil : path
     }
 
     private static func isChronologicallyOrdered(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {

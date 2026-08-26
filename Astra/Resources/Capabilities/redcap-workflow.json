@@ -25,7 +25,7 @@
       "serviceType" : "redcap"
     }
   ],
-  "description" : "Query and manage Stanford REDCap projects through the API",
+  "description" : "Query Stanford REDCap projects through the API",
   "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
@@ -43,10 +43,9 @@
       "network"
     ],
     "externalEffects" : [
-      "readOnly",
-      "externalAPIWrite"
+      "readOnly"
     ],
-    "policyNotes" : "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time.",
+    "policyNotes" : "REDCap access can expose sensitive research data and potential PHI. This capability cannot write: ASTRA's typed broker enumerates the read operations it permits and rejects imports, updates, deletes, and file uploads outright, so there is no task-time confirmation that could authorise one.",
     "requiresAdminApproval" : false,
     "requiresExplicitUserConsent" : true,
     "riskLevel" : "restricted",
@@ -106,5 +105,5 @@
   "templates" : [
 
   ],
-  "version" : "2.0.0"
+  "version" : "2.1.0"
 }

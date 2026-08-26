@@ -77,6 +77,64 @@ struct ConnectorCredentialAdmissionTests {
         #expect(decision.normalizedValue == Self.redcapShaped)
     }
 
+    // MARK: Whitespace — trimming a password is a bug, trimming a token is not
+
+    /// A password may legitimately begin or end with a space. With no declared
+    /// format and no recognisable issuer, ASTRA does not know what it is
+    /// holding, and trimming turns a correct paste into an authentication
+    /// failure the user cannot see or explain.
+    @Test("Surrounding spaces survive where nothing declares the value's shape")
+    func passwordSpacesAreStored() {
+        let decision = ConnectorCredentialAdmission.evaluate(
+            key: "DB_PASSWORD",
+            value: " correct horse battery staple ",
+            serviceType: "postgres"
+        )
+
+        #expect(decision.isAdmitted)
+        #expect(decision.normalizedValue == " correct horse battery staple ")
+    }
+
+    /// Nothing issues a credential containing a line break, and a trailing
+    /// newline off a `cat` or a copied code block is the commonest way a valid
+    /// secret gets stored broken.
+    @Test("Line breaks and tabs go even where spaces stay")
+    func lineBreaksAreAlwaysRemoved() {
+        let decision = ConnectorCredentialAdmission.evaluate(
+            key: "DB_PASSWORD",
+            value: " pass\tword\nbroken\r\nacross lines\n",
+            serviceType: "postgres"
+        )
+
+        #expect(decision.isAdmitted)
+        #expect(decision.normalizedValue == " passwordbrokenacross lines")
+    }
+
+    /// The storable form is looser than it was; the rules must not be. Judging
+    /// them on the canonical form is what stops a leading space smuggling a
+    /// foreign token past the vendor fingerprint.
+    @Test("A leading space does not hide a foreign vendor's token")
+    func leadingSpaceDoesNotDefeatTheVendorRule() {
+        let decision = ConnectorCredentialAdmission.evaluate(
+            key: "REDCAP_API_TOKEN",
+            value: "  \(Self.atlassianShaped)",
+            serviceType: "redcap"
+        )
+
+        #expect(decision.verdict.auditReason == "foreign_vendor")
+    }
+
+    @Test("A value made only of spaces is still refused as empty")
+    func allSpacesIsEmpty() {
+        let decision = ConnectorCredentialAdmission.evaluate(
+            key: "DB_PASSWORD",
+            value: "     ",
+            serviceType: "postgres"
+        )
+
+        #expect(decision.verdict.auditReason == "empty")
+    }
+
     // MARK: Format
 
     @Test("A REDCap token of the wrong shape is refused with the expected shape")
@@ -263,6 +321,67 @@ struct ConnectorCredentialAdmissionTests {
     }
 }
 
+/// The lookup that lets a write made long after the install still see what the
+/// installing package declared.
+@Suite("Connector declared credential format")
+struct ConnectorDeclaredCredentialFormatResolverTests {
+    private static let atlassianShaped =
+        "ATATT3xFfGF0aaaabbbbccccddddeeeeffff0000111122223333444455556666"
+    private static let redcapShaped = "0123456789ABCDEF0123456789ABCDEF"
+
+    /// The origin stamp the row already carries is enough; nothing has to be
+    /// copied onto it, which is what keeps a package free to tighten its
+    /// declaration in an update.
+    @Test("A package's declaration is resolved from the origin stamp alone")
+    func resolvesFromTheOriginStamp() throws {
+        let format = try #require(ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            originPackageID: "redcap-workflow",
+            originComponentID: nil,
+            // Lower-cased on purpose: hint keys are matched case-insensitively.
+            key: "redcap_api_token"
+        ))
+
+        #expect(format.admits(Self.redcapShaped))
+        #expect(!format.admits(Self.atlassianShaped))
+    }
+
+    @Test("An unknown package, or a key it never declared, resolves to nothing")
+    func unknownOriginResolvesToNothing() {
+        #expect(ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            originPackageID: "no-such-package", originComponentID: nil, key: "REDCAP_API_TOKEN") == nil)
+        #expect(ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            originPackageID: "redcap-workflow", originComponentID: nil, key: "SOME_OTHER_KEY") == nil)
+    }
+
+    /// `originComponentID` encodes the connector's name, so a rename in a
+    /// package update orphans the stamp. Falling back to the package's other
+    /// connectors cannot make the check wrong — it can only find a declaration
+    /// the same package made for the same key — and losing it would silently
+    /// reopen the hole.
+    @Test("A stale component stamp falls back to the package's own connectors")
+    func staleComponentStampFallsBack() {
+        let format = ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            originPackageID: "redcap-workflow",
+            originComponentID: "connector:renamed-away",
+            key: "REDCAP_API_TOKEN"
+        )
+
+        #expect(format?.admits(Self.redcapShaped) == true)
+    }
+
+    /// Unregistered, the seam answers `nil` instead of trapping. Credential
+    /// writes run on paths that start long before `registerAll()` in some tools,
+    /// and the right behaviour without a resolver is the one that existed
+    /// before it: fall back to the built-in registry.
+    @Test("The seam answers for a connector with no origin without trapping")
+    func seamIsOptionalNotFailFast() {
+        #expect(ConnectorDeclaredCredentialFormatSeam.declaredFormat(
+            originPackageID: nil, originComponentID: nil, key: "REDCAP_API_TOKEN") == nil)
+        #expect(ConnectorDeclaredCredentialFormatSeam.declaredFormat(
+            originPackageID: "", originComponentID: nil, key: "REDCAP_API_TOKEN") == nil)
+    }
+}
+
 /// Admission is enforced at the `Connector` write itself, so no entry point
 /// can route around it.
 @Suite("Connector Credential Admission Enforcement")
@@ -394,6 +513,55 @@ struct ConnectorCredentialAdmissionEnforcementTests {
             key: "REDCAP_API_TOKEN", value: Self.atlassianShaped, store: store)
 
         #expect(outcome.rejection?.auditReason == "foreign_vendor")
+    }
+
+    /// `CapabilityInstaller` was the only caller that passed `declaredFormat`,
+    /// so it covered exactly one write. Every later write — a rotated token
+    /// replaced in Configure › Connectors, a repair, a copied setup — asked with
+    /// `nil`, and for a service with no built-in registry entry that meant no
+    /// format check at all: the package could declare a shape and ASTRA would
+    /// still store whatever was pasted.
+    @MainActor
+    @Test("A later write is checked against the format the package declared")
+    func laterWriteHonoursThePackageDeclaration() throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        // `rest_api` has no entry in the built-in registry, so the package's
+        // declaration is the only thing that can refuse this.
+        #expect(ConnectorCredentialFormatRegistry.format(
+            serviceType: "rest_api", key: "REDCAP_API_TOKEN") == nil)
+        let connector = Connector(
+            name: "REDCap (copied setup)", serviceType: "rest_api", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        connector.originPackageID = "redcap-workflow"
+        fixture.context.insert(connector)
+
+        let refused = connector.saveCredentialChecked(
+            key: "REDCAP_API_TOKEN", value: "pasted-the-wrong-thing-again", store: store)
+        #expect(refused.rejection?.auditReason == "format_mismatch")
+        #expect(!connector.credentialKeys.contains("REDCAP_API_TOKEN"))
+
+        // And it is a check, not a blockade: the shape the package declared
+        // still goes in.
+        #expect(connector.saveCredentialChecked(
+            key: "REDCAP_API_TOKEN", value: Self.redcapShaped, store: store) == .saved)
+    }
+
+    /// A connector nobody installed has no origin to look up, and must not
+    /// inherit a stranger's rules.
+    @MainActor
+    @Test("A hand-made connector is unaffected by any package's declaration")
+    func handMadeConnectorHasNoDeclaredFormat() throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Internal API", serviceType: "rest_api", icon: "arrow.left.arrow.right",
+            baseURL: "https://internal.example.edu", authMethod: "bearer")
+        fixture.context.insert(connector)
+
+        #expect(connector.originPackageID == nil)
+        #expect(connector.saveCredentialChecked(
+            key: "REDCAP_API_TOKEN", value: "pasted-the-wrong-thing-again", store: store) == .saved)
     }
 
     @MainActor

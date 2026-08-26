@@ -253,6 +253,23 @@ struct PluginCatalogBuiltInTests {
         #expect(!skill.behaviorInstructions.contains("READ-ONLY OPERATIONS"))
     }
 
+    /// The inverse of the Jira case, and it has to be stated as plainly. REDCap
+    /// declared `.externalAPIWrite` and offered to "manage" projects, which read
+    /// as "writes are possible here, under confirmation" — but the broker
+    /// enumerates reads and refuses everything else, so no confirmation exists
+    /// that could authorise one. An overstated effect list trains the user to
+    /// discount the list.
+    @Test("REDCap capability declares the read-only reach it actually has")
+    func redcapCapabilityDeclaresReadOnlyReach() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
+
+        #expect(package.version == "2.1.0")
+        #expect(package.governance.externalEffects == [.readOnly])
+        #expect(package.governance.policyNotes.contains("This capability cannot write"))
+        #expect(package.governance.policyNotes.contains("no task-time confirmation"))
+        #expect(!package.description.localizedCaseInsensitiveContains("manage"))
+    }
+
     @Test("Security auditor bundled capability version matches fallback catalog")
     func securityAuditorVersionMatchesFallbackCatalog() throws {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })

@@ -255,11 +255,11 @@ final class PluginCatalog {
             id: "redcap-workflow",
             name: "REDCap",
             icon: "tablecells",
-            description: "Query and manage Stanford REDCap projects through the API",
+            description: "Query Stanford REDCap projects through the API",
             author: "ASTRA",
             category: "Integrations",
             tags: ["redcap", "stanford", "research", "clinical-data", "api"],
-            version: "2.0.0",
+            version: "2.1.0",
             setupGuide: """
             Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https://redcap.stanford.edu/api/.
 
@@ -350,9 +350,16 @@ final class PluginCatalog {
                 requiresAdminApproval: false,
                 requiresExplicitUserConsent: true,
                 dataAccess: [.connectorCredentials, .clinicalData, .externalService, .network],
-                externalEffects: [.readOnly, .externalAPIWrite],
+                // Read-only, and the declaration has to say so. Claiming
+                // `externalAPIWrite` described a capability that does not
+                // exist: `REDCapHostControlPolicy` enumerates the operations it
+                // permits and rejects everything else, so a user reading this
+                // was warned about writes ASTRA cannot perform — and would have
+                // had no reason to notice if writes were ever added, since the
+                // governance already said they were there.
+                externalEffects: [.readOnly],
                 approvedBy: "ASTRA",
-                policyNotes: "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time."
+                policyNotes: "REDCap access can expose sensitive research data and potential PHI. This capability cannot write: ASTRA's typed broker enumerates the read operations it permits and rejects imports, updates, deletes, and file uploads outright, so there is no task-time confirmation that could authorise one."
             )
         ),
 

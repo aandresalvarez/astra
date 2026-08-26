@@ -14,6 +14,10 @@ struct ConnectorMutationReviewSheet: View {
 
     @State private var isSending = false
     @State private var errorMessage: String?
+    /// Set when the write has already reached the provider. The send button
+    /// does not come back from this: the only thing a second click could
+    /// achieve is a duplicate.
+    @State private var isSpent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -21,6 +25,13 @@ struct ConnectorMutationReviewSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(proposal.warnings.enumerated()), id: \.offset) { _, warning in
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(Stanford.body(13))
+                            .foregroundStyle(Stanford.poppy)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("ConnectorMutationProposalWarning")
+                    }
                     ForEach(proposal.fields) { field in
                         labeledValue(field.label, field.value, monospaced: field.isMonospaced)
                     }
@@ -86,37 +97,48 @@ struct ConnectorMutationReviewSheet: View {
 
     private var footer: some View {
         HStack {
-            Label("Nothing has been sent yet", systemImage: "lock.fill")
-                .font(Stanford.caption(12).weight(.medium))
-                .foregroundStyle(.secondary)
+            Label(
+                isSpent ? "This has been sent" : "Nothing has been sent yet",
+                systemImage: isSpent ? "checkmark.seal.fill" : "lock.fill"
+            )
+            .font(Stanford.caption(12).weight(.medium))
+            .foregroundStyle(.secondary)
             Spacer()
-            Button("Cancel") {
-                onCancel()
-            }
-            .disabled(isSending)
 
-            // Declining is a first-class outcome, not the absence of one. Cancel
-            // leaves the proposal pending for later; this retires it.
-            Button("Don't send") {
-                decline()
-            }
-            .disabled(isSending)
-            .accessibilityIdentifier("DeclineConnectorMutationButton")
-
-            Button {
-                send()
-            } label: {
-                if isSending {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Label("Send with connector", systemImage: "paperplane.fill")
+            if isSpent {
+                Button("Close") { onCancel() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Stanford.paloAltoGreen)
+                    .accessibilityIdentifier("CloseSpentConnectorMutationButton")
+            } else {
+                Button("Cancel") {
+                    onCancel()
                 }
+                .disabled(isSending)
+
+                // Declining is a first-class outcome, not the absence of one. Cancel
+                // leaves the proposal pending for later; this retires it.
+                Button("Don't send") {
+                    decline()
+                }
+                .disabled(isSending)
+                .accessibilityIdentifier("DeclineConnectorMutationButton")
+
+                Button {
+                    send()
+                } label: {
+                    if isSending {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Send with connector", systemImage: "paperplane.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Stanford.paloAltoGreen)
+                .disabled(isSending)
+                .accessibilityIdentifier("SendReviewedConnectorMutationButton")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Stanford.paloAltoGreen)
-            .disabled(isSending)
-            .accessibilityIdentifier("SendReviewedConnectorMutationButton")
         }
     }
 
@@ -143,7 +165,12 @@ struct ConnectorMutationReviewSheet: View {
                 // Stays open on failure. The proposal is still pending and still
                 // reviewable, so closing the sheet would hide a decision the user
                 // has not finished making.
+                //
+                // Unless the write already landed: then the sheet is a report,
+                // not a decision, and re-arming the button would offer the user
+                // a second copy of something they asked for once.
                 errorMessage = error.localizedDescription
+                isSpent = (error as? ConnectorMutationCoordinatorError)?.isTerminal ?? false
                 isSending = false
             }
         }
