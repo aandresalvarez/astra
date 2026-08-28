@@ -71,7 +71,7 @@ struct BrokeredConnectorFitnessTests {
             violations.isEmpty,
             """
             Broker code must reach connectors through \
-            HostControlBrokeredServices.connector(forServiceType:alias:in:), which \
+            HostControlBrokeredServices.resolveConnector(forServiceType:alias:in:), which \
             refuses service types that are not also stripped from the agent's \
             environment: \(violations)
             """

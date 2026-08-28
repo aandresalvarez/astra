@@ -1007,8 +1007,12 @@ public final class HostControlMCPServer {
 
     private func handleJira(arguments: [String: Any]) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
-        guard let connector = jiraConnector(alias: clean(arguments["alias"] as? String)) else {
-            return .error(code: -32602, message: "No Jira connector is projected into ASTRA_CONNECTORS")
+        let resolution = jiraConnector(alias: clean(arguments["alias"] as? String))
+        guard let connector = resolution.connector else {
+            return .error(
+                code: -32602,
+                message: resolution.failureMessage(serviceLabel: "Jira") ?? "No Jira connector is available"
+            )
         }
         switch operation {
         case "status":
@@ -1108,8 +1112,8 @@ public final class HostControlMCPServer {
         ])
     }
 
-    private func jiraConnector(alias: String?) -> HostControlConnector? {
-        HostControlBrokeredServices.connector(forServiceType: "jira", alias: alias, in: configuration)
+    private func jiraConnector(alias: String?) -> HostControlConnectorResolution {
+        HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: alias, in: configuration)
     }
 
     private func jiraStatus(connector: HostControlConnector) -> JiraConnectorStatus {
@@ -1366,7 +1370,7 @@ public final class HostControlMCPServer {
                 "type": "object",
                 "properties": [
                     "operation": ["type": "string", "description": "status, get_issue, search_jql, get_comments, or propose_issue. Defaults to status."],
-                    "alias": ["type": "string", "description": "Optional connector alias."],
+                    "alias": ["type": "string", "description": "Connector alias, or its id. Optional when one Jira connector is projected and required when more than one is: ASTRA refuses the call rather than choosing a tenant for you, and names the aliases in scope."],
                     "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
                     "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],

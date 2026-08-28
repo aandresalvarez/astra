@@ -71,54 +71,110 @@ struct BrokeredConnectorRegistryTests {
         let configuration = Self.configuration(serviceType: "unregistered-service")
 
         #expect(
-            HostControlBrokeredServices.connector(
+            HostControlBrokeredServices.resolveConnector(
                 forServiceType: "unregistered-service",
                 alias: nil,
                 in: configuration
-            ) == nil
+            ) == .notProjected
         )
     }
 
     @Test("A registered service type resolves case- and whitespace-insensitively")
     func registeredServiceTypeResolvesLoosely() {
         let configuration = Self.configuration(serviceType: "  REDCap ")
-        let connector = HostControlBrokeredServices.connector(
+        let connector = HostControlBrokeredServices.resolveConnector(
             forServiceType: "redcap",
             alias: nil,
             in: configuration
-        )
+        ).connector
 
         #expect(connector?.alias == "primary")
     }
 
     @Test("An alias selects among connectors of the same service")
     func aliasSelectsAmongConnectorsOfTheSameService() {
+        let configuration = Self.twoREDCapConnectors()
+
+        #expect(
+            HostControlBrokeredServices.resolveConnector(
+                forServiceType: "redcap",
+                alias: "secondary",
+                in: configuration
+            ).connector?.id == "c2"
+        )
+        #expect(
+            HostControlBrokeredServices.resolveConnector(
+                forServiceType: "redcap",
+                alias: "missing",
+                in: configuration
+            ) == .unknownAlias("missing", candidates: ["primary", "secondary"])
+        )
+    }
+
+    /// The reason this returns a resolution rather than an optional. Picking the
+    /// first match sends the query to whichever study sorts first in the
+    /// manifest — for `redcap` that is one study's subject data exported because
+    /// the call was under-specified.
+    @Test("An omitted alias with two connectors in scope is refused, not guessed")
+    func omittedAliasWithTwoConnectorsIsRefused() {
+        let resolution = HostControlBrokeredServices.resolveConnector(
+            forServiceType: "redcap",
+            alias: nil,
+            in: Self.twoREDCapConnectors()
+        )
+
+        #expect(resolution.connector == nil)
+        #expect(resolution == .ambiguous(alias: nil, candidates: ["primary", "secondary"]))
+        let message = resolution.failureMessage(serviceLabel: "REDCap") ?? ""
+        #expect(message.contains("will not"))
+        #expect(message.contains("primary"))
+        #expect(message.contains("secondary"))
+    }
+
+    /// Aliases and display names are user-entered and can collide; IDs cannot.
+    /// So a name that is ambiguous still resolves when the caller passes the one
+    /// string that is unique by construction, and the refusal says so.
+    @Test("A duplicated alias is refused by name and resolved by id")
+    func duplicatedAliasIsRefusedByNameAndResolvedByID() {
         let configuration = HostControlToolConfiguration(
             connectorsJSON: """
             {"connectors":[\
-            \(Self.connectorJSON(id: "c1", alias: "primary", serviceType: "redcap")),\
-            \(Self.connectorJSON(id: "c2", alias: "secondary", serviceType: "redcap"))\
+            \(Self.connectorJSON(id: "c1", alias: "study", serviceType: "redcap")),\
+            \(Self.connectorJSON(id: "c2", alias: "study", serviceType: "redcap"))\
             ]}
             """
         )
 
-        #expect(
-            HostControlBrokeredServices.connector(
-                forServiceType: "redcap",
-                alias: "secondary",
-                in: configuration
-            )?.id == "c2"
+        let byAlias = HostControlBrokeredServices.resolveConnector(
+            forServiceType: "redcap",
+            alias: "study",
+            in: configuration
         )
+        #expect(byAlias.connector == nil)
+        #expect(byAlias == .ambiguous(alias: "study", candidates: ["study (id c1)", "study (id c2)"]))
+        #expect(byAlias.failureMessage(serviceLabel: "REDCap")?.contains("id c2") == true)
+
         #expect(
-            HostControlBrokeredServices.connector(
+            HostControlBrokeredServices.resolveConnector(
                 forServiceType: "redcap",
-                alias: "missing",
+                alias: "c2",
                 in: configuration
-            ) == nil
+            ).connector?.id == "c2"
         )
     }
 
     // MARK: - Helpers
+
+    private static func twoREDCapConnectors() -> HostControlToolConfiguration {
+        HostControlToolConfiguration(
+            connectorsJSON: """
+            {"connectors":[\
+            \(connectorJSON(id: "c1", alias: "primary", serviceType: "redcap")),\
+            \(connectorJSON(id: "c2", alias: "secondary", serviceType: "redcap"))\
+            ]}
+            """
+        )
+    }
 
     private static func configuration(serviceType: String) -> HostControlToolConfiguration {
         HostControlToolConfiguration(

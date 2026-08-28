@@ -51,11 +51,15 @@ public enum REDCapHostControlPolicy {
         diagnostics: HostControlToolDiagnosticsRecorder?
     ) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
-        guard let connector = connector(
+        let resolution = resolveConnector(
             alias: clean(arguments["alias"] as? String),
             configuration: configuration
-        ) else {
-            return .error(code: -32602, message: "No REDCap connector is projected into ASTRA_CONNECTORS")
+        )
+        guard let connector = resolution.connector else {
+            return .error(
+                code: -32602,
+                message: resolution.failureMessage(serviceLabel: "REDCap") ?? "No REDCap connector is available"
+            )
         }
         guard readOperations.contains(operation) else {
             return .error(code: -32602, message: "Unsupported REDCap operation '\(operation)'")
@@ -124,12 +128,12 @@ public enum REDCapHostControlPolicy {
         configuration: HostControlToolConfiguration
     ) -> MCPServerReply {
         guard !response.isError else {
-            // An error body is REDCap's own message, not subject data, so it is
-            // safe to surface — after redaction, since REDCap echoes the token
-            // back in some malformed-request errors.
-            let message = configuration.redacted(response.errorBody, includingSecretFragments: true)
             return textReply(
-                "status_code: \(response.statusCode)\nerror:\n\(message.isEmpty ? "<empty>" : message)",
+                exportFailureText(
+                    response: response,
+                    operation: operation,
+                    configuration: configuration
+                ),
                 isError: true
             )
         }
@@ -158,6 +162,63 @@ public enum REDCapHostControlPolicy {
         }
     }
 
+    /// What a failed record-bearing call is allowed to say out loud.
+    ///
+    /// `REDCapHTTPResponse.errorBody` is the general path and it is the wrong
+    /// one here. For `record` and `report` the response body *is* subject data:
+    /// a transfer that drops after the first rows have arrived leaves
+    /// `isError` true with a partial export sitting in `body`, and returning
+    /// that inline puts PHI in the transcript by exactly the route the
+    /// file-only rule exists to close — with nothing in the reply saying so.
+    /// The same is true of a 500 that arrives after a streamed export began.
+    ///
+    /// REDCap's own diagnostics survive because they are structurally
+    /// distinct: every request here sets `returnFormat=json`, and an API
+    /// refusal comes back as a JSON *object* with an `error` key, never as the
+    /// array of rows an export returns. So that object is surfaced and
+    /// anything else is counted and dropped.
+    private static func exportFailureText(
+        response: REDCapHTTPResponse,
+        operation: String,
+        configuration: HostControlToolConfiguration
+    ) -> String {
+        var lines = ["status_code: \(response.statusCode)"]
+        if let message = response.errorMessage, !message.isEmpty {
+            lines.append("error: \(configuration.redacted(message, includingSecretFragments: true))")
+        }
+        if let diagnostic = redcapErrorDocument(in: response.body) {
+            // Redacted because REDCap echoes the token back in some
+            // malformed-request errors.
+            lines.append("redcap_error: \(configuration.redacted(diagnostic, includingSecretFragments: true))")
+        } else if !response.body.isEmpty {
+            lines.append("withheld_body_bytes: \(response.body.utf8.count)")
+            lines.append(
+                "note: the failed \(operation) response was withheld because a record-bearing body can "
+                    + "hold subject data even when the request failed. It was not written to a file either."
+            )
+        }
+        if lines.count == 1 { lines.append("error: <empty>") }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Ceiling on a surfaced REDCap diagnostic. It is a sentence in practice;
+    /// this is only here so a misbehaving endpoint cannot use the `error` key
+    /// as an inline channel.
+    static let exportErrorMessageLimit = 2048
+
+    /// REDCap's documented failure shape. An export is a JSON array, and a
+    /// partial one does not parse at all, so this cannot match subject data.
+    private static func redcapErrorDocument(in body: String) -> String? {
+        guard body.utf8.count <= exportErrorMessageLimit * 8,
+              let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = object["error"] as? String,
+              !message.isEmpty else {
+            return nil
+        }
+        return String(message.prefix(exportErrorMessageLimit))
+    }
+
     private struct ExportedFile {
         var path: String
         var byteCount: Int
@@ -183,18 +244,119 @@ public enum REDCapHostControlPolicy {
             )
         }
         let root = URL(fileURLWithPath: configuration.taskFolder, isDirectory: true)
-        let directory = root.appendingPathComponent(exportDirectoryName, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            .resolvingSymlinksInPath()
+        let directory = try exportDirectory(beneath: root)
 
         // Named from the run and a per-run sequence rather than a timestamp, so
         // a second export in the same run does not overwrite the first and the
         // name stays reproducible in tests.
-        let index = exportSequence.next(for: "\(configuration.runID)#\(operation)")
-        let name = "redcap-\(operation)-\(configuration.runID)-\(index).json"
-        let url = directory.appendingPathComponent(name)
         let data = Data(body.utf8)
-        try data.write(to: url, options: .atomic)
+        let url = try writeExclusively(
+            data,
+            in: directory,
+            named: { "redcap-\(operation)-\(configuration.runID)-\($0).json" },
+            startingAt: exportSequence.next(for: "\(configuration.runID)#\(operation)")
+        )
         return ExportedFile(path: url.path, byteCount: data.count, recordCount: recordCount(in: body))
+    }
+
+    /// Creates `redcap-exports` under the task folder, refusing to follow a
+    /// symlink out of it.
+    ///
+    /// The task folder is agent-writable; this broker is not sandboxed to it.
+    /// An agent that pre-creates `redcap-exports` as a symlink to a git
+    /// checkout gets a `createDirectory` that succeeds against the link target
+    /// and every export after it landing there — outside the task folder, past
+    /// the workspace-write permissions the user granted, and into something one
+    /// `git add .` from committing subject data. `createDirectory` has no
+    /// don't-follow option, so the link is rejected explicitly, and the result
+    /// is re-resolved afterwards so an intermediate component (or a link
+    /// swapped in between the two calls) cannot carry the write out either.
+    private static func exportDirectory(
+        beneath root: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let directory = root.appendingPathComponent(exportDirectoryName, isDirectory: true)
+        // `attributesOfItem` is `lstat`-backed, so unlike `fileExists` it
+        // reports the link rather than what the link points at.
+        if let type = try? fileManager.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType,
+           type == .typeSymbolicLink {
+            throw REDCapRequestPolicyError(
+                "The \(exportDirectoryName) directory in this task folder is a symbolic link. ASTRA will "
+                    + "not write subject data through it, because it can point outside the task folder. "
+                    + "Remove the link and let ASTRA create a real directory."
+            )
+        }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let resolved = directory.resolvingSymlinksInPath()
+        guard isContained(resolved, in: root) else {
+            throw REDCapRequestPolicyError(
+                "The \(exportDirectoryName) directory in this task folder resolves to \(resolved.path), "
+                    + "which is outside the task folder. Refusing to write subject data there."
+            )
+        }
+        return resolved
+    }
+
+    /// Path containment by component, not by string prefix: `/tmp/task` must
+    /// not be judged to contain `/tmp/task-other`.
+    private static func isContained(_ url: URL, in root: URL) -> Bool {
+        let rootParts = root.standardizedFileURL.pathComponents
+        let parts = url.standardizedFileURL.pathComponents
+        guard parts.count >= rootParts.count else { return false }
+        return Array(parts.prefix(rootParts.count)) == rootParts
+    }
+
+    /// How many names to try before giving up. Bounded so a directory that
+    /// somehow cannot accept a new file fails loudly instead of spinning.
+    static let maximumExportNameAttempts = 512
+
+    /// Writes to the first free name, and lets the filesystem decide what free
+    /// means.
+    ///
+    /// `exportSequence` is process-local. A broker restart — or a second broker
+    /// instance serving another connection for the same run — starts back at 1,
+    /// and a plain write then replaced the earlier export while the earlier
+    /// receipt still pointed at that path: the agent reads a file it was told
+    /// held one export and finds another. Probing for a free name does not fix
+    /// it either, since two brokers can both see the same name free at the same
+    /// instant.
+    ///
+    /// So the name is claimed by `link(2)`, which either creates the entry or
+    /// fails with `EEXIST` and cannot do anything in between. The content is
+    /// written to a temporary in the same directory first, so what appears
+    /// under the claimed name is a complete export rather than a file being
+    /// filled in — `Data.WritingOptions` cannot do both halves, since `.atomic`
+    /// and `.withoutOverwriting` are mutually exclusive.
+    private static func writeExclusively(
+        _ data: Data,
+        in directory: URL,
+        named name: (Int) -> String,
+        startingAt start: Int,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let temporary = directory.appendingPathComponent(".redcap-export-\(UUID().uuidString).tmp")
+        try data.write(to: temporary, options: [.atomic])
+        // The link is what the reader sees; this name never appears in a
+        // receipt, and it goes whether or not a link was made.
+        defer { try? fileManager.removeItem(at: temporary) }
+
+        var index = max(1, start)
+        for _ in 0..<maximumExportNameAttempts {
+            let url = directory.appendingPathComponent(name(index))
+            if link(temporary.path, url.path) == 0 { return url }
+            guard errno == EEXIST else {
+                throw REDCapRequestPolicyError(
+                    "ASTRA could not write the export to \(url.path): "
+                        + String(cString: strerror(errno))
+                )
+            }
+            index += 1
+        }
+        throw REDCapRequestPolicyError(
+            "ASTRA could not find a free export filename in \(directory.path) after "
+                + "\(maximumExportNameAttempts) attempts."
+        )
     }
 
     /// Best-effort row count for the receipt. `nil` when the body is not a JSON
@@ -213,11 +375,11 @@ public enum REDCapHostControlPolicy {
 
     // MARK: - Connector and readiness
 
-    static func connector(
+    static func resolveConnector(
         alias: String?,
         configuration: HostControlToolConfiguration
-    ) -> HostControlConnector? {
-        HostControlBrokeredServices.connector(
+    ) -> HostControlConnectorResolution {
+        HostControlBrokeredServices.resolveConnector(
             forServiceType: serviceType,
             alias: alias,
             in: configuration
@@ -299,7 +461,12 @@ public enum REDCapHostControlPolicy {
                         "description": "status reports readiness; project, metadata and user return study "
                             + "structure; record and report export subject data to a file."
                     ],
-                    "alias": ["type": "string", "description": "Connector alias when more than one REDCap connector is projected."],
+                    "alias": [
+                        "type": "string",
+                        "description": "Connector alias, or its id. Optional when one REDCap connector is "
+                            + "projected and required when more than one is: ASTRA refuses the call rather "
+                            + "than choosing a study for you, and names the aliases in scope."
+                    ],
                     "fields": ["type": "array", "items": ["type": "string"], "description": "For metadata and record: field names to limit the export to."],
                     "forms": ["type": "array", "items": ["type": "string"], "description": "For metadata and record: instrument names to limit the export to."],
                     "records": ["type": "array", "items": ["type": "string"], "description": "For record: record IDs to limit the export to."],
@@ -629,8 +796,17 @@ final class BoundedREDCapHTTPDelegate: NSObject, URLSessionDataDelegate, @unchec
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        // Truncation is read back off the buffer, so the flag is not needed here.
-        _ = buffer.append(data)
+        // Truncation is read back off the buffer, so no flag is needed here —
+        // but the cancel is. The buffer stops accumulating at the limit and
+        // says so, and discarding that answer left the session downloading the
+        // rest of the response anyway: for the 8 MiB export cap that is a whole
+        // project's rows pulled over the network and the broker operation held
+        // open for as long as it takes, to produce a reply that was already
+        // decided. Cancelling surfaces as `NSURLErrorCancelled`, which
+        // `didCompleteWithError` below deliberately does not treat as a failure.
+        if buffer.append(data) {
+            dataTask.cancel()
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
