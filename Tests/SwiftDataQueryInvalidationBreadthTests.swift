@@ -107,6 +107,68 @@ struct SwiftDataQueryInvalidationBreadthTests {
         spinRunLoop(until: { false }, timeout: duration)
     }
 
+    /// The case the sidebar actually depends on, and the one the mutation test
+    /// above cannot reach: a row arriving *outside* the one-row window.
+    ///
+    /// `invalidationSignalDescriptor` has no sort, so SQLite answers `LIMIT 1`
+    /// with the lowest rowid — which an insert never displaces. If SwiftData
+    /// republished only on a changed result set, a new task would raise no
+    /// signal at all, `SidebarTaskStore` would never be told to reconcile, and
+    /// the rail would keep showing the set it loaded at launch.
+    @Test("A one-row query re-runs body when a task is inserted beyond its window")
+    func narrowQueryInvalidatesOnInsertOutsideTheWindow() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = ModelContext(container)
+        // Seeded first, so the row the query returns is already there and the
+        // insert below lands behind it.
+        context.insert(AgentTask(title: "seed", goal: "goal"))
+        try context.save()
+
+        let counter = BodyCounter()
+        var root = ProbeHost(container: container, counter: counter, showsProbe: true)
+        let host = NSHostingView(rootView: root)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 10, height: 10),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        ProbeLifetime.keepAlive(container, host, window)
+        defer {
+            root.showsProbe = false
+            host.rootView = root
+            drainRunLoop()
+            host.removeFromSuperview()
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+        host.layoutSubtreeIfNeeded()
+
+        spinRunLoop(until: { counter.count > 0 })
+        let baseline = counter.count
+        #expect(baseline > 0, "The probe never rendered; the rest of this test would be vacuous")
+
+        context.insert(AgentTask(title: "arrived later", goal: "goal"))
+        try context.save()
+
+        spinRunLoop(until: { counter.count > baseline })
+        #expect(
+            counter.count > baseline,
+            """
+            A one-row @Query did NOT re-run body when a task was inserted \
+            outside its window. The sidebar's signal query cannot see new \
+            tasks, so SidebarTaskStore is never asked to reconcile and the \
+            rail stays at whatever it loaded on appear.
+            """
+        )
+    }
+
     @Test("A query matching no rows still re-runs body when an unmatched row is mutated")
     func narrowQueryInvalidatesOnUnmatchedRowMutation() throws {
         let container = try ModelContainer(

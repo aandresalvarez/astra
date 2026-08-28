@@ -360,24 +360,6 @@ enum SidebarRevealSettlingPolicy {
     }
 }
 
-enum SidebarWorkspaceTaskList {
-    static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
-    /// Overflow controls sit with the task titles, not the full-width row
-    /// surface, so a long workspace list keeps one readable left edge.
-    static let showMoreLeadingPadding = SidebarThreadRowLayout.titleLeadingOffset(
-        childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
-        contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
-    )
-
-    static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
-        isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
-    }
-
-    static func hiddenTaskCount(totalTasks: Int, visibleTasks: Int) -> Int {
-        max(0, totalTasks - visibleTasks)
-    }
-}
-
 struct TaskSidebarView: View {
     let appUpdateController: AppUpdateController
     let tasks: [AgentTask]
@@ -456,7 +438,7 @@ struct TaskSidebarView: View {
     @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
-    @State private var taskIndex = SidebarTaskIndex(tasks: [], searchText: "")
+    @State private var taskIndex = SidebarTaskIndex.empty
     @State private var allSchedules: [TaskSchedule] = []
 
     private var disclosureAnimation: Animation? {
@@ -1422,7 +1404,7 @@ struct TaskSidebarView: View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
         let hasTasks = !workspaceTasks.isEmpty
-        let hasAny = hasAnyTask(in: workspace, using: taskIndex)
+        let hasAny = hasAnyTask(in: workspace, isExpanded: isExpanded, using: taskIndex)
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(workspaceTasks, isShowingAll: isShowingAll)
         let hiddenTaskCount = SidebarWorkspaceTaskList.hiddenTaskCount(
@@ -1431,6 +1413,11 @@ struct TaskSidebarView: View {
         )
         let workspaceAppRows = appsForWorkspace(workspace)
         let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
+        let showsEmptyDrawer = SidebarWorkspaceDrawer.showsEmptyState(
+            hasDrawerTasks: hasTasks,
+            holdsWork: hasAny,
+            hasApps: !workspaceAppRows.isEmpty
+        )
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
@@ -1447,7 +1434,8 @@ struct TaskSidebarView: View {
                             onOpen: { onOpenWorkspaceApp?(app) }
                         )
                     }
-                    if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
+                    let _ = SidebarWorkspaceDrawerLog.record(workspace, empty: showsEmptyDrawer, tasks: workspaceTasks.count)
+                    if showsEmptyDrawer {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
                         if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
@@ -2100,8 +2088,19 @@ struct TaskSidebarView: View {
         )
     }
 
-    private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
-        taskIndex.hasAnyTask(in: workspace)
+    /// Whether the workspace holds any work at all — the test that decides
+    /// between an empty drawer and a silent one. See `SidebarWorkspaceDrawer`
+    /// for why the index alone cannot be trusted with it.
+    private func hasAnyTask(
+        in workspace: Workspace,
+        isExpanded: Bool,
+        using taskIndex: SidebarTaskIndex
+    ) -> Bool {
+        SidebarWorkspaceDrawer.holdsWork(
+            isExpanded: isExpanded,
+            indexHasAnyTask: taskIndex.hasAnyTask(in: workspace),
+            workspaceHoldsTasks: { !workspace.tasks.isEmpty }
+        )
     }
 
     /// The apps belonging to a workspace, name-sorted and search-filtered like chat rows.
