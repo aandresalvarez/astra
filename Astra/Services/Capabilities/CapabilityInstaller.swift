@@ -12,6 +12,11 @@ struct CapabilityInstaller {
         /// The value was refused before it reached the Keychain — retrying
         /// the same value cannot help, so this must not say "Try again".
         case credentialRejected(packageID: String, key: String, verdict: ConnectorCredentialAdmissionVerdict)
+        /// The install failed *and* could not put back what it overwrote, so a
+        /// credential the user had working is gone. Distinct from the two
+        /// above because the remedy is different: nothing about this install
+        /// can recover it, and they have to re-enter the value.
+        case credentialRestoreFailed(packageID: String, keys: [String])
 
         var errorDescription: String? {
             switch self {
@@ -25,6 +30,12 @@ struct CapabilityInstaller {
                 let reason = verdict.message(forKey: key)
                     ?? "\(key) is not a valid credential for this connector."
                 return "Enabling \(id) was stopped: \(reason)"
+            case .credentialRestoreFailed(let id, let keys):
+                let names = keys.joined(separator: ", ")
+                return """
+                    Enabling \(id) failed, and the previous \(names) \
+                    credential could not be put back. Re-enter it in Connectors.
+                    """
             }
         }
     }
@@ -532,7 +543,8 @@ struct CapabilityInstaller {
     /// that prior value restored instead of deleted, since rollback leaves
     /// the connector's `credentialKeys` still listing it as configured;
     /// deleting it there would silently break an unrelated, previously
-    /// working credential.
+    /// working credential. A restore that cannot land is reported rather than
+    /// swallowed: see `InstallationError.credentialRestoreFailed`.
     ///
     /// Looks up each hint's prior value with `currentCredentialValue(forKey:)`
     /// right before overwriting it, rather than snapshotting `connector
@@ -563,16 +575,36 @@ struct CapabilityInstaller {
                 // The compensating rollback runs for a rejection too: an
                 // earlier hint in this batch may already have overwritten a
                 // working credential.
+                //
+                // Restoration deliberately does not go back through admission.
+                // It used to, and that made the rollback able to fail for the
+                // same reason the install did — a package that tightened a
+                // format since the value was stored, or a reuse scan that now
+                // sees it on a sibling connector — leaving this call reporting
+                // a failed install while the connector kept the failed
+                // install's credential and the user's working one was gone. A
+                // value already in the Keychain has been admitted once; the
+                // question at rollback is only whether the write lands.
+                var unrestored: [String] = []
                 for saved in savedThisCall {
                     if let previousValue = saved.previousValue {
-                        connector.saveCredential(
+                        let restored = connector.restorePreviouslyStoredCredential(
                             key: saved.key,
                             value: previousValue,
                             allowUserInteraction: allowCredentialUserInteraction
                         )
+                        if !restored { unrestored.append(saved.key) }
                     } else {
                         connector.removeCredential(forKey: saved.key)
                     }
+                }
+                // Reported ahead of the failure that caused it. Both are true,
+                // but only one of them says a credential that was working
+                // before this install is not there any more, and no amount of
+                // retrying the install will bring it back.
+                if !unrestored.isEmpty {
+                    throw InstallationError.credentialRestoreFailed(
+                        packageID: packageID, keys: unrestored.sorted())
                 }
                 if let verdict = outcome.rejection {
                     throw InstallationError.credentialRejected(

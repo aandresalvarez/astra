@@ -3618,8 +3618,8 @@ struct WorkspaceSetupForm: View {
     @Environment(\.scenePhase) private var scenePhase
     @Binding var draft: NewWorkspaceDraft
     @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
+    /// Unfiltered: `copyableCapabilitySetupKey` has to see workspace-owned edits.
+    @Query private var allConnectors: [Connector]
     let rootPath: String
     let mode: WorkspaceSetupFormMode
     @Binding var validationIssues: [String]
@@ -4222,7 +4222,7 @@ struct WorkspaceSetupForm: View {
         guard isCapabilitiesExpanded else { return "collapsed" }
         return CopyableCapabilitySetupResolver.key(
             sources: capabilitySetupSourceWorkspaces,
-            globalConnectors: globalConnectors
+            connectors: allConnectors
         )
     }
 
@@ -4234,7 +4234,7 @@ struct WorkspaceSetupForm: View {
         }
         copyableCapabilitySetups = CopyableCapabilitySetupResolver.resolve(
             sources: capabilitySetupSourceWorkspaces,
-            globalConnectors: globalConnectors
+            connectors: allConnectors
         )
     }
 

@@ -321,11 +321,11 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [task.id])
     }
 
-    /// The signature never reads `title` or `goal`, in search or out of it. It
-    /// used to hash both whenever a search was active, which on a real store
-    /// meant hashing 10.85 MB of `goal` text per call — and the call sat on the
-    /// keystroke path. `updatedAt` is what stands in for them.
-    @Test("Sidebar task index invalidation never hashes searchable text")
+    /// The signature never reads `goal`, in search or out of it. It used to
+    /// hash it whenever a search was active, which on a real store meant
+    /// hashing 10.83 MB of text per call — and the call sat on the keystroke
+    /// path. `updatedAt` stands in for it: every writer of `goal` bumps it.
+    @Test("Sidebar task index invalidation never hashes the goal text")
     func sidebarTaskIndexInvalidationIgnoresSearchableText() {
         let workspace = makeWorkspace(name: "Slow Workspace")
         let longGoal = String(repeating: "long goal text ", count: 20_000)
@@ -339,17 +339,52 @@ struct SidebarGroupingTests {
 
         let before = SidebarTaskIndexInvalidation.signature(for: [task])
 
-        task.title = "Changed title"
         task.goal = String(repeating: "changed goal text ", count: 20_000)
 
         #expect(SidebarTaskIndexInvalidation.signature(for: [task]) == before)
     }
 
-    /// The invariant that makes dropping `title` and `goal` safe: every writer
-    /// of either bumps `updatedAt`, which is hashed unconditionally. If a new
-    /// writer ever renames a task without touching `updatedAt`, a search would
-    /// stop re-filtering, and this is the test that should fail.
-    @Test("A rename reaches the sidebar index through updatedAt")
+    /// A rename must reach the index by itself, not by way of `updatedAt`.
+    ///
+    /// `updatedAt` was the whole story while every rename bumped it, and the
+    /// generated-title backfill is the writer that broke that: it restores the
+    /// original timestamp on purpose so renaming a finished thread does not
+    /// shove it back up the rail. With `title` unhashed the write was invisible
+    /// to the signature, so a task whose new title matched the active query
+    /// stayed hidden.
+    @Test("A rename that preserves updatedAt still moves the signature")
+    func sidebarTaskIndexInvalidationTracksSilentRenames() {
+        let workspace = makeWorkspace(name: "Search Workspace")
+        let task = makeTask(
+            title: "Summarize report updates for the",
+            goal: "Summarize report updates for the steering committee",
+            status: .completed,
+            workspace: workspace
+        )
+        let originalUpdatedAt = Date(timeIntervalSince1970: 400)
+        task.updatedAt = originalUpdatedAt
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        // Exactly what `TaskLifecycleCoordinator.backfillGeneratedTitles` does:
+        // a generated title, and the timestamp put back the way it was.
+        task.title = "Steering committee report summary"
+        task.updatedAt = originalUpdatedAt
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [task]) != before,
+            """
+            A backfilled title moved nothing the sidebar can see, so \
+            SidebarTaskStore republishes the same version and the index is \
+            never rebuilt. A search for the new title finds nothing.
+            """
+        )
+    }
+
+    /// The ordinary rename path, which does bump `updatedAt`. Kept alongside
+    /// the silent one so a future change cannot satisfy this suite by hashing
+    /// only the timestamp again.
+    @Test("A rename that bumps updatedAt moves the signature")
     func sidebarTaskIndexInvalidationTracksRenamesViaUpdatedAt() {
         let workspace = makeWorkspace(name: "Search Workspace")
         let task = makeTask(

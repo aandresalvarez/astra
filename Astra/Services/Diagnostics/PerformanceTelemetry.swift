@@ -4,9 +4,14 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAModels
 
-/// Totals for the samples a threshold hid, per event, over one flush window.
+/// Totals for the samples a threshold hid, per event *and task*, over one flush
+/// window.
 struct PerformanceTelemetrySuppressedRollup: Equatable {
     let event: String
+    /// The task the samples came from, or `nil` for the call sites that have no
+    /// task in hand. Carried on the rollup rather than taken from whichever
+    /// sample happened to trip the flush — see `PerformanceTelemetrySuppressedLedger`.
+    let taskID: UUID?
     let count: Int
     let totalMilliseconds: Double
     let maxMilliseconds: Double
@@ -33,9 +38,23 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         var thresholdMilliseconds: Double = 0
     }
 
+    /// Aggregation is per event *and* per task.
+    ///
+    /// Keying on the event alone folded every task's samples into one bucket,
+    /// and the flush then stamped each line with the `taskID` of whichever
+    /// sample happened to close the window. So a rollup covering work done for
+    /// task A could be logged against task B — and the logs are read by
+    /// filtering on the task, which is how this ledger gets used at all. An
+    /// attribution that is confidently wrong is worse than the `nil` the
+    /// unattributed call sites already report.
+    private struct BucketKey: Hashable {
+        let event: String
+        let taskID: UUID?
+    }
+
     private let lock = NSLock()
     private let flushInterval: TimeInterval
-    private var buckets: [String: Bucket] = [:]
+    private var buckets: [BucketKey: Bucket] = [:]
     /// Set by the first sample rather than at construction: the ledger is built
     /// at process start, so anchoring the window there would make the first
     /// rollup cover an arbitrary stretch of idle time.
@@ -53,6 +72,7 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
     /// same activity that produced them.
     func record(
         event: String,
+        taskID: UUID? = nil,
         milliseconds: Double,
         thresholdMilliseconds: Double,
         now: Date = Date()
@@ -60,12 +80,13 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        var bucket = buckets[event] ?? Bucket()
+        let key = BucketKey(event: event, taskID: taskID)
+        var bucket = buckets[key] ?? Bucket()
         bucket.count += 1
         bucket.totalMilliseconds += milliseconds
         bucket.maxMilliseconds = max(bucket.maxMilliseconds, milliseconds)
         bucket.thresholdMilliseconds = thresholdMilliseconds
-        buckets[event] = bucket
+        buckets[key] = bucket
 
         guard let windowStart = lastFlushAt else {
             lastFlushAt = now
@@ -74,9 +95,10 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         guard now.timeIntervalSince(windowStart) >= flushInterval else { return [] }
         lastFlushAt = now
         let rollups = buckets
-            .map { name, bucket in
+            .map { key, bucket in
                 PerformanceTelemetrySuppressedRollup(
-                    event: name,
+                    event: key.event,
+                    taskID: key.taskID,
                     count: bucket.count,
                     totalMilliseconds: bucket.totalMilliseconds,
                     maxMilliseconds: bucket.maxMilliseconds,
@@ -84,8 +106,15 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
                 )
             }
             // Stable order so consecutive lines are comparable by eye, and the
-            // costliest event reads first.
-            .sorted { ($0.totalMilliseconds, $0.event) > ($1.totalMilliseconds, $1.event) }
+            // costliest event reads first. The task is the last tiebreak, so two
+            // tasks doing identical work still produce a deterministic order.
+            .sorted {
+                (
+                    $0.totalMilliseconds, $0.event, $0.taskID?.uuidString ?? ""
+                ) > (
+                    $1.totalMilliseconds, $1.event, $1.taskID?.uuidString ?? ""
+                )
+            }
         buckets.removeAll(keepingCapacity: true)
         return rollups
     }
@@ -113,6 +142,7 @@ enum PerformanceTelemetry {
     ) {
         let rollups = suppressedLedger.record(
             event: event,
+            taskID: taskID,
             milliseconds: milliseconds,
             thresholdMilliseconds: thresholdMilliseconds
         )
@@ -132,7 +162,10 @@ enum PerformanceTelemetry {
                     "threshold_ms": String(format: "%.2f", rollup.thresholdMilliseconds),
                     "window_s": String(format: "%.0f", suppressedRollupIntervalSeconds)
                 ],
-                taskID: taskID
+                // The rollup's own task, not this sample's. They are usually
+                // the same and occasionally are not, and the time they are not
+                // is a burst from one task closing another task's window.
+                taskID: rollup.taskID
             )
         }
     }

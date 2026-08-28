@@ -16,6 +16,7 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case connectorChangedSinceReview(reviewed: String, now: String)
     case missingCredential(String)
     case invalidBaseURL(String)
+    case insecureTransport(alias: String, url: String)
     case requestFailed(statusCode: Int, message: String)
     case alreadySent(String)
     case sentButNotRecorded(target: String, reason: String)
@@ -44,6 +45,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
             "The \(alias) connector has no usable credential in the Keychain, so ASTRA cannot send this."
         case let .invalidBaseURL(url):
             "The connector's base URL (\(url)) is not a valid http(s) URL."
+        case let .insecureTransport(alias, url):
+            "The \(alias) connector points at \(url), which would send its credential over "
+                + "unprotected HTTP. Refusing to send; set an HTTPS base URL in Connectors."
         case let .requestFailed(statusCode, message):
             statusCode > 0
                 ? "The connector rejected the request (HTTP \(statusCode)): \(message)"
@@ -329,6 +333,7 @@ final class ConnectorMutationCoordinator {
         guard let url = Self.url(baseURL: connector.baseURL, path: definition.path) else {
             throw ConnectorMutationCoordinatorError.invalidBaseURL(connector.baseURL)
         }
+        try Self.requireProtectedTransport(connector)
         return ConnectorMutationProposal(
             serviceType: staged.serviceType,
             operation: staged.operation,
@@ -457,11 +462,45 @@ final class ConnectorMutationCoordinator {
         guard let url = URL(string: proposal.destinationURL) else {
             throw ConnectorMutationCoordinatorError.invalidBaseURL(connector.baseURL)
         }
+        // Checked again here, immediately before the credential is turned into
+        // a header, because this is the line that decides whether it goes on
+        // the wire. `resolveProposal` has already refused an unprotected
+        // connector at review and at re-resolution, so reaching this is not
+        // expected — which is exactly why it is worth stating: the gate must
+        // hold even if a future caller builds a request by another route.
+        try Self.requireProtectedTransport(connector)
         return ConnectorMutationHTTPRequest(
             url: url,
             method: proposal.requestMethod,
             body: proposal.requestBody,
             authorizationHeader: try authorizationHeader(for: connector, alias: proposal.connectorAlias)
+        )
+    }
+
+    /// Refuses to put a credential on unprotected transport.
+    ///
+    /// Every other path that hands a connector credential to something —
+    /// install, import, share, workspace config — runs
+    /// `credentialTransportViolation` first, and the write path had grown up
+    /// without it. A base URL is user-editable after the connector is created,
+    /// so an `https://` connector that the agent composed a proposal against
+    /// can be `http://` by the time it is approved, and the request built from
+    /// it still carried `Authorization: Basic …` in the clear to whatever host
+    /// the new URL named. The route check upstream constrains the *path*; only
+    /// this constrains the scheme and the host.
+    ///
+    /// Loopback HTTP stays allowed, matching every other caller: a connector
+    /// pointed at `127.0.0.1` is a local test instance, and the credential
+    /// never leaves the machine.
+    private static func requireProtectedTransport(_ connector: Connector) throws {
+        guard ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: connector.baseURL,
+            authMethod: connector.authMethod,
+            credentialKeys: connector.credentialKeys
+        ) != nil else { return }
+        throw ConnectorMutationCoordinatorError.insecureTransport(
+            alias: connector.name,
+            url: connector.baseURL
         )
     }
 

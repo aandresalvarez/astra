@@ -564,6 +564,58 @@ struct ConnectorCredentialAdmissionEnforcementTests {
             key: "REDCAP_API_TOKEN", value: "pasted-the-wrong-thing-again", store: store) == .saved)
     }
 
+    /// The one write allowed past admission, and the reason it has to be.
+    ///
+    /// `CapabilityInstaller`'s rollback used to restore through
+    /// `saveCredential`, which runs the full admission pass. So a package that
+    /// tightened a format after a value was stored made the *undo* fail for the
+    /// same reason the install did — and the refusal changed nothing for the
+    /// better: the prior value was already overwritten in the Keychain, so all
+    /// it achieved was leaving the failed install's credential in place while
+    /// reporting the install a failure.
+    @MainActor
+    @Test("A rollback puts back a value the package would no longer admit")
+    func restoreBypassesAdmissionForAValueAlreadyHeld() throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "REDCap (copied setup)", serviceType: "rest_api", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        connector.originPackageID = "redcap-workflow"
+        fixture.context.insert(connector)
+
+        // The shape the package declares today. A value stored before it said
+        // so does not match, and admission refuses to write it.
+        let legacyValue = "legacy-token-from-before-the-declaration"
+        #expect(connector.saveCredentialChecked(
+            key: "REDCAP_API_TOKEN", value: legacyValue, store: store
+        ).rejection?.auditReason == "format_mismatch")
+
+        // Restoring it is a different question, and the answer is yes.
+        #expect(connector.restorePreviouslyStoredCredential(
+            key: "REDCAP_API_TOKEN", value: legacyValue, store: store))
+        #expect(connector.credentials(store: store)["REDCAP_API_TOKEN"] == legacyValue)
+        #expect(connector.credentialKeys.contains("REDCAP_API_TOKEN"))
+    }
+
+    /// A restore that does not land is the failure the caller most needs to
+    /// hear about, so it has to be reportable rather than fire-and-forget.
+    @MainActor
+    @Test("A restore that cannot be written says so")
+    func restoreReportsAFailedWrite() throws {
+        let fixture = try Self.makeFixture()
+        let store = MockSecretStore()
+        store.failsWrites = true
+        let connector = Connector(
+            name: "REDCap", serviceType: "redcap", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        fixture.context.insert(connector)
+
+        #expect(!connector.restorePreviouslyStoredCredential(
+            key: "REDCAP_API_TOKEN", value: Self.redcapShaped, store: store))
+        #expect(!connector.credentialKeys.contains("REDCAP_API_TOKEN"))
+    }
+
     @MainActor
     @Test("A truncated reuse scan reports itself instead of reading as clean")
     func reuseScanReportsTruncation() throws {

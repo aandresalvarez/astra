@@ -31,6 +31,61 @@ struct RunSecretRedactionTests {
         }
     }
 
+    /// The invariant the two predicates exist to keep: a name that puts a value
+    /// in the Keychain must also be a name a transcript redacts. It was broken
+    /// for every credential matching bare `KEY` or `AUTH` — an `SSH_PRIVATE_KEY`
+    /// or a `CLIENT_AUTH` was loaded from the Keychain, projected into the
+    /// agent's environment, and then written to the transcript in the clear,
+    /// because the redaction predicate had been narrowed by hand and the two
+    /// lists silently drifted apart.
+    @Test("Anything the Keychain will hold is something a transcript will redact")
+    func everyStorableKeyIsRedactable() {
+        for key in ["SSH_PRIVATE_KEY", "CLIENT_AUTH", "GITHUB_KEY", "AUTHORIZATION",
+                    "JIRA_API_TOKEN", "DB_PASSWORD", "SERVICE_CREDENTIAL"] {
+            #expect(
+                Skill.isSecretEnvironmentKey(key),
+                "\(key) should be Keychain-backed; this test is otherwise vacuous"
+            )
+            #expect(
+                RunSecretRedaction.isSecretKey(key),
+                "\(key) is Keychain-backed, so its value must never survive in a transcript"
+            )
+        }
+
+        // The one permitted divergence, and it is enumerated rather than
+        // inferred: these are stored, because a value already in the Keychain
+        // has to stay readable, and deliberately not redacted, because they
+        // name things rather than unlock them.
+        for key in ["PROJECT_KEY", "JIRA_PROJECT_KEY", "SIGNING_KEY_ID"] {
+            #expect(Skill.isSecretEnvironmentKey(key))
+            #expect(
+                !RunSecretRedaction.isSecretKey(key),
+                "\(key) identifies rather than authenticates; redacting it shreds the transcript"
+            )
+        }
+    }
+
+    /// An `SSH_PRIVATE_KEY` value reaching a payload is the shape of the leak
+    /// the narrowed predicate allowed, so it is pinned end to end rather than
+    /// at the predicate alone.
+    @Test("A Keychain-backed SSH key and client auth are stripped from a payload")
+    func widerCredentialNamesAreRedactedFromText() {
+        let sshShaped = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----"
+        let clientAuthShaped = "Basic YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo="
+        let secrets = RunSecretRedaction.secretValues(in: [
+            "SSH_PRIVATE_KEY": sshShaped,
+            "CLIENT_AUTH": clientAuthShaped,
+            "JIRA_PROJECT_KEY": "STAR"
+        ])
+        let redacted = RunSecretRedaction.redact(
+            "ssh key was \(sshShaped) and header \(clientAuthShaped) for STAR",
+            secrets: secrets
+        )
+        #expect(!redacted.contains(sshShaped))
+        #expect(!redacted.contains(clientAuthShaped))
+        #expect(redacted.contains("for STAR"), "The project key names a board; it is not a credential")
+    }
+
     @Test("Only credential-named values of usable length are collected from an environment")
     func secretValuesFilterTheEnvironment() {
         let values = Set(RunSecretRedaction.secretValues(in: [
@@ -165,6 +220,69 @@ struct RunSecretRedactionTests {
 
         #expect(!RunSecretRedactionScope.secrets(for: longLived).isEmpty)
         #expect(RunSecretRedactionScope.secrets(for: newcomers[0]).isEmpty)
+    }
+
+    // MARK: - The launch environment
+
+    /// Registration used to see only the capability overlay, but the subprocess
+    /// receives far more than that. `RuntimeProcessEnvironment.enriched` starts
+    /// from `ProcessInfo.processInfo.environment`, so every variable ASTRA was
+    /// itself launched with is inherited by the agent — and a developer build
+    /// started from a shell that exports `ANTHROPIC_API_KEY` or
+    /// `OPENAI_API_KEY` was handing the agent a live provider credential that
+    /// nothing would redact. Echoing it wrote it into the transcript verbatim.
+    @MainActor
+    @Test("A credential inherited from ASTRA's own launch is registered for redaction")
+    func inheritedLaunchCredentialsAreRegistered() {
+        // A name no ASTRA code reads, so setting it cannot change how a suite
+        // running alongside this one behaves. What is under test is inheritance
+        // from the process environment, not any particular provider.
+        let inherited = "ASTRA_TEST_INHERITED_API_TOKEN"
+        setenv(inherited, atlassianShaped, 1)
+        defer { unsetenv(inherited) }
+
+        let task = AgentTask(title: "Echo", goal: "Print the environment")
+        defer { RunSecretRedactionScope.forget(taskID: task.id) }
+        let env = AgentRuntimeProcessRunner.environment(
+            phase: .run, task: task, taskEnv: [:], includeClaudeTeamFlag: false)
+        #expect(env[inherited] == atlassianShaped, "The agent really does inherit it")
+
+        let redacted = RunSecretRedactionScope.redact(
+            "the agent echoed \(atlassianShaped)", taskID: task.id)
+        #expect(!redacted.contains(atlassianShaped))
+    }
+
+    /// The other half of registering a whole launch environment: it is full of
+    /// variables that are not credentials, and redacting one of those shreds
+    /// the transcript. `SSH_AUTH_SOCK` is the collision that matters, because
+    /// macOS sets it on every login session and its value is a path — and the
+    /// fragment scan matches on eight bytes, so registering it would replace
+    /// `/private` wherever it appeared.
+    @MainActor
+    @Test("Ordinary launch variables are not mistaken for credentials")
+    func inheritedNonCredentialsAreLeftAlone() {
+        #expect(!RunSecretRedaction.isSecretKey("SSH_AUTH_SOCK"))
+        let socket = "/private/tmp/com.apple.launchd.AbCdEf1234/Listeners"
+        #expect(RunSecretRedaction.secretValues(in: ["SSH_AUTH_SOCK": socket]).isEmpty)
+
+        let task = AgentTask(title: "Echo", goal: "Print the environment")
+        defer { RunSecretRedactionScope.forget(taskID: task.id) }
+        // Restored rather than unset: this one is real on any login session,
+        // and the ssh shim reads it.
+        let previousSocket = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
+        setenv("SSH_AUTH_SOCK", socket, 1)
+        defer {
+            if let previousSocket {
+                setenv("SSH_AUTH_SOCK", previousSocket, 1)
+            } else {
+                unsetenv("SSH_AUTH_SOCK")
+            }
+        }
+        let env = AgentRuntimeProcessRunner.environment(
+            phase: .run, task: task, taskEnv: [:], includeClaudeTeamFlag: false)
+
+        let sample = "wrote \(socket) using PATH=\(env["PATH"] ?? "")"
+        #expect(RunSecretRedactionScope.redact(sample, taskID: task.id) == sample)
     }
 
     // MARK: - The seam between chunks
@@ -459,13 +577,13 @@ struct PersistedCredentialPurgeServiceTests {
         fixture.context.insert(event)
         try fixture.context.save()
 
-        // Two predicates, deliberately. `Skill.isSecretEnvironmentKey` decides
-        // what is *stored* in the Keychain and is the wider of the two, so
-        // `PROJECT_KEY` is held there; `RunSecretRedaction.isSecretKey` decides
-        // what a run redacts, and it does not treat a project key as a
-        // credential. Sweeping the wider set would make old transcripts hide
-        // identifiers that today's transcripts show.
-        let values = PersistedCredentialPurgeService.liveCredentialValues(
+        // Both predicates now read the same pattern list, so anything the
+        // Keychain holds is swept. `PROJECT_KEY` still survives, but by being
+        // named in `RunSecretRedaction.nonCredentialKeyNames` rather than by
+        // falling through a narrower rule — the difference matters, because the
+        // narrower rule also silently spared `SSH_PRIVATE_KEY` and
+        // `CLIENT_AUTH`.
+        let values = try PersistedCredentialPurgeService.liveCredentialValues(
             modelContext: fixture.context, store: store)
         #expect(values == [redcapShaped])
 
@@ -490,7 +608,7 @@ struct PersistedCredentialPurgeServiceTests {
         #expect(connector.saveCredentialChecked(
             key: "JIRA_EMAIL", value: "person@stanford.edu", store: store) == .saved)
 
-        let values = PersistedCredentialPurgeService.liveCredentialValues(
+        let values = try PersistedCredentialPurgeService.liveCredentialValues(
             modelContext: fixture.context, store: store)
         // An address is an identifier, not a credential. Redacting it out of
         // transcripts would destroy the audit trail the attestation depends on.

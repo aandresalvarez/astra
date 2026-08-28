@@ -153,6 +153,49 @@ public final class Connector {
         return saved ? .saved : .keychainWriteFailed
     }
 
+    /// Puts back a value this connector was already holding, without asking
+    /// admission whether it may.
+    ///
+    /// The one write that is allowed past the funnel above, and only because
+    /// admission is the wrong question here. A compensating rollback is not
+    /// storing a new credential; it is undoing an overwrite it should never
+    /// have performed, and the value it puts back was admitted when it was
+    /// first stored. Re-judging it means a package that has since tightened a
+    /// format — or a reuse scan that now sees the value on a sibling connector
+    /// — can refuse the restore, and the refusal does not protect anything: the
+    /// prior value is already gone from the Keychain, so all "no" achieves is
+    /// leaving the connector holding the failed install's value instead.
+    ///
+    /// Returns whether the Keychain write landed. Callers must not discard it:
+    /// a failed restore means a credential the user had working is now gone,
+    /// which is worse than the failure that triggered the rollback and is the
+    /// one thing they cannot discover for themselves.
+    public func restorePreviouslyStoredCredential(
+        key: String,
+        value: String,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
+        let upperKey = key.uppercased()
+        let saved = ConnectorSecretSeam.required.saveCredential(
+            value,
+            key: upperKey,
+            facts: secretFacts,
+            allowUserInteraction: allowUserInteraction
+        )
+        recordCredentialSaveResult(key: upperKey, saved: saved)
+        return saved
+    }
+
+    /// Store-injectable twin of `restorePreviouslyStoredCredential(key:value:allowUserInteraction:)`.
+    @discardableResult
+    func restorePreviouslyStoredCredential(key: String, value: String, store: SecretStore) -> Bool {
+        let upperKey = key.uppercased()
+        let saved = ConnectorSecretSeam.required.saveCredential(
+            value, key: upperKey, facts: secretFacts, store: store)
+        recordCredentialSaveResult(key: upperKey, saved: saved)
+        return saved
+    }
+
     /// Test seam for credential key normalization and persistence behavior.
     /// Production uses `saveCredential(key:value:)` so KeychainService remains
     /// the single app-facing persistence boundary. Routes through

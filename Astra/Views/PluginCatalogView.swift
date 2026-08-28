@@ -2104,8 +2104,8 @@ struct PluginInstallSheet: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
+    /// Unfiltered: `copyableSetupSourceKey` has to see workspace-owned edits.
+    @Query private var allConnectors: [Connector]
     @State private var credentialValues: [String: String] = [:]
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
@@ -2260,7 +2260,7 @@ struct PluginInstallSheet: View {
                 for: package,
                 excluding: workspace.id,
                 sources: capabilitySetupSourceWorkspaces,
-                globalConnectors: globalConnectors
+                connectors: allConnectors
             )
         }
         .alert("Capability could not be installed", isPresented: Binding(
@@ -2367,7 +2367,7 @@ struct PluginInstallSheet: View {
         CopyableCapabilitySetupResolver.key(
             prefix: package.id,
             sources: capabilitySetupSourceWorkspaces,
-            globalConnectors: globalConnectors
+            connectors: allConnectors
         )
     }
 

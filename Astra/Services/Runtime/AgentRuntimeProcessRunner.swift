@@ -1430,6 +1430,19 @@ final class AgentRuntimeProcessRunner {
             additionalPaths: prefixPaths,
             extraVariables: extraVars
         )
+        // Registered from the environment the subprocess actually gets, not
+        // from the capability overlay that produced part of it.
+        //
+        // `enriched` starts from `ProcessInfo.processInfo.environment`, so
+        // anything ASTRA was itself launched with is inherited by the agent —
+        // and for a developer build started from a shell that exports
+        // `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, that is a live provider
+        // credential. Registering only `taskEnv` meant those were handed to the
+        // agent and left out of the redaction set, so echoing one wrote it
+        // straight into the transcript. The overlay is still registered where
+        // it is built, because that is where the brokered strip has happened;
+        // this adds what only the launch can see.
+        RunSecretRedactionScope.register(taskID: task.id, environment: env)
         if !taskEnv.isEmpty {
             AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
                 "phase": phase.rawValue,

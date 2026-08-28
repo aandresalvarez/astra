@@ -217,7 +217,7 @@ struct ConnectorEditorView: View {
     @State private var pendingDeletion: PendingConnectorDeletion?
     @FocusState private var isNameFocused: Bool
 
-    private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+    private static let secretPatterns = RunSecretRedaction.keychainBackedKeyPatterns
 
     private static func isSecretKey(_ key: String) -> Bool {
         let upper = key.uppercased()

@@ -496,10 +496,10 @@ static NSUInteger sAstraFailuresSinceLastReport = 0;
 /// read the thing.
 ///
 /// Fails closed: a keychain that opens and reports any status other than the
-/// three "cannot make sense of this file" codes is left alone, including one
-/// that is merely locked or that this binary is not authorized to unlock. A
-/// denial is a permission the user grants in one dialog. It is not a reason to
-/// erase their credentials.
+/// two "there is nothing here to lose" codes is left alone, including one that
+/// is merely locked or that this binary is not authorized to unlock. A denial
+/// is a permission the user grants in one dialog. It is not a reason to erase
+/// their credentials.
 + (BOOL)dedicatedKeychainIsBeyondRecoveryAtPath:(NSString *)path {
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         return YES;
@@ -509,15 +509,34 @@ static NSUInteger sAstraFailuresSinceLastReport = 0;
     OSStatus openStatus = SecKeychainOpen(path.fileSystemRepresentation, &keychain);
     if (openStatus != errSecSuccess || keychain == NULL) {
         if (keychain != NULL) { CFRelease(keychain); }
-        return YES;
+        // Classified, not assumed. Treating every failing open as terminal
+        // pointed the destructive path at exactly the conditions it must never
+        // fire on: `SecKeychainOpen` fails for a locked or ACL-denied keychain,
+        // and for a securityd that is not answering, and each of those is a
+        // full keychain the save path would then have deleted the bootstrap
+        // password for. An open that reports success but hands back no handle
+        // is unclassifiable, so it stays on the safe side too.
+        return [self keychainStatusIsBeyondRecovery:openStatus];
     }
 
     SecKeychainStatus keychainStatus = 0;
     OSStatus status = SecKeychainGetStatus(keychain, &keychainStatus);
     CFRelease(keychain);
+    return [self keychainStatusIsBeyondRecovery:status];
+}
+
+/// The only two statuses that mean destroying this file destroys nothing.
+///
+/// `errSecInvalidKeychain` — the bytes are not a keychain. `errSecNoSuchKeychain`
+/// — there is no keychain at that path. Everything else describes the state of
+/// the machine or of this process's authorization rather than the state of the
+/// file, and none of it can be told apart from a healthy keychain the user
+/// still needs. `errSecNotAvailable` ("no keychain is available; you may need
+/// to restart your computer") is the one worth naming, because it reads like a
+/// verdict on the file and is a verdict on securityd.
++ (BOOL)keychainStatusIsBeyondRecovery:(OSStatus)status {
     return status == errSecInvalidKeychain
-        || status == errSecNoSuchKeychain
-        || status == errSecNotAvailable;
+        || status == errSecNoSuchKeychain;
 }
 
 + (BOOL)recoverUnreadableDedicatedKeychainAtPath:(NSString *)path

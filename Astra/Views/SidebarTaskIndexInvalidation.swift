@@ -9,16 +9,28 @@ import ASTRAModels
 /// slices that each stayed under the 8 ms log threshold and so never surfaced
 /// as an event. Four terms were removed on that evidence:
 ///
-/// - **`title` and `goal`, hashed whenever a search was active.** A real store
-///   holds 10.85 MB of `goal` text across 726 rows, so an active search meant
-///   hashing 10.85 MB per call. Redundant as well as ruinous: every writer of
-///   either field bumps `updatedAt`, which is hashed unconditionally, and
-///   `searchText` itself already drives its own `onChange` in the sidebar.
+/// - **`goal`, hashed whenever a search was active.** A real store holds
+///   10.83 MB of `goal` text, so an active search meant hashing 10.83 MB per
+///   call. Redundant as well as ruinous: every writer of `goal` bumps
+///   `updatedAt`, which is hashed unconditionally, and `searchText` itself
+///   already drives its own `onChange` in the sidebar.
 /// - **`shouldShowUnread`**, which is defined as `unreadAt != nil` and so can
 ///   never move without the `unreadAt` term moving too.
 /// - **A `Set<UUID>` of workspace IDs**, allocated and grown on every call to
 ///   populate a `workspace_count` telemetry field that is discarded on every
 ///   call that comes in under threshold — which is nearly all of them.
+///
+/// `title` went out with `goal` and had to come back, unconditionally. It is
+/// the one searchable field with a writer that does not bump `updatedAt`: the
+/// generated-title backfill in `TaskLifecycleCoordinator` restores the original
+/// `updatedAt` on purpose, so a rename does not shove a finished thread back to
+/// the top of the rail. With `title` unhashed that write moved nothing the
+/// signature could see, so a task whose new title matched the active query
+/// stayed hidden until the next unrelated reconcile. It is hashed whether or
+/// not a search is running, because a term that only exists some of the time is
+/// a term the next writer will not know to think about — and the price is
+/// nothing like `goal`'s: the same store holding 10.83 MB of goals holds 16 KB
+/// of titles, 665× less.
 ///
 /// The two date terms now hash the `Date` rather than truncating it to whole
 /// seconds. That is the same cost, cannot trap on an out-of-range interval, and
@@ -40,6 +52,7 @@ enum SidebarTaskIndexInvalidation {
                 acc ^= workspaceID.hashValue
             }
             acc ^= task.status.rawValue.hashValue
+            acc ^= task.title.hashValue
             acc ^= task.isPinned ? 1 : 0
             acc ^= task.isDone ? 2 : 0
             acc &+= task.updatedAt.hashValue

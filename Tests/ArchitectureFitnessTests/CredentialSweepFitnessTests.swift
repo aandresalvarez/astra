@@ -145,6 +145,42 @@ struct CredentialSweepFitnessTests {
             """
         )
 
+        // Every OSStatus the gate sees has to be classified. `SecKeychainOpen`
+        // fails for a locked keychain, for an ACL denial, and for a securityd
+        // that is not answering — each of those a full keychain — so an
+        // unconditional YES on a failing open aims the destructive path at
+        // precisely the cases it exists to spare. Only "the file is not there"
+        // may take that exit.
+        #expect(
+            gateBody.components(separatedBy: "return YES;").count == 2,
+            """
+            The recovery gate has more than one unconditional YES. A failing \
+            OSStatus is not by itself evidence that there is nothing to lose.
+            """
+        )
+        #expect(
+            gateBody.components(separatedBy: "keychainStatusIsBeyondRecovery:").count == 3,
+            """
+            Both the open status and the status read back from securityd must go \
+            through the classifier before recovery is allowed to run.
+            """
+        )
+        let classifier = try body(
+            from: "+ (BOOL)keychainStatusIsBeyondRecovery:",
+            until: "\n+ (",
+            in: keychain
+        )
+        for tolerated in ["errSecAuthFailed", "errSecInteractionNotAllowed", "errSecNotAvailable"] {
+            #expect(
+                !classifier.contains(tolerated),
+                """
+                \(tolerated) describes the machine or this process's \
+                authorization, not the file. A keychain that reports it is \
+                indistinguishable from a healthy one the user still needs.
+                """
+            )
+        }
+
         let writeBody = try body(
             from: "+ (BOOL)writeSecret:",
             until: "\n+ (",
@@ -226,6 +262,95 @@ struct CredentialSweepFitnessTests {
                 "A count query now runs after the sweep has declared itself complete."
             )
         }
+    }
+
+    @Test("An inventory the sweep could not build does not count as an empty one")
+    func failedInventoryFetchesDoNotCompleteThePurge() throws {
+        let source = try fileText("Astra/Services/Persistence/PersistedCredentialPurgeService.swift")
+        let inventoryBody = try body(
+            from: "static func liveCredentialValues(",
+            until: "\n    private static func eventDescriptor(",
+            in: source
+        )
+
+        // The inventory decides what the sweep will even look for, so a fetch
+        // coerced to `[]` here is worse than a failed count: the sweep does not
+        // stop, it searches for a shorter list and finishes clean. Connectors
+        // read and skills not is the dangerous shape — `skippedNoSecrets` never
+        // fires, `completed` goes true, and `purgeIfNeeded` spends the build
+        // gate, so the skill credentials are never searched for again.
+        #expect(
+            !inventoryBody.contains("try?"),
+            """
+            liveCredentialValues swallows a fetch failure. A partial inventory \
+            still produces a sweep that reports success, which retires the \
+            search for whatever it could not enumerate.
+            """
+        )
+        #expect(
+            inventoryBody.contains("try modelContext.fetch(FetchDescriptor<Connector>())")
+                && inventoryBody.contains("try modelContext.fetch(FetchDescriptor<Skill>())"),
+            "The inventory no longer enumerates both credential sources by throwing fetch."
+        )
+
+        let purgeBody = try body(
+            from: "static func purge(",
+            until: "\n    /// Every credential value reachable",
+            in: source
+        )
+        let inventorySite = try #require(
+            purgeBody.range(of: "liveCredentialValues("),
+            "purge no longer builds an inventory; this guard is scanning for something that moved."
+        )
+        #expect(
+            String(purgeBody[..<inventorySite.lowerBound].suffix(80)).contains("guard let"),
+            "purge does not bind the inventory with `guard let`, so a failure to build one looks empty."
+        )
+        let completion = try #require(purgeBody.range(of: "outcome.completed = true"))
+        #expect(
+            inventorySite.upperBound < completion.lowerBound,
+            "The inventory is built after the sweep has already declared itself complete."
+        )
+    }
+
+    @Test("An install rollback restores without re-asking admission, and reports a restore it could not make")
+    func credentialRollbackDoesNotReRunAdmission() throws {
+        let source = try fileText("Astra/Services/Capabilities/CapabilityInstaller.swift")
+        let saveBody = try body(
+            from: "private func saveConnectorCredentials(",
+            until: "\n    private func connectorConfigKeys(",
+            in: source
+        )
+        let rollback = try body(
+            from: "guard outcome.isSaved else {",
+            until: "savedThisCall.append(",
+            in: saveBody
+        )
+
+        // Admission decides whether a *new* value may be stored. Asking it
+        // again on the way back means the undo can be refused — a tightened
+        // package format, a reuse scan that now sees the value elsewhere — and
+        // the refusal is pure loss: the prior value is already overwritten, so
+        // "no" leaves the failed install's credential in place instead.
+        #expect(
+            !rollback.contains("connector.saveCredential"),
+            """
+            The rollback restores through the admission-controlled write again. \
+            A value already in the Keychain has been admitted once; re-judging \
+            it can only fail the undo.
+            """
+        )
+        #expect(
+            rollback.contains("connector.restorePreviouslyStoredCredential("),
+            "The rollback no longer restores through the non-admitting path; this guard has lost its subject."
+        )
+        // Fire-and-forget is the failure mode that matters: a restore that did
+        // not land means a credential the user had working is gone, and it is
+        // the one thing they cannot discover for themselves.
+        #expect(
+            rollback.contains("credentialRestoreFailed"),
+            "A failed restore is swallowed; the install reports its own failure and not the worse one."
+        )
     }
 
     // MARK: - Helpers

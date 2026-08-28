@@ -238,6 +238,91 @@ struct ConnectorMutationDiscoveryTests {
         )
     }
 
+    /// Proposals inside one run are frequently dependent — file the epic, then
+    /// the story that references it — so the order they are offered in is the
+    /// order the user is asked to approve them in.
+    ///
+    /// The broker names them with an unpadded per-run counter, so a plain
+    /// `sorted()` read `10` as text and put it ahead of `2`. Eleven is the
+    /// smallest number of proposals that shows it.
+    @Test("Proposals are offered in the order the broker staged them")
+    func proposalsAreOfferedInStagingOrder() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let count = 11
+        for index in 1...count {
+            _ = try propose(fixture, summary: "Proposal \(index)")
+        }
+
+        let recorded = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(
+            recorded.map(\.summary) == (1...count).map { "Proposal \($0)" },
+            """
+            Staged proposals were offered out of order, so the user is asked to \
+            approve a dependent write before the one it depends on.
+            """
+        )
+    }
+
+    /// The cap turns the same mis-ordering into a dropped proposal rather than
+    /// a reordered one: it takes the first `maximumProposalsPerScan` names, so
+    /// under a text sort the tenth is offered while the second waits a run.
+    @Test("The cap holds back the last staged proposals, not arbitrary ones")
+    func theCapHoldsBackTheLastStagedProposals() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let overCap = ConnectorMutationDiscovery.maximumProposalsPerScan + 3
+        for index in 1...overCap {
+            _ = try propose(fixture, summary: "Proposal \(index)")
+        }
+
+        let first = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(
+            first.map(\.summary)
+                == (1...ConnectorMutationDiscovery.maximumProposalsPerScan).map { "Proposal \($0)" }
+        )
+    }
+
+    /// A name the broker did not write must not be able to reorder the ones it
+    /// did, and must not disappear either — the scan is the only thing that
+    /// tells the user a file is there at all.
+    @Test("A staged name with no sequence number sorts after its own family")
+    func namesWithoutASequenceSortAfterTheirFamily() {
+        let ordered = [
+            "jira-create_issue-run.json",
+            "jira-create_issue-run-10.json",
+            "hand-written.json",
+            "jira-create_issue-run-2.json"
+        ]
+        .map { (key: ConnectorMutationDiscovery.stagedOrderKey($0), name: $0) }
+        .sorted { $0.key < $1.key }
+        .map(\.name)
+
+        #expect(ordered == [
+            // Its own group, so it orders by name against the others rather
+            // than jumping into the middle of a numbered run.
+            "hand-written.json",
+            "jira-create_issue-run-2.json",
+            "jira-create_issue-run-10.json",
+            // Same family, no number: after every numbered sibling.
+            "jira-create_issue-run.json"
+        ])
+    }
+
     /// An envelope the app cannot parse is a proposal the user will never be
     /// offered. Skipping it quietly leaves the agent believing a write is queued
     /// and the user unaware one is missing.
@@ -292,6 +377,83 @@ struct ConnectorMutationDiscoveryTests {
 
         #expect(recorded.isEmpty)
         #expect(fixture.task.events.isEmpty)
+    }
+
+    /// The starvation the two ceilings exist to prevent. A file that fails to
+    /// read is never recorded, so it never enters `recordedStagedPaths`, so the
+    /// name filter never removes it — it is back on the next scan, and the one
+    /// after. Counting the cap against candidates rather than against successes
+    /// meant twenty-five of them sorting first consumed the entire scan, every
+    /// time, and the valid proposal behind them was never offered at all.
+    @Test("Unreadable files ahead of a valid proposal do not consume the scan")
+    func unreadableFilesDoNotStarveAValidProposal() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let directory = ConnectorMutationStaging.stagingDirectory(taskFolder: fixture.taskFolder)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // `aaa-` sorts ahead of the broker's `jira-…` names, so these are the
+        // first thing the scan reaches.
+        let broken = ConnectorMutationDiscovery.maximumProposalsPerScan
+        for index in 1...broken {
+            try "not an envelope".write(
+                to: directory.appendingPathComponent("aaa-broken-\(index).json"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        _ = try propose(fixture, summary: "The one real proposal")
+
+        let recorded = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(
+            recorded.map(\.summary) == ["The one real proposal"],
+            "The valid proposal is behind the cap's worth of unreadable files, not lost to them"
+        )
+        let errors = fixture.task.events.filter { $0.type == TaskEventTypes.System.error.rawValue }
+        #expect(errors.count == 1)
+        #expect(errors.first?.payload.contains("could not read \(broken) staged connector") == true)
+    }
+
+    /// Reading past the failures has to stay bounded — the staging directory is
+    /// agent-writable — so the second ceiling counts files opened. Past it the
+    /// scan stops and says how many it is holding back, which is the same
+    /// contract the recording cap has: never truncate in silence.
+    @Test("The examination ceiling bounds the scan and reports what it held back")
+    func theExaminationCeilingIsReported() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+
+        let directory = ConnectorMutationStaging.stagingDirectory(taskFolder: fixture.taskFolder)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let broken = ConnectorMutationDiscovery.maximumFilesExaminedPerScan
+        for index in 1...broken {
+            try "not an envelope".write(
+                to: directory.appendingPathComponent("aaa-broken-\(index).json"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        _ = try propose(fixture, summary: "Behind the ceiling")
+
+        let recorded = ConnectorMutationDiscovery.recordStagedMutations(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context
+        )
+        try fixture.context.save()
+
+        #expect(recorded.isEmpty)
+        let payloads = fixture.task.events
+            .filter { $0.type == TaskEventTypes.System.error.rawValue }
+            .map(\.payload)
+        #expect(payloads.contains { $0.contains("will pick up the remaining 1 on the next run") })
+        #expect(payloads.contains { $0.contains("could not read \(broken) staged connector") })
     }
 
     // MARK: - Fixture

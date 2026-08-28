@@ -131,6 +131,38 @@ struct REDCapHostControlPolicyTests {
         #expect(try String(contentsOfFile: firstPath, encoding: .utf8).contains(#""1""#))
     }
 
+    /// The export used to fall back to the working directory, which is the
+    /// workspace the agent is operating in — normally a git checkout. A run
+    /// that reached the broker without a projected task folder therefore wrote
+    /// subject data into the repository, one `git add .` from committing it.
+    /// There is no safe default here, so there is no default.
+    @Test("An export with no task folder is refused rather than redirected")
+    func exportWithoutATaskFolderIsRefused() throws {
+        defer { Self.endCapture() }
+        Self.beginCapture()
+        let phi = #"[{"record_id":"1","dob":"1970-01-01","mrn":"ABC-99887"}]"#
+        REDCapCaptureURLProtocol.body = phi
+
+        // `server(taskFolder:)` defaults to none, and its `currentDirectory` is
+        // the destination the old fallback would have chosen.
+        let text = try resultText(try call(
+            server(),
+            id: 1,
+            arguments: ["operation": "record"]
+        ))
+
+        #expect(text.contains("could not be written"))
+        #expect(text.contains("task folder"))
+        #expect(!text.contains("export_path:"), "Nothing was written, so there is no path to hand back")
+        // The refusal must not become the other leak: no inline PHI either.
+        #expect(!text.contains("ABC-99887"))
+        #expect(!text.contains("1970-01-01"))
+        #expect(
+            !FileManager.default.fileExists(atPath: "/tmp/not-the-export-destination"),
+            "Subject data was written to the working directory the fallback used to pick"
+        )
+    }
+
     @Test("Structural operations still come back inline")
     func structuralOperationsComeBackInline() throws {
         defer { Self.endCapture() }

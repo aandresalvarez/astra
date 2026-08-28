@@ -55,7 +55,10 @@ public final class Skill {
     @Relationship(inverse: \LocalTool.skill)
     public var localTools: [LocalTool] = []
 
-    public static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+    /// What goes in the Keychain. Deliberately wider than what a run
+    /// redacts — see `RunSecretRedaction.nonCredentialKeyNames` for the only
+    /// names the two are allowed to disagree on.
+    public static let secretPatterns = RunSecretRedaction.keychainBackedKeyPatterns
 
     public init(
         name: String = "",

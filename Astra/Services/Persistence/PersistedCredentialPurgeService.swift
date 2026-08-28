@@ -72,7 +72,18 @@ public enum PersistedCredentialPurgeService {
         store: SecretStore = SecretStoreSeam.required,
         batchSize: Int = PersistedCredentialPurgeService.batchSize
     ) async -> Outcome {
-        let secrets = liveCredentialValues(modelContext: modelContext, store: store)
+        // An inventory that could not be built is not an empty inventory. The
+        // fetch coerced to `[]` used to look identical to a store with no
+        // credentials in it, except in one decisive respect: an empty inventory
+        // reports `skippedNoSecrets` and leaves the build gate open, while a
+        // *partial* one — connectors read, skills not — reports a completed
+        // sweep and spends the gate, retiring the search for skill credentials
+        // permanently on the strength of a query that failed.
+        guard let secrets = try? liveCredentialValues(modelContext: modelContext, store: store) else {
+            let outcome = Outcome()
+            log(stage: "inventory_failed", outcome: outcome, severity: .failure)
+            return outcome
+        }
         guard !secrets.isEmpty else {
             let outcome = Outcome(completed: true, skippedNoSecrets: true)
             log(stage: "skipped_no_secrets", outcome: outcome)
@@ -150,10 +161,16 @@ public enum PersistedCredentialPurgeService {
     /// Filtered by key name rather than by value shape: the same projection
     /// carries base URLs and project IDs, and replacing those with a marker
     /// would corrupt transcripts without protecting anything.
+    ///
+    /// Throws rather than returning what it managed to collect. A half-built
+    /// inventory is the dangerous kind of answer here: the sweep would run to
+    /// completion against it, find nothing it was never told to look for, and
+    /// let `purgeIfNeeded` stamp the build gate — so the caller has to be able
+    /// to tell "no credentials" from "could not ask".
     static func liveCredentialValues(
         modelContext: ModelContext,
         store: SecretStore
-    ) -> [String] {
+    ) throws -> [String] {
         var values: [String] = []
         var seen = Set<String>()
         func consider(key: String, value: String) {
@@ -164,20 +181,22 @@ public enum PersistedCredentialPurgeService {
             values.append(trimmed)
         }
 
-        let connectors = (try? modelContext.fetch(FetchDescriptor<Connector>())) ?? []
+        let connectors = try modelContext.fetch(FetchDescriptor<Connector>())
         for connector in connectors {
             for (key, value) in connector.credentials(store: store) {
                 consider(key: key, value: value)
             }
         }
 
-        // Two different predicates, deliberately. `Skill.isSecretEnvironmentKey`
-        // decides what is *stored* in the Keychain and is the wider of the two —
-        // it matches bare "KEY" and "AUTH", so `PROJECT_KEY` is Keychain-backed.
-        // `consider` then applies the narrower live-redaction rule, so the sweep
-        // rewrites exactly what a run today would have redacted. Widening it
-        // here would make old transcripts hide identifiers that new ones show.
-        let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
+        // Both predicates read `RunSecretRedaction.keychainBackedKeyPatterns`,
+        // so everything a skill can put in the Keychain is something this sweep
+        // can find. They part company only on the names in
+        // `nonCredentialKeyNames`: `Skill.isSecretEnvironmentKey` still stores a
+        // `PROJECT_KEY`, because a value already in the Keychain has to stay
+        // readable, and `consider` still declines to redact it, because a
+        // project key runs through ordinary prose and replacing it would shred
+        // the transcript without protecting anything.
+        let skills = try modelContext.fetch(FetchDescriptor<Skill>())
         for skill in skills {
             for (index, key) in skill.environmentKeys.enumerated()
             where Skill.isSecretEnvironmentKey(key) {

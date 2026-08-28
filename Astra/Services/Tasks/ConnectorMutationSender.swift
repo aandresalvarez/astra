@@ -66,7 +66,20 @@ protocol ConnectorMutationSending: Sendable {
 struct URLSessionConnectorMutationSender: ConnectorMutationSending {
     /// Ceiling on the response ASTRA reads back. A receipt is an issue key and a
     /// URL; anything larger is a body no one benefits from holding.
+    ///
+    /// Enforced while reading, not after. `URLSession.data(for:)` buffers the
+    /// entire body before returning it, so trimming the result afterwards
+    /// bounded what ASTRA *kept* and not what it *allocated*: a connector that
+    /// answered a write with a gigabyte — a misconfigured proxy, an error page
+    /// from something that is not the service, a host the base URL now resolves
+    /// to — pulled all of it into memory first. Streaming and stopping at the
+    /// limit makes the ceiling real.
     static let responseByteLimit = 64 * 1024
+
+    /// Applied per stall *and* to the exchange as a whole. Without the second,
+    /// a server dribbling bytes below the limit holds the send open for as long
+    /// as it likes, and a write with no answer is the one outcome the commit
+    /// path cannot resolve for the user.
     static let timeoutSeconds: TimeInterval = 30
 
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse {
@@ -79,6 +92,7 @@ struct URLSessionConnectorMutationSender: ConnectorMutationSending {
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = Self.timeoutSeconds
+        configuration.timeoutIntervalForResource = Self.timeoutSeconds
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
         // A write must not be replayed by the loading system on ASTRA's behalf.
@@ -86,12 +100,31 @@ struct URLSessionConnectorMutationSender: ConnectorMutationSending {
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
 
-        let (data, response) = try await session.data(for: urlRequest)
+        let (stream, response) = try await session.bytes(for: urlRequest)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let capped = data.prefix(Self.responseByteLimit)
+        let body = try await Self.read(stream, limit: Self.responseByteLimit)
         return ConnectorMutationHTTPResponse(
             statusCode: statusCode,
-            body: String(data: capped, encoding: .utf8) ?? ""
+            body: String(data: body, encoding: .utf8) ?? ""
         )
+    }
+
+    /// Reads at most `limit` bytes and hangs up.
+    ///
+    /// Cancelling the task is the part that matters. Leaving the stream to be
+    /// torn down by deinit would let the transfer keep running — the ceiling
+    /// would bound the string ASTRA holds while the download it was meant to
+    /// stop continued in the background.
+    static func read(_ stream: URLSession.AsyncBytes, limit: Int) async throws -> Data {
+        var body = Data()
+        body.reserveCapacity(min(limit, 8 * 1024))
+        for try await byte in stream {
+            body.append(byte)
+            if body.count >= limit {
+                stream.task.cancel()
+                break
+            }
+        }
+        return body
     }
 }

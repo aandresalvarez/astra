@@ -115,6 +115,62 @@ struct PerformanceTelemetrySuppressedRollupTests {
         )
     }
 
+    /// The logs are read by filtering on a task, so a rollup attributed to the
+    /// wrong one sends the reader to the wrong place — and does it confidently.
+    /// Aggregating by event alone folded every task's samples into one bucket
+    /// and then stamped the whole flush with whichever sample closed the
+    /// window, so a burst in one task was reported against another.
+    @Test("A rollup is attributed to the task whose samples it totals")
+    func rollupsKeepTheirOwnTaskAttribution() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 10)
+        let busy = UUID()
+        let quiet = UUID()
+
+        for _ in 0..<10 {
+            _ = ledger.record(
+                event: "render_task_thread", taskID: busy,
+                milliseconds: 7, thresholdMilliseconds: 8, now: epoch)
+        }
+        _ = ledger.record(
+            event: "render_task_thread", taskID: quiet,
+            milliseconds: 1, thresholdMilliseconds: 8, now: epoch)
+
+        // The flush is tripped by the quiet task, which is exactly the shape
+        // that used to hand it the busy task's totals.
+        let rollups = ledger.record(
+            event: "render_task_thread", taskID: quiet,
+            milliseconds: 1, thresholdMilliseconds: 8, now: epoch.addingTimeInterval(11))
+
+        #expect(rollups.count == 2)
+        let heaviest = try #require(rollups.first)
+        #expect(heaviest.taskID == busy)
+        #expect(heaviest.count == 10)
+        let lighter = try #require(rollups.last)
+        #expect(lighter.taskID == quiet)
+        #expect(lighter.count == 2)
+    }
+
+    /// Attribution splits the buckets, so the unattributed call sites — the
+    /// `measure` overloads, which have no task in hand — must still land
+    /// together rather than fragmenting one per call.
+    @Test("Samples with no task share a single unattributed rollup")
+    func unattributedSamplesShareOneBucket() {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 10)
+
+        for _ in 0..<5 {
+            _ = ledger.record(
+                event: "build_thread_snapshot",
+                milliseconds: 2, thresholdMilliseconds: 8, now: epoch)
+        }
+        let rollups = ledger.record(
+            event: "build_thread_snapshot",
+            milliseconds: 2, thresholdMilliseconds: 8, now: epoch.addingTimeInterval(11))
+
+        #expect(rollups.count == 1)
+        #expect(rollups.first?.taskID == nil)
+        #expect(rollups.first?.count == 6)
+    }
+
     /// The ledger is constructed at process start but the window has to begin
     /// at the first suppressed sample. Anchoring it to construction would make
     /// the first rollup cover however long the app happened to sit idle, and

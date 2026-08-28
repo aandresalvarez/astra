@@ -169,14 +169,20 @@ public enum REDCapHostControlPolicy {
         operation: String,
         configuration: HostControlToolConfiguration
     ) throws -> ExportedFile {
-        // Task folder first: the working directory is usually a git checkout,
-        // and an export dropped there is one `git add .` from being committed.
-        let destination = configuration.taskFolder.isEmpty
-            ? configuration.currentDirectory
-            : configuration.taskFolder
-        let root = destination.isEmpty
-            ? FileManager.default.temporaryDirectory
-            : URL(fileURLWithPath: destination, isDirectory: true)
+        // The task folder or nothing. The two fallbacks that used to be here
+        // both put subject data somewhere nobody chose: the working directory
+        // is usually a git checkout, one `git add .` from committing PHI, and
+        // the temporary directory is world-readable and reaped by the system on
+        // a schedule ASTRA does not control. An export with nowhere sanctioned
+        // to go is a refusal — the caller already treats a write failure as
+        // "the rows stay at REDCap", which is the right outcome.
+        guard !configuration.taskFolder.isEmpty else {
+            throw REDCapRequestPolicyError(
+                "ASTRA did not project a task folder for this run, so there is nowhere to put "
+                    + "the export. Subject data will not be written to the working directory."
+            )
+        }
+        let root = URL(fileURLWithPath: configuration.taskFolder, isDirectory: true)
         let directory = root.appendingPathComponent(exportDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 

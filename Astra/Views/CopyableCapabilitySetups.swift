@@ -65,13 +65,24 @@ enum CopyableCapabilitySetupResolver {
     /// write lands in `Connector.recordCredentialSaveResult`, which stamps
     /// `updatedAt`, so the timestamp is the cheap stored scalar that tracks it.
     ///
+    /// `connectors` is *every* connector, not just the global ones, and the
+    /// distinction is the whole point. A workspace-owned connector is the
+    /// commonest thing a copy source is made of, and rotating or deleting one
+    /// stamps `Connector.updatedAt` — never `Workspace.updatedAt`. Keying on
+    /// workspaces plus global connectors therefore held still through exactly
+    /// the edits that matter: with a sheet open, a removed or superseded secret
+    /// stayed in the cached summary and could be copied back out of it. The
+    /// cost of over-including is a re-resolve after an edit to a connector no
+    /// source workspace uses, which is a sweep nobody sees; the cost of
+    /// under-including is reinstalling a credential the user just revoked.
+    ///
     /// `prefix` distinguishes callers that key on something else as well — the
     /// package being installed, say — so they do not need a second spelling of
     /// this logic to add it.
-    static func key(prefix: String = "", sources: [Workspace], globalConnectors: [Connector]) -> String {
+    static func key(prefix: String = "", sources: [Workspace], connectors: [Connector]) -> String {
         let workspaces = sources.map { "\($0.id.uuidString)@\($0.updatedAt.timeIntervalSince1970)" }
-        let connectors = globalConnectors.map { "\($0.id.uuidString)@\($0.updatedAt.timeIntervalSince1970)" }
-        let parts = prefix.isEmpty ? workspaces + connectors : [prefix] + workspaces + connectors
+        let revisions = connectors.map { "\($0.id.uuidString)@\($0.updatedAt.timeIntervalSince1970)" }
+        let parts = prefix.isEmpty ? workspaces + revisions : [prefix] + workspaces + revisions
         return parts.joined(separator: "|")
     }
 
@@ -88,9 +99,13 @@ enum CopyableCapabilitySetupResolver {
         for package: PluginPackage,
         excluding excludedWorkspaceID: UUID,
         sources: [Workspace],
-        globalConnectors: [Connector],
+        connectors: [Connector],
         copier: CapabilitySetupCopier = CapabilitySetupCopier()
     ) -> [CopyableCapabilityInstallSource] {
+        // Narrowed here rather than by the caller's query, so that the caller
+        // observes every connector — which is what `key` needs — while the
+        // sweep still sees only the globals it is defined over.
+        let globalConnectors = connectors.filter(\.isGlobal)
         // This sweep is the app's heaviest batch of credential reads, so it is
         // also where an unopenable keychain shows up first. Drain the pending
         // failure here as well as at startup: a keychain that breaks *while the
@@ -125,9 +140,12 @@ enum CopyableCapabilitySetupResolver {
     @MainActor
     static func resolve(
         sources: [Workspace],
-        globalConnectors: [Connector],
+        connectors: [Connector],
         copier: CapabilitySetupCopier = CapabilitySetupCopier()
     ) -> [CopyableCapabilitySetup] {
+        // See `installSources`: the caller observes all connectors, the sweep
+        // takes the globals.
+        let globalConnectors = connectors.filter(\.isGlobal)
         defer { AstraSecureKeychainStore.logPendingKeychainFailure(scope: "workspace_setup") }
         return sources.compactMap { workspace in
             let summary = copier.copySetup(from: workspace, globalConnectors: globalConnectors)

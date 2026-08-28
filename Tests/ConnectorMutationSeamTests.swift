@@ -86,4 +86,44 @@ struct ConnectorMutationSeamTests {
         #expect(!ConnectorMutationOperations.supportsMutation(serviceType: "github"))
         #expect(!ConnectorMutationOperations.supportsMutation(serviceType: ""))
     }
+
+    /// The ceiling has to bind on what is allocated, not on what is kept.
+    /// `URLSession.data(for:)` returns only once the whole body is in memory, so
+    /// trimming afterwards left a connector answering a write with a gigabyte —
+    /// a misconfigured proxy, an error page from something that is not the
+    /// service — free to pull all of it in first.
+    @Test("A response larger than the ceiling stops at the ceiling")
+    func oversizedResponsesStopAtTheCeiling() async throws {
+        let limit = 4 * 1024
+        let source = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-oversized-\(UUID().uuidString).json")
+        try Data(repeating: UInt8(ascii: "x"), count: limit * 8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let (stream, _) = try await session.bytes(from: source)
+        let body = try await URLSessionConnectorMutationSender.read(stream, limit: limit)
+
+        #expect(body.count == limit)
+    }
+
+    /// The ordinary case, and the one the cap must not damage: a receipt is an
+    /// issue key and a URL, and it has to come back whole.
+    @Test("A response under the ceiling is returned intact")
+    func ordinaryResponsesAreReturnedWhole() async throws {
+        let receipt = #"{"id":"10042","key":"STAR-1","self":"https://jira.test/rest/api/2/issue/10042"}"#
+        let source = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-receipt-\(UUID().uuidString).json")
+        try Data(receipt.utf8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let (stream, _) = try await session.bytes(from: source)
+        let body = try await URLSessionConnectorMutationSender.read(
+            stream, limit: URLSessionConnectorMutationSender.responseByteLimit)
+
+        #expect(String(data: body, encoding: .utf8) == receipt)
+    }
 }

@@ -29,20 +29,46 @@ public enum RunSecretRedaction {
     /// ordinary text does not collide with the head of a real credential.
     public static let minimumFragmentLength = 8
 
+    /// Every environment-name pattern that can put a value in the Keychain.
+    ///
+    /// The single owner of that list. It used to be copied into `Skill`, into
+    /// the connectors UI, and — narrower — into the predicate below, and the
+    /// narrowing is what left `SSH_PRIVATE_KEY` and `CLIENT_AUTH` readable: a
+    /// name matching bare `KEY` or `AUTH` was loaded from the Keychain and
+    /// projected into the agent environment, but never redacted from a
+    /// transcript. Anything storage treats as a secret has to be redactable,
+    /// so the two predicates now read from one list instead of agreeing by
+    /// hand.
+    public static let keychainBackedKeyPatterns = [
+        "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"
+    ]
+
+    /// The names that match a pattern above and still are not credentials.
+    ///
+    /// A REDCap or Jira `PROJECT_KEY` is a short project name that runs
+    /// through ordinary prose, and a `KEY_ID` names the public half of a pair.
+    /// Redacting those shreds a transcript without protecting anything, which
+    /// is the failure mode in the other direction. This is the one place the
+    /// storage and redaction predicates are allowed to disagree, so the
+    /// exceptions are enumerated here rather than inferred from shape.
+    ///
+    /// `SSH_AUTH_SOCK` is here because the redaction set is now built from the
+    /// environment ASTRA was *launched* with, not just from the connector
+    /// overlay, and macOS puts an agent socket path in that name on every
+    /// login session. Its value is `/private/tmp/com.apple.launchd.…`, and
+    /// fragment redaction matches on eight bytes, so registering it would
+    /// replace `/private` everywhere it appears — a transcript full of
+    /// `[redacted]` file paths, protecting a socket path that is not a secret.
+    public static let nonCredentialKeyNames = ["PROJECT_KEY", "KEY_ID", "SSH_AUTH_SOCK"]
+
     /// Whether an environment variable's *name* says it holds a credential.
     ///
     /// Keyed on the name rather than the value because the projection also
-    /// carries base URLs, project IDs, and file paths — redacting those would
-    /// shred transcripts without protecting anything. Mirrors the broker's
-    /// `isSecretKey`.
+    /// carries base URLs, project IDs, and file paths.
     public static func isSecretKey(_ key: String) -> Bool {
         let upper = key.uppercased()
-        return upper.contains("TOKEN")
-            || upper.contains("SECRET")
-            || upper.contains("PASSWORD")
-            || upper.contains("API_KEY")
-            || upper.contains("APIKEY")
-            || upper.contains("CREDENTIAL")
+        guard !nonCredentialKeyNames.contains(where: { upper.contains($0) }) else { return false }
+        return keychainBackedKeyPatterns.contains { upper.contains($0) }
     }
 
     /// The credential values in a resolved launch environment.

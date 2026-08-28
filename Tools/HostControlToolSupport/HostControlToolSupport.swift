@@ -12,8 +12,13 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     public var allowedSSHAliases: [String]
     public var allowedTools: Set<String>
     public var currentDirectory: String
-    /// Where a brokered tool writes output it must not return inline. Falls
-    /// back to `currentDirectory` when the app did not project one.
+    /// Where a brokered tool writes output it must not return inline.
+    ///
+    /// No fallback. It used to fall back to `currentDirectory`, which is
+    /// normally the workspace the agent is working in — usually a git checkout,
+    /// so a REDCap export landing there was one `git add .` from committing
+    /// subject data. A tool that has nowhere sanctioned to put its output must
+    /// fail rather than choose somewhere.
     public var taskFolder: String
     public var diagnosticsHostPath: String
     public var taskID: String

@@ -276,13 +276,46 @@ struct CopyableCapabilitySetupKeyTests {
         context.insert(connector)
 
         let before = CopyableCapabilitySetupResolver.key(
-            sources: [workspace], globalConnectors: [connector])
+            sources: [workspace], connectors: [connector])
         // What a credential write does: `recordCredentialSaveResult` stamps it.
         connector.updatedAt = connector.updatedAt.addingTimeInterval(60)
         let after = CopyableCapabilitySetupResolver.key(
-            sources: [workspace], globalConnectors: [connector])
+            sources: [workspace], connectors: [connector])
 
         #expect(before != after)
+    }
+
+    /// The case the key used to be blind to, and the more dangerous one: most
+    /// copy sources are made of workspace-owned connectors, and rotating or
+    /// revoking one stamps `Connector.updatedAt` while leaving
+    /// `Workspace.updatedAt` exactly where it was. A key built from workspaces
+    /// plus global connectors therefore held still, the open sheet kept its
+    /// cached summary, and copying from it reinstalled the superseded secret.
+    @Test("Editing a workspace-owned connector moves the key too")
+    func workspaceOwnedConnectorTimestampMovesTheKey() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Lab", primaryPath: "/tmp/lab")
+        let connector = Connector(
+            name: "REDCap", serviceType: "redcap", icon: "tablecells",
+            baseURL: "https://redcap.stanford.edu/api/", authMethod: "api_key")
+        connector.isGlobal = false
+        context.insert(workspace)
+        context.insert(connector)
+        workspace.connectors = [connector]
+        let workspaceStamp = workspace.updatedAt
+
+        let before = CopyableCapabilitySetupResolver.key(
+            sources: [workspace], connectors: [connector])
+        connector.updatedAt = connector.updatedAt.addingTimeInterval(60)
+        let after = CopyableCapabilitySetupResolver.key(
+            sources: [workspace], connectors: [connector])
+
+        #expect(before != after)
+        #expect(
+            workspace.updatedAt == workspaceStamp,
+            "The workspace row is unchanged, which is why it cannot be the only thing keyed on"
+        )
     }
 
     @Test("The key is stable when nothing the summary reads has changed")
@@ -297,8 +330,8 @@ struct CopyableCapabilitySetupKeyTests {
         context.insert(connector)
 
         #expect(
-            CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [connector])
-                == CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [connector])
+            CopyableCapabilitySetupResolver.key(sources: [workspace], connectors: [connector])
+                == CopyableCapabilitySetupResolver.key(sources: [workspace], connectors: [connector])
         )
     }
 
@@ -340,7 +373,7 @@ struct CopyableCapabilitySetupKeyTests {
             for: makeRedcapPackage(),
             excluding: destination.id,
             sources: [source, destination, empty],
-            globalConnectors: [global],
+            connectors: [global],
             copier: CapabilitySetupCopier(secretStore: store)
         )
 
@@ -357,9 +390,9 @@ struct CopyableCapabilitySetupKeyTests {
         let workspace = Workspace(name: "Lab", primaryPath: "/tmp/lab")
         context.insert(workspace)
 
-        let plain = CopyableCapabilitySetupResolver.key(sources: [workspace], globalConnectors: [])
+        let plain = CopyableCapabilitySetupResolver.key(sources: [workspace], connectors: [])
         let prefixed = CopyableCapabilitySetupResolver.key(
-            prefix: "redcap-workflow", sources: [workspace], globalConnectors: [])
+            prefix: "redcap-workflow", sources: [workspace], connectors: [])
 
         #expect(plain != prefixed)
         #expect(prefixed.hasPrefix("redcap-workflow|"))

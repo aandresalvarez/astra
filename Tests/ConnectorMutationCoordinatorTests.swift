@@ -128,6 +128,64 @@ struct ConnectorMutationCoordinatorTests {
         #expect(sender.requests.isEmpty)
     }
 
+    /// Every other path that hands out a connector credential — install,
+    /// import, share, workspace config — runs `credentialTransportViolation`
+    /// first. The write path had grown up without it, so an `https://`
+    /// connector re-pointed at plain `http://` still had its Basic header built
+    /// and sent to whatever host the new URL named.
+    @Test("A connector on unprotected HTTP is refused before its credential is used")
+    func insecureTransportIsRefusedAtSend() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender()
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        fixture.connector.baseURL = "http://jira.commit.test"
+
+        await #expect(
+            throws: ConnectorMutationCoordinatorError.insecureTransport(
+                alias: "Jira", url: "http://jira.commit.test"
+            )
+        ) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+        #expect(sender.requests.isEmpty, "The credential must not reach the wire at all")
+    }
+
+    /// And refused before the user is ever asked, so the sheet cannot show an
+    /// approval button for a request ASTRA would not make.
+    @Test("A connector on unprotected HTTP is refused at review")
+    func insecureTransportIsRefusedAtReview() throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let coordinator = fixture.coordinator(sender: RecordingSender())
+        fixture.connector.baseURL = "http://jira.commit.test"
+
+        #expect(throws: ConnectorMutationCoordinatorError.insecureTransport(
+            alias: "Jira", url: "http://jira.commit.test"
+        )) {
+            try coordinator.prepare(task: fixture.task, pending: pending)
+        }
+    }
+
+    /// A connector pointed at loopback is a local test instance and the
+    /// credential never leaves the machine. Refusing it here would diverge from
+    /// every other caller of the same policy.
+    @Test("Loopback HTTP is still allowed to commit")
+    func loopbackTransportStillCommits() async throws {
+        let fixture = try Fixture(baseURL: "http://127.0.0.1:8080")
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(statusCode: 201, body: #"{"key":"STAR-1"}"#)
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+        _ = try await coordinator.send(task: fixture.task, proposal: proposal)
+
+        #expect(sender.requests.count == 1)
+    }
+
     @Test("A connector that is no longer the staged service is never used")
     func connectorServiceMismatchIsNeverSent() async throws {
         let fixture = try Fixture()
@@ -305,7 +363,7 @@ struct ConnectorMutationCoordinatorTests {
         let connector: Connector
         let workspaceRoot: URL
 
-        init() throws {
+        init(baseURL: String = "https://jira.commit.test") throws {
             let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
             container = try ModelContainer(
                 for: ASTRASchema.current,
@@ -323,7 +381,7 @@ struct ConnectorMutationCoordinatorTests {
             connector = Connector(
                 name: "Jira",
                 serviceType: "jira",
-                baseURL: "https://jira.commit.test",
+                baseURL: baseURL,
                 authMethod: "basic"
             )
             connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
