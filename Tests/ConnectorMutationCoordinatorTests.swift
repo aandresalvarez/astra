@@ -454,6 +454,183 @@ struct ConnectorMutationCoordinatorTests {
         #expect(!stagedBytes.contains(Fixture.apiToken))
     }
 
+    // MARK: - Ambiguous refusals
+
+    /// A `408` is reported by whatever gave up waiting, not by the service that
+    /// would have done the work. The gateway may well have forwarded the POST
+    /// and Jira may well have filed the ticket, so re-arming Send here creates
+    /// exactly the duplicate the indeterminate path exists to prevent.
+    @Test("A request-timeout status is quarantined even though it is a 4xx")
+    func requestTimeoutIsQuarantined() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 408,
+                body: #"{"errorMessages":["Request timed out at the gateway"],"errors":{}}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        #expect(error?.isTerminal == true)
+        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.indeterminate })
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+        // The claim stays, so a relaunch cannot re-send what may already exist.
+        #expect(FileManager.default.fileExists(atPath: pending.stagedPayloadPath + ".sent"))
+    }
+
+    /// The boundary the fix turns on: `400` still means the provider is on the
+    /// record that it did not act, so it must stay retryable. Asserted next to
+    /// the `408` case so a future simplification back to `(400...499)` breaks
+    /// one of the two.
+    @Test("A definite client refusal is still retryable")
+    func clientRefusalStaysRetryable() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 400,
+                body: #"{"errorMessages":["Issue type is required"],"errors":{}}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        #expect(error?.isTerminal == false)
+        #expect(!ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: pending.stagedPayloadPath + ".sent"))
+    }
+
+    @Test("Status classification names only the timeout-shaped 4xx as ambiguous")
+    func definiteRefusalClassification() {
+        for code in [400, 401, 403, 404, 409, 422, 429] {
+            #expect(ConnectorMutationCoordinator.isDefiniteRefusal(code), "\(code) should be definite")
+        }
+        for code in [408, 425, 500, 502, 503, 504, 307, 308, 200] {
+            #expect(!ConnectorMutationCoordinator.isDefiniteRefusal(code), "\(code) should be ambiguous")
+        }
+    }
+
+    // MARK: - Reflected credentials
+
+    /// A brokered credential is deliberately never a run secret — that is what
+    /// the broker is for — so nothing downstream of here can recognise it. When
+    /// a provider or a proxy in front of it quotes the submitted `Authorization`
+    /// value back in an error body, this message is the one string that carries
+    /// the credential out of containment and into the store.
+    @Test("A provider that echoes the credential does not get it persisted")
+    func reflectedCredentialIsNotPersisted() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let header = "Basic " + Data("user@example.com:\(Fixture.apiToken)".utf8).base64EncodedString()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 401,
+                body: #"{"errorMessages":["Rejected credential \#(header) for user@example.com"],"errors":{}}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        let transcript = fixture.task.events.map(\.payload).joined(separator: "\n")
+        #expect(!transcript.contains(Fixture.apiToken))
+        #expect(!transcript.contains(header))
+        // Scrubbed, not discarded: the failure event exists so the user can see
+        // why the send did not work, and "401" with no words is not that.
+        #expect(transcript.contains("Rejected credential"))
+    }
+
+    /// Same route, different persistence: the indeterminate path writes the
+    /// message to the audit log as well as to a task event, so it needs the same
+    /// scrub and used to have neither.
+    @Test("An echoed credential is scrubbed on the quarantine path too")
+    func reflectedCredentialIsNotPersistedWhenQuarantined() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let header = "Basic " + Data("user@example.com:\(Fixture.apiToken)".utf8).base64EncodedString()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 502,
+                body: #"{"errorMessages":["upstream rejected \#(header)"],"errors":{}}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        let transcript = fixture.task.events.map(\.payload).joined(separator: "\n")
+        #expect(!transcript.contains(Fixture.apiToken))
+        #expect(!transcript.contains(header))
+        #expect(error?.localizedDescription.contains(Fixture.apiToken) != true)
+    }
+
+    // MARK: - Unreadable proposals
+
+    /// `prepare` used to fail here and record nothing, so the pending event
+    /// survived and the dock offered the same broken review forever — sitting
+    /// above the correction and advisory rows the user could still act on.
+    @Test("A proposal that cannot be opened can be retired")
+    func unreadableProposalCanBeQuarantined() throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        try fixture.recordStagedEvent(pending)
+        try FileManager.default.removeItem(atPath: pending.stagedPayloadPath)
+
+        let coordinator = fixture.coordinator()
+        #expect(throws: (any Error).self) {
+            try coordinator.prepare(task: fixture.task, pending: pending)
+        }
+        #expect(!ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+
+        try coordinator.quarantine(
+            task: fixture.task,
+            pending: pending,
+            reason: "Staged mutation could not be read"
+        )
+
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.quarantined })
+        // Distinct from a decline on purpose: one says the user read it and said
+        // no, the other says ASTRA lost it, and only the second is a bug report.
+        #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.declined })
+    }
+
+    /// Retiring one broken proposal must not retire a healthy sibling — the
+    /// resolution is keyed by staged path for the same reason approval is.
+    @Test("Quarantining one proposal leaves the others pending")
+    func quarantineIsScopedToItsProposal() throws {
+        let fixture = try Fixture()
+        let first = try fixture.stageProposal()
+        let second = try fixture.stageProposal()
+        try fixture.recordStagedEvent(first)
+        try fixture.recordStagedEvent(second)
+
+        try fixture.coordinator().quarantine(task: fixture.task, pending: first, reason: "gone")
+
+        let stillPending = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
+        #expect(stillPending.map(\.stagedPayloadPath) == [second.stagedPayloadPath])
+    }
+
     // MARK: - Fixture
 
     @MainActor

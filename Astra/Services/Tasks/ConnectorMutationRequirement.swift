@@ -14,6 +14,15 @@ enum ConnectorMutationEventTypes {
     /// sendable, and this must not.
     static let indeterminate = "connector.mutation.indeterminate"
     static let declined = "connector.mutation.declined"
+    /// The user retired a proposal ASTRA could not open at all.
+    ///
+    /// Not `declined`, which means the user read the payload and said no. This
+    /// one was never readable — the staged file is gone, edited, or already
+    /// claimed by a send whose outcome was never recorded — so there is nothing
+    /// to have an opinion about. The distinction is worth an event type because
+    /// it is the difference between "the user rejected this ticket" and "this
+    /// proposal was lost", and only the second is a bug report.
+    static let quarantined = "connector.mutation.quarantined"
 }
 
 /// The durable record that the agent composed a mutation and ASTRA has not yet
@@ -116,7 +125,8 @@ enum ConnectorMutationRequirementResolver {
                 }
             case ConnectorMutationEventTypes.receipt,
                  ConnectorMutationEventTypes.indeterminate,
-                 ConnectorMutationEventTypes.declined:
+                 ConnectorMutationEventTypes.declined,
+                 ConnectorMutationEventTypes.quarantined:
                 // Resolution is keyed by the staged file for the same reason
                 // approval is: a second proposal in the same task is a different
                 // thing even when it says the same words, and sending or

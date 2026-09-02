@@ -195,9 +195,15 @@ public enum RunSecretRedactionScope {
     /// It is a ceiling on *finished* runs only. See `beginRun(taskID:)`.
     public static let retainedTaskLimit = 16
 
-    /// Distinct values retained per task. Registration accumulates rather than
-    /// replaces (see `register`), so this is what stops a task that relaunches
-    /// a hundred times with rotating credentials from growing without bound.
+    /// Distinct values retained per task **once its runs have finished**.
+    /// Registration accumulates rather than replaces (see `register`), so this
+    /// is what stops a task that relaunches a hundred times with rotating
+    /// credentials from growing without bound.
+    ///
+    /// It is not applied while a run is live. A value this cap drops is a value
+    /// the subprocess still holds and can still echo, and the echo would be
+    /// persisted in cleartext — so trading redaction coverage for a bounded
+    /// dictionary is the wrong way round. See `register`.
     public static let retainedSecretsPerTask = 64
 
     private struct State {
@@ -275,22 +281,73 @@ public enum RunSecretRedactionScope {
     /// narrower one must not be able to shrink the set and unredact a value an
     /// earlier one knew about. A rotated credential lingering in the set costs
     /// nothing: it was a real secret, and redacting it stays correct.
+    /// The per-task cap is **not** applied while the task has a live run.
+    ///
+    /// It used to be applied unconditionally, over a list that put the newest
+    /// values first, and both halves of that leaked. A launch environment
+    /// holding more than `retainedSecretsPerTask` distinct credentials had the
+    /// remainder silently dropped even though the subprocess received all of
+    /// them; and because new values displaced old ones, a second launch for the
+    /// same task could push a *still-live* earlier run's credentials out of the
+    /// set. Either way the agent echoes a value nothing recognises, and
+    /// `TaskEvent` and `TaskRun` persist it in cleartext — the exact outcome
+    /// this type exists to prevent, reached by an optimisation for memory.
+    ///
+    /// So while a run is active the set grows to hold everything that run was
+    /// exposed to. It is bounded in practice by the size of the launch
+    /// environment, and it is collected the moment the run ends: `endRun` makes
+    /// the task evictable again and the next registration trims it back to the
+    /// cap. A few hundred short strings for the length of a run is the cheaper
+    /// half of this trade by a wide margin.
     public static func register(taskID: UUID, secrets: [String]) {
         let usable = secrets
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.count >= RunSecretRedaction.minimumSecretLength }
         guard !usable.isEmpty else { return }
         storage.withLock { state in
-            var merged = usable
-            merged.append(contentsOf: state.secretsByTaskID[taskID] ?? [])
+            // History first, this registration last. The order decides who
+            // loses when the cap applies, and it used to be the other way
+            // round — which is how a second launch's values displaced a
+            // still-running first launch's.
+            var merged = state.secretsByTaskID[taskID] ?? []
+            merged.append(contentsOf: usable)
             var seen = Set<String>()
-            state.secretsByTaskID[taskID] = merged
-                .filter { seen.insert($0).inserted }
-                .prefix(retainedSecretsPerTask)
-                .map { $0 }
+            let distinct = merged.filter { seen.insert($0).inserted }
+            state.secretsByTaskID[taskID] = Self.retained(
+                distinct,
+                registering: usable,
+                isActive: state.activeRunDepthByTaskID[taskID] != nil
+            )
             state.touch(taskID)
             state.evictInactiveOverflow(limit: retainedTaskLimit)
         }
+    }
+
+    /// What survives the per-task cap.
+    ///
+    /// Two things are never dropped, and between them they are the whole fix:
+    ///
+    /// - **Anything, while a run is active.** A live process holds these and can
+    ///   echo any of them.
+    /// - **The values being registered right now**, active or not. This call is
+    ///   describing an environment that is about to be handed to a subprocess;
+    ///   a cap that discards part of it is deciding that some of what the agent
+    ///   receives will be persisted in the clear. `register` is called during
+    ///   launch assembly, so it does not always run inside `beginRun`/`endRun`
+    ///   and cannot lean on the active check alone.
+    ///
+    /// Only accumulated history is trimmed, which is what the cap was for: a
+    /// task relaunching a hundred times with rotating credentials.
+    private static func retained(
+        _ distinct: [String],
+        registering incoming: [String],
+        isActive: Bool
+    ) -> [String] {
+        guard !isActive, distinct.count > retainedSecretsPerTask else { return distinct }
+        let arriving = Set(incoming)
+        let kept = distinct.filter { arriving.contains($0) }
+        let history = distinct.filter { !arriving.contains($0) }
+        return kept + history.suffix(max(0, retainedSecretsPerTask - kept.count))
     }
 
     /// Pins a task's scope for as long as its agent process is alive.

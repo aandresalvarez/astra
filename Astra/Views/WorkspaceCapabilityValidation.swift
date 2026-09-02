@@ -173,18 +173,28 @@ enum WorkspaceCapabilityConnectorValidation {
         }
     }
 
+    /// - Parameter traceID: the wizard attempt this test belongs to.
+    ///
+    ///   Threaded in rather than minted here. The surrounding flow logs
+    ///   `validationStarted` and `validationFinished` under one trace ID, and
+    ///   this used to generate a second one for the connector's own audit
+    ///   events — so the connector result and the wizard attempt that asked for
+    ///   it shared no field, and two concurrent tests for the same package could
+    ///   not be told apart at all. A trace ID that does not span the thing being
+    ///   traced is decoration.
     @MainActor
     static func validate(
         packageID: String,
         connector: Connector,
         credentials: [String: String],
-        source: String
+        source: String,
+        traceID: String
     ) async -> WorkspaceCapabilityValidationState {
         let result = await connector.testConnection(
             store: WorkspaceSetupValidationSecretStore(credentials: credentials),
             source: source,
             packageID: packageID,
-            traceID: AuditTrace.make("workspace-capability-validate")
+            traceID: traceID
         )
         return result.0 ? .ready(result.1) : .failed(result.1)
     }

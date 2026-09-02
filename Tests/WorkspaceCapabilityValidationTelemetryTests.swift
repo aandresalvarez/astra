@@ -97,3 +97,78 @@ struct WorkspaceCapabilityValidationTelemetryTests {
             packageID: "github-workflow", configuration: configuration).isEmpty)
     }
 }
+
+/// A trace ID that stops at the edge of the thing being traced is decoration.
+///
+/// The wizard logs `validationStarted` and `validationFinished` under one ID,
+/// and the connector's own audit events used to carry a second one minted
+/// inside `validate` — so the connector's `connector_tested` lines shared no
+/// field with the attempt that asked for them, and two tests of the same
+/// package running at once could not be told apart at all.
+///
+/// Asserted against the source because the only observer of the value passed
+/// to `Connector.testConnection` is the audit log, and the logger is a
+/// process-wide seam this suite cannot replace without reaching into every
+/// other suite running beside it.
+@Suite("Workspace capability validation trace continuity")
+struct WorkspaceCapabilityValidationTraceTests {
+    @Test("Connector validation is traced by the attempt, not by itself")
+    func validationDoesNotMintItsOwnTraceID() throws {
+        let text = try source("Astra/Views/WorkspaceCapabilityValidation.swift")
+        let body = try #require(text.range(of: "enum WorkspaceCapabilityConnectorValidation"))
+
+        #expect(
+            !text[body.lowerBound...].contains("AuditTrace.make("),
+            """
+            WorkspaceCapabilityConnectorValidation mints a trace ID. It must take the \
+            wizard's, or the connector's audit events detach from the attempt that \
+            caused them.
+            """
+        )
+        #expect(text.contains("traceID: String"))
+        #expect(text.contains("traceID: traceID"))
+    }
+
+    /// The other half: the caller has to hand over the same ID it logged. A
+    /// threaded parameter filled from a fresh `makeTraceID()` at the call site
+    /// would satisfy the test above and reproduce the bug exactly.
+    @Test("The wizard passes the trace ID it logged under")
+    func theWizardPassesItsOwnTraceID() throws {
+        let text = try source("Astra/Views/ContentView.swift")
+        let calls = text.components(separatedBy: "WorkspaceCapabilityConnectorValidation.validate(")
+            .dropFirst()
+
+        #expect(!calls.isEmpty, "The wizard no longer validates connectors through the shared seam.")
+        for call in calls {
+            #expect(
+                Self.argumentList(after: call).contains("traceID: traceID"),
+                "A connector validation is started under a trace ID the wizard did not log."
+            )
+        }
+        #expect(text.contains("runCapabilityValidation(for: packageID, traceID: traceID)"))
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(
+            contentsOf: TestRepositoryRoot.resolve().appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
+    /// The text up to the paren that closes the call. Nested calls — the
+    /// connector is built inline in both arms — mean the first `)` is not the
+    /// end of the argument list.
+    private static func argumentList(after openParen: String) -> String {
+        var depth = 1
+        var arguments = ""
+        for character in openParen {
+            if character == "(" { depth += 1 }
+            if character == ")" {
+                depth -= 1
+                if depth == 0 { break }
+            }
+            arguments.append(character)
+        }
+        return arguments
+    }
+}

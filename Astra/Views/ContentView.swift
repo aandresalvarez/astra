@@ -4489,7 +4489,7 @@ struct WorkspaceSetupForm: View {
         let traceID = WorkspaceCapabilityValidationTelemetry.makeTraceID()
         WorkspaceCapabilityValidationTelemetry.started(packageID: packageID, traceID: traceID)
 
-        let result = await runCapabilityValidation(for: packageID)
+        let result = await runCapabilityValidation(for: packageID, traceID: traceID)
         guard capabilityValidationSignature(for: packageID) == signature else {
             capabilityValidationStates[packageID] = .unchecked
             refreshValidationIssues()
@@ -4514,7 +4514,10 @@ struct WorkspaceSetupForm: View {
         )
     }
 
-    private func runCapabilityValidation(for packageID: String) async -> WorkspaceCapabilityValidationState {
+    private func runCapabilityValidation(
+        for packageID: String,
+        traceID: String
+    ) async -> WorkspaceCapabilityValidationState {
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
             await probeCapabilityPrerequisites(for: packageID, forceRefresh: true)
@@ -4534,7 +4537,8 @@ struct WorkspaceSetupForm: View {
                 connector: WorkspaceCapabilityConnectorValidation
                     .jiraConnector(configuration: draft.capabilityConfiguration),
                 credentials: validationCredentials(for: packageID),
-                source: mode.validationSource
+                source: mode.validationSource,
+                traceID: traceID
             )
         case OnboardingCapabilitySetup.redcapPackageID:
             return await WorkspaceCapabilityConnectorValidation.validate(
@@ -4542,7 +4546,8 @@ struct WorkspaceSetupForm: View {
                 connector: WorkspaceCapabilityConnectorValidation
                     .redcapConnector(configuration: draft.capabilityConfiguration),
                 credentials: validationCredentials(for: packageID),
-                source: mode.validationSource
+                source: mode.validationSource,
+                traceID: traceID
             )
         default:
             return .ready("No connection test is required for this capability.")

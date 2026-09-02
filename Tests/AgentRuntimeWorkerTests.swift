@@ -163,6 +163,46 @@ struct ProviderLaunchCapabilityScopeTests {
         #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
     }
 
+    /// A staged proposal exists on disk the moment the broker returns, but the
+    /// pending event that makes it reviewable lives in the `ModelContext` until
+    /// something saves. After discovery the worker goes on to deliverable
+    /// verification, tests, an AI check, baseline verification and a handoff
+    /// scan — minutes of `await`s. An exit anywhere in there used to lose the
+    /// event while leaving the write behind, and nothing rescans the staging
+    /// directory at launch: the proposal simply never surfaced.
+    @Test("Discovered connector mutations are persisted before the worker awaits again")
+    func discoveredConnectorMutationsArePersistedBeforeTheNextAwait() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeWorker.swift"),
+            encoding: .utf8
+        )
+
+        let discovery = try #require(
+            workerSource.range(of: "ConnectorMutationDiscovery.recordStagedMutations(")
+        )
+        let afterDiscovery = workerSource[discovery.upperBound...]
+        let save = try #require(
+            afterDiscovery.range(of: "WorkspacePersistenceCoordinator.saveAndAutoExport("),
+            "Discovery no longer persists its events; they are lost on any later exit."
+        )
+        if let nextAwait = afterDiscovery.range(of: "await ") {
+            #expect(
+                save.lowerBound < nextAwait.lowerBound,
+                "The worker awaits again before saving the proposals it just discovered."
+            )
+        }
+        // A refused save is a proposal the user will never be offered, which is
+        // exactly the condition that has to be reportable afterwards.
+        #expect(sourceContains(workerSource, "connector_mutation_discovery_unpersisted"))
+    }
+
     @Test("Docker image preflight runs before credential projection and provider launch")
     func dockerImagePreflightRunsBeforeCredentialProjectionAndProviderLaunch() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)

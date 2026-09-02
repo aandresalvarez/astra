@@ -493,19 +493,31 @@ final class ConnectorMutationCoordinator {
                 proposal: current,
                 url: request.url,
                 statusCode: 0,
-                message: error.localizedDescription
+                message: ConnectorMutationSecretRedaction.redacted(
+                    error.localizedDescription,
+                    authorizationHeader: request.authorizationHeader
+                )
             )
         }
 
         if !(200...299).contains(response.statusCode) {
-            let message = Self.providerMessage(response.body)
-            guard (400...499).contains(response.statusCode) else {
-                // Anything that is neither success nor a client refusal is
-                // ambiguous by nature. A `503` is usually the gateway in front
-                // of Jira, and a gateway can time out on a request Jira has
-                // already committed; a `3xx` ASTRA did not follow says even
-                // less. Only the `4xx` range is a provider stating, on the
-                // record, that it did not act.
+            // Scrubbed before it is looked at, never after. Everything below
+            // either persists this string in a task event or writes it to the
+            // audit log, and the connector credential is broker-held —
+            // deliberately outside the run redaction scope — so the persistence
+            // funnel cannot catch it on the way past. A provider or proxy that
+            // reflects the submitted `Authorization` value would otherwise put
+            // the credential in the store in cleartext.
+            let message = ConnectorMutationSecretRedaction.redacted(
+                Self.providerMessage(response.body),
+                authorizationHeader: request.authorizationHeader
+            )
+            guard Self.isDefiniteRefusal(response.statusCode) else {
+                // Anything that is neither success nor a definite client
+                // refusal is ambiguous by nature. A `503` is usually the gateway
+                // in front of Jira, and a gateway can time out on a request Jira
+                // has already committed; a `3xx` ASTRA refused to follow says
+                // even less.
                 throw indeterminate(
                     task: task,
                     staged: staged,
@@ -717,6 +729,27 @@ final class ConnectorMutationCoordinator {
     }
 
     /// Trims a provider error body to something a person can read in a sheet.
+    /// Whether this status is the provider stating, on the record, that it did
+    /// not act — the only thing that may re-arm Send.
+    ///
+    /// Nearly all of `4xx` qualifies: a `400` is a malformed field, a `403` is
+    /// permission, a `404` is a project that does not exist, and none of them
+    /// leave a ticket behind. The timeout-shaped ones do not qualify, because
+    /// they are reported by whatever gave up waiting rather than by the service
+    /// that would have done the work:
+    ///
+    /// - `408` is a gateway saying the exchange took too long. It may have
+    ///   forwarded the `POST` to Jira first, and Jira may have completed it.
+    /// - `425` says the request may have been replayed, which is the same
+    ///   ambiguity stated from the other side.
+    ///
+    /// Retrying either is how the duplicate the indeterminate path exists to
+    /// prevent gets created anyway.
+    static func isDefiniteRefusal(_ statusCode: Int) -> Bool {
+        guard (400...499).contains(statusCode) else { return false }
+        return statusCode != 408 && statusCode != 425
+    }
+
     private static func providerMessage(_ body: String) -> String {
         if let object = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any] {
             if let messages = object["errorMessages"] as? [String], !messages.isEmpty {
@@ -851,6 +884,59 @@ final class ConnectorMutationCoordinator {
             task: task,
             stagedPath: proposal.stagedPayloadPath,
             operation: "connector_mutation_declined"
+        )
+    }
+
+    /// Retires a proposal that could not be opened for review.
+    ///
+    /// Without this the dock had a state it could not leave. `prepare` fails on
+    /// a staged file that is missing, edited, or already claimed by a send whose
+    /// outcome was never recorded, and it recorded nothing — so the pending
+    /// event survived, the dock offered the same broken review again on the next
+    /// pass, and because a connector-mutation row outranks corrections and
+    /// advisories it sat on top of the rows the user could still act on. An
+    /// alert with only "OK" is not an exit.
+    ///
+    /// Takes the pending record rather than a `ConnectorMutationProposal`,
+    /// because the reason this is being called is that no proposal could be
+    /// built. The digest recorded is the one the proposal was staged with, which
+    /// is what makes the event line up with the `staged` event it retires — not
+    /// a digest of whatever is on disk now, which may be exactly the thing that
+    /// went wrong.
+    ///
+    /// The staged file is left alone, like `decline`. ASTRA could not read it,
+    /// so deleting it would destroy the evidence for a report that ASTRA lost a
+    /// proposal.
+    func quarantine(
+        task: AgentTask,
+        pending: TaskStagedConnectorMutation,
+        reason: String
+    ) throws {
+        try record(
+            ConnectorMutationQuarantine(
+                stagedPayloadPath: pending.stagedPayloadPath,
+                requestDigest: pending.requestDigest,
+                serviceType: pending.serviceType,
+                operation: pending.operation,
+                target: pending.target,
+                reason: reason
+            ),
+            type: ConnectorMutationEventTypes.quarantined,
+            task: task,
+            stagedPath: pending.stagedPayloadPath,
+            operation: "connector_mutation_quarantined"
+        )
+        AuditLoggingSeam.required.audit(
+            .dataStoreRecovered,
+            category: "Tasks",
+            fields: [
+                "operation": "connector_mutation_quarantined",
+                "service_type": pending.serviceType,
+                "connector_operation": pending.operation,
+                "target": pending.target,
+                "reason": reason
+            ],
+            level: .warning
         )
     }
 
@@ -1002,6 +1088,39 @@ final class ConnectorMutationCoordinator {
             return String(data: data, encoding: .utf8) ?? "<unreadable payload>"
         }
         return text
+    }
+}
+
+/// The record that a proposal was retired without ever being readable.
+///
+/// Carries the scope fields as well as the pointer, because unlike a decline
+/// there is no readable payload behind this event: if the transcript is going to
+/// say anything at all about what was lost, it has to say it here.
+struct ConnectorMutationQuarantine: Codable, Sendable, Equatable {
+    let version: Int
+    let stagedPayloadPath: String
+    let requestDigest: String
+    let serviceType: String
+    let operation: String
+    let target: String
+    /// Why `prepare` refused, in the words the user was shown.
+    let reason: String
+
+    init(
+        stagedPayloadPath: String,
+        requestDigest: String,
+        serviceType: String,
+        operation: String,
+        target: String,
+        reason: String
+    ) {
+        version = 1
+        self.stagedPayloadPath = stagedPayloadPath
+        self.requestDigest = requestDigest
+        self.serviceType = serviceType
+        self.operation = operation
+        self.target = target
+        self.reason = reason
     }
 }
 

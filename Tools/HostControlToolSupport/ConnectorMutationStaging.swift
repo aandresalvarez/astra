@@ -38,6 +38,10 @@ public enum ConnectorMutationStaging {
     /// this is not a ticket anyone will review.
     public static let envelopeByteLimit = 1024 * 1024
 
+    /// How many names to try before giving up. Bounded so a directory that
+    /// cannot accept a new file fails loudly instead of spinning.
+    public static let maximumStagedNameAttempts = 512
+
     // MARK: - Staged mutation
 
     /// A staged mutation, as written or as read back. One type for both
@@ -127,7 +131,12 @@ public enum ConnectorMutationStaging {
                 "No task folder is projected, so a proposal cannot be staged where ASTRA would find it"
             )
         }
-        let directory = try TaskFolderContainment.createDirectory(
+        // An open descriptor, not a path. A validated pathname is re-resolved by
+        // the write that follows it, so an agent that renames this directory and
+        // leaves a symlink in its place gets the proposal written wherever the
+        // link points — and a proposal outside the task folder is one the app
+        // will never offer for review while the agent believes it was staged.
+        let directory = try TaskFolderContainment.openDirectory(
             named: directoryName,
             beneath: TaskFolderContainment.resolvedRoot(configuration.taskFolder),
             refusal: "stage a connector mutation",
@@ -165,19 +174,38 @@ public enum ConnectorMutationStaging {
         // mid-run would hand out `1` again and overwrite a proposal the app has
         // already recorded and the user may be about to approve. Probing for a
         // free name makes the identity a property of the directory instead.
+        //
+        // The name is claimed by the create itself rather than by a `fileExists`
+        // probe. A probe answers for the instant it ran, so two brokers serving
+        // the same run can both see a name free and the second overwrite a
+        // proposal the user is already reviewing; `O_EXCL` cannot do anything
+        // between deciding the name is free and owning it.
         let key = "\(configuration.runID)#\(serviceType)#\(operation)"
-        var url = directory.appendingPathComponent(
-            "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
-        )
-        while FileManager.default.fileExists(atPath: url.path) {
-            url = directory.appendingPathComponent(
-                "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
+        var claimed: String?
+        for _ in 0..<maximumStagedNameAttempts {
+            let name = "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
+            do {
+                try directory.writeExclusively(data, named: name)
+                claimed = name
+                break
+            } catch let error as NSError where error.code == Int(EEXIST) {
+                continue
+            } catch {
+                throw ConnectorMutationStagingError(
+                    "ASTRA could not stage the proposal in \(directory.path): \(error.localizedDescription)"
+                )
+            }
+        }
+        guard let claimed else {
+            throw ConnectorMutationStagingError(
+                "ASTRA could not find a free proposal filename in \(directory.path) after "
+                    + "\(maximumStagedNameAttempts) attempts."
             )
         }
-        try data.write(to: url, options: .atomic)
+        directory.synchronize()
 
         return StagedConnectorMutation(
-            path: url.path,
+            path: (directory.path as NSString).appendingPathComponent(claimed),
             digest: sha256Hex(data),
             byteCount: data.count,
             serviceType: serviceType,

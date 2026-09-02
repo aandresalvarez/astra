@@ -278,6 +278,78 @@ struct RunSecretRedactionTests {
         #expect(RunSecretRedactionScope.secrets(for: finished).isEmpty)
     }
 
+    // MARK: - Per-task capacity
+
+    /// The per-task cap used to be applied to every registration, so a launch
+    /// environment holding more distinct credentials than the cap had the
+    /// remainder dropped — while the subprocess received all of them. An agent
+    /// echoing a dropped value writes it through `TaskEvent` and `TaskRun`
+    /// unredacted, which is the one outcome this type exists to prevent.
+    @Test("Every secret in one launch environment is retained, however many there are")
+    func oversizedLaunchEnvironmentIsFullyRetained() {
+        let taskID = UUID()
+        defer { RunSecretRedactionScope.forget(taskID: taskID) }
+        let secrets = (0..<(RunSecretRedactionScope.retainedSecretsPerTask + 12))
+            .map { "launch-secret-value-\($0)-padding" }
+
+        RunSecretRedactionScope.register(taskID: taskID, secrets: secrets)
+
+        for secret in secrets {
+            #expect(
+                !RunSecretRedactionScope.redact("echo \(secret)", taskID: taskID).contains(secret),
+                "A value the subprocess received was not redactable: \(secret)"
+            )
+        }
+    }
+
+    /// The other half: registration put new values first, so a second launch for
+    /// the same task pushed a *still-live* earlier launch's credentials out of
+    /// the set. Two overlapping runs of half the cap each were enough.
+    @Test("A second launch does not displace a live launch's secrets")
+    func overlappingLaunchesKeepBothSetsRedactable() {
+        let taskID = UUID()
+        defer {
+            RunSecretRedactionScope.endRun(taskID: taskID)
+            RunSecretRedactionScope.forget(taskID: taskID)
+        }
+        let half = RunSecretRedactionScope.retainedSecretsPerTask / 2 + 4
+        let first = (0..<half).map { "first-launch-secret-\($0)-padding" }
+        let second = (0..<half).map { "second-launch-secret-\($0)-padding" }
+
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        RunSecretRedactionScope.register(taskID: taskID, secrets: first)
+        // The second launch starts before the first has finished.
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        RunSecretRedactionScope.register(taskID: taskID, secrets: second)
+
+        for secret in first + second {
+            #expect(
+                !RunSecretRedactionScope.redact("echo \(secret)", taskID: taskID).contains(secret),
+                "A value a live run received was evicted: \(secret)"
+            )
+        }
+    }
+
+    /// The cap still does its job. Once no run is live, accumulated history is
+    /// trimmed — otherwise a task relaunching a hundred times with rotating
+    /// credentials grows without bound, which is what the cap was added for.
+    @Test("Accumulated history is still trimmed once the run has finished")
+    func finishedTasksStillTrimHistory() {
+        let taskID = UUID()
+        defer { RunSecretRedactionScope.forget(taskID: taskID) }
+        let cap = RunSecretRedactionScope.retainedSecretsPerTask
+
+        for index in 0..<(cap + 20) {
+            RunSecretRedactionScope.register(taskID: taskID, secrets: ["rotating-secret-\(index)-padding"])
+        }
+
+        #expect(RunSecretRedactionScope.secrets(for: taskID).count <= cap)
+        // The most recent registration is the one that survives.
+        #expect(!RunSecretRedactionScope
+            .redact("echo rotating-secret-\(cap + 19)-padding", taskID: taskID)
+            .contains("rotating-secret-\(cap + 19)-padding"))
+    }
+
     // MARK: - Key classification
 
     /// A bare substring match let an exception swallow a credential whose name

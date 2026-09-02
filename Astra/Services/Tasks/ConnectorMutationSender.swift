@@ -62,6 +62,34 @@ protocol ConnectorMutationSending: Sendable {
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse
 }
 
+/// Stops `URLSession` from re-sending an approved write somewhere the user
+/// never saw.
+///
+/// Default redirect handling follows `3xx` transparently, and `307`/`308`
+/// preserve the method and the body — so a reviewed `POST` to the endpoint on
+/// the sheet is re-delivered whole to a different path, or a different host,
+/// chosen by whatever answered first. Whether the loading system re-attaches
+/// the `Authorization` header on the way is beside the point: the write itself
+/// arrives somewhere nobody reviewed. `httpShouldSetCookies` and a `nil` cache
+/// do not touch any of that; only a delegate does.
+///
+/// Returning `nil` completes the task with the redirect response itself, which
+/// lands in the coordinator's "neither 2xx nor 4xx" branch and is quarantined as
+/// indeterminate. That is the right reading: a server that redirects a `POST`
+/// may well have applied it before answering, so this is not a refusal ASTRA can
+/// report as a clean failure.
+private final class ConnectorMutationRedirectRefusal: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// The one place in the app that performs a connector write.
 struct URLSessionConnectorMutationSender: ConnectorMutationSending {
     /// Ceiling on the response ASTRA reads back. A receipt is an issue key and a
@@ -97,7 +125,11 @@ struct URLSessionConnectorMutationSender: ConnectorMutationSending {
         configuration.urlCache = nil
         // A write must not be replayed by the loading system on ASTRA's behalf.
         configuration.httpShouldSetCookies = false
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(
+            configuration: configuration,
+            delegate: ConnectorMutationRedirectRefusal(),
+            delegateQueue: nil
+        )
         defer { session.finishTasksAndInvalidate() }
 
         let (stream, response) = try await session.bytes(for: urlRequest)

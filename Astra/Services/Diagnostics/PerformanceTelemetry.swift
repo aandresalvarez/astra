@@ -12,6 +12,16 @@ struct PerformanceTelemetrySuppressedRollup: Equatable {
     /// task in hand. Carried on the rollup rather than taken from whichever
     /// sample happened to trip the flush — see `PerformanceTelemetrySuppressedLedger`.
     let taskID: UUID?
+    /// The severity the samples in this bucket were measured at.
+    ///
+    /// Carried for the same reason as `taskID`, and it was missed the first
+    /// time: the flush used the `level` of whichever sample closed the window,
+    /// so a debug-level sample tripping a window that also held warning-level
+    /// ones emitted those warnings at debug — below the production log
+    /// threshold, which is to say not at all. The reverse ordering promoted
+    /// debug measurements to warnings and put noise where a real regression
+    /// would be looked for.
+    let level: LogLevel
     let count: Int
     let totalMilliseconds: Double
     let maxMilliseconds: Double
@@ -47,9 +57,15 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
     /// filtering on the task, which is how this ledger gets used at all. An
     /// attribution that is confidently wrong is worse than the `nil` the
     /// unattributed call sites already report.
+    /// Level is part of the key, not just part of the payload. One event can be
+    /// measured at more than one severity — the same helper is called with
+    /// `.debug` from a hot path and `.warning` from a guarded one — and folding
+    /// those into a single bucket would make the level a property of the last
+    /// writer again, one layer down.
     private struct BucketKey: Hashable {
         let event: String
         let taskID: UUID?
+        let level: LogLevel
     }
 
     private let lock = NSLock()
@@ -73,6 +89,7 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
     func record(
         event: String,
         taskID: UUID? = nil,
+        level: LogLevel = .debug,
         milliseconds: Double,
         thresholdMilliseconds: Double,
         now: Date = Date()
@@ -80,7 +97,7 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let key = BucketKey(event: event, taskID: taskID)
+        let key = BucketKey(event: event, taskID: taskID, level: level)
         var bucket = buckets[key] ?? Bucket()
         bucket.count += 1
         bucket.totalMilliseconds += milliseconds
@@ -99,6 +116,7 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
                 PerformanceTelemetrySuppressedRollup(
                     event: key.event,
                     taskID: key.taskID,
+                    level: key.level,
                     count: bucket.count,
                     totalMilliseconds: bucket.totalMilliseconds,
                     maxMilliseconds: bucket.maxMilliseconds,
@@ -143,6 +161,7 @@ enum PerformanceTelemetry {
         let rollups = suppressedLedger.record(
             event: event,
             taskID: taskID,
+            level: level,
             milliseconds: milliseconds,
             thresholdMilliseconds: thresholdMilliseconds
         )
@@ -150,7 +169,11 @@ enum PerformanceTelemetry {
             log(
                 "perf_suppressed_rollup",
                 durationMilliseconds: rollup.totalMilliseconds,
-                level: level,
+                // The rollup's own level, for the same reason as its own task
+                // below. A window is closed by whichever sample happens to be
+                // last, and that sample's severity has nothing to do with the
+                // severity of the buckets being drained alongside it.
+                level: rollup.level,
                 fields: [
                     "suppressed_event": rollup.event,
                     "suppressed_count": PerformanceTelemetryFields.count(rollup.count),

@@ -267,11 +267,14 @@ public enum REDCapHostControlPolicy {
     /// connector-mutation staging directory now shares: the hole was found here
     /// first and was identical there, and a containment rule written twice is a
     /// containment rule enforced once.
+    /// Returns an open descriptor rather than a path: subject data is the last
+    /// thing that should be written through a name the agent can still redirect
+    /// between the check and the write.
     private static func exportDirectory(
         beneath root: URL,
         fileManager: FileManager = .default
-    ) throws -> URL {
-        try TaskFolderContainment.createDirectory(
+    ) throws -> TaskFolderDirectoryHandle {
+        try TaskFolderContainment.openDirectory(
             named: exportDirectoryName,
             beneath: root,
             refusal: "write subject data",
@@ -295,33 +298,42 @@ public enum REDCapHostControlPolicy {
     /// it either, since two brokers can both see the same name free at the same
     /// instant.
     ///
-    /// So the name is claimed by `link(2)`, which either creates the entry or
+    /// So the name is claimed by `linkat(2)`, which either creates the entry or
     /// fails with `EEXIST` and cannot do anything in between. The content is
     /// written to a temporary in the same directory first, so what appears
     /// under the claimed name is a complete export rather than a file being
     /// filled in — `Data.WritingOptions` cannot do both halves, since `.atomic`
     /// and `.withoutOverwriting` are mutually exclusive.
+    ///
+    /// Everything here goes through `directory`'s descriptor. Writing to
+    /// `directory.path + name` instead would re-resolve the directory on every
+    /// call, which hands the agent a window to rename the validated directory
+    /// and leave a symlink behind — and the file that lands outside the task
+    /// folder in that race is PHI.
     private static func writeExclusively(
         _ data: Data,
-        in directory: URL,
+        in directory: TaskFolderDirectoryHandle,
         named name: (Int) -> String,
-        startingAt start: Int,
-        fileManager: FileManager = .default
+        startingAt start: Int
     ) throws -> URL {
-        let temporary = directory.appendingPathComponent(".redcap-export-\(UUID().uuidString).tmp")
-        try data.write(to: temporary, options: [.atomic])
+        let temporary = ".redcap-export-\(UUID().uuidString).tmp"
+        try directory.writeExclusively(data, named: temporary)
         // The link is what the reader sees; this name never appears in a
         // receipt, and it goes whether or not a link was made.
-        defer { try? fileManager.removeItem(at: temporary) }
+        defer { directory.removeFile(named: temporary) }
 
         var index = max(1, start)
         for _ in 0..<maximumExportNameAttempts {
-            let url = directory.appendingPathComponent(name(index))
-            if link(temporary.path, url.path) == 0 { return url }
-            guard errno == EEXIST else {
+            let claimed = name(index)
+            let code = directory.link(temporary: temporary, to: claimed)
+            if code == 0 {
+                directory.synchronize()
+                return URL(fileURLWithPath: (directory.path as NSString).appendingPathComponent(claimed))
+            }
+            guard code == EEXIST else {
                 throw REDCapRequestPolicyError(
-                    "ASTRA could not write the export to \(url.path): "
-                        + String(cString: strerror(errno))
+                    "ASTRA could not write the export to \(directory.path)/\(claimed): "
+                        + String(cString: strerror(code))
                 )
             }
             index += 1

@@ -1955,7 +1955,10 @@ struct ArchitectureFitnessTests {
             // other test green, so nothing but this would catch it.
             // 2_230 -> 2_236: two budget changes for the connector-mutation seam,
             // each carrying the "why" this registry exists to preserve.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_236, .owner("Architecture fitness test suite")),
+            // 2_236 -> 2_250 on 2026-09-02 (PR #381 review follow-up): the two
+            // entries above say why they moved, which is the only thing that
+            // stops a budget line from being a number someone raised once.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_250, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1988,7 +1991,13 @@ struct ArchitectureFitnessTests {
             // runs must hold their durable turn request open until post-run
             // checkpoint/contract validation decides the outcome, so the verdict
             // has to be threaded from the session defer back to executeApprovedPlan.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_150, .owner("Runtime worker execution")),
+            // 2_150 -> 2_160 on 2026-09-02 (PR #381 review follow-up): a staged
+            // connector proposal is durable on disk the moment the broker
+            // returns, so its pending event has to be saved before the minutes
+            // of post-run awaits that follow — and the save going through the
+            // persistence coordinator means a refusal is reported rather than
+            // swallowed.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_161, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -2021,7 +2030,12 @@ struct ArchitectureFitnessTests {
             // direction in Finding 2 of the extraction doc is untouched and remains its own
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
             "Tests/AgentRuntimeAdapterTests.swift": .init(3_350, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_550 -> 2_565 on 2026-09-02 (PR #381 review follow-up): the
+            // ordering guard for the discovery save — the proposal is on disk
+            // whether or not the event survived, so "persisted before the next
+            // await" is the invariant, and it is only checkable against the
+            // source.
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_565, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
             // ship local tool grants on the real Copilot command line, asserted against a
             // `.build` control so the test cannot pass vacuously.

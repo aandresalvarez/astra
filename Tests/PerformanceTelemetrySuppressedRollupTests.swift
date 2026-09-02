@@ -171,6 +171,36 @@ struct PerformanceTelemetrySuppressedRollupTests {
         #expect(rollups.first?.count == 6)
     }
 
+    /// Severity is a property of the samples, not of the clock. Stamping the
+    /// flush with whichever sample happened to close the window demoted a
+    /// window's worth of warnings to `debug` — invisible at the level anyone
+    /// filters at — or promoted routine work to `warning`, which is worse
+    /// because it is believed.
+    @Test("A rollup keeps its own bucket's level, not the closing sample's")
+    func rollupsKeepTheirOwnLevel() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 10)
+
+        for _ in 0..<5 {
+            _ = ledger.record(
+                event: "connector_send", level: .warning,
+                milliseconds: 7, thresholdMilliseconds: 8, now: epoch)
+        }
+
+        // Closed by a debug sample, which is the shape that used to relabel the
+        // warnings above it.
+        let rollups = ledger.record(
+            event: "connector_send", level: .debug,
+            milliseconds: 0.5, thresholdMilliseconds: 8, now: epoch.addingTimeInterval(11))
+
+        #expect(rollups.count == 2)
+        let heaviest = try #require(rollups.first)
+        #expect(heaviest.level == .warning)
+        #expect(heaviest.count == 5)
+        let lighter = try #require(rollups.last)
+        #expect(lighter.level == .debug)
+        #expect(lighter.count == 1)
+    }
+
     /// The ledger is constructed at process start but the window has to begin
     /// at the first suppressed sample. Anchoring it to construction would make
     /// the first rollup cover however long the app happened to sit idle, and
