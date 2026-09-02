@@ -37,6 +37,17 @@ import ASTRAModels
 /// closes a real blind spot: two writes inside one second used to be
 /// indistinguishable.
 ///
+/// Each task's fields are folded through one `Hasher` and only that task's hash
+/// joins the accumulator. The terms used to be XOR-ed into the accumulator
+/// individually, which recorded the *parity* of each field across the snapshot
+/// rather than which task held which value. Two pin writes coalesced into one
+/// snapshot — unpin A, pin B — cancelled exactly, and the pin writer restores
+/// `updatedAt` deliberately, so nothing else moved either: `tasksVersion` did
+/// not publish and `SidebarTaskIndex` kept both tasks in the wrong arrays until
+/// some unrelated field changed. Hashing per task makes field ownership part of
+/// the fingerprint, and combining with `&+=` keeps the result independent of the
+/// order the snapshot arrives in.
+///
 /// **Do not call this from a SwiftUI `body`.** Reading a field off every task
 /// registers an observation dependency on all of them, so a view that
 /// fingerprints the snapshot inline re-runs on any field write to any task —
@@ -47,16 +58,16 @@ enum SidebarTaskIndexInvalidation {
     static func signature(for tasks: [AgentTask]) -> Int {
         let start = DispatchTime.now().uptimeNanoseconds
         let signature = tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            if let workspaceID = task.workspace?.id {
-                acc ^= workspaceID.hashValue
-            }
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.title.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc &+= task.updatedAt.hashValue
-            acc &+= task.unreadAt?.hashValue ?? 0
+            var hasher = Hasher()
+            hasher.combine(task.id)
+            hasher.combine(task.workspace?.id)
+            hasher.combine(task.status.rawValue)
+            hasher.combine(task.title)
+            hasher.combine(task.isPinned)
+            hasher.combine(task.isDone)
+            hasher.combine(task.updatedAt)
+            hasher.combine(task.unreadAt)
+            acc &+= hasher.finalize()
         }
         PerformanceTelemetry.logIfNeeded(
             "sidebar_index_signature",

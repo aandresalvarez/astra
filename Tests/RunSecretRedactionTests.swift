@@ -222,6 +222,101 @@ struct RunSecretRedactionTests {
         #expect(RunSecretRedactionScope.secrets(for: newcomers[0]).isEmpty)
     }
 
+    /// "Used" is not "running". A scope is only touched when its task writes
+    /// output, and a task that is thinking, waiting on a tool, or blocked on the
+    /// user writes nothing for minutes at a time. Sixteen short tasks in that
+    /// window evicted a live one, and `use` returns before `touch` when the
+    /// scope is missing, so reading could not bring it back either.
+    @Test("A task with a live process is never evicted, however quiet it is")
+    func activeRunsAreNotEvicted() {
+        let limit = RunSecretRedactionScope.retainedTaskLimit
+        let running = UUID()
+        let newcomers = (0..<(limit + 4)).map { _ in UUID() }
+        defer {
+            RunSecretRedactionScope.endRun(taskID: running)
+            ([running] + newcomers).forEach { RunSecretRedactionScope.forget(taskID: $0) }
+        }
+
+        RunSecretRedactionScope.beginRun(taskID: running)
+        RunSecretRedactionScope.register(taskID: running, secrets: [atlassianShaped])
+        #expect(RunSecretRedactionScope.isRunActive(taskID: running))
+
+        // It says nothing at all from here on, which is the point.
+        for (index, taskID) in newcomers.enumerated() {
+            RunSecretRedactionScope.register(taskID: taskID, secrets: ["secret-value-\(index)-padding"])
+        }
+
+        #expect(!RunSecretRedactionScope.secrets(for: running).isEmpty)
+        #expect(!RunSecretRedactionScope.redact("bearer \(atlassianShaped)", taskID: running)
+            .contains(atlassianShaped))
+        // Bounded still: the overflow came out of the finished tasks.
+        #expect(RunSecretRedactionScope.secrets(for: newcomers[0]).isEmpty)
+    }
+
+    /// The pin has to come off, or the ceiling is not a ceiling.
+    @Test("A finished run stops being pinned and rejoins the eviction order")
+    func endingARunReleasesThePin() {
+        let limit = RunSecretRedactionScope.retainedTaskLimit
+        let finished = UUID()
+        let newcomers = (0..<limit).map { _ in UUID() }
+        defer { ([finished] + newcomers).forEach { RunSecretRedactionScope.forget(taskID: $0) } }
+
+        // Nested launches on one task: the pin is a count, so the inner one
+        // ending must not unpin the outer.
+        RunSecretRedactionScope.beginRun(taskID: finished)
+        RunSecretRedactionScope.beginRun(taskID: finished)
+        RunSecretRedactionScope.register(taskID: finished, secrets: [atlassianShaped])
+        RunSecretRedactionScope.endRun(taskID: finished)
+        #expect(RunSecretRedactionScope.isRunActive(taskID: finished))
+        RunSecretRedactionScope.endRun(taskID: finished)
+        #expect(!RunSecretRedactionScope.isRunActive(taskID: finished))
+
+        for (index, taskID) in newcomers.enumerated() {
+            RunSecretRedactionScope.register(taskID: taskID, secrets: ["secret-value-\(index)-padding"])
+        }
+
+        #expect(RunSecretRedactionScope.secrets(for: finished).isEmpty)
+    }
+
+    // MARK: - Key classification
+
+    /// A bare substring match let an exception swallow a credential whose name
+    /// merely started with it. `Skill.isSecretEnvironmentKey` has no exception
+    /// list, so `PROJECT_KEY_TOKEN` was stored in the Keychain, projected into
+    /// the agent environment, and then classified as not-a-secret by everything
+    /// that redacts or purges.
+    @Test("An exception has to own the end of the name")
+    func exceptionsDoNotSwallowSuffixedCredentials() {
+        #expect(!RunSecretRedaction.isSecretKey("PROJECT_KEY"))
+        #expect(!RunSecretRedaction.isSecretKey("JIRA_PROJECT_KEY"))
+        #expect(!RunSecretRedaction.isSecretKey("KEY_ID"))
+        #expect(!RunSecretRedaction.isSecretKey("SSH_AUTH_SOCK"))
+
+        #expect(RunSecretRedaction.isSecretKey("PROJECT_KEY_TOKEN"))
+        #expect(RunSecretRedaction.isSecretKey("JIRA_PROJECT_KEY_SECRET"))
+        #expect(RunSecretRedaction.isSecretKey("KEY_ID_PASSWORD"))
+        #expect(RunSecretRedaction.isSecretKey("PROJECT_KEY_ID_TOKEN"))
+    }
+
+    /// And the classification has to reach the redactor, not just the predicate.
+    @Test("A suffixed credential's value is redacted from run output")
+    func suffixedCredentialValueIsRedacted() {
+        let taskID = UUID()
+        defer { RunSecretRedactionScope.forget(taskID: taskID) }
+        RunSecretRedactionScope.register(taskID: taskID, environment: [
+            "PROJECT_KEY": "STAR",
+            "PROJECT_KEY_TOKEN": atlassianShaped
+        ])
+
+        let redacted = RunSecretRedactionScope.redact(
+            "PROJECT_KEY=STAR PROJECT_KEY_TOKEN=\(atlassianShaped)",
+            taskID: taskID
+        )
+        #expect(!redacted.contains(atlassianShaped))
+        // The project name is not a credential and stays readable.
+        #expect(redacted.contains("PROJECT_KEY=STAR"))
+    }
+
     // MARK: - The launch environment
 
     /// Registration used to see only the capability overlay, but the subprocess

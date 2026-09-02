@@ -171,6 +171,98 @@ struct ConnectorMutationStagingTests {
         }
     }
 
+    // MARK: - Containment
+
+    /// The task folder is agent-writable and this broker is deliberately *not*
+    /// sandboxed to it, so the agent gets to create this name first.
+    @Test("A symlinked staging directory is refused rather than followed")
+    func symlinkedStagingDirectoryIsRefused() throws {
+        let folder = try temporaryTaskFolder()
+        let outside = try temporaryTaskFolder()
+        defer {
+            try? FileManager.default.removeItem(atPath: folder)
+            try? FileManager.default.removeItem(atPath: outside)
+        }
+        try FileManager.default.createSymbolicLink(
+            atPath: URL(fileURLWithPath: folder)
+                .appendingPathComponent(ConnectorMutationStaging.directoryName).path,
+            withDestinationPath: outside
+        )
+        let server = try proposalServer(taskFolder: folder)
+        defer { endCapture() }
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "propose_issue",
+            "project_key": "STAR",
+            "issue_type": "Bug",
+            "summary": "Would land outside the task folder"
+        ])
+
+        #expect(try resultText(response).contains("symbolic link"))
+        // The link target is the assertion that matters: `createDirectory`
+        // succeeds against it, so nothing else would have noticed.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside).isEmpty)
+    }
+
+    /// The read path needs this as much as the write path. Resolving the
+    /// staging directory and then checking the file against *that* is circular:
+    /// a link pointed anywhere makes every file under it "contained".
+    @Test("Reading refuses to resolve the staging directory through a symlink")
+    func readingRefusesASymlinkedStagingDirectory() throws {
+        let folder = try temporaryTaskFolder()
+        let outside = try temporaryTaskFolder()
+        defer {
+            try? FileManager.default.removeItem(atPath: folder)
+            try? FileManager.default.removeItem(atPath: outside)
+        }
+        let planted = URL(fileURLWithPath: outside).appendingPathComponent("planted.json")
+        try Data(#"{"schema_version":1}"#.utf8).write(to: planted)
+        try FileManager.default.createSymbolicLink(
+            atPath: URL(fileURLWithPath: folder)
+                .appendingPathComponent(ConnectorMutationStaging.directoryName).path,
+            withDestinationPath: outside
+        )
+
+        let error = #expect(throws: ConnectorMutationStagingError.self) {
+            try ConnectorMutationStaging.read(atPath: planted.path, containedIn: folder)
+        }
+        #expect(error?.message.contains("symbolic link") == true)
+    }
+
+    // MARK: - Envelope bounds
+
+    @Test("An oversized envelope is refused by its metadata, not after loading it")
+    func oversizedEnvelopeIsRefused() throws {
+        let folder = try temporaryTaskFolder()
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let directory = ConnectorMutationStaging.stagingDirectory(taskFolder: folder)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("jira-create_issue-run-1-1.json")
+        try Data(count: ConnectorMutationStaging.envelopeByteLimit + 1).write(to: file)
+
+        let error = #expect(throws: ConnectorMutationStagingError.self) {
+            try ConnectorMutationStaging.read(atPath: file.path, containedIn: folder)
+        }
+        #expect(error?.message.contains("larger than") == true)
+    }
+
+    /// A fifo used to be read, not rejected — and a fifo nobody writes to blocks
+    /// the reader forever. The app scans this directory on the main actor.
+    @Test("A non-regular entry is refused before anything opens it")
+    func nonRegularStagedEntryIsRefused() throws {
+        let folder = try temporaryTaskFolder()
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let directory = ConnectorMutationStaging.stagingDirectory(taskFolder: folder)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("jira-create_issue-run-1-2.json")
+        #expect(mkfifo(file.path, 0o600) == 0)
+
+        let error = #expect(throws: ConnectorMutationStagingError.self) {
+            try ConnectorMutationStaging.read(atPath: file.path, containedIn: folder)
+        }
+        #expect(error?.message.contains("regular file") == true)
+    }
+
     // MARK: - Field gating
 
     @Test("Proposing refuses arguments it does not understand")

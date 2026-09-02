@@ -207,6 +207,13 @@ final class AgentRuntimeProcessRunner {
         )
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
+        // Immediately, before anything else reads `plan.environment`. Each
+        // adapter builds its environment from `ProcessInfo`, so the brokered
+        // strip its overlay went through does not cover a credential ASTRA was
+        // itself launched with.
+        plan = plan.strippingBrokeredConnectorEnvironment(
+            capabilityScope: resolvedContext.capabilityResolutionSnapshot.providerLaunch
+        )
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
             contract: launchResourcePlan.readOnlyResourceContract,
@@ -833,6 +840,14 @@ final class AgentRuntimeProcessRunner {
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
         let taskID = task.id
+
+        // The one place that owns a live agent process, so the one place that
+        // can say a redaction scope must not be evicted yet. A run that spends
+        // ten minutes on a tool call writes nothing, and without this the LRU
+        // treats it as finished: sixteen shorter runs starting meanwhile drop
+        // its secrets, and its next line of output is persisted in the clear.
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        defer { RunSecretRedactionScope.endRun(taskID: taskID) }
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()

@@ -79,6 +79,47 @@ struct BrokeredConnectorEnvironmentTests {
         #expect(environment["ASTRA_CONNECTORS"]?.contains("redcap.example.edu") != true)
     }
 
+    /// `scopedEnvironmentVariables` only ever saw the capability overlay, and
+    /// that is not what the child process gets. Every adapter builds its own
+    /// environment starting from `RuntimeProcessEnvironment.enriched`, which
+    /// starts from `ProcessInfo.processInfo.environment` — so a brokered key
+    /// exported in the shell that launched ASTRA was inherited straight past the
+    /// strip. Six adapters, one plan: the plan is where it has to be caught.
+    @Test("The assembled launch plan drops brokered keys ASTRA itself inherited")
+    func launchPlanDropsInheritedBrokeredKeys() throws {
+        let container = try makeBrokeredConnectorEnvironmentContainer()
+        let context = container.mainContext
+        let (task, connector) = try makeREDCapTask(in: context)
+
+        let scope = TaskCapabilityResolutionSnapshot.capture(for: task, providerLaunchContextText: "").providerLaunch
+        let brokeredKey = try #require(
+            ConnectorRuntimeProjection(connectors: [connector]).declaredEnvironmentBindingKeys().first
+        )
+
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI,
+            executablePath: "/opt/homebrew/bin/codex",
+            arguments: ["run"],
+            currentDirectory: "/tmp/astra-workspace",
+            // As if the developer had this exported in the shell they launched
+            // ASTRA from. Nothing in the capability overlay put it here.
+            environment: ["HOME": "/tmp/astra-home", brokeredKey: "inherited-secret-value"],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: true
+        )
+
+        let stripped = plan.strippingBrokeredConnectorEnvironment(capabilityScope: scope)
+
+        #expect(stripped.environment[brokeredKey] == nil)
+        #expect(stripped.environment["HOME"] == "/tmp/astra-home")
+        #expect(stripped.commandPlannedFields["brokered_env_keys_stripped_at_launch"] == "1")
+
+        // Idempotent, and a clean plan is returned untouched rather than rebuilt.
+        let again = stripped.strippingBrokeredConnectorEnvironment(capabilityScope: scope)
+        #expect(again.environment == stripped.environment)
+    }
+
     /// The regression this exists for: stripping used to be conditional on the
     /// run having host-control tools. A runtime that could not mount the broker
     /// therefore got the raw credential as a silent fallback - the one case

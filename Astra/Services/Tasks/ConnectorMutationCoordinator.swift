@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SwiftData
 import ASTRACore
@@ -19,6 +20,8 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case insecureTransport(alias: String, url: String)
     case requestFailed(statusCode: Int, message: String)
     case alreadySent(String)
+    case sendNotReserved(reason: String)
+    case dispatchedWithoutConfirmation(target: String, reason: String)
     case sentButNotRecorded(target: String, reason: String)
 
     var errorDescription: String? {
@@ -54,6 +57,14 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
                 : "The request could not be completed: \(message)"
         case let .alreadySent(target):
             "ASTRA already sent this proposal to \(target). It will not be sent a second time."
+        case let .sendNotReserved(reason):
+            "ASTRA could not durably record that it was about to send this, so it did not send it "
+                + "(\(reason)). Nothing has been sent. Free some disk space or fix permissions on the "
+                + "task folder, then try again."
+        case let .dispatchedWithoutConfirmation(target, reason):
+            "ASTRA sent this to \(target) but never got an answer it could trust (\(reason)). The "
+                + "change may or may not have been made — check \(target) before proposing it again. "
+                + "ASTRA will not send it a second time."
         case let .sentButNotRecorded(target, reason):
             "ASTRA sent this to \(target) and the connector accepted it, but the receipt could not be "
                 + "saved to this task (\(reason)). The change has been made — do not send it again."
@@ -69,12 +80,20 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         return 0
     }
 
-    /// Whether the write has already happened, so offering to retry would
+    /// Whether the write may already have happened, so offering to retry could
     /// duplicate it. The review sheet reads this to decide whether the send
     /// button comes back.
+    ///
+    /// "May" is doing the work. `dispatchedWithoutConfirmation` is terminal even
+    /// though ASTRA does not know that anything was written: a dropped
+    /// connection after a `POST` is indistinguishable from a slow success, and
+    /// between showing a second Send button and not showing one, only one of
+    /// those two mistakes files a duplicate ticket in someone's tracker. The
+    /// user is told to go and look, which is the only honest instruction
+    /// available.
     var isTerminal: Bool {
         switch self {
-        case .alreadySent, .sentButNotRecorded: true
+        case .alreadySent, .dispatchedWithoutConfirmation, .sentButNotRecorded: true
         default: false
         }
     }
@@ -141,6 +160,50 @@ struct ConnectorMutationFailure: Codable, Sendable, Equatable {
         version = 2
         self.stagedPayloadPath = stagedPayloadPath
         self.requestDigest = requestDigest
+        self.statusCode = statusCode
+        self.message = message
+    }
+}
+
+/// The record that ASTRA dispatched a write and never learned the outcome.
+///
+/// Deliberately not a `ConnectorMutationFailure` with a different event type.
+/// The two say opposite things to whoever reads the transcript next — a failure
+/// means the tracker is unchanged, this means it might not be — and the
+/// resolver retires them differently. Sharing a payload would have made that
+/// difference a string comparison on the event type, which is exactly how the
+/// distinction gets lost.
+struct ConnectorMutationIndeterminateOutcome: Codable, Sendable, Equatable {
+    let version: Int
+    let stagedPayloadPath: String
+    let requestDigest: String
+    let serviceType: String
+    let operation: String
+    let target: String
+    /// The host that received the dispatch, so the person checking knows where
+    /// to look.
+    let destinationURL: String
+    /// The provider status, when one arrived. Zero means the reply never did.
+    let statusCode: Int
+    let message: String
+
+    init(
+        stagedPayloadPath: String,
+        requestDigest: String,
+        serviceType: String,
+        operation: String,
+        target: String,
+        destinationURL: String,
+        statusCode: Int,
+        message: String
+    ) {
+        version = 1
+        self.stagedPayloadPath = stagedPayloadPath
+        self.requestDigest = requestDigest
+        self.serviceType = serviceType
+        self.operation = operation
+        self.target = target
+        self.destinationURL = destinationURL
         self.statusCode = statusCode
         self.message = message
     }
@@ -371,9 +434,24 @@ final class ConnectorMutationCoordinator {
             digest: proposal.requestDigest
         )
 
+        // Three phases, and the boundaries between them are the whole design.
+        //
+        //   1. Refuse, freely. Nothing is reserved and nothing has been sent, so
+        //      any error here leaves the proposal exactly as reviewable as it
+        //      was.
+        //   2. Reserve, durably. After this line ASTRA has promised not to send
+        //      this proposal twice, and that promise survives a crash.
+        //   3. Dispatch. After this line the provider may have committed the
+        //      write, so no outcome may re-enable the send button.
+        //
+        // The reservation used to sit *after* the response, best-effort. That
+        // ordering could only ever lose: the case the marker exists for is the
+        // one where the durable record failed, and a `try?` write in the same
+        // unwritable folder fails the same way. Reserving first means the worst
+        // case is a proposal that was never sent, instead of a write that
+        // happened and left no trace.
         let request: ConnectorMutationHTTPRequest
         let current: ConnectorMutationProposal
-        let response: ConnectorMutationHTTPResponse
         do {
             current = try resolveProposal(staged)
             // The connector is resolved twice — once for the sheet, once here —
@@ -388,39 +466,69 @@ final class ConnectorMutationCoordinator {
                 )
             }
             request = try buildRequest(current)
-            response = try await sender.send(request)
-            guard (200...299).contains(response.statusCode) else {
-                throw ConnectorMutationCoordinatorError.requestFailed(
-                    statusCode: response.statusCode,
-                    message: Self.providerMessage(response.body)
-                )
-            }
+            try Self.reserveSend(stagedPath: staged.path, target: proposal.target)
         } catch {
             // Recorded, then rethrown. The sheet shows the error and the row
             // stays pending; the event is so the transcript says an attempt was
             // made, which is what stops a retry looking like a first try.
             //
-            // Only reachable before the request was accepted. Everything past
-            // this block has already changed the provider's state, and calling
-            // that a failure is what would invite the duplicate.
-            try? record(
-                ConnectorMutationFailure(
-                    stagedPayloadPath: staged.path,
-                    requestDigest: staged.digest,
-                    statusCode: (error as? ConnectorMutationCoordinatorError)?.statusCode ?? 0,
-                    message: error.localizedDescription
-                ),
-                type: ConnectorMutationEventTypes.failed,
+            // Only reachable before anything was dispatched. Everything past
+            // this block may already have changed the provider's state, and
+            // calling that a failure is what would invite the duplicate.
+            recordFailure(task: task, staged: staged, error: error)
+            throw error
+        }
+
+        let response: ConnectorMutationHTTPResponse
+        do {
+            response = try await sender.send(request)
+        } catch {
+            // The request went out. Whether Jira filed the ticket before the
+            // socket died is not knowable from here, and a timeout is the same
+            // ambiguity wearing a different error. Quarantine rather than
+            // retry: this used to fall into the catch above and re-arm Send.
+            throw indeterminate(
                 task: task,
-                stagedPath: staged.path,
-                operation: "connector_mutation_failed"
+                staged: staged,
+                proposal: current,
+                url: request.url,
+                statusCode: 0,
+                message: error.localizedDescription
             )
+        }
+
+        if !(200...299).contains(response.statusCode) {
+            let message = Self.providerMessage(response.body)
+            guard (400...499).contains(response.statusCode) else {
+                // Anything that is neither success nor a client refusal is
+                // ambiguous by nature. A `503` is usually the gateway in front
+                // of Jira, and a gateway can time out on a request Jira has
+                // already committed; a `3xx` ASTRA did not follow says even
+                // less. Only the `4xx` range is a provider stating, on the
+                // record, that it did not act.
+                throw indeterminate(
+                    task: task,
+                    staged: staged,
+                    proposal: current,
+                    url: request.url,
+                    statusCode: response.statusCode,
+                    message: message
+                )
+            }
+            // A definite refusal, so the reservation is given back and the
+            // proposal stays sendable — the user can fix the field the provider
+            // objected to and approve it again.
+            Self.releaseSendReservation(stagedPath: staged.path)
+            let error = ConnectorMutationCoordinatorError.requestFailed(
+                statusCode: response.statusCode,
+                message: message
+            )
+            recordFailure(task: task, staged: staged, error: error)
             throw error
         }
 
         // The write has happened. From here the only question is how well ASTRA
         // can describe it — never whether to try again.
-        Self.markSent(stagedPath: staged.path)
         let receipt = Self.receipt(for: current, response: response, baseURL: request.url)
         do {
             try record(
@@ -622,6 +730,84 @@ final class ConnectorMutationCoordinator {
         return trimmed.isEmpty ? "no response body" : String(trimmed.prefix(500))
     }
 
+    /// Records an attempt that did not change anything, so the transcript shows
+    /// a retry is a retry.
+    ///
+    /// `try?` on purpose: the caller is already throwing something the user
+    /// needs to see, and losing the audit line is a worse outcome to swap it
+    /// for. Nothing was sent, so nothing is at stake if it does not save.
+    private func recordFailure(
+        task: AgentTask,
+        staged: ConnectorMutationStaging.StagedConnectorMutation,
+        error: Error
+    ) {
+        try? record(
+            ConnectorMutationFailure(
+                stagedPayloadPath: staged.path,
+                requestDigest: staged.digest,
+                statusCode: (error as? ConnectorMutationCoordinatorError)?.statusCode ?? 0,
+                message: error.localizedDescription
+            ),
+            type: ConnectorMutationEventTypes.failed,
+            task: task,
+            stagedPath: staged.path,
+            operation: "connector_mutation_failed"
+        )
+    }
+
+    /// Quarantines a dispatch whose outcome ASTRA cannot determine, and returns
+    /// the error to throw.
+    ///
+    /// Returns rather than throws so its call sites read `throw
+    /// indeterminate(...)` — one statement, with no way to record the quarantine
+    /// and then keep going into the success path.
+    ///
+    /// The reservation is deliberately *not* released. It is the only thing
+    /// standing between an ambiguous outcome and a duplicate write after a
+    /// relaunch, and it costs nothing but a file the user can delete.
+    private func indeterminate(
+        task: AgentTask,
+        staged: ConnectorMutationStaging.StagedConnectorMutation,
+        proposal: ConnectorMutationProposal,
+        url: URL,
+        statusCode: Int,
+        message: String
+    ) -> ConnectorMutationCoordinatorError {
+        try? record(
+            ConnectorMutationIndeterminateOutcome(
+                stagedPayloadPath: staged.path,
+                requestDigest: staged.digest,
+                serviceType: proposal.serviceType,
+                operation: proposal.operation,
+                target: proposal.target,
+                destinationURL: proposal.destinationURL,
+                statusCode: statusCode,
+                message: message
+            ),
+            type: ConnectorMutationEventTypes.indeterminate,
+            task: task,
+            stagedPath: staged.path,
+            operation: "connector_mutation_indeterminate"
+        )
+        // Logged as well as recorded. The task event retires the row; this is
+        // what someone reading the audit log after a support report sees, and
+        // "may have been written" is the sentence they need.
+        AuditLoggingSeam.required.audit(
+            .dataStoreRecovered,
+            category: "Tasks",
+            fields: [
+                "operation": "connector_mutation_indeterminate",
+                "service_type": proposal.serviceType,
+                "connector_operation": proposal.operation,
+                "destination_url": url.absoluteString,
+                "status_code": String(statusCode),
+                "error": message
+            ],
+            level: .error
+        )
+        return .dispatchedWithoutConfirmation(target: proposal.target, reason: message)
+    }
+
     private func record<T: Encodable>(
         _ payload: T,
         type: String,
@@ -687,15 +873,16 @@ final class ConnectorMutationCoordinator {
     /// request goes out.
     private static var sentStagedPaths: Set<String> = []
 
-    /// Extension marking a staged proposal as already sent.
+    /// Extension marking a staged proposal as claimed for sending.
     ///
-    /// The in-memory set does not survive a relaunch, and the case it exists for
-    /// — a receipt that could not be saved — is exactly the case where the
-    /// durable record is missing, so a restart would otherwise offer the write
-    /// again. This marker is written to the same directory the envelope came
-    /// from, which is agent-writable: an agent could delete it, but deleting it
-    /// only re-exposes its *own* proposal for a second review by the user, so it
-    /// buys an agent nothing it could not get by staging a second proposal.
+    /// The in-memory set does not survive a relaunch, and the cases it exists
+    /// for — a receipt that could not be saved, a dispatch with no answer — are
+    /// exactly the cases where the durable record is missing, so a restart would
+    /// otherwise offer the write again. This marker is written to the same
+    /// directory the envelope came from, which is agent-writable: an agent could
+    /// delete it, but deleting it only re-exposes its *own* proposal for a
+    /// second review by the user, so it buys an agent nothing it could not get
+    /// by staging a second proposal.
     private static let sentMarkerExtension = "sent"
 
     private static func sentMarkerPath(stagedPath: String) -> String {
@@ -707,14 +894,94 @@ final class ConnectorMutationCoordinator {
             || fileManager.fileExists(atPath: sentMarkerPath(stagedPath: stagedPath))
     }
 
-    private static func markSent(stagedPath: String) {
+    /// Claims the send on disk, before it happens, and refuses to proceed if the
+    /// claim cannot be made durable.
+    ///
+    /// The order is the fix. The marker used to be written after the provider
+    /// accepted, wrapped in `try?`, which meant the one situation it was built
+    /// for — an unwritable task folder losing the receipt — was also the
+    /// situation in which the marker silently failed to appear. Restart, and the
+    /// still-pending event offered the same proposal for a second POST.
+    ///
+    /// Claiming first inverts which way the uncertainty falls. If the claim
+    /// fails, nothing is dispatched and the proposal is untouched; the user sees
+    /// a plain "not sent, fix the disk" and can try again. If it succeeds,
+    /// ASTRA's promise not to send twice is on disk before there is anything to
+    /// be wrong about.
+    ///
+    /// `O_CREAT | O_EXCL` rather than exists-then-write, so two coordinators
+    /// racing the same proposal are settled in the kernel: one creates the
+    /// marker, the other gets `EEXIST` and is told the proposal is already
+    /// claimed. `fsync` before returning, because a claim still sitting in the
+    /// page cache is not a claim that survives the crash it exists for.
+    private static func reserveSend(stagedPath: String, target: String) throws {
+        let markerPath = sentMarkerPath(stagedPath: stagedPath)
+        let descriptor = markerPath.withCString { open($0, O_CREAT | O_EXCL | O_WRONLY, 0o600) }
+        guard descriptor >= 0 else {
+            let code = errno
+            if code == EEXIST {
+                sentStagedPaths.insert(stagedPath)
+                throw ConnectorMutationCoordinatorError.alreadySent(target)
+            }
+            throw ConnectorMutationCoordinatorError.sendNotReserved(reason: Self.describe(errno: code))
+        }
+        do {
+            try writeAll(descriptor: descriptor, bytes: Array("sent\n".utf8))
+            guard fsync(descriptor) == 0 else { throw Self.posixError() }
+        } catch {
+            close(descriptor)
+            // The claim is not durable, so it must not be left behind either: a
+            // marker this call did not commit would block a send that never
+            // happened.
+            unlink(markerPath)
+            throw ConnectorMutationCoordinatorError.sendNotReserved(reason: error.localizedDescription)
+        }
+        close(descriptor)
+        // The file's contents are durable; this is what makes its *name* so.
+        // Unchecked, unlike the two above: on APFS the directory entry lands
+        // with the file, and there is no useful recovery from failing here
+        // other than the in-memory set that already covers this launch.
+        let directoryPath = (markerPath as NSString).deletingLastPathComponent
+        let directoryDescriptor = directoryPath.withCString { open($0, O_RDONLY) }
+        if directoryDescriptor >= 0 {
+            fsync(directoryDescriptor)
+            close(directoryDescriptor)
+        }
         sentStagedPaths.insert(stagedPath)
-        // Best effort by construction: if the disk is unwritable the in-memory
-        // set still covers this launch, and there is nothing better available.
-        try? Data("sent\n".utf8).write(
-            to: URL(fileURLWithPath: sentMarkerPath(stagedPath: stagedPath)),
-            options: .atomic
-        )
+    }
+
+    /// Gives a claim back, for the one outcome that is not ambiguous: the
+    /// provider answered, on the record, that it did not act.
+    private static func releaseSendReservation(stagedPath: String) {
+        sentStagedPaths.remove(stagedPath)
+        try? FileManager.default.removeItem(atPath: sentMarkerPath(stagedPath: stagedPath))
+    }
+
+    /// A full write, or a thrown error. `write(2)` is allowed to be partial and
+    /// is allowed to be interrupted, and a marker holding half of "sent" is a
+    /// marker that was never really written.
+    private static func writeAll(descriptor: Int32, bytes: [UInt8]) throws {
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes.withUnsafeBufferPointer { buffer in
+                Darwin.write(descriptor, buffer.baseAddress! + offset, bytes.count - offset)
+            }
+            if written < 0 {
+                if errno == EINTR { continue }
+                throw posixError()
+            }
+            offset += written
+        }
+    }
+
+    private static func posixError() -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [
+            NSLocalizedDescriptionKey: describe(errno: errno)
+        ])
+    }
+
+    private static func describe(errno code: Int32) -> String {
+        String(cString: strerror(code))
     }
 
     /// Test seam. Production never forgets a send.

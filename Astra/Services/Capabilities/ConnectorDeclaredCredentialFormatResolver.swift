@@ -32,9 +32,37 @@ enum ConnectorDeclaredCredentialFormatResolver: ConnectorDeclaredCredentialForma
             .first(where: { $0.id == originPackageID })
         else { return nil }
 
+        return declaredFormat(in: package, componentID: originComponentID, key: key)
+    }
+
+    /// The resolution itself, with the catalog lookup left out.
+    ///
+    /// Split from the entry point above so the matching rules can be exercised
+    /// against a package a test builds — the shapes that matter here (two
+    /// connectors of different services declaring one key) are shapes no shipped
+    /// package has, which is exactly why the old rule looked safe.
+    static func declaredFormat(
+        in package: PluginPackage,
+        componentID: String?,
+        key: String
+    ) -> ConnectorCredentialFormat? {
         let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let candidates = matchingConnectors(in: package, componentID: originComponentID)
-        for connector in candidates {
+        let match = matchingConnectors(in: package, componentID: componentID)
+        if let format = declaredFormat(in: match.exact, key: normalizedKey) {
+            return format
+        }
+        // Only reached when the stamp names no connector the package still has.
+        // A single answer from the fallback set is the rename it is there for;
+        // two different answers are two connectors, and neither of them is
+        // provably this row's.
+        return unambiguousDeclaredFormat(in: match.fallback, key: normalizedKey)
+    }
+
+    private static func declaredFormat(
+        in connectors: [PluginConnector],
+        key normalizedKey: String
+    ) -> ConnectorCredentialFormat? {
+        for connector in connectors {
             for hint in connector.credentialHints
             where hint.key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedKey {
                 if let format = hint.format { return format }
@@ -43,22 +71,72 @@ enum ConnectorDeclaredCredentialFormatResolver: ConnectorDeclaredCredentialForma
         return nil
     }
 
-    /// Prefers the exact component the row was stamped with, and falls back to
-    /// every connector in the package.
+    /// The format the fallback set agrees on, or nothing.
+    ///
+    /// Taking the first match would let an unrelated sibling's declaration
+    /// decide whether a rotated credential is accepted — rejecting a valid
+    /// replacement, or admitting one that this connector's own package says is
+    /// malformed. A disagreement means the stamp was the only thing that knew
+    /// which declaration applied, and it is gone; answering `nil` puts the row
+    /// back where an unstamped row already is rather than answering wrongly.
+    private static func unambiguousDeclaredFormat(
+        in connectors: [PluginConnector],
+        key normalizedKey: String
+    ) -> ConnectorCredentialFormat? {
+        var declared: ConnectorCredentialFormat?
+        for connector in connectors {
+            for hint in connector.credentialHints
+            where hint.key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedKey {
+                guard let format = hint.format else { continue }
+                if let declared, declared != format { return nil }
+                declared = format
+            }
+        }
+        return declared
+    }
+
+    /// Splits the package's connectors into the exact component the row was
+    /// stamped with and the set to consult if that component is gone.
     ///
     /// The fallback matters because `originComponentID` encodes the connector's
-    /// *name* and service type, so renaming a connector in a package update
-    /// orphans the stamp. Losing the format on a rename would silently reopen
-    /// the hole this closes, and the fallback cannot make the check wrong — it
-    /// can only find a declaration the same package made for the same key.
+    /// *name* as well as its service type, so renaming a connector in a package
+    /// update orphans the stamp, and losing the format on a rename would
+    /// silently reopen the hole this closes.
+    ///
+    /// It used to be every connector in the package, on the reasoning that the
+    /// fallback "cannot make the check wrong". It can: two connectors in one
+    /// package declaring the same key with different formats make the answer
+    /// whichever one is listed first. The stamp still carries the service type
+    /// even when the name no longer resolves, so the fallback is narrowed to the
+    /// connectors that share it — a rename within a service still finds its
+    /// declaration, and a Jira connector can no longer be validated against a
+    /// REDCap one.
     private static func matchingConnectors(
         in package: PluginPackage,
         componentID: String?
-    ) -> [PluginConnector] {
-        guard let componentID, !componentID.isEmpty else { return package.connectors }
+    ) -> (exact: [PluginConnector], fallback: [PluginConnector]) {
+        guard let componentID, !componentID.isEmpty else { return ([], package.connectors) }
         let exact = package.connectors.filter {
             CapabilityResourceOrigin.componentID(for: $0) == componentID
         }
-        return exact.isEmpty ? package.connectors : exact
+        guard exact.isEmpty else { return (exact, []) }
+        guard let serviceType = stampedServiceType(componentID) else {
+            return ([], package.connectors)
+        }
+        let sameService = package.connectors.filter {
+            CapabilityResourceOrigin.componentID(for: $0).hasPrefix("connector:\(serviceType):")
+        }
+        return ([], sameService.isEmpty ? package.connectors : sameService)
+    }
+
+    /// The service type out of a `connector:<service>:<name>` stamp.
+    ///
+    /// Parsed rather than stored: the stamp is the durable record, and adding a
+    /// second column for a value already inside it would need a SwiftData
+    /// migration to carry a substring.
+    private static func stampedServiceType(_ componentID: String) -> String? {
+        let parts = componentID.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count >= 3, parts[0] == "connector", !parts[1].isEmpty else { return nil }
+        return String(parts[1])
     }
 }

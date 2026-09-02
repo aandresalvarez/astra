@@ -127,8 +127,12 @@ public enum ConnectorMutationStaging {
                 "No task folder is projected, so a proposal cannot be staged where ASTRA would find it"
             )
         }
-        let directory = stagingDirectory(taskFolder: configuration.taskFolder)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try TaskFolderContainment.createDirectory(
+            named: directoryName,
+            beneath: TaskFolderContainment.resolvedRoot(configuration.taskFolder),
+            refusal: "stage a connector mutation",
+            makeError: { ConnectorMutationStagingError($0) }
+        )
 
         let envelope: [String: Any] = [
             "schema_version": schemaVersion,
@@ -209,17 +213,19 @@ public enum ConnectorMutationStaging {
         containedIn taskFolder: String,
         expectedDigest: String? = nil
     ) throws -> StagedConnectorMutation {
-        let directory = stagingDirectory(taskFolder: taskFolder).resolvingSymlinksInPath()
+        let directory = try TaskFolderContainment.existingDirectory(
+            named: directoryName,
+            beneath: TaskFolderContainment.resolvedRoot(taskFolder),
+            refusal: "read a staged connector mutation",
+            makeError: { ConnectorMutationStagingError($0) }
+        )
         let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         guard url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else {
             throw ConnectorMutationStagingError(
                 "Staged mutation is not inside this task's \(directoryName) directory"
             )
         }
-        let data = try Data(contentsOf: url)
-        guard data.count <= envelopeByteLimit else {
-            throw ConnectorMutationStagingError("Staged mutation is larger than the \(envelopeByteLimit)-byte limit")
-        }
+        let data = try boundedContents(of: url)
         let digest = sha256Hex(data)
         // Checked before decoding, so a rewritten envelope is refused as a
         // mismatch rather than reported as whatever it now says it is.
@@ -229,6 +235,46 @@ public enum ConnectorMutationStaging {
             )
         }
         return try decode(data: data, digest: digest, path: url.path)
+    }
+
+    /// Reads an envelope without ever holding more than the limit in memory.
+    ///
+    /// The limit used to be checked after `Data(contentsOf:)` had already
+    /// allocated the whole file, which is a limit enforced after the damage.
+    /// That matters here more than it would elsewhere: every file in this
+    /// directory is a file the agent can write, and the app's scan is on the
+    /// main actor — `ConnectorMutationDiscovery` opens up to 200 candidates a
+    /// pass, so one oversized name in the directory is a main-thread allocation
+    /// of whatever size the agent chose.
+    ///
+    /// Two checks, because neither is sufficient alone. The `lstat` rejects an
+    /// oversized or non-regular entry before a byte is read — a fifo would
+    /// otherwise block the scan indefinitely rather than merely exhaust it. The
+    /// bounded handle read then covers a file that grows between the stat and
+    /// the read, by asking for one byte more than is allowed and refusing if it
+    /// gets it.
+    private static func boundedContents(of url: URL) throws -> Data {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch {
+            throw ConnectorMutationStagingError(
+                "Staged mutation could not be read: \(error.localizedDescription)"
+            )
+        }
+        guard (attributes[.type] as? FileAttributeType) == .typeRegular else {
+            throw ConnectorMutationStagingError("Staged mutation is not a regular file")
+        }
+        if let size = attributes[.size] as? Int, size > envelopeByteLimit {
+            throw ConnectorMutationStagingError("Staged mutation is larger than the \(envelopeByteLimit)-byte limit")
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: envelopeByteLimit + 1) ?? Data()
+        guard data.count <= envelopeByteLimit else {
+            throw ConnectorMutationStagingError("Staged mutation is larger than the \(envelopeByteLimit)-byte limit")
+        }
+        return data
     }
 
     private static func decode(data: Data, digest: String, path: String) throws -> StagedConnectorMutation {

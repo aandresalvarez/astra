@@ -6,6 +6,13 @@ enum ConnectorMutationEventTypes {
     static let approved = "connector.mutation.approved"
     static let receipt = "connector.mutation.receipt"
     static let failed = "connector.mutation.failed"
+    /// ASTRA dispatched the write and never learned whether it took.
+    ///
+    /// Distinct from `failed` because it is not one: a failure says the write
+    /// did not happen, and this says nobody knows. They have to be different
+    /// events because they retire the proposal differently — a failure leaves it
+    /// sendable, and this must not.
+    static let indeterminate = "connector.mutation.indeterminate"
     static let declined = "connector.mutation.declined"
 }
 
@@ -108,6 +115,7 @@ enum ConnectorMutationRequirementResolver {
                     order.append(staged.stagedPayloadPath)
                 }
             case ConnectorMutationEventTypes.receipt,
+                 ConnectorMutationEventTypes.indeterminate,
                  ConnectorMutationEventTypes.declined:
                 // Resolution is keyed by the staged file for the same reason
                 // approval is: a second proposal in the same task is a different
@@ -152,9 +160,18 @@ enum ConnectorMutationRequirementResolver {
         )
     }
 
-    /// A failure is not a resolution. A Jira `POST` that returned 503 leaves the
-    /// proposal exactly as reviewable as it was, so the row stays and the user
-    /// can send it again; only a receipt or an explicit decline retires it.
+    /// A failure is not a resolution. A Jira `POST` that came back `400` leaves
+    /// the proposal exactly as reviewable as it was, so the row stays and the
+    /// user can send it again.
+    ///
+    /// An *indeterminate* outcome is a resolution, and that is the difference
+    /// worth stating. It says ASTRA put the request on the wire and never got a
+    /// usable answer — a dropped connection, a timeout, a gateway `503` that may
+    /// sit in front of a Jira that already filed the ticket. Leaving that row
+    /// pending would offer a second POST for a write that may already exist, and
+    /// a duplicate ticket is the one outcome here that cannot be undone. So it
+    /// retires, and the receipt the user gets is a sentence telling them to go
+    /// look.
     private static func resolvedStagedPath(in payload: String) -> String? {
         guard let data = payload.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

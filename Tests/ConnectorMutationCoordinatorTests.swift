@@ -232,8 +232,80 @@ struct ConnectorMutationCoordinatorTests {
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
     }
 
+    /// A `4xx` is the one non-success the provider is willing to put its name
+    /// to: it acted on the request by refusing it, and nothing was written. Only
+    /// that shape gives the claim back.
     @Test("A rejected send is recorded but leaves the proposal reviewable")
     func rejectedSendLeavesTheProposalPending() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 400,
+                body: #"{"errorMessages":["issuetype is required"],"errors":{}}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        #expect(error == .requestFailed(statusCode: 400, message: "issuetype is required"))
+        #expect(error?.isTerminal == false)
+        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.failed })
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 1)
+        // The claim taken before dispatch is handed back, or the row would be
+        // pending and unsendable at the same time.
+        #expect(!FileManager.default.fileExists(atPath: pending.stagedPayloadPath + ".sent"))
+        #expect(!ConnectorMutationCoordinator.hasBeenSent(stagedPath: pending.stagedPayloadPath))
+    }
+
+    /// Jira may well have filed the ticket before the socket died. Retrying
+    /// would file it twice, and a duplicate ticket is the one outcome here that
+    /// nobody can undo.
+    @Test("A transport failure after dispatch is quarantined, not retried")
+    func transportFailureAfterDispatchIsQuarantined() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender(failure: FixtureTransportFailure())
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        #expect(error == .dispatchedWithoutConfirmation(
+            target: "STAR / Bug",
+            reason: FixtureTransportFailure.message
+        ))
+        // The sheet reads this to decide the send button does not come back.
+        #expect(error?.isTerminal == true)
+        #expect(sender.requests.count == 1)
+        // Not a failure. A failure event says the tracker is unchanged, and
+        // that is precisely what ASTRA does not know.
+        #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.failed })
+        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.indeterminate })
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+
+        // And it survives the relaunch that used to be where the duplicate came
+        // from: the claim is on disk, written before the request went out.
+        #expect(FileManager.default.fileExists(atPath: pending.stagedPayloadPath + ".sent"))
+        ConnectorMutationCoordinator.resetSentStagedPathsForTesting()
+        #expect(throws: ConnectorMutationCoordinatorError.alreadySent("STAR / Bug")) {
+            try fixture.coordinator(sender: sender).prepare(task: fixture.task, pending: pending)
+        }
+        #expect(sender.requests.count == 1)
+    }
+
+    /// A `503` is usually the gateway in front of Jira, and a gateway can time
+    /// out on a request Jira has already committed.
+    @Test("A gateway failure is quarantined rather than offered for retry")
+    func gatewayFailureIsQuarantined() async throws {
         let fixture = try Fixture()
         let pending = try fixture.stageProposal()
         let sender = RecordingSender(
@@ -246,16 +318,48 @@ struct ConnectorMutationCoordinatorTests {
         let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
         try fixture.recordStagedEvent(pending)
 
-        await #expect(
-            throws: ConnectorMutationCoordinatorError.requestFailed(
-                statusCode: 503,
-                message: "Jira is temporarily unavailable"
-            )
-        ) {
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
             try await coordinator.send(task: fixture.task, proposal: proposal)
         }
 
-        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.failed })
+        #expect(error == .dispatchedWithoutConfirmation(
+            target: "STAR / Bug",
+            reason: "Jira is temporarily unavailable"
+        ))
+        #expect(error?.isTerminal == true)
+        #expect(fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.indeterminate })
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+    }
+
+    /// The claim used to be written after the response, wrapped in `try?`, so
+    /// the one situation it existed for — an unwritable task folder — was the
+    /// situation in which it silently failed to appear.
+    @Test("Nothing is dispatched when the send cannot be claimed durably")
+    func sendIsRefusedWhenTheClaimCannotBeWritten() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal()
+        let sender = RecordingSender()
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let directory = (pending.stagedPayloadPath as NSString).deletingLastPathComponent
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+        }
+
+        let error = await #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try await coordinator.send(task: fixture.task, proposal: proposal)
+        }
+
+        guard case .sendNotReserved = error else {
+            Issue.record("Expected a reservation failure, got \(String(describing: error))")
+            return
+        }
+        // Nothing went out, so the proposal is exactly as reviewable as it was.
+        #expect(error?.isTerminal == false)
+        #expect(sender.requests.isEmpty)
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 1)
     }
 
@@ -481,6 +585,11 @@ struct ConnectorMutationCoordinatorTests {
 }
 
 /// Stands in for the store being unwritable at the moment the receipt is saved.
+private struct FixtureTransportFailure: LocalizedError {
+    static let message = "The network connection was lost."
+    var errorDescription: String? { Self.message }
+}
+
 private struct FixtureSaveFailure: LocalizedError {
     static let message = "the task store could not be written"
     var errorDescription: String? { Self.message }
@@ -490,9 +599,16 @@ private final class RecordingSender: ConnectorMutationSending, @unchecked Sendab
     private let lock = NSLock()
     private var recorded: [ConnectorMutationHTTPRequest] = []
     let response: ConnectorMutationHTTPResponse
+    /// Thrown *after* the request is recorded, so a test can model the case that
+    /// matters: the bytes went out and the answer never came back.
+    let failure: (any Error)?
 
-    init(response: ConnectorMutationHTTPResponse = ConnectorMutationHTTPResponse(statusCode: 201, body: "{}")) {
+    init(
+        response: ConnectorMutationHTTPResponse = ConnectorMutationHTTPResponse(statusCode: 201, body: "{}"),
+        failure: (any Error)? = nil
+    ) {
         self.response = response
+        self.failure = failure
     }
 
     var requests: [ConnectorMutationHTTPRequest] {
@@ -505,6 +621,7 @@ private final class RecordingSender: ConnectorMutationSending, @unchecked Sendab
         lock.lock()
         recorded.append(request)
         lock.unlock()
+        if let failure { throw failure }
         return response
     }
 }

@@ -263,48 +263,21 @@ public enum REDCapHostControlPolicy {
     /// Creates `redcap-exports` under the task folder, refusing to follow a
     /// symlink out of it.
     ///
-    /// The task folder is agent-writable; this broker is not sandboxed to it.
-    /// An agent that pre-creates `redcap-exports` as a symlink to a git
-    /// checkout gets a `createDirectory` that succeeds against the link target
-    /// and every export after it landing there — outside the task folder, past
-    /// the workspace-write permissions the user granted, and into something one
-    /// `git add .` from committing subject data. `createDirectory` has no
-    /// don't-follow option, so the link is rejected explicitly, and the result
-    /// is re-resolved afterwards so an intermediate component (or a link
-    /// swapped in between the two calls) cannot carry the write out either.
+    /// The rule and its reasoning live in `TaskFolderContainment`, which the
+    /// connector-mutation staging directory now shares: the hole was found here
+    /// first and was identical there, and a containment rule written twice is a
+    /// containment rule enforced once.
     private static func exportDirectory(
         beneath root: URL,
         fileManager: FileManager = .default
     ) throws -> URL {
-        let directory = root.appendingPathComponent(exportDirectoryName, isDirectory: true)
-        // `attributesOfItem` is `lstat`-backed, so unlike `fileExists` it
-        // reports the link rather than what the link points at.
-        if let type = try? fileManager.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType,
-           type == .typeSymbolicLink {
-            throw REDCapRequestPolicyError(
-                "The \(exportDirectoryName) directory in this task folder is a symbolic link. ASTRA will "
-                    + "not write subject data through it, because it can point outside the task folder. "
-                    + "Remove the link and let ASTRA create a real directory."
-            )
-        }
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let resolved = directory.resolvingSymlinksInPath()
-        guard isContained(resolved, in: root) else {
-            throw REDCapRequestPolicyError(
-                "The \(exportDirectoryName) directory in this task folder resolves to \(resolved.path), "
-                    + "which is outside the task folder. Refusing to write subject data there."
-            )
-        }
-        return resolved
-    }
-
-    /// Path containment by component, not by string prefix: `/tmp/task` must
-    /// not be judged to contain `/tmp/task-other`.
-    private static func isContained(_ url: URL, in root: URL) -> Bool {
-        let rootParts = root.standardizedFileURL.pathComponents
-        let parts = url.standardizedFileURL.pathComponents
-        guard parts.count >= rootParts.count else { return false }
-        return Array(parts.prefix(rootParts.count)) == rootParts
+        try TaskFolderContainment.createDirectory(
+            named: exportDirectoryName,
+            beneath: root,
+            refusal: "write subject data",
+            fileManager: fileManager,
+            makeError: { REDCapRequestPolicyError($0) }
+        )
     }
 
     /// How many names to try before giving up. Bounded so a directory that

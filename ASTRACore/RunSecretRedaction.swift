@@ -61,13 +61,35 @@ public enum RunSecretRedaction {
     /// `[redacted]` file paths, protecting a socket path that is not a secret.
     public static let nonCredentialKeyNames = ["PROJECT_KEY", "KEY_ID", "SSH_AUTH_SOCK"]
 
+    /// Whether an exception above names *this* variable, rather than merely
+    /// appearing somewhere inside its name.
+    ///
+    /// The distinction is the whole safety of the exception list. Matched as a
+    /// bare substring, `PROJECT_KEY` also swallowed `PROJECT_KEY_TOKEN` and
+    /// `KEY_ID` swallowed `KEY_ID_SECRET` — names that `Skill.isSecretEnvironmentKey`
+    /// (which has no exception list) stores in the Keychain and projects into
+    /// the agent environment. The value went out and never came back through
+    /// either launch-time redaction or the startup purge, so an agent echoing
+    /// it persisted it in the clear.
+    ///
+    /// So an exception has to own the *end* of the name: `PROJECT_KEY` and
+    /// `JIRA_PROJECT_KEY` are the project name the exception is about, while
+    /// anything with a further `_TOKEN`, `_SECRET`, or `_PASSWORD` after it is a
+    /// credential that happens to be scoped by one. Prefix and infix matches are
+    /// deliberately not accepted: a suffix is what changes what a name *is*.
+    static func isNonCredentialKeyName(_ upper: String) -> Bool {
+        nonCredentialKeyNames.contains { exception in
+            upper == exception || upper.hasSuffix("_" + exception)
+        }
+    }
+
     /// Whether an environment variable's *name* says it holds a credential.
     ///
     /// Keyed on the name rather than the value because the projection also
     /// carries base URLs, project IDs, and file paths.
     public static func isSecretKey(_ key: String) -> Bool {
         let upper = key.uppercased()
-        guard !nonCredentialKeyNames.contains(where: { upper.contains($0) }) else { return false }
+        guard !isNonCredentialKeyName(upper) else { return false }
         return keychainBackedKeyPatterns.contains { upper.contains($0) }
     }
 
@@ -169,6 +191,8 @@ public enum RunSecretRedactionScope {
     /// itself — handoffs, checkpoints, and post-run summaries all write
     /// payloads — and a task's set is replaced wholesale on its next launch,
     /// so this bounds memory without a lifecycle callback that could be missed.
+    ///
+    /// It is a ceiling on *finished* runs only. See `beginRun(taskID:)`.
     public static let retainedTaskLimit = 16
 
     /// Distinct values retained per task. Registration accumulates rather than
@@ -185,9 +209,17 @@ public enum RunSecretRedactionScope {
         /// registers once at launch and then redacts for hours, so sixteen
         /// short tasks starting after it would evict the live one and every
         /// credential it echoed from then on would persist in the clear.
-        /// Reading keeps a task alive, which is the property that matters —
-        /// a scope stops being touched exactly when its task stops writing.
+        ///
+        /// Reading keeps a task alive, but only while it is reading: a run that
+        /// is silent for long enough is indistinguishable from a finished one
+        /// here. That is what `activeRunDepthByTaskID` is for.
         var order: [UUID] = []
+        /// Tasks with a live agent process, by nesting depth. Never evicted.
+        ///
+        /// A count rather than a set because one task can have overlapping
+        /// launches — a phase that starts before the previous one's reaper has
+        /// finished — and the inner one ending must not unpin the outer.
+        var activeRunDepthByTaskID: [UUID: Int] = [:]
         /// Non-empty iff at least one task has secrets, so the common case
         /// (no connectors, or none with credentials) costs one bool read.
         var isEmpty: Bool { secretsByTaskID.isEmpty }
@@ -203,10 +235,33 @@ public enum RunSecretRedactionScope {
         }
 
         /// Reads a task's secrets and marks it used in one lock acquisition.
+        ///
+        /// Returns before touching when the scope is missing, which is worth
+        /// saying out loud: a read cannot resurrect an evicted task, so
+        /// read-based LRU protects a task that is *writing* and nothing else.
+        /// Protecting a task that is merely *running* is `activeRunDepthByTaskID`'s
+        /// job, not this one's.
         mutating func use(_ taskID: UUID) -> [String] {
             guard !isEmpty, let secrets = secretsByTaskID[taskID], !secrets.isEmpty else { return [] }
             touch(taskID)
             return secrets
+        }
+
+        /// Drops least-recently-used *inactive* scopes down to the limit.
+        ///
+        /// Stops rather than evicting an active one. `retainedTaskLimit` bounds
+        /// scopes kept for tasks that are no longer running; a live process is
+        /// bounded by the app's own run concurrency, and each scope is already
+        /// capped at `retainedSecretsPerTask` values, so retaining every active
+        /// one cannot grow without bound. Evicting one could: the run keeps
+        /// producing output, and every line of it after the eviction would be
+        /// persisted unredacted.
+        mutating func evictInactiveOverflow(limit: Int) {
+            while order.count > limit {
+                guard let index = order.firstIndex(where: { activeRunDepthByTaskID[$0] == nil }) else { return }
+                let evicted = order.remove(at: index)
+                secretsByTaskID.removeValue(forKey: evicted)
+            }
         }
     }
 
@@ -234,11 +289,46 @@ public enum RunSecretRedactionScope {
                 .prefix(retainedSecretsPerTask)
                 .map { $0 }
             state.touch(taskID)
-            while state.order.count > retainedTaskLimit {
-                let evicted = state.order.removeFirst()
-                state.secretsByTaskID.removeValue(forKey: evicted)
-            }
+            state.evictInactiveOverflow(limit: retainedTaskLimit)
         }
+    }
+
+    /// Pins a task's scope for as long as its agent process is alive.
+    ///
+    /// Eviction is least-recently-*used*, and a scope is only used when its task
+    /// writes something. A credential-bearing run that is thinking, waiting on a
+    /// tool, or blocked on an approval writes nothing, so sixteen shorter runs
+    /// starting after it used to evict it — and because `State.use` returns
+    /// before touching when the scope is gone, its next line of output could not
+    /// bring it back. It was persisted in the clear, and so was everything after
+    /// it.
+    ///
+    /// Balanced by `endRun(taskID:)`, which does not drop the secrets: redaction
+    /// still has to outlive the run for handoffs and post-run summaries. It only
+    /// makes the scope evictable again, which is what the LRU was always for.
+    public static func beginRun(taskID: UUID) {
+        storage.withLock { state in
+            state.activeRunDepthByTaskID[taskID, default: 0] += 1
+        }
+    }
+
+    public static func endRun(taskID: UUID) {
+        storage.withLock { state in
+            guard let depth = state.activeRunDepthByTaskID[taskID] else { return }
+            if depth <= 1 {
+                state.activeRunDepthByTaskID.removeValue(forKey: taskID)
+            } else {
+                state.activeRunDepthByTaskID[taskID] = depth - 1
+            }
+            // The scope stopped being pinned, so the backlog it was holding open
+            // can go now rather than waiting for the next registration.
+            state.evictInactiveOverflow(limit: retainedTaskLimit)
+        }
+    }
+
+    /// Whether a task's scope is currently pinned. Test and diagnostic seam.
+    public static func isRunActive(taskID: UUID) -> Bool {
+        storage.withLock { $0.activeRunDepthByTaskID[taskID] != nil }
     }
 
     /// Registers the credential values found in a resolved launch environment.

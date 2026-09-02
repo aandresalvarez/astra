@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// The outcome of testing one capability's connection from the New Workspace
 /// wizard.
@@ -78,10 +79,13 @@ enum WorkspaceCapabilityValidationTelemetry {
         ])
     }
 
+    /// - Parameter credentials: the draft values the test was run with, so the
+    ///   detail can be scrubbed of them before it is written.
     static func finished(
         packageID: String,
         traceID: String,
-        state: WorkspaceCapabilityValidationState
+        state: WorkspaceCapabilityValidationState,
+        credentials: [String: String] = [:]
     ) {
         var fields = [
             "source": source,
@@ -99,7 +103,7 @@ enum WorkspaceCapabilityValidationTelemetry {
             // The detail is what makes the line worth having. "GCP failed" was
             // already on screen; what it said is the part that was missing.
             // `audit` bounds field length itself.
-            fields["detail"] = detail
+            fields["detail"] = redacted(detail, credentials: credentials)
         case .unchecked, .checking:
             // Unreachable today — validation only ever resolves to a terminal
             // state. Recorded rather than dropped so that a new case added to
@@ -113,5 +117,112 @@ enum WorkspaceCapabilityValidationTelemetry {
             fields: fields,
             level: passed ? .info : .warning
         )
+    }
+
+    /// Scrubs the wizard's draft credentials out of a provider's error text.
+    ///
+    /// A connector test sends the token the user just typed, and some endpoints
+    /// — a campus proxy, a misconfigured gateway, REDCap itself for certain
+    /// argument errors — quote the submitted parameters back in their JSON
+    /// error. `Connector.redcapAPIError` returns that body as the failure
+    /// detail, so persisting it verbatim wrote a second cleartext copy of the
+    /// token into the audit log. Nothing else covers it: these values are still
+    /// draft, not yet in the Keychain and not attached to any task, so
+    /// `RunSecretRedactionScope` has never heard of them.
+    ///
+    /// Redacted rather than dropped. The detail is the reason this event
+    /// records anything at all — a user reporting "it failed" with no line in
+    /// the log is what it was added for — and a scrubbed message still says
+    /// which host refused and why.
+    static func redacted(_ detail: String, credentials: [String: String]) -> String {
+        RunSecretRedaction.redact(
+            detail,
+            secrets: credentials.values
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.count >= RunSecretRedaction.minimumSecretLength }
+        )
+    }
+}
+
+/// The connector half of the New Workspace wizard's Test Connection button.
+///
+/// Extracted from `ContentView` so the draft credentials a test submits and the
+/// draft credentials the audit line has to scrub are one list rather than two.
+/// A second copy would go stale exactly when a new connector is added, and the
+/// symptom would be a token in the log rather than a compile error.
+enum WorkspaceCapabilityConnectorValidation {
+    /// The draft credentials a package's connection test sends.
+    ///
+    /// Empty for packages whose test spends a subprocess rather than a
+    /// credential (`github`, `gcloud`): nothing the user typed goes on the wire,
+    /// so there is nothing for the audit line to scrub.
+    static func draftCredentials(
+        packageID: String,
+        configuration: OnboardingCapabilityConfiguration
+    ) -> [String: String] {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            [
+                "JIRA_EMAIL": configuration.jiraEmail,
+                "JIRA_API_TOKEN": configuration.jiraAPIToken
+            ]
+        case OnboardingCapabilitySetup.redcapPackageID:
+            ["REDCAP_API_TOKEN": configuration.redcapAPIToken]
+        default:
+            [:]
+        }
+    }
+
+    @MainActor
+    static func validate(
+        packageID: String,
+        connector: Connector,
+        credentials: [String: String],
+        source: String
+    ) async -> WorkspaceCapabilityValidationState {
+        let result = await connector.testConnection(
+            store: WorkspaceSetupValidationSecretStore(credentials: credentials),
+            source: source,
+            packageID: packageID,
+            traceID: AuditTrace.make("workspace-capability-validate")
+        )
+        return result.0 ? .ready(result.1) : .failed(result.1)
+    }
+
+    @MainActor
+    static func jiraConnector(configuration: OnboardingCapabilityConfiguration) -> Connector {
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            icon: "list.bullet.clipboard",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: trimmed(configuration.jiraBaseURL),
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.credentialValues = ["", ""]
+        connector.configKeys = ["JIRA_PROJECTS"]
+        connector.configValues = [trimmed(configuration.jiraProjects)]
+        return connector
+    }
+
+    @MainActor
+    static func redcapConnector(configuration: OnboardingCapabilityConfiguration) -> Connector {
+        let connector = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            icon: "tablecells",
+            connectorDescription: "Stanford REDCap API",
+            baseURL: trimmed(configuration.redcapAPIURL),
+            authMethod: "api_key"
+        )
+        connector.credentialKeys = ["REDCAP_API_TOKEN"]
+        connector.credentialValues = [""]
+        connector.testHTTPMethod = "POST"
+        return connector
+    }
+
+    private static func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

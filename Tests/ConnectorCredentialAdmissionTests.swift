@@ -369,6 +369,107 @@ struct ConnectorDeclaredCredentialFormatResolverTests {
         #expect(format?.admits(Self.redcapShaped) == true)
     }
 
+    /// A rename within one service still finds its declaration — that is what
+    /// the fallback is for — but it must not reach across services.
+    @Test("A stale stamp falls back only inside its own service type")
+    func staleStampFallsBackWithinItsServiceOnly() {
+        let package = Self.twoServicePackage()
+
+        // The Jira connector was renamed, so its stamp no longer resolves. The
+        // REDCap sibling declares the same key with a different shape, and
+        // borrowing it would reject every valid Atlassian token from here on.
+        let jira = ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            in: package,
+            componentID: "connector:jira:renamed-away",
+            key: "SHARED_TOKEN"
+        )
+
+        #expect(jira?.admits(Self.atlassianShaped) == true)
+        #expect(jira?.admits(Self.redcapShaped) == false)
+    }
+
+    /// And when the stamp says nothing useful, disagreement is not a tiebreak
+    /// to be resolved by declaration order.
+    @Test("Conflicting sibling declarations resolve to nothing, not the first")
+    func conflictingSiblingDeclarationsResolveToNothing() {
+        let package = Self.twoServicePackage()
+
+        // An unstamped row, and a stamp whose service type the package does not
+        // have. Both fall back to every connector, and the two disagree.
+        #expect(ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            in: package, componentID: nil, key: "SHARED_TOKEN") == nil)
+        #expect(ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            in: package, componentID: "connector:github:gone", key: "SHARED_TOKEN") == nil)
+    }
+
+    @Test("An exact component stamp is answered by that connector alone")
+    func exactStampWinsOutright() {
+        let package = Self.twoServicePackage()
+
+        let redcap = ConnectorDeclaredCredentialFormatResolver.declaredFormat(
+            in: package,
+            componentID: CapabilityResourceOrigin.componentID(for: package.connectors[1]),
+            key: "shared_token"
+        )
+
+        #expect(redcap?.admits(Self.redcapShaped) == true)
+        #expect(redcap?.admits(Self.atlassianShaped) == false)
+    }
+
+    /// Two connectors, two services, one credential key, two different shapes.
+    /// No shipped package looks like this, which is why "the fallback cannot
+    /// make the check wrong" held up for as long as it did.
+    private static func twoServicePackage() -> PluginPackage {
+        func connector(
+            name: String, serviceType: String, pattern: String, expectation: String
+        ) -> PluginConnector {
+            PluginConnector(
+                name: name,
+                serviceType: serviceType,
+                icon: "link",
+                description: name,
+                baseURL: "https://\(serviceType).example.com",
+                authMethod: "api_key",
+                credentialHints: [
+                    PluginConnector.CredentialHint(
+                        key: "SHARED_TOKEN",
+                        hint: expectation,
+                        format: ConnectorCredentialFormat(pattern: pattern, expectation: expectation)
+                    )
+                ],
+                configHints: [],
+                notes: ""
+            )
+        }
+        return PluginPackage(
+            id: "two-service-package",
+            name: "Two Service",
+            icon: "square",
+            description: "Two connectors that disagree about one key",
+            author: "test",
+            category: "test",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [
+                connector(
+                    name: "Jira",
+                    serviceType: "jira",
+                    pattern: "ATATT[A-Za-z0-9]{16,}",
+                    expectation: "an Atlassian API token"
+                ),
+                connector(
+                    name: "REDCap",
+                    serviceType: "redcap",
+                    pattern: "[0-9A-F]{32}",
+                    expectation: "32 hexadecimal characters"
+                )
+            ],
+            localTools: [],
+            templates: []
+        )
+    }
+
     /// Unregistered, the seam answers `nil` instead of trapping. Credential
     /// writes run on paths that start long before `registerAll()` in some tools,
     /// and the right behaviour without a resolver is the one that existed

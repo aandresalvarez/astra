@@ -381,6 +381,52 @@ struct SidebarGroupingTests {
         )
     }
 
+    /// The terms used to be XOR-ed into one accumulator, which recorded each
+    /// field's *parity* across the snapshot rather than which task held which
+    /// value. Two pin writes coalesced into one snapshot cancelled exactly — and
+    /// the pin writer restores `updatedAt` on purpose, so nothing else moved
+    /// either.
+    @Test("Two tasks swapping a boolean still moves the signature")
+    func sidebarTaskIndexInvalidationCouplesFieldsToTheirTask() {
+        let workspace = makeWorkspace(name: "Pinned Workspace")
+        let pinned = makeTask(title: "Already pinned", status: .completed, workspace: workspace)
+        let unpinned = makeTask(title: "Not pinned", status: .completed, workspace: workspace)
+        let frozen = Date(timeIntervalSince1970: 400)
+        pinned.updatedAt = frozen
+        unpinned.updatedAt = frozen
+        pinned.isPinned = true
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [pinned, unpinned])
+
+        // Unpin one, pin the other, in the window before a single snapshot.
+        pinned.isPinned = false
+        pinned.updatedAt = frozen
+        unpinned.isPinned = true
+        unpinned.updatedAt = frozen
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [pinned, unpinned]) != before,
+            """
+            The pinned count is unchanged, so a parity fingerprint says nothing \
+            happened and SidebarTaskIndex keeps both tasks in the wrong arrays.
+            """
+        )
+    }
+
+    /// And the fingerprint still must not depend on the order the snapshot
+    /// arrives in — the fix folds per-task hashes with `&+`, not by appending.
+    @Test("The signature does not depend on snapshot order")
+    func sidebarTaskIndexInvalidationIsOrderIndependent() {
+        let workspace = makeWorkspace(name: "Ordering Workspace")
+        let first = makeTask(title: "First", status: .completed, workspace: workspace)
+        let second = makeTask(title: "Second", status: .running, workspace: workspace)
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [first, second])
+                == SidebarTaskIndexInvalidation.signature(for: [second, first])
+        )
+    }
+
     /// The ordinary rename path, which does bump `updatedAt`. Kept alongside
     /// the silent one so a future change cannot satisfy this suite by hashing
     /// only the timestamp again.

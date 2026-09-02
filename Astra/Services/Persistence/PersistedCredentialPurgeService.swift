@@ -196,6 +196,10 @@ public enum PersistedCredentialPurgeService {
         // readable, and `consider` still declines to redact it, because a
         // project key runs through ordinary prose and replacing it would shred
         // the transcript without protecting anything.
+        //
+        // That divergence is bounded by name, not by substring — see
+        // `RunSecretRedaction.isNonCredentialKeyName`. A `PROJECT_KEY_TOKEN` is
+        // a token, it is stored as one, and this sweep purges it as one.
         let skills = try modelContext.fetch(FetchDescriptor<Skill>())
         for skill in skills {
             for (index, key) in skill.environmentKeys.enumerated()

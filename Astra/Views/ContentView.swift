@@ -4502,7 +4502,15 @@ struct WorkspaceSetupForm: View {
         WorkspaceCapabilityValidationTelemetry.finished(
             packageID: packageID,
             traceID: traceID,
-            state: result
+            state: result,
+            credentials: validationCredentials(for: packageID)
+        )
+    }
+
+    private func validationCredentials(for packageID: String) -> [String: String] {
+        WorkspaceCapabilityConnectorValidation.draftCredentials(
+            packageID: packageID,
+            configuration: draft.capabilityConfiguration
         )
     }
 
@@ -4521,73 +4529,24 @@ struct WorkspaceSetupForm: View {
             }
             return await validateGCloudProject()
         case OnboardingCapabilitySetup.jiraPackageID:
-            return await validateConnectorCapability(
+            return await WorkspaceCapabilityConnectorValidation.validate(
                 packageID: packageID,
-                connector: jiraValidationConnector(),
-                credentials: [
-                    "JIRA_EMAIL": draft.capabilityConfiguration.jiraEmail,
-                    "JIRA_API_TOKEN": draft.capabilityConfiguration.jiraAPIToken
-                ]
+                connector: WorkspaceCapabilityConnectorValidation
+                    .jiraConnector(configuration: draft.capabilityConfiguration),
+                credentials: validationCredentials(for: packageID),
+                source: mode.validationSource
             )
         case OnboardingCapabilitySetup.redcapPackageID:
-            return await validateConnectorCapability(
+            return await WorkspaceCapabilityConnectorValidation.validate(
                 packageID: packageID,
-                connector: redcapValidationConnector(),
-                credentials: [
-                    "REDCAP_API_TOKEN": draft.capabilityConfiguration.redcapAPIToken
-                ]
+                connector: WorkspaceCapabilityConnectorValidation
+                    .redcapConnector(configuration: draft.capabilityConfiguration),
+                credentials: validationCredentials(for: packageID),
+                source: mode.validationSource
             )
         default:
             return .ready("No connection test is required for this capability.")
         }
-    }
-
-    private func validateConnectorCapability(
-        packageID: String,
-        connector: Connector,
-        credentials: [String: String]
-    ) async -> WorkspaceCapabilityValidationState {
-        let traceID = AuditTrace.make("workspace-capability-validate")
-        let result = await connector.testConnection(
-            store: WorkspaceSetupValidationSecretStore(credentials: credentials),
-            source: mode.validationSource,
-            packageID: packageID,
-            traceID: traceID
-        )
-        return result.0 ? .ready(result.1) : .failed(result.1)
-    }
-
-    private func jiraValidationConnector() -> Connector {
-        let config = draft.capabilityConfiguration
-        let connector = Connector(
-            name: "Jira",
-            serviceType: "jira",
-            icon: "list.bullet.clipboard",
-            connectorDescription: "Atlassian Jira REST API v3",
-            baseURL: trimmed(config.jiraBaseURL),
-            authMethod: "basic"
-        )
-        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
-        connector.credentialValues = ["", ""]
-        connector.configKeys = ["JIRA_PROJECTS"]
-        connector.configValues = [trimmed(config.jiraProjects)]
-        return connector
-    }
-
-    private func redcapValidationConnector() -> Connector {
-        let config = draft.capabilityConfiguration
-        let connector = Connector(
-            name: "REDCap",
-            serviceType: "redcap",
-            icon: "tablecells",
-            connectorDescription: "Stanford REDCap API",
-            baseURL: trimmed(config.redcapAPIURL),
-            authMethod: "api_key"
-        )
-        connector.credentialKeys = ["REDCAP_API_TOKEN"]
-        connector.credentialValues = [""]
-        connector.testHTTPMethod = "POST"
-        return connector
     }
 
     private func validateGCloudProject() async -> WorkspaceCapabilityValidationState {
