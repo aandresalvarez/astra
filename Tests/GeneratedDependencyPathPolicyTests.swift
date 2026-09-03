@@ -143,6 +143,26 @@ struct GeneratedDependencyPathPolicyTests {
         #expect(files == [deliverable.path])
     }
 
+    @Test("The diagnostics walker prunes dependency trees instead of classifying them")
+    func diagnosticsWalkerPrunesDependencyTrees() throws {
+        let folder = try makeTemporaryRoot("diagnostics")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write("log", to: folder.appendingPathComponent("jobs/job-1/stdout.log"))
+        try write("{}", to: folder.appendingPathComponent(".runtime/client/config.json"))
+        // A virtualenv holds files that look exactly like diagnostics — logs,
+        // JSON config, `.runtime`-shaped nesting — so without the prune they do
+        // not merely cost a walk, they land in the popover as task output.
+        try write("noise", to: folder.appendingPathComponent(".venv/lib/python3.13/site-packages/pip/__init__.py"))
+        try write("noise", to: folder.appendingPathComponent(".venv/jobs/job-9/stdout.log"))
+        try write("noise", to: folder.appendingPathComponent("web/node_modules/left-pad/config.json"))
+
+        let relativePaths = Set(
+            TaskDiagnosticsIndex.groups(in: folder.path).flatMap(\.items).map(\.relativePath)
+        )
+
+        #expect(relativePaths == ["jobs/job-1/stdout.log", ".runtime/client/config.json"])
+    }
+
     @MainActor
     @Test("A virtualenv inside the task folder is not user-facing output")
     func virtualenvIsNotUserFacing() throws {

@@ -627,9 +627,8 @@ struct TaskMainView: View {
                 onGeneratedFilesChange: {
                     deferTaskViewMutation {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-                        Task {
-                            await recomputeDiagnosticFileGroups()
-                        }
+                        // Diagnostics rebuild from `.task(id:)`, which carries
+                        // the artifact count this fires on and can be cancelled.
                         refreshTaskContextState()
                         refreshForkSourceAvailabilityWarning()
                     }
@@ -955,7 +954,9 @@ struct TaskMainView: View {
             "\(currentThreadSnapshot.totalEventCount)",
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
-            "\(latestRun?.fileChangesJSONLength ?? 0)"
+            "\(latestRun?.fileChangesJSONLength ?? 0)",
+            // One fault to count; one per row to read. See `TaskGeneratedFilesTrigger`.
+            "\(task.artifacts.count)"
         ].joined(separator: "|")
     }
 

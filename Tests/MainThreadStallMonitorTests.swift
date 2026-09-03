@@ -50,6 +50,17 @@ struct MainThreadStallMonitorTests {
         monitor.stop()
     }
 
+    @Test("A heartbeat that lands mid-check reports zero, not 584 years")
+    func outOfOrderTimestampsSaturate() {
+        // What production logged on this monitor's first launch:
+        // `duration_ms=18446744073709.55`, which is `UInt64.max` nanoseconds —
+        // the watchdog sampled the clock, the main thread stamped a newer
+        // heartbeat before the watchdog got the lock, and `&-` wrapped.
+        #expect(MainThreadStallMonitor.seconds(from: 500, to: 100) == 0)
+        #expect(MainThreadStallMonitor.seconds(from: 100, to: 100) == 0)
+        #expect(MainThreadStallMonitor.seconds(from: 0, to: 2_500_000_000) == 2.5)
+    }
+
     @Test("Memory is sampled from the kernel, not guessed")
     func memoryFootprintIsReadable() {
         let memory = MainThreadStallMonitor.memoryFootprint()

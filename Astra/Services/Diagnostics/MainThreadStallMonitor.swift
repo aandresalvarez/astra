@@ -138,9 +138,25 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         }
     }
 
+    /// Seconds from `start` to `end`, saturating at zero.
+    ///
+    /// Both callers below read the clock and compare it against a timestamp the
+    /// other thread owns. Wrapping subtraction turns any moment where those
+    /// arrive out of order into `UInt64.max` nanoseconds, and the monitor's
+    /// first production launch duly reported a main thread stalled for
+    /// 18446744073.7 s. A stall that resolved itself is zero seconds long.
+    /// Not `private`: the wraparound it prevents is invisible in any assertion
+    /// about the monitor's behaviour, so a test calls this directly.
+    static func seconds(from start: UInt64, to end: UInt64) -> Double {
+        guard end > start else { return 0 }
+        return Double(end - start) / 1_000_000_000
+    }
+
     private func beat(activity: CFRunLoopActivity) {
-        let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
+        // Read under the lock: the watchdog is comparing against `lastHeartbeat`
+        // and must never see a stamp from before a value it already read.
+        let now = DispatchTime.now().uptimeNanoseconds
         let stalledSince = stallStartedAt
         lastHeartbeat = now
         isWaiting = activity == .beforeWaiting
@@ -151,20 +167,27 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         lock.unlock()
 
         guard let stalledSince, count > 0 else { return }
-        let seconds = Double(now &- stalledSince) / 1_000_000_000
-        report(event: "main_thread_stall_recovered", seconds: seconds, level: .warning)
+        report(
+            event: "main_thread_stall_recovered",
+            seconds: Self.seconds(from: stalledSince, to: now),
+            level: .warning
+        )
     }
 
     private func check() {
-        let now = DispatchTime.now().uptimeNanoseconds
         lock.lock()
+        // Taken inside the lock for the same reason as in `beat`: sampling it
+        // outside let the main thread stamp a *newer* heartbeat while this
+        // thread was still waiting to acquire, which read as a stall of
+        // 584 years rather than of nothing at all.
+        let now = DispatchTime.now().uptimeNanoseconds
         // Parked, not wedged. `beat` already cleared any stall in progress and
         // logged its recovery on the way in here.
         guard !isWaiting else {
             lock.unlock()
             return
         }
-        let elapsed = Double(now &- lastHeartbeat) / 1_000_000_000
+        let elapsed = Self.seconds(from: lastHeartbeat, to: now)
         guard elapsed >= stallThreshold else {
             lock.unlock()
             return
