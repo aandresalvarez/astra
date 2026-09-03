@@ -1958,7 +1958,9 @@ struct ArchitectureFitnessTests {
             // 2_236 -> 2_250 on 2026-09-02 (PR #381 review follow-up): the two
             // entries above say why they moved, which is the only thing that
             // stops a budget line from being a number someone raised once.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_250, .owner("Architecture fitness test suite")),
+            // 2_250 -> 2_256: the sidebar rebuild-coalescing entry above, and
+            // this line, which is the same bargain applied to itself.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_256, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1966,7 +1968,11 @@ struct ArchitectureFitnessTests {
             // SidebarTaskStore — the signal-query rationale, the model context,
             // and the reconcile-after wrapper for the two membership-changing
             // handlers.
-            "Astra/Views/TaskSidebarView.swift": .init(2_525, .owner("Task sidebar")),
+            // 2_525 -> 2_530: coalescing the index rebuild off
+            // `sidebarTasksVersion`. The window itself is a separate file
+            // (SidebarTaskIndexRebuildScheduler); what is left here is three
+            // wiring lines and the note on why search stays uncoalesced.
+            "Astra/Views/TaskSidebarView.swift": .init(2_530, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see

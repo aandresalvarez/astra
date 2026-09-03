@@ -875,16 +875,20 @@ public enum TaskContextStateManager {
         let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
         state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
-        let access = TaskWorkspaceAccess(task: task)
+        // One scope for the whole pass. Every `isUserFacingOutputPath` below
+        // resolves symlinks on the path it is handed; resolving the two roots
+        // alongside them, once per call, is what turned a large task folder
+        // into an unrecoverable main-thread spin.
+        let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
-            .filter { isUserFacingOutputPath($0, task: task, access: access) }
+            .filter { isUserFacingOutputPath($0, task: task, scope: visibility) }
         let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
         state.filesChanged = dedupeKeepingOrder(
             (state.filesChanged + changedFiles + discoveredChangedFiles)
-                .filter { isUserFacingOutputPath($0, task: task, access: access) },
+                .filter { isUserFacingOutputPath($0, task: task, scope: visibility) },
             limit: 50
         )
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
@@ -901,8 +905,8 @@ public enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
-        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, access: access)
-        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, access: access)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
         state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(task: task, planState: planState)
         state.latestHandoff = latestHandoffState(task: task)
@@ -1110,14 +1114,14 @@ public enum TaskContextStateManager {
             during: run,
             from: TaskOutputDiscovery.files(in: taskFolder)
         ).map(\.path)
-        let access = TaskWorkspaceAccess(task: task)
+        let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
         return TaskContextState.Turn(
             turn: number,
             ask: boundedInline(message, maxCharacters: 400),
             summary: summarizeOutput(run.output, fallback: run.stopReason),
             filesChanged: dedupeKeepingOrder(
                 (run.fileChanges.map(\.path) + discoveredRunFiles)
-                    .filter { isUserFacingOutputPath($0, task: task, access: access) },
+                    .filter { isUserFacingOutputPath($0, task: task, scope: visibility) },
                 limit: 20
             ),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
@@ -1219,7 +1223,7 @@ public enum TaskContextStateManager {
     private static func changedFileReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        access: TaskWorkspaceAccess
+        scope: TaskOutputVisibilityScope
     ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
@@ -1227,7 +1231,7 @@ public enum TaskContextStateManager {
 
         for run in sortedRuns {
             for change in run.fileChanges {
-                guard isUserFacingOutputPath(change.path, task: task, access: access) else { continue }
+                guard isUserFacingOutputPath(change.path, task: task, scope: scope) else { continue }
                 let pointers = [
                     sourcePointer(kind: "run", id: run.id.uuidString, summary: "Provider run"),
                     sourcePointer(kind: "file_change", id: change.id.uuidString, path: change.path, summary: "\(change.changeType) file change")
@@ -1269,14 +1273,14 @@ public enum TaskContextStateManager {
     private static func artifactReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        access: TaskWorkspaceAccess
+        scope: TaskOutputVisibilityScope
     ) -> [TaskContextState.ArtifactReference] {
         var references: [TaskContextState.ArtifactReference] = []
         var indexByPath: [String: Int] = [:]
 
         for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
             let path = TaskArtifactPathNormalizer.normalizedPath(artifact.path, task: task)
-            guard isUserFacingOutputPath(path, task: task, access: access) else { continue }
+            guard isUserFacingOutputPath(path, task: task, scope: scope) else { continue }
             let key = artifactReferenceKey(path)
             guard !key.isEmpty else { continue }
 

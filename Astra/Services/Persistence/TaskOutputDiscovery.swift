@@ -40,11 +40,14 @@ public enum TaskOutputDiscovery {
         let taskAccess = TaskWorkspaceAccess(task: task)
         let executionPath = workspacePath ?? taskAccess.effectiveWorkspacePath
 
+        // Resolved once for the loop: `discoveredRunFile` compares each path
+        // against both roots in standardized *and* symlink-resolved form, and
+        // re-resolving the roots per file change is pure repetition.
+        let roots = RunFileRoots(taskFolder: taskAccess.taskFolder, workspacePath: executionPath)
         for change in run.fileChanges {
             guard let file = discoveredRunFile(
                 path: change.path,
-                taskFolder: taskAccess.taskFolder,
-                workspacePath: executionPath,
+                roots: roots,
                 fileManager: fileManager
             ) else { continue }
             guard seen.insert(URL(fileURLWithPath: file.path).standardizedFileURL.path).inserted else { continue }
@@ -113,27 +116,31 @@ public enum TaskOutputDiscovery {
         resolvedTaskFolderPath: String,
         fileManager: FileManager
     ) -> TaskOutputDiscoveredFile? {
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
-              !isDirectory.boolValue else {
-            return nil
-        }
-
         let url = URL(fileURLWithPath: path)
         let standardizedPath = url.standardizedFileURL.path
         guard standardizedPath == taskFolderPath || standardizedPath.hasPrefix(taskFolderPath + "/") else {
             return nil
         }
 
-        let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
-        guard resolvedPath == resolvedTaskFolderPath || resolvedPath.hasPrefix(resolvedTaskFolderPath + "/") else {
-            return nil
-        }
-
+        // Classify first: the visibility test is string work, and the three
+        // checks below it are a stat, a symlink resolve, and an attribute read.
+        // Paying those for a path that is about to be discarded is the whole
+        // cost of a folder full of generated files.
         guard let relative = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
             String(standardizedPath.dropFirst(taskFolderPath.count)),
             context: .taskFolder
         ) else {
+            return nil
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return nil
+        }
+
+        let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolvedPath == resolvedTaskFolderPath || resolvedPath.hasPrefix(resolvedTaskFolderPath + "/") else {
             return nil
         }
 
@@ -146,27 +153,32 @@ public enum TaskOutputDiscovery {
         )
     }
 
+    /// The task folder and workspace roots a run's file changes are matched
+    /// against, each resolved once for the whole run.
+    private struct RunFileRoots {
+        let candidates: [(root: TaskOutputArtifactPathPolicy.ResolvedRoot, context: TaskOutputArtifactPathPolicy.RelativePathContext)]
+
+        init(taskFolder: String, workspacePath: String) {
+            candidates = [
+                (.init(taskFolder), .taskFolder),
+                (.init(workspacePath), .workspace)
+            ].filter { !$0.0.isEmpty }
+        }
+    }
+
     private static func discoveredRunFile(
         path: String,
-        taskFolder: String,
-        workspacePath: String,
+        roots: RunFileRoots,
         fileManager: FileManager
     ) -> TaskOutputDiscoveredFile? {
         let url = URL(fileURLWithPath: path)
         let standardizedPath = url.standardizedFileURL.path
         let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
 
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: standardizedPath, isDirectory: &isDirectory),
-              !isDirectory.boolValue else {
-            return nil
-        }
-
         guard let match = matchedRoot(
             standardizedPath: standardizedPath,
             resolvedPath: resolvedPath,
-            taskFolder: taskFolder,
-            workspacePath: workspacePath
+            roots: roots
         ) else {
             return nil
         }
@@ -176,6 +188,12 @@ public enum TaskOutputDiscovery {
             String(standardizedPath.dropFirst(rootPath.count)),
             context: match.context
         ) else {
+            return nil
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: standardizedPath, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
             return nil
         }
 
@@ -191,20 +209,12 @@ public enum TaskOutputDiscovery {
     private static func matchedRoot(
         standardizedPath: String,
         resolvedPath: String,
-        taskFolder: String,
-        workspacePath: String
+        roots: RunFileRoots
     ) -> (root: String, context: TaskOutputArtifactPathPolicy.RelativePathContext)? {
-        let candidates: [(String, TaskOutputArtifactPathPolicy.RelativePathContext)] = [
-            (taskFolder, .taskFolder),
-            (workspacePath, .workspace)
-        ]
-        for (root, context) in candidates where !root.isEmpty {
-            let rootURL = URL(fileURLWithPath: root)
-            let standardRoot = rootURL.standardizedFileURL.path
-            let resolvedRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL.path
-            if (standardizedPath == standardRoot || standardizedPath.hasPrefix(standardRoot + "/")) &&
-                (resolvedPath == resolvedRoot || resolvedPath.hasPrefix(resolvedRoot + "/")) {
-                return (standardRoot, context)
+        for (root, context) in roots.candidates {
+            if (standardizedPath == root.standardized || standardizedPath.hasPrefix(root.standardized + "/")) &&
+                (resolvedPath == root.resolved || resolvedPath.hasPrefix(root.resolved + "/")) {
+                return (root.standardized, context)
             }
         }
         return nil

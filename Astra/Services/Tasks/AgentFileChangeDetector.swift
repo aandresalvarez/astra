@@ -233,14 +233,20 @@ enum AgentFileChangeDetector {
 
     private static func isIgnoredRuntimeRelativePath(_ relativePath: String) -> Bool {
         let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
-        return rel.hasPrefix(".git/")
-            || rel.hasPrefix(".astra/")
+        // `.git`, `node_modules`, and `.build` used to be spelled here as
+        // root-anchored prefixes, which missed both a nested `node_modules` and
+        // `.venv` entirely — a virtualenv built inside a task folder recorded
+        // ~15,000 `StoredFileChange` rows that the UI then had to filter out on
+        // every context refresh. The shared list matches per component, at any
+        // depth.
+        if TaskOutputArtifactPathPolicy.hasGeneratedDependencyComponent(rel) {
+            return true
+        }
+        return rel.hasPrefix(".astra/")
             || rel.hasPrefix(".agentflow/")
             || rel.hasPrefix(".codex/")
             || rel.hasPrefix(".claude/")
             || rel.hasPrefix(".gemini/")
-            || rel.hasPrefix("node_modules/")
-            || rel.hasPrefix(".build/")
             || rel == "cache/projects.json"
     }
 }

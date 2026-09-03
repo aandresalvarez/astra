@@ -439,6 +439,7 @@ struct TaskSidebarView: View {
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     @State private var taskIndex = SidebarTaskIndex.empty
+    @State private var indexRebuildScheduler = SidebarTaskIndexRebuildScheduler()
     @State private var allSchedules: [TaskSchedule] = []
 
     private var disclosureAnimation: Animation? {
@@ -494,6 +495,7 @@ struct TaskSidebarView: View {
     /// rank. First build and search rebuilds stay instant: one has nothing to
     /// move from, and the other fires on every keystroke.
     private func rebuildTaskIndex(animated: Bool = false) {
+        indexRebuildScheduler.noteRebuilt()
         let rebuilt = SidebarTaskIndex(
             tasks: tasks,
             searchText: searchText,
@@ -682,8 +684,12 @@ struct TaskSidebarView: View {
         .onDisappear {
             endTaskDrag()
             endWorkspaceDrag()
+            indexRebuildScheduler.cancel()
         }
-        .onChange(of: sidebarTasksVersion) { rebuildTaskIndex(animated: true) }
+        // Coalesced: `taskActivitySignature` moves on every turn-request write
+        // and each move re-laid out the whole rail. Search below stays
+        // uncoalesced; a query lagging the keystroke reads as a broken field.
+        .onChange(of: sidebarTasksVersion) { indexRebuildScheduler.schedule { rebuildTaskIndex(animated: true) } }
         .onChange(of: searchText) {
             rebuildTaskIndex()
             setAccordionState(WorkspaceSidebarAccordion.searchChanged(in: accordion))

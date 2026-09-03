@@ -227,6 +227,8 @@ struct TaskMainView: View {
     @State private var isShowingDiagnosticsPopover = false
     @State private var headerFileItemsCache: [TaskFileItem] = []
     @State private var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
+    /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
+    @State var decisionArtifactPathsCache: [String] = []
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -558,6 +560,9 @@ struct TaskMainView: View {
         }
         .task(id: diagnosticFileGroupsInputSignature) {
             await recomputeDiagnosticFileGroups()
+        }
+        .task(id: decisionArtifactPathsInputSignature) {
+            await recomputeDecisionArtifactPaths()
         }
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
@@ -1034,18 +1039,6 @@ struct TaskMainView: View {
                 context: .taskFolder
             ) != nil
         }.count
-    }
-
-    private func isUserFacingStoredArtifactPath(_ path: String) -> Bool {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        let normalizedPath = TaskArtifactPathNormalizer.normalizedPath(path, task: task)
-        guard let relative = TaskOutputArtifactPathPolicy.relativePath(normalizedPath, under: taskFolder) else {
-            return true
-        }
-        return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
-            relative,
-            context: .taskFolder
-        ) != nil
     }
 
     private func formatHeaderFileSize(_ size: Int64) -> String {
@@ -3950,14 +3943,13 @@ struct TaskMainView: View {
         ))
     }
 
+    /// Cached: `body` resolves the decision dock once per pass, including the
+    /// pass a keystroke in the composer triggers, and the walk behind this list
+    /// costs O(artifacts) syscalls. Refreshed from
+    /// `TaskMainViewDecisionArtifacts.swift`; the cost is written up at
+    /// `TaskDecisionArtifactPathFilter`.
     private var taskDecisionArtifactPaths: [String] {
-        TaskDecisionDockContextBuilder.artifactPaths(
-            generatedFilePaths: threadViewModel.generatedFilePaths,
-            storedArtifactPaths: task.artifacts
-                .filter { !$0.isStale }
-                .map(\.path)
-                .filter(isUserFacingStoredArtifactPath)
-        )
+        decisionArtifactPathsCache
     }
 
     private var shouldOfferGitPublishReview: Bool {
@@ -4983,7 +4975,14 @@ struct TaskMainView: View {
                         }
                         return .ignored
                     }
-                    .onChange(of: messageText) { slashSelectedIndex = 0 }
+                    // The probe was only ever armed from `ChatPanelView`, so
+                    // typing into an open task — the composer this is — logged
+                    // nothing at all. That silence is why the per-keystroke
+                    // artifact walk went unmeasured for so long.
+                    .onChange(of: messageText) {
+                        slashSelectedIndex = 0
+                        ComposerTypingStallProbe.shared.noteTyping()
+                    }
                     .disabled(task.status == .running)
 
                 Color.clear

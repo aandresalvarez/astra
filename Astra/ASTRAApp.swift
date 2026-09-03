@@ -265,6 +265,10 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         // and relaunches the installed copy. Placed after activation so the
         // installer is foregrounded with ASTRA's real icon already set.
         ApplicationInstallationCoordinator.presentIfNeeded()
+        // The main run loop exists by now, which is all this needs. It has to
+        // be running before the first freeze to be worth anything, and a freeze
+        // is exactly when nothing else in the app is able to report.
+        MainThreadStallMonitor.shared.start()
         AppLogger.audit(.appActivated, category: "App")
     }
 

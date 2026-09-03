@@ -180,12 +180,31 @@ enum AgentRuntimeRunPersistence {
         persistedArtifactCount: Int = 0
     ) -> [String: String] {
         let start = DispatchTime.now().uptimeNanoseconds
-        let runEvents = task.events.filter { $0.run?.id == run.id }
-        let responseEventCount = runEvents.filter { $0.type == "agent.response" }.count
-        let thinkingEventCount = runEvents.filter { $0.type == "agent.thinking" }.count
-        let toolUseEventCount = runEvents.filter { $0.type == "tool.use" }.count
-        let toolResultEventCount = runEvents.filter { $0.type == "tool.result" }.count
-        let errorEventCount = runEvents.filter { $0.type == "error" }.count
+        // One pass. This was six — a `filter` to select the run's events, then
+        // five more over the result, one per type — across a SwiftData
+        // relationship that has to be faulted in each time. On a task with tens
+        // of thousands of events that is the difference between a telemetry
+        // helper and a stall on the finalize path.
+        var eventCount = 0
+        var runEventCount = 0
+        var responseEventCount = 0
+        var thinkingEventCount = 0
+        var toolUseEventCount = 0
+        var toolResultEventCount = 0
+        var errorEventCount = 0
+        for event in task.events {
+            eventCount += 1
+            guard event.run?.id == run.id else { continue }
+            runEventCount += 1
+            switch event.type {
+            case "agent.response": responseEventCount += 1
+            case "agent.thinking": thinkingEventCount += 1
+            case "tool.use": toolUseEventCount += 1
+            case "tool.result": toolResultEventCount += 1
+            case "error": errorEventCount += 1
+            default: break
+            }
+        }
         let artifactCount = task.artifacts.count
         var fields: [String: String] = [
             "phase": phase.rawValue,
@@ -198,13 +217,13 @@ enum AgentRuntimeRunPersistence {
         ]
         fields["run_output_chars"] = String(run.output.count)
         fields["run_output_bucket"] = PerformanceTelemetryFields.byteBucket(run.output.utf8.count)
-        fields["event_count"] = String(task.events.count)
+        fields["event_count"] = String(eventCount)
         fields["response_event_count"] = String(responseEventCount)
         fields["thinking_event_count"] = String(thinkingEventCount)
         fields["tool_use_event_count"] = String(toolUseEventCount)
         fields["tool_result_event_count"] = String(toolResultEventCount)
         fields["error_event_count"] = String(errorEventCount)
-        fields["run_event_count"] = String(runEvents.count)
+        fields["run_event_count"] = String(runEventCount)
         fields["file_changes"] = String(run.fileChanges.count)
         fields["artifact_count"] = String(artifactCount)
         fields["task_artifacts"] = String(artifactCount)
@@ -218,9 +237,9 @@ enum AgentRuntimeRunPersistence {
             fields: [
                 "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
                 "run_id": PerformanceTelemetryFields.abbreviatedID(run.id),
-                "event_count": PerformanceTelemetryFields.count(task.events.count),
-                "run_event_count": PerformanceTelemetryFields.count(runEvents.count),
-                "artifact_count": PerformanceTelemetryFields.count(task.artifacts.count)
+                "event_count": PerformanceTelemetryFields.count(eventCount),
+                "run_event_count": PerformanceTelemetryFields.count(runEventCount),
+                "artifact_count": PerformanceTelemetryFields.count(artifactCount)
             ]
         )
         return fields
