@@ -498,11 +498,29 @@ struct TaskCapabilityResolver {
         }
 
         let searchableText = Self.searchableTaskText(task: task, contextText: contextText)
+        // The inventory keeps one copy of each logical skill, but a resource's
+        // `skill` back-reference still points at whichever copy owns it — and
+        // that can be the copy dedupe discarded (a global "Jira Agent" and a
+        // workspace copy of the same package component both exist; the newer
+        // one wins). Matching ownership on raw object identity then orphans the
+        // resource: the skill is in scope, its connector is unreachable, and no
+        // wording of the request can recover it. Resolve through the logical
+        // identity the user actually sees.
+        let canonicalSkillsByKey = Dictionary(
+            skills.map { (logicalSkillKey($0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        func canonicalSkill(_ skill: Skill?) -> Skill? {
+            guard let skill else { return nil }
+            return canonicalSkillsByKey[logicalSkillKey(skill)] ?? skill
+        }
+
         var includedSkills: [Skill] = []
         var includedSkillIDs = Set<UUID>()
 
         func includeSkill(_ skill: Skill?) {
-            guard let skill, includedSkillIDs.insert(skill.id).inserted else { return }
+            guard let skill = canonicalSkill(skill),
+                  includedSkillIDs.insert(skill.id).inserted else { return }
             includedSkills.append(skill)
         }
 
@@ -510,13 +528,36 @@ struct TaskCapabilityResolver {
             includeSkill(skill)
         }
 
+        // A connector whose credentials the user already approved for this task
+        // is settled business: they were asked about this exact connector, in
+        // this exact task, and said yes. Re-deciding that from the wording of a
+        // later turn is how "you have accessto jita ,, give methe data" — one
+        // transposed letter — silently strips the connector the run has already
+        // been using, and the agent reports it has no access to a tool the user
+        // just authorized. Word overlap is a hint for discovering capabilities;
+        // it is not evidence for revoking an approved one.
+        //
+        // This widens scope, never exposure: the projection still gates every
+        // credential through `connectorCredentialExposurePolicy`, which is
+        // built from these same approved labels.
+        let approvedConnectorIDs = Self.approvedCredentialConnectorIDs(
+            in: TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: runtime,
+                additionalGrants: additionalCredentialGrants
+            )
+        )
+
         let matchedConnectors = connectors.filter { connector in
             Self.matchesConnector(connector, taskText: searchableText)
         }
         let relevantConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
             from: matchedConnectors,
             contextText: searchableText
-        )
+        ) + connectors.filter { connector in
+            approvedConnectorIDs.contains(connector.id)
+                && !matchedConnectors.contains { $0.id == connector.id }
+        }
         for connector in relevantConnectors {
             includeSkill(connector.skill)
         }
@@ -525,12 +566,12 @@ struct TaskCapabilityResolver {
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
                 return true
             }
-            guard let skill = connector.skill else { return false }
+            guard let skill = canonicalSkill(connector.skill) else { return false }
             return includedSkillIDs.contains(skill.id)
         }
 
         let includedLocalTools = tools.filter { tool in
-            if let skill = tool.skill {
+            if let skill = canonicalSkill(tool.skill) {
                 return includedSkillIDs.contains(skill.id)
             }
             return Self.matchesLocalTool(tool, taskText: searchableText)
@@ -828,6 +869,18 @@ struct TaskCapabilityResolver {
             toolType: "cli",
             command: "astra-browser"
         )
+    }
+
+    /// Connector IDs named by approved credential labels of the form
+    /// `connector:<uuid>:<CREDENTIAL_KEY>`. Labels that are not connector
+    /// scoped (a bare `GCP_PROJECT`, say) carry no connector identity and are
+    /// ignored here.
+    private static func approvedCredentialConnectorIDs(in labels: [String]) -> Set<UUID> {
+        Set(labels.compactMap { label -> UUID? in
+            let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == "connector" else { return nil }
+            return UUID(uuidString: String(parts[1]))
+        })
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {

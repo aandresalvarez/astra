@@ -3,7 +3,7 @@ import Foundation
 import MCPServerKit
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
-    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira"]
+    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap"]
 
     public var githubExecutable: String
     public var gcloudExecutable: String
@@ -12,6 +12,14 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     public var allowedSSHAliases: [String]
     public var allowedTools: Set<String>
     public var currentDirectory: String
+    /// Where a brokered tool writes output it must not return inline.
+    ///
+    /// No fallback. It used to fall back to `currentDirectory`, which is
+    /// normally the workspace the agent is working in — usually a git checkout,
+    /// so a REDCap export landing there was one `git add .` from committing
+    /// subject data. A tool that has nowhere sanctioned to put its output must
+    /// fail rather than choose somewhere.
+    public var taskFolder: String
     public var diagnosticsHostPath: String
     public var taskID: String
     public var runID: String
@@ -26,6 +34,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         allowedSSHAliases: [String] = [],
         allowedTools: Set<String> = knownToolNames,
         currentDirectory: String = "",
+        taskFolder: String = "",
         diagnosticsHostPath: String = "",
         taskID: String = "unknown-task",
         runID: String = "unknown-run",
@@ -41,6 +50,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             .intersection(Self.knownToolNames)
         self.allowedTools = normalizedTools
         self.currentDirectory = Self.clean(currentDirectory) ?? ""
+        self.taskFolder = Self.clean(taskFolder) ?? ""
         self.diagnosticsHostPath = Self.clean(diagnosticsHostPath) ?? ""
         self.taskID = Self.clean(taskID) ?? "unknown-task"
         self.runID = Self.clean(runID) ?? "unknown-run"
@@ -57,6 +67,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             allowedSSHAliases: splitList(env["ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES"]),
             allowedTools: allowedToolSet(env["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]),
             currentDirectory: clean(env["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"]) ?? "",
+            taskFolder: clean(env["ASTRA_HOST_CONTROL_TASK_FOLDER"]) ?? "",
             diagnosticsHostPath: clean(env["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"]) ?? "",
             taskID: clean(env["ASTRA_HOST_CONTROL_TASK_ID"]) ?? "unknown-task",
             runID: clean(env["ASTRA_HOST_CONTROL_RUN_ID"]) ?? "unknown-run",
@@ -68,165 +79,6 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     public var connectorManifest: HostControlConnectorManifest {
         (try? JSONDecoder().decode(HostControlConnectorManifest.self, from: Data(connectorsJSON.utf8)))
             ?? HostControlConnectorManifest(connectors: [])
-    }
-
-    func redacted(_ value: String, includingSecretFragments: Bool = false) -> String {
-        let secrets = secretValues
-        let redacted = secrets.reduce(value) { current, secret in
-            current.replacingOccurrences(of: secret, with: "[redacted]")
-        }
-        guard includingSecretFragments else { return redacted }
-        return redactedSecretPrefixes(redacted, secrets: secrets)
-    }
-
-    private var secretValues: [String] {
-        connectorManifest.connectors.flatMap { connector in
-            connector.credentials.values.compactMap { envKey in
-                guard isSecretKey(envKey),
-                      let value = environment[envKey],
-                      value.count >= 4 else { return nil }
-                return value
-            }
-        }
-    }
-
-    private func isSecretKey(_ value: String) -> Bool {
-        let upper = value.uppercased()
-        return upper.contains("TOKEN")
-            || upper.contains("SECRET")
-            || upper.contains("PASSWORD")
-            || upper.contains("API_KEY")
-            || upper.contains("CREDENTIAL")
-    }
-
-    private func redactedSecretPrefixes(_ value: String, secrets: [String]) -> String {
-        let redaction = Array("[redacted]".utf8)
-        let source = Array(value.utf8)
-        let ranges = mergedSecretPrefixRanges(in: source, secrets: secrets.map { Array($0.utf8) })
-        guard !ranges.isEmpty else { return value }
-
-        var output: [UInt8] = []
-        output.reserveCapacity(source.count)
-        var cursor = 0
-        for range in ranges {
-            guard range.lowerBound >= cursor else { continue }
-            output.append(contentsOf: source[cursor..<range.lowerBound])
-            output.append(contentsOf: redaction)
-            cursor = range.upperBound
-        }
-        output.append(contentsOf: source[cursor..<source.count])
-        return String(decoding: output, as: UTF8.self)
-    }
-
-    private func mergedSecretPrefixRanges(in value: [UInt8], secrets: [[UInt8]]) -> [Range<Int>] {
-        var ranges: [Range<Int>] = []
-        let boundaries = truncatedOutputBoundaries(in: value)
-        for secret in secrets where secret.count >= 4 {
-            appendShortTruncatedSecretPrefixRanges(in: value, secret: secret, boundaries: boundaries, to: &ranges)
-
-            var index = 0
-            while index + 4 <= value.count {
-                guard value[index] == secret[0],
-                      value[index + 1] == secret[1],
-                      value[index + 2] == secret[2],
-                      value[index + 3] == secret[3] else {
-                    index += 1
-                    continue
-                }
-
-                let maximumLength = min(secret.count, value.count - index)
-                var length = 4
-                while length < maximumLength, value[index + length] == secret[length] {
-                    length += 1
-                }
-                ranges.append(index..<index + length)
-                index += length
-            }
-        }
-
-        guard !ranges.isEmpty else { return [] }
-        return ranges.sorted { lhs, rhs in
-            lhs.lowerBound == rhs.lowerBound ? lhs.upperBound < rhs.upperBound : lhs.lowerBound < rhs.lowerBound
-        }.reduce(into: []) { merged, range in
-            guard let last = merged.last else {
-                merged.append(range)
-                return
-            }
-            if range.lowerBound <= last.upperBound {
-                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
-            } else {
-                merged.append(range)
-            }
-        }
-    }
-
-    private func appendShortTruncatedSecretPrefixRanges(
-        in value: [UInt8],
-        secret: [UInt8],
-        boundaries: [Int],
-        to ranges: inout [Range<Int>]
-    ) {
-        guard !value.isEmpty else { return }
-        let maximumShortPrefixLength = min(3, secret.count)
-        for boundary in boundaries {
-            let candidateMaximumLength = min(maximumShortPrefixLength, boundary)
-            for length in stride(from: candidateMaximumLength, through: 1, by: -1) {
-                let start = boundary - length
-                guard bytes(in: value, at: start, matchPrefixOf: secret, length: length) else { continue }
-                let range = start..<boundary
-                ranges.append(range)
-                break
-            }
-        }
-    }
-
-    private func truncatedOutputBoundaries(in value: [UInt8]) -> [Int] {
-        var boundaries = [value.count]
-        let markerPrefix = Array("\n[ASTRA ".utf8)
-        guard value.count >= markerPrefix.count else { return boundaries }
-        for index in 0...(value.count - markerPrefix.count) where isTruncatedOutputMarker(in: value, at: index) {
-            boundaries.append(index)
-        }
-        return boundaries
-    }
-
-    private func isTruncatedOutputMarker(in value: [UInt8], at index: Int) -> Bool {
-        let truncatedMarker = Array("\n[ASTRA truncated ".utf8)
-        if bytes(in: value, at: index, match: truncatedMarker) {
-            return true
-        }
-
-        let cappedMarkerPrefix = Array("\n[ASTRA ".utf8)
-        guard bytes(in: value, at: index, match: cappedMarkerPrefix) else { return false }
-
-        let cappedNeedle = Array(" output capped after ".utf8)
-        var cursor = index + cappedMarkerPrefix.count
-        while cursor + cappedNeedle.count <= value.count {
-            if value[cursor] == 10 {
-                return false
-            }
-            if bytes(in: value, at: cursor, match: cappedNeedle) {
-                return true
-            }
-            cursor += 1
-        }
-        return false
-    }
-
-    private func bytes(in value: [UInt8], at index: Int, match marker: [UInt8]) -> Bool {
-        guard index >= 0, index + marker.count <= value.count else { return false }
-        for offset in marker.indices where value[index + offset] != marker[offset] {
-            return false
-        }
-        return true
-    }
-
-    private func bytes(in value: [UInt8], at index: Int, matchPrefixOf secret: [UInt8], length: Int) -> Bool {
-        guard index >= 0, length <= secret.count, index + length <= value.count else { return false }
-        for offset in 0..<length where value[index + offset] != secret[offset] {
-            return false
-        }
-        return true
     }
 
     private static func splitList(_ value: String?) -> [String] {
@@ -327,12 +179,12 @@ public struct HostControlProcessLimits: Equatable, Sendable {
     }
 }
 
-private struct HostControlCappedOutput: Equatable {
+struct HostControlCappedOutput: Equatable {
     var value: String
     var truncated: Bool
 }
 
-private enum HostControlOutputCap {
+enum HostControlOutputCap {
     static func capped(_ value: String, label: String, byteLimit: Int) -> HostControlCappedOutput {
         guard value.utf8.count > byteLimit else {
             return HostControlCappedOutput(value: value, truncated: false)
@@ -1054,6 +906,14 @@ public final class HostControlMCPServer {
             return handleSSH(arguments: arguments)
         case "jira":
             return handleJira(arguments: arguments)
+        case "redcap":
+            return REDCapHostControlPolicy.handle(
+                arguments: arguments,
+                configuration: configuration,
+                processLimits: processLimits,
+                cancellationRegistry: cancellationRegistry,
+                diagnostics: diagnosticsRecorder
+            )
         default:
             return .error(code: -32602, message: "Unsupported tool")
         }
@@ -1147,8 +1007,12 @@ public final class HostControlMCPServer {
 
     private func handleJira(arguments: [String: Any]) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
-        guard let connector = jiraConnector(alias: clean(arguments["alias"] as? String)) else {
-            return .error(code: -32602, message: "No Jira connector is projected into ASTRA_CONNECTORS")
+        let resolution = jiraConnector(alias: clean(arguments["alias"] as? String))
+        guard let connector = resolution.connector else {
+            return .error(
+                code: -32602,
+                message: resolution.failureMessage(serviceLabel: "Jira") ?? "No Jira connector is available"
+            )
         }
         switch operation {
         case "status":
@@ -1161,11 +1025,45 @@ public final class HostControlMCPServer {
                 ]],
                 "isError": !status.ready
             ])
-        case "get_issue", "search_jql":
+        case "get_issue", "search_jql", "get_comments":
             return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
+        case "propose_issue":
+            return handleJiraIssueProposal(connector: connector, arguments: arguments)
         default:
             return .error(code: -32602, message: "Unsupported Jira operation '\(operation)'")
         }
+    }
+
+    /// Checks the connector can authenticate, then hands off to
+    /// `JiraIssueProposalPolicy`, which composes and stages the payload without
+    /// reaching the network.
+    ///
+    /// Readiness is checked here, before staging rather than after, because a
+    /// proposal composed against a connector that cannot authenticate is one
+    /// the user would read and approve and only then discover was never
+    /// sendable.
+    private func handleJiraIssueProposal(
+        connector: HostControlConnector,
+        arguments: [String: Any]
+    ) -> MCPServerReply {
+        let status = jiraStatus(connector: connector)
+        guard status.ready else {
+            diagnosticsRecorder?.record(
+                toolName: "jira",
+                summary: "jira propose_issue \(connector.alias) blocked: not configured",
+                result: nil
+            )
+            return .result([
+                "content": [["type": "text", "text": formattedJiraStatus(status)]],
+                "isError": true
+            ])
+        }
+        return JiraIssueProposalPolicy.stage(
+            arguments: arguments,
+            connector: connector,
+            configuration: configuration,
+            diagnostics: diagnosticsRecorder
+        )
     }
 
     private func handleJiraReadRequest(
@@ -1214,13 +1112,8 @@ public final class HostControlMCPServer {
         ])
     }
 
-    private func jiraConnector(alias: String?) -> HostControlConnector? {
-        let connectors = configuration.connectorManifest.connectors
-            .filter { $0.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "jira" }
-        if let alias {
-            return connectors.first { $0.alias == alias || $0.name == alias || $0.id == alias }
-        }
-        return connectors.first
+    private func jiraConnector(alias: String?) -> HostControlConnectorResolution {
+        HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: alias, in: configuration)
     }
 
     private func jiraStatus(connector: HostControlConnector) -> JiraConnectorStatus {
@@ -1408,7 +1301,8 @@ public final class HostControlMCPServer {
                 argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
             sshSchema(),
-            jiraSchema()
+            jiraSchema(),
+            REDCapHostControlPolicy.toolSchema(timeoutDescription: timeoutDescription(kind: "request"))
         ].filter { schema in
             guard let name = schema["name"] as? String else { return false }
             return toolIsAllowed(name)
@@ -1463,18 +1357,32 @@ public final class HostControlMCPServer {
     }
 
     private func jiraSchema() -> [String: Any] {
-        [
+        let description = """
+            Use typed ASTRA-projected Jira connector operations on the host. Reads return data \
+            directly. The one write, propose_issue, only stages a ticket for the user to approve — \
+            this tool never posts to Jira and never exposes the credential, so do not fall back to \
+            curl or a script.
+            """
+        return [
             "name": "jira",
-            "description": "Use typed, read-only ASTRA-projected Jira connector operations on the host. Status never reveals secret values.",
+            "description": description,
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "operation": ["type": "string", "description": "status, get_issue, or search_jql. Defaults to status."],
-                    "alias": ["type": "string", "description": "Optional connector alias."],
-                    "issue_key": ["type": "string", "description": "For get_issue: Jira issue key, for example ASTRA-123."],
+                    "operation": ["type": "string", "description": "status, get_issue, search_jql, get_comments, or propose_issue. Defaults to status."],
+                    "alias": ["type": "string", "description": "Connector alias, or its id. Optional when one Jira connector is projected and required when more than one is: ASTRA refuses the call rather than choosing a tenant for you, and names the aliases in scope."],
+                    "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
-                    "max_results": ["type": "number", "description": "For search_jql: maximum result count from 1 to 100. Defaults to 20."],
+                    "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],
                     "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
+                    "project_key": ["type": "string", "description": "For propose_issue: destination project key, for example STAR."],
+                    "issue_type": ["type": "string", "description": "For propose_issue: issue type name as configured in the project, for example Bug."],
+                    "summary": ["type": "string", "description": "For propose_issue: single-line ticket title, at most 255 characters."],
+                    "description": ["type": "string", "description": "For propose_issue: ticket body as Jira wiki markup, at most 32768 characters. Jira renders it; do not send Atlassian Document Format JSON."],
+                    "priority": ["type": "string", "description": "For propose_issue: optional priority name, for example Highest."],
+                    "labels": ["type": "array", "items": ["type": "string"], "description": "For propose_issue: optional labels, at most 20. Each must be a single word without spaces."],
+                    "assignee_account_id": ["type": "string", "description": "For propose_issue: optional Jira account id to assign."],
+                    "parent_key": ["type": "string", "description": "For propose_issue: optional parent issue key, for example STAR-123."],
                     "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "request")]
                 ],
                 "additionalProperties": false
@@ -1747,113 +1655,6 @@ private struct JiraConnectorStatus {
     }
 }
 
-private struct JiraHTTPRequest {
-    var method: String
-    var path: String
-    var queryItems: [URLQueryItem]
-
-    var diagnosticPath: String {
-        if queryItems.isEmpty {
-            return path
-        }
-        return "\(path)?<query>"
-    }
-}
-
-private enum JiraRequestPolicy {
-    private static let readFields = [
-        "summary",
-        "status",
-        "assignee",
-        "priority",
-        "issuetype",
-        "project",
-        "created",
-        "updated"
-    ].joined(separator: ",")
-
-    static func readRequest(operation: String, arguments: [String: Any]) throws -> JiraHTTPRequest {
-        switch operation {
-        case "get_issue":
-            guard let issueKey = clean(arguments["issue_key"] as? String),
-                  isValidIssueKey(issueKey) else {
-                throw JiraRequestPolicyError("jira get_issue requires an issue_key such as ASTRA-123")
-            }
-            return JiraHTTPRequest(
-                method: "GET",
-                path: "/rest/api/3/issue/\(issueKey)",
-                queryItems: [
-                    URLQueryItem(name: "fields", value: Self.readFields)
-                ]
-            )
-        case "search_jql":
-            guard let jql = clean(arguments["jql"] as? String),
-                  jql.count <= 1_000 else {
-                throw JiraRequestPolicyError("jira search_jql requires a non-empty jql string up to 1000 characters")
-            }
-            var queryItems = [
-                URLQueryItem(name: "jql", value: jql),
-                URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
-                URLQueryItem(name: "fields", value: Self.readFields)
-            ]
-            if let nextPageToken = try nextPageToken(from: arguments["next_page_token"]) {
-                queryItems.append(URLQueryItem(name: "nextPageToken", value: nextPageToken))
-            }
-            return JiraHTTPRequest(
-                method: "GET",
-                path: "/rest/api/3/search/jql",
-                queryItems: queryItems
-            )
-        default:
-            throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")
-        }
-    }
-
-    private static func maxResults(from value: Any?) -> Int {
-        let raw: Int?
-        switch value {
-        case let number as NSNumber:
-            raw = number.intValue
-        case let string as String:
-            raw = Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
-        default:
-            raw = nil
-        }
-        return min(max(raw ?? 20, 1), 100)
-    }
-
-    private static func nextPageToken(from value: Any?) throws -> String? {
-        guard let raw = value else { return nil }
-        guard let token = clean(raw as? String),
-              token.count <= 2_000,
-              !token.contains("\n"),
-              !token.contains("\r") else {
-            throw JiraRequestPolicyError("jira search_jql next_page_token must be a non-empty string up to 2000 characters")
-        }
-        return token
-    }
-
-    private static func clean(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func isValidIssueKey(_ value: String) -> Bool {
-        value.range(
-            of: #"^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"#,
-            options: [.regularExpression]
-        ) != nil
-    }
-}
-
-private struct JiraRequestPolicyError: LocalizedError {
-    var errorDescription: String?
-
-    init(_ message: String) {
-        errorDescription = message
-    }
-}
-
 struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
@@ -1912,19 +1713,13 @@ struct JiraHTTPResponse {
         configuration: HostControlToolConfiguration,
         includeSecretFragments: Bool
     ) -> HostControlCappedOutput {
-        let limit = max(1, byteLimit)
-        let capped = HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: limit)
-        guard includeSecretFragments || capped.truncated else { return capped }
-
-        let redactedAfterCap = configuration.redacted(capped.value, includingSecretFragments: true)
-        let recapped = HostControlOutputCap.capped(redactedAfterCap, label: "redacted \(label)", byteLimit: limit)
-        let finalValue = configuration.redacted(recapped.value, includingSecretFragments: true)
-        if finalValue == recapped.value {
-            return HostControlCappedOutput(value: recapped.value, truncated: capped.truncated || recapped.truncated)
-        }
-
-        let finalCap = HostControlOutputCap.capped(finalValue, label: "redacted \(label)", byteLimit: limit)
-        return HostControlCappedOutput(value: finalCap.value, truncated: capped.truncated || recapped.truncated || finalCap.truncated)
+        HostControlRedactedBody.capped(
+            value,
+            label: label,
+            byteLimit: byteLimit,
+            configuration: configuration,
+            includeSecretFragments: includeSecretFragments
+        )
     }
 }
 
@@ -1992,35 +1787,6 @@ private final class BoundedJiraHTTPDelegate: NSObject, URLSessionDataDelegate, @
     }
 }
 
-enum HostControlURLSessionConfiguration {
-    private static let lock = NSLock()
-    private static var testingProtocolClasses: [AnyClass] = []
-
-    static var protocolClassesForTesting: [AnyClass] {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return testingProtocolClasses
-        }
-        set {
-            lock.lock()
-            testingProtocolClasses = newValue
-            lock.unlock()
-        }
-    }
-
-    static func jiraHTTPConfiguration() -> URLSessionConfiguration {
-        let configuration = URLSessionConfiguration.default
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let customProtocolClasses = protocolClassesForTesting
-        if !customProtocolClasses.isEmpty {
-            configuration.protocolClasses = customProtocolClasses + (configuration.protocolClasses ?? [])
-        }
-        return configuration
-    }
-}
-
 private final class JiraHTTPClient {
     private let configuration: HostControlToolConfiguration
     private let cancellationRegistry: HostControlOperationCancellationRegistry
@@ -2055,7 +1821,7 @@ private final class JiraHTTPClient {
 
         let semaphore = DispatchSemaphore(value: 0)
         let delegate = BoundedJiraHTTPDelegate(semaphore: semaphore, outputByteLimit: outputByteLimit)
-        let sessionConfiguration = HostControlURLSessionConfiguration.jiraHTTPConfiguration()
+        let sessionConfiguration = HostControlURLSessionConfiguration.brokeredHTTPConfiguration()
         let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
         let task = session.dataTask(with: request)
         task.resume()
@@ -2180,7 +1946,7 @@ private final class ProcessOutputReadHandle: @unchecked Sendable {
     }
 }
 
-private final class BoundedProcessOutput: @unchecked Sendable {
+final class BoundedProcessOutput: @unchecked Sendable {
     private static let truncationBoundarySafetyBytes = 512
 
     private let lock = NSLock()

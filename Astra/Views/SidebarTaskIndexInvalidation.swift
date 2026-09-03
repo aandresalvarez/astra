@@ -1,37 +1,79 @@
 import Foundation
 import ASTRAModels
 
+/// The fingerprint that decides when `SidebarTaskIndex` has to be rebuilt.
+///
+/// It touches every task in the sidebar's snapshot, so what it *doesn't* read
+/// matters as much as what it does. Production telemetry caught it at 283 calls
+/// totalling 1,011 ms inside one 30 s window — 3.4% of wall clock — in 3.5 ms
+/// slices that each stayed under the 8 ms log threshold and so never surfaced
+/// as an event. Four terms were removed on that evidence:
+///
+/// - **`goal`, hashed whenever a search was active.** A real store holds
+///   10.83 MB of `goal` text, so an active search meant hashing 10.83 MB per
+///   call. Redundant as well as ruinous: every writer of `goal` bumps
+///   `updatedAt`, which is hashed unconditionally, and `searchText` itself
+///   already drives its own `onChange` in the sidebar.
+/// - **`shouldShowUnread`**, which is defined as `unreadAt != nil` and so can
+///   never move without the `unreadAt` term moving too.
+/// - **A `Set<UUID>` of workspace IDs**, allocated and grown on every call to
+///   populate a `workspace_count` telemetry field that is discarded on every
+///   call that comes in under threshold — which is nearly all of them.
+///
+/// `title` went out with `goal` and had to come back, unconditionally. It is
+/// the one searchable field with a writer that does not bump `updatedAt`: the
+/// generated-title backfill in `TaskLifecycleCoordinator` restores the original
+/// `updatedAt` on purpose, so a rename does not shove a finished thread back to
+/// the top of the rail. With `title` unhashed that write moved nothing the
+/// signature could see, so a task whose new title matched the active query
+/// stayed hidden until the next unrelated reconcile. It is hashed whether or
+/// not a search is running, because a term that only exists some of the time is
+/// a term the next writer will not know to think about — and the price is
+/// nothing like `goal`'s: the same store holding 10.83 MB of goals holds 16 KB
+/// of titles, 665× less.
+///
+/// The two date terms now hash the `Date` rather than truncating it to whole
+/// seconds. That is the same cost, cannot trap on an out-of-range interval, and
+/// closes a real blind spot: two writes inside one second used to be
+/// indistinguishable.
+///
+/// Each task's fields are folded through one `Hasher` and only that task's hash
+/// joins the accumulator. The terms used to be XOR-ed into the accumulator
+/// individually, which recorded the *parity* of each field across the snapshot
+/// rather than which task held which value. Two pin writes coalesced into one
+/// snapshot — unpin A, pin B — cancelled exactly, and the pin writer restores
+/// `updatedAt` deliberately, so nothing else moved either: `tasksVersion` did
+/// not publish and `SidebarTaskIndex` kept both tasks in the wrong arrays until
+/// some unrelated field changed. Hashing per task makes field ownership part of
+/// the fingerprint, and combining with `&+=` keeps the result independent of the
+/// order the snapshot arrives in.
+///
+/// **Do not call this from a SwiftUI `body`.** Reading a field off every task
+/// registers an observation dependency on all of them, so a view that
+/// fingerprints the snapshot inline re-runs on any field write to any task —
+/// and `AgentEventRecorder` writes `updatedAt` for every streamed event. That
+/// made the fingerprint both the cost and its own trigger. `SidebarTaskStore`
+/// owns the call and publishes the result as `tasksVersion`.
 enum SidebarTaskIndexInvalidation {
-    static func signature(for tasks: [AgentTask], searchText: String = "") -> Int {
+    static func signature(for tasks: [AgentTask]) -> Int {
         let start = DispatchTime.now().uptimeNanoseconds
-        let includesSearchableText = !searchText.isEmpty
-        var workspaceIDs = Set<UUID>()
         let signature = tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            if let workspaceID = task.workspace?.id {
-                workspaceIDs.insert(workspaceID)
-                acc ^= workspaceID.hashValue
-            }
-            if includesSearchableText {
-                acc ^= task.title.hashValue
-                acc ^= task.goal.hashValue
-            }
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc ^= task.shouldShowUnread ? 4 : 0
-            acc &+= Int(task.updatedAt.timeIntervalSince1970)
-            acc &+= Int(task.unreadAt?.timeIntervalSince1970 ?? 0)
+            var hasher = Hasher()
+            hasher.combine(task.id)
+            hasher.combine(task.workspace?.id)
+            hasher.combine(task.status.rawValue)
+            hasher.combine(task.title)
+            hasher.combine(task.isPinned)
+            hasher.combine(task.isDone)
+            hasher.combine(task.updatedAt)
+            hasher.combine(task.unreadAt)
+            acc &+= hasher.finalize()
         }
         PerformanceTelemetry.logIfNeeded(
             "sidebar_index_signature",
             start: start,
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "task_count": PerformanceTelemetryFields.count(tasks.count),
-                "workspace_count": PerformanceTelemetryFields.count(workspaceIDs.count),
-                "search_active": PerformanceTelemetryFields.bool(includesSearchableText)
-            ]
+            fields: ["task_count": PerformanceTelemetryFields.count(tasks.count)]
         )
         return signature
     }

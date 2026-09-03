@@ -81,6 +81,16 @@ enum TaskDiagnosticsIndex {
 
         var items: [TaskDiagnosticFileItem] = []
         while let url = enumerator.nextObject() as? URL {
+            // Prune generated dependency trees before resolving anything. Every
+            // surviving entry below costs a `resolvingSymlinksInPath` (a
+            // `getattrlist` per component) plus a `resourceValues` fetch, and a
+            // single `.venv` in a task folder is 14,917 entries that can never
+            // be a diagnostic. Comparing the last component is pure string work,
+            // and `skipDescendants` means the subtree is never enumerated.
+            if TaskOutputArtifactPathPolicy.isGeneratedDependencyDirectoryName(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
             let itemURL = url
                 .resolvingSymlinksInPath()
                 .standardizedFileURL

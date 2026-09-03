@@ -256,9 +256,14 @@ if [[ "$AUTO_TEAM_SIGNING" != "0" && "$AUTO_TEAM_SIGNING" != "1" ]]; then
   echo "Invalid ASTRA_AUTO_TEAM_SIGNING '$AUTO_TEAM_SIGNING'. Use 0 or 1." >&2
   exit 2
 fi
+# Whether the identity was found on this machine or handed over by the release
+# workflow. Only the latter means "this is going to be distributed" — see the
+# codesign branch below.
+SIGN_IDENTITY_AUTODETECTED=0
 if [[ -z "$SIGN_IDENTITY" && "$AUTO_TEAM_SIGNING" == "1" ]]; then
   SIGN_IDENTITY="$(find_local_team_signing_identity)"
   if [[ -n "$SIGN_IDENTITY" ]]; then
+    SIGN_IDENTITY_AUTODETECTED=1
     echo "  signing local $ASTRA_CHANNEL build with team identity '$SIGN_IDENTITY'"
   fi
 fi
@@ -552,6 +557,14 @@ PLIST
 # the login-keychain ACL (bound to the signing Designated Requirement) survives
 # rebuilds. An ad-hoc signature's DR is a cdhash that changes on every build, which
 # is what triggers the repeated keychain prompts/failures while configuring ASTRA.
+#
+# Note what this does NOT fix, measured on the prod bootstrap item 2026-08-17: an
+# item's ACL has a `partition_id` authorization as well as a trusted-application
+# list, and a partition entry is `teamid:<TEAM>` only for an Apple-issued
+# certificate. A self-signed identity has no Team ID, so securityd keeps deriving
+# a per-build `cdhash:` partition ID and each rebuild is denied again. The real
+# item's list reads `teamid:2BKAYYACN9` plus 23 accreted dead cdhashes — one per
+# rebuild. Only a certificate from that team clears it permanently.
 if [[ -z "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" == "dev" ]]; then
   if security find-identity -v -p codesigning 2>/dev/null | grep -q '"ASTRA Local Dev"'; then
     SIGN_IDENTITY="ASTRA Local Dev"
@@ -607,7 +620,14 @@ sign_sparkle_framework_for_notarization() {
   sign_developer_id "$framework"
 }
 
-if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+# Channel is the wrong discriminator on its own. A locally auto-signed prod
+# build exists to give the Keychain a stable Designated Requirement and Team ID
+# (see docs/code-signing.md, "Keychain ACLs"), not to be distributed:
+# `--timestamp` costs a network round trip to Apple per Mach-O, and
+# `--options runtime` turns on library validation against the bundled tools and
+# the MLX helper. Only an identity supplied by the release workflow means
+# "notarize this".
+if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" && "$SIGN_IDENTITY_AUTODETECTED" != "1" ]]; then
   # A prior CI run signed successfully right after cert import, then failed
   # with "no identity found" ~14 minutes later at this exact point with no
   # code change in between. Defensively re-unlock the CI temp keychain right
@@ -715,7 +735,9 @@ verify_app_bundle() {
     fi
   done
 
-  if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+  # Same discriminator as the codesign branch above: a locally auto-signed build
+  # took the --deep path, so it has no inside-out signature to verify.
+  if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" && "$SIGN_IDENTITY_AUTODETECTED" != "1" ]]; then
     # Distribution builds: catch a broken inside-out signature locally,
     # before it surfaces as an opaque notarytool rejection.
     for tool_product in "${TOOL_PRODUCTS[@]}"; do

@@ -180,8 +180,8 @@ struct TaskThreadArchitectureFitnessTests {
         }
     }
 
-    @Test("Transcript rows stay grouped below the outer lazy stack")
-    func transcriptRowsStayGroupedBelowOuterLazyStack() throws {
+    @Test("Transcript rows stay grouped below the outer stack, which must not be lazy")
+    func transcriptRowsStayGroupedBelowOuterStack() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -193,7 +193,20 @@ struct TaskThreadArchitectureFitnessTests {
         )
         let summarySource = String(taskMainView[summaryStart.lowerBound..<summaryEnd.lowerBound])
 
-        #expect(summarySource.contains("LazyVStack(alignment: .leading, spacing: 10) {"))
+        #expect(summarySource.contains("VStack(alignment: .leading, spacing: 10) {"))
+        // Deliberately NOT lazy, and this second assertion is load-bearing because
+        // "LazyVStack(alignment:..." also satisfies the `contains` above. Matched on
+        // the call form `LazyVStack(` rather than the bare type name so the
+        // explanatory comment at the stack itself — which necessarily names the type
+        // it is warning against — does not trip it.
+        //
+        // A lazy stack keeps an item-phase cache whose `AllItemsPhaseMutation` writes
+        // back into the AttributeGraph; combined with the intrinsic-size invalidation
+        // every selectable `Text` performs through its `SelectionOverlay`, that forms
+        // a non-terminating `GraphHost.flushTransactions()` cycle. It froze the app
+        // for 2h56m at 99% CPU on a five-row transcript on 2026-08-18. The full
+        // mechanism is written up at the stack itself in TaskMainView.swift.
+        #expect(!summarySource.contains("LazyVStack("))
         #expect(summarySource.contains("chatThreadContent(decisionDockVisible: decisionDockVisible)"))
         #expect(!summarySource.contains("ForEach(currentThreadSnapshot.conversationItems)"))
         #expect(taskMainView.contains("private func chatThreadContentBody(decisionDockVisible: Bool)"))

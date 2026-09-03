@@ -11,7 +11,11 @@ import ASTRACore
 // against its architecture line budget.
 
 struct SearchPanelOverlayContainer: View {
-    @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+    // Unsorted on purpose: `SearchPanelOverlayResults` re-sorts by `updatedAt`
+    // before it takes a prefix, so a SQL `ORDER BY` on the unindexed, all-zero
+    // `queuePosition` bought nothing and cost a full external sort of the
+    // table. See `TaskSidebarContainerView` for the full story.
+    @Query private var tasks: [AgentTask]
 
     let workspaces: [Workspace]
     @Binding var selectedTask: AgentTask?

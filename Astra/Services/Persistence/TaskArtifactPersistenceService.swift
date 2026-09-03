@@ -86,6 +86,18 @@ public enum TaskArtifactPersistenceService {
         var normalizedArtifacts: [Artifact] = []
         var normalizedArtifactKinds: [Artifact] = []
         var seenPaths = Set<String>()
+        // Everything the loops below need about the rows already on the task,
+        // gathered in the single pass that was walking them anyway.
+        //
+        // This used to be four more passes: `nextVersion` and
+        // `insertArtifact` each scanned `task.artifacts` from scratch *per
+        // created file*, and `duplicateArtifacts` re-normalised every path a
+        // second time. At 13,295 artifacts — an agent's virtualenv, before
+        // `generatedDependencyDirectoryNames` started excluding those — that is
+        // where run finalization's ten seconds went.
+        var highestVersionByPath: [String: Int] = [:]
+        var heldArtifactIDs = Set<UUID>()
+        var artifactsByNormalizedPath: [String: [Artifact]] = [:]
 
         for artifact in task.artifacts {
             let path = normalizedPath(artifact.path, task: task)
@@ -98,8 +110,11 @@ public enum TaskArtifactPersistenceService {
                 artifact.type = kind.rawValue
                 normalizedArtifactKinds.append(artifact)
             }
+            heldArtifactIDs.insert(artifact.id)
+            artifactsByNormalizedPath[path, default: []].append(artifact)
             if !path.isEmpty {
                 seenPaths.insert(path)
+                highestVersionByPath[path] = max(highestVersionByPath[path] ?? 0, artifact.version)
             }
         }
 
@@ -112,10 +127,30 @@ public enum TaskArtifactPersistenceService {
                 task: task,
                 type: file.kind.rawValue,
                 path: path,
-                version: nextVersion(for: path, task: task)
+                version: (highestVersionByPath[path] ?? 0) + 1
             )
-            insertArtifact(artifact, into: task, modelContext: modelContext)
+            insertArtifact(
+                artifact,
+                into: task,
+                modelContext: modelContext,
+                heldArtifactIDs: &heldArtifactIDs
+            )
             created.append(artifact)
+            highestVersionByPath[path] = artifact.version
+            artifactsByNormalizedPath[path, default: []].append(artifact)
+        }
+
+        // One `fileExists` per artifact, not two. The two filters were
+        // complements of each other, so the second one re-stat'd every row the
+        // first had just stat'd.
+        var current: [Artifact] = []
+        var stale: [Artifact] = []
+        for artifact in task.artifacts {
+            if artifactExists(artifact, fileManager: fileManager) {
+                current.append(artifact)
+            } else {
+                stale.append(artifact)
+            }
         }
 
         let summary = TaskArtifactReconciliationSummary(
@@ -123,9 +158,9 @@ public enum TaskArtifactPersistenceService {
             createdArtifacts: created,
             normalizedArtifacts: normalizedArtifacts,
             normalizedArtifactKinds: normalizedArtifactKinds,
-            duplicateArtifacts: duplicateArtifacts(for: task),
-            currentArtifacts: task.artifacts.filter { artifactExists($0, fileManager: fileManager) },
-            staleArtifacts: task.artifacts.filter { !artifactExists($0, fileManager: fileManager) }
+            duplicateArtifacts: duplicateArtifacts(groupedByNormalizedPath: artifactsByNormalizedPath),
+            currentArtifacts: current,
+            staleArtifacts: stale
         )
         AuditLoggingSeam.required.audit(
             .runtimePersistenceSummary,
@@ -204,24 +239,36 @@ public enum TaskArtifactPersistenceService {
     }
 
     private static func insertArtifact(_ artifact: Artifact, into task: AgentTask, modelContext: ModelContext?) {
-        modelContext?.insert(artifact)
-        if !task.artifacts.contains(where: { $0.id == artifact.id }) {
-            task.artifacts.append(artifact)
-        }
+        var heldArtifactIDs = Set(task.artifacts.map(\.id))
+        insertArtifact(artifact, into: task, modelContext: modelContext, heldArtifactIDs: &heldArtifactIDs)
     }
 
-    private static func duplicateArtifacts(for task: AgentTask) -> [Artifact] {
-        let grouped = Dictionary(grouping: task.artifacts) { normalizedPath($0.path, task: task) }
-        return grouped.values.flatMap { artifacts -> [Artifact] in
+    /// The bulk form. `heldArtifactIDs` carries the membership test across
+    /// calls so appending *n* artifacts costs *n* lookups rather than a linear
+    /// scan of the relationship each time.
+    private static func insertArtifact(
+        _ artifact: Artifact,
+        into task: AgentTask,
+        modelContext: ModelContext?,
+        heldArtifactIDs: inout Set<UUID>
+    ) {
+        modelContext?.insert(artifact)
+        guard heldArtifactIDs.insert(artifact.id).inserted else { return }
+        task.artifacts.append(artifact)
+    }
+
+    private static func duplicateArtifacts(
+        groupedByNormalizedPath grouped: [String: [Artifact]]
+    ) -> [Artifact] {
+        // The key is already the normalized path, which is what the emptiness
+        // test used to recompute off the first member of each group.
+        grouped.flatMap { path, artifacts -> [Artifact] in
+            guard !path.isEmpty else { return [] }
             let sorted = artifacts.sorted {
                 if $0.version == $1.version {
                     return $0.createdAt < $1.createdAt
                 }
                 return $0.version < $1.version
-            }
-            guard let first = sorted.first,
-                  !normalizedPath(first.path, task: task).isEmpty else {
-                return []
             }
             return Array(sorted.dropFirst())
         }

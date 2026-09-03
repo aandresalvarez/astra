@@ -185,6 +185,24 @@ struct ConnectorRuntimeProjection {
         Self.uniquedSorted(configuredCredentialBindings().map(\.label))
     }
 
+    /// Labels for the credentials a connector *declares*, whether or not this
+    /// process can load their values.
+    ///
+    /// `configuredCredentialLabels()` answers "what did we hand out", so it has
+    /// to read the value. Reporting a credential ASTRA withholds is the other
+    /// question - "what does this connector own that the agent will not get" -
+    /// and that answer must not change because the reader lacks Keychain
+    /// access. Derived from the same declared basis as
+    /// `declaredEnvironmentBindingKeys()` so the withheld report and the strip
+    /// cannot disagree about which keys are covered.
+    func declaredCredentialLabels() -> [String] {
+        ConnectorRuntimeProjection(
+            connectors: connectors,
+            secretStore: DeclaredConnectorSecretStore(),
+            credentialExposurePolicy: .allowAllCredentials
+        ).configuredCredentialLabels()
+    }
+
     func unapprovedCredentialLabelsRequiringApproval() -> [String] {
         Self.uniquedSorted(unapprovedCredentialApprovalRequests().flatMap(\.labels))
     }

@@ -2,6 +2,7 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
+import HostControlToolSupport
 
 enum HostControlPlaneMCPProjection {
     struct CapabilitySnapshot: Sendable {
@@ -39,7 +40,7 @@ enum HostControlPlaneMCPProjection {
     }
 
     static let serverID = "astra_host"
-    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira"]
+    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira", "redcap"]
     static let githubPackageID = "github-workflow"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
@@ -96,9 +97,10 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func connectorToolName(_ serviceType: String) -> String? {
+        if let brokered = HostControlBrokeredServices.toolName(forServiceType: serviceType) {
+            return brokered
+        }
         switch serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "jira":
-            return "jira"
         case "github", "gh":
             return "github"
         case "gcloud", "google_cloud", "googlecloud", "gcp":
@@ -108,8 +110,13 @@ enum HostControlPlaneMCPProjection {
         }
     }
 
+    /// A connector is brokered because a typed handler in the broker reads its
+    /// credentials, not because someone remembered to add it here. The list
+    /// lives next to the handlers in `HostControlBrokeredServices` so the two
+    /// cannot drift; a service that gains a handler is stripped from the
+    /// agent's environment on the same commit.
     static func brokerOwnsConnectorConfiguration(_ serviceType: String) -> Bool {
-        connectorToolName(serviceType) == "jira"
+        HostControlBrokeredServices.ownsConfiguration(ofServiceType: serviceType)
     }
 
     static func githubIsEnabled(
@@ -288,6 +295,12 @@ enum HostControlPlaneMCPProjection {
             "ASTRA_HOST_CONTROL_SSH_EXECUTABLE": detectExecutable("ssh", fallback: "/usr/bin/ssh"),
             "ASTRA_HOST_CONTROL_ALLOWED_TOOLS": allowedTools.joined(separator: ","),
             "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY": currentDirectory,
+            // Where a brokered tool puts anything it must not return inline.
+            // The workspace root is the wrong place for that: it is usually a
+            // git checkout, so a REDCap export dropped there is one `git add`
+            // from being committed. The task folder is already the agreed home
+            // for run artifacts.
+            "ASTRA_HOST_CONTROL_TASK_FOLDER": TaskWorkspaceAccess(task: task).taskFolder,
             "ASTRA_HOST_CONTROL_TASK_ID": task.id.uuidString,
             "ASTRA_HOST_CONTROL_RUN_ID": runID?.uuidString ?? "run",
             "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST": diagnosticsHostPath(task: task),
@@ -344,6 +357,7 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES",
         "ASTRA_HOST_CONTROL_ALLOWED_TOOLS",
         "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY",
+        "ASTRA_HOST_CONTROL_TASK_FOLDER",
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",
@@ -365,7 +379,12 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return "Use configured workspace SSH aliases on the host through ASTRA without accepting provider-supplied remote commands."
         case "jira":
-            return "Use typed, read-only Jira connector operations through ASTRA's host control-plane bridge."
+            return "Use typed Jira connector operations through ASTRA's host control-plane bridge. "
+                + "Reads return data; propose_issue only stages a ticket in the task directory for the "
+                + "user to approve, and never posts to Jira."
+        case "redcap":
+            return "Use typed, read-only REDCap connector operations through ASTRA's host control-plane bridge. "
+                + "Record and report exports are written to a file in the task directory, not returned inline."
         default:
             return "Use ASTRA's host control-plane bridge."
         }
@@ -379,6 +398,8 @@ enum HostControlPlaneMCPProjection {
             return ["alias", "timeout_seconds"]
         case "jira":
             return ["operation", "alias", "issue_key", "jql", "max_results", "next_page_token", "timeout_seconds"]
+        case "redcap":
+            return ["operation", "alias", "fields", "forms", "records", "report_id", "raw_or_label", "timeout_seconds"]
         default:
             return []
         }

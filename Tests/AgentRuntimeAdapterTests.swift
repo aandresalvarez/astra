@@ -2972,6 +2972,12 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("--additional-mcp-config") == true)
         #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
         #expect(plan.environment["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == workspace.primaryPath)
+        // Anything a broker must not return inline goes to the task folder, not
+        // the working directory: the working directory is usually a git
+        // checkout, so an export dropped there is one `git add .` from a commit.
+        let taskFolder = plan.environment["ASTRA_HOST_CONTROL_TASK_FOLDER"]
+        #expect(taskFolder?.isEmpty == false)
+        #expect(taskFolder != workspace.primaryPath)
         #expect(plan.arguments.contains("--additional-mcp-config") == false)
     }
 

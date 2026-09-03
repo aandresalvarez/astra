@@ -29,12 +29,23 @@ public enum AstraSecureKeychainStore {
     /// `keychainPathOverride`). `nil` in production.
     @TaskLocal static var bootstrapServiceOverride: String?
 
+    // The three values below are fixed for the lifetime of the process — they
+    // derive from the bundle's Info.plist, the environment, and the home
+    // directory — but they used to be recomputed on every single call. Each
+    // rebuilt `AppChannel.current` (an Info.plist lookup plus a full
+    // `ProcessInfo.environment` dictionary), and `isRunningTests` built that
+    // dictionary a second time. That is pure Swift overhead paid per credential
+    // lookup, and the callers above this layer issue them in the hundreds:
+    // `CapabilitySetupCopier.copySetup` alone is over a hundred loads.
+    private static let channelKeychainPath = AppChannel.current.astraKeychainPath
+    private static let channelBootstrapService = AppChannel.current.astraKeychainBootstrapService
+
     private static var keychainPath: String {
-        keychainPathOverride ?? AppChannel.current.astraKeychainPath
+        keychainPathOverride ?? channelKeychainPath
     }
 
     private static var bootstrapService: String {
-        bootstrapServiceOverride ?? AppChannel.current.astraKeychainBootstrapService
+        bootstrapServiceOverride ?? channelBootstrapService
     }
 
     static var isUsingExplicitTestKeychain: Bool {
@@ -45,7 +56,7 @@ public enum AstraSecureKeychainStore {
         isRunningTests && !isUsingExplicitTestKeychain
     }
 
-    private static var isRunningTests: Bool {
+    private static let isRunningTests: Bool = {
         // SwiftPM's test helper is ad-hoc signed separately from ASTRA.app. If
         // it creates the real per-channel keychain/bootstrap item, ASTRA cannot
         // reliably read that item later. Tests that exercise Keychain behavior
@@ -53,7 +64,7 @@ public enum AstraSecureKeychainStore {
         let processName = ProcessInfo.processInfo.processName
         return processName == "swiftpm-testing-helper"
             || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-    }
+    }()
 
     // MARK: - CRUD
 
@@ -66,8 +77,18 @@ public enum AstraSecureKeychainStore {
         allowUserInteraction: Bool = false
     ) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        let saved: Bool
         if allowUserInteraction {
-            return AstraSecureKeychain.saveSecretAllowingUserInteraction(
+            saved = AstraSecureKeychain.saveSecretAllowingUserInteraction(
+                value,
+                forAccount: account,
+                service: service,
+                label: label,
+                keychainPath: keychainPath,
+                bootstrapService: bootstrapService
+            )
+        } else {
+            saved = AstraSecureKeychain.saveSecret(
                 value,
                 forAccount: account,
                 service: service,
@@ -76,14 +97,25 @@ public enum AstraSecureKeychainStore {
                 bootstrapService: bootstrapService
             )
         }
-        return AstraSecureKeychain.saveSecret(
-            value,
-            forAccount: account,
-            service: service,
-            label: label,
-            keychainPath: keychainPath,
-            bootstrapService: bootstrapService
-        )
+        if !saved {
+            // Drain here, at the one chokepoint every write passes through,
+            // rather than at each caller — a new writer then cannot be silent by
+            // omission. Before this the only drains were on the startup,
+            // workspace_setup and capability_install paths, so eleven
+            // consecutive connector failures on 2026-08-17 logged
+            // `keychain.save_failed scope=connector` eleven times and not one
+            // `keychain.unavailable`; the -25293 behind them had to be
+            // recovered from securityd's own log. A failed write is the one
+            // moment the app knows something is wrong *and* knows a human is
+            // waiting on it.
+            //
+            // Accepted cost: `suppressed=` stops being additive across scopes,
+            // since this competes with the other drains for one process-global
+            // counter. Attributing a failure when it happens is worth more than
+            // a hoarded count.
+            logPendingKeychainFailure(scope: "keychain_write")
+        }
+        return saved
     }
 
     public static func load(service: String, account: String) -> String? {
@@ -149,5 +181,34 @@ public enum AstraSecureKeychainStore {
     public static func loginKeychainContains(service: String, account: String? = nil) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
         return AstraSecureKeychain.loginKeychainContainsService(service, account: account)
+    }
+
+    /// Emits `keychain.unavailable` if the dedicated keychain has failed to open
+    /// since this was last called, and reports whether it did.
+    ///
+    /// "Fails closed" is the right behavior for a read, but on its own it is
+    /// indistinguishable from "the user never configured this". When the
+    /// keychain itself is unopenable that mistake is made for *every* credential
+    /// at once: connectors show as unconfigured, capability setup finds nothing
+    /// to copy, and enabling a provider fails with a message about a missing
+    /// key. Nothing in the log said the keychain was the cause, because the
+    /// Obj-C layer swallowed every OSStatus. This is the one line that says so.
+    ///
+    /// Call it after a batch of keychain work rather than per lookup — the
+    /// report already carries the suppressed-attempt count, and draining it here
+    /// keeps a degraded keychain from writing a log line per credential.
+    @discardableResult
+    public static func logPendingKeychainFailure(scope: String) -> Bool {
+        // Obj-C `takeLastKeychainFailureReport`; Swift drops the redundant
+        // "Keychain", as it does for `secretForAccount:` → `secret(forAccount:)`.
+        guard let report = AstraSecureKeychain.takeLastFailureReport() else { return false }
+        // `report` is `stage=… status=… suppressed=…` built from an OSStatus and
+        // a fixed set of stage names. It never contains a secret, an account, or
+        // a path, so it is safe to log verbatim.
+        AuditLoggingSeam.required.audit(.keychainUnavailable, category: "Keychain", fields: [
+            "scope": scope,
+            "detail": report
+        ], level: .warning)
+        return true
     }
 }

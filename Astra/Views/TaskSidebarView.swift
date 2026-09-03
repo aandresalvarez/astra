@@ -6,7 +6,14 @@ import ASTRAPersistence
 import ASTRACore
 
 struct TaskSidebarContainerView: View {
-    @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+    // Not the task list — just the subscription to it. SwiftData invalidates a
+    // `@Query` on any mutation to its model type, so this one-row fetch gets
+    // exactly the same signal an unfiltered one would, for a `LIMIT 1` instead
+    // of a 726-row, ~64 ms read on the main thread inside the view transaction.
+    // `SidebarTaskStore` decides what that signal costs; see its doc comment
+    // for why most invalidations need no refetch at all.
+    @Query(SidebarTaskFetch.invalidationSignalDescriptor())
+    private var taskChangeSignal: [AgentTask]
     @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
     // Only active (non-terminal) requests drive sidebar activity counts. The
     // table is append-only and never pruned, so an unfiltered query would grow
@@ -23,6 +30,9 @@ struct TaskSidebarContainerView: View {
         sort: \TaskTurnRequest.submittedAt,
         order: .reverse
     ) private var turnRequests: [TaskTurnRequest]
+
+    @Environment(\.modelContext) private var modelContext
+    @State private var taskStore = SidebarTaskStore()
 
     let appUpdateController: AppUpdateController
     @Binding var selectedTask: AgentTask?
@@ -48,15 +58,22 @@ struct TaskSidebarContainerView: View {
 
     private var taskActivities: [UUID: TaskActivityPresentation] {
         TaskActivityPresentation.resolveByTaskID(
-            tasks: tasks,
+            tasks: taskStore.tasks,
             requests: turnRequests.map(\.snapshot)
         )
     }
 
     var body: some View {
-        TaskSidebarView(
+        // Reading the signal query is the subscription. `noteChanged` only
+        // schedules; it never writes observed state, so calling it from `body`
+        // cannot re-enter this update.
+        let _ = taskChangeSignal.count
+        taskStore.noteChanged(context: modelContext)
+
+        return TaskSidebarView(
             appUpdateController: appUpdateController,
-            tasks: tasks,
+            tasks: taskStore.tasks,
+            tasksVersion: taskStore.tasksVersion,
             selectedTask: $selectedTask,
             taskQueue: taskQueue,
             workspaces: workspaces,
@@ -68,10 +85,10 @@ struct TaskSidebarContainerView: View {
             onToggleDone: onToggleDone,
             onCancelTask: onCancelTask,
             onRetryTask: onRetryTask,
-            onDeleteTask: onDeleteTask,
+            onDeleteTask: reconcilingAfter(onDeleteTask),
             onEditWorkspace: onEditWorkspace,
             onShowConfigure: onShowConfigure,
-            onDeleteWorkspace: onDeleteWorkspace,
+            onDeleteWorkspace: reconcilingAfter(onDeleteWorkspace),
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
@@ -80,6 +97,23 @@ struct TaskSidebarContainerView: View {
             onOpenWorkspaceApp: onOpenWorkspaceApp,
             selectedWorkspaceApp: selectedWorkspaceApp
         )
+        .onAppear { taskStore.loadIfNeeded(context: modelContext) }
+    }
+
+    /// Wraps the two handlers that can change *which* tasks exist so the rail
+    /// updates on the same interaction rather than waiting out the store's
+    /// coalescing window. Everything else the sidebar offers — pin, rename,
+    /// mark done, cancel, retry — only changes fields on tasks already held,
+    /// and those render through `@Observable` without any refetch.
+    ///
+    /// Preserves nil so an absent handler stays absent; substituting a
+    /// non-nil one would light up an affordance that does nothing.
+    private func reconcilingAfter<T>(_ handler: ((T) -> Void)?) -> ((T) -> Void)? {
+        guard let handler else { return nil }
+        return { value in
+            handler(value)
+            taskStore.refreshNow(context: modelContext)
+        }
     }
 }
 
@@ -326,27 +360,13 @@ enum SidebarRevealSettlingPolicy {
     }
 }
 
-enum SidebarWorkspaceTaskList {
-    static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
-    /// Overflow controls sit with the task titles, not the full-width row
-    /// surface, so a long workspace list keeps one readable left edge.
-    static let showMoreLeadingPadding = SidebarThreadRowLayout.titleLeadingOffset(
-        childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
-        contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
-    )
-
-    static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
-        isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
-    }
-
-    static func hiddenTaskCount(totalTasks: Int, visibleTasks: Int) -> Int {
-        max(0, totalTasks - visibleTasks)
-    }
-}
-
 struct TaskSidebarView: View {
     let appUpdateController: AppUpdateController
     let tasks: [AgentTask]
+    /// `SidebarTaskStore`'s fingerprint of the fields the index is built from.
+    /// Passed in, never derived here — see `SidebarTaskIndexInvalidation` for
+    /// why fingerprinting the snapshot inside a `body` is self-defeating.
+    let tasksVersion: Int
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
@@ -418,7 +438,8 @@ struct TaskSidebarView: View {
     @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
-    @State private var taskIndex = SidebarTaskIndex(tasks: [], searchText: "")
+    @State private var taskIndex = SidebarTaskIndex.empty
+    @State private var indexRebuildScheduler = SidebarTaskIndexRebuildScheduler()
     @State private var allSchedules: [TaskSchedule] = []
 
     private var disclosureAnimation: Animation? {
@@ -474,6 +495,7 @@ struct TaskSidebarView: View {
     /// rank. First build and search rebuilds stay instant: one has nothing to
     /// move from, and the other fires on every keystroke.
     private func rebuildTaskIndex(animated: Bool = false) {
+        indexRebuildScheduler.noteRebuilt()
         let rebuilt = SidebarTaskIndex(
             tasks: tasks,
             searchText: searchText,
@@ -491,11 +513,12 @@ struct TaskSidebarView: View {
         allSchedules = workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
     }
 
-    // Lightweight fingerprint of task fields that the sidebar index cares about.
-    // Avoids rebuilding the index when unrelated fields (output, tokens) change.
+    // Fingerprint of what the sidebar index is built from, so unrelated field
+    // writes (output, tokens) don't rebuild it. The task half arrives
+    // precomputed from `SidebarTaskStore`; only the activity half is derived
+    // here, bounded by live turn requests rather than by the task table.
     private var sidebarTasksVersion: Int {
-        SidebarTaskIndexInvalidation.signature(for: tasks, searchText: searchText)
-            ^ taskActivitySignature
+        tasksVersion ^ taskActivitySignature
     }
 
     private var taskActivitySignature: Int {
@@ -661,8 +684,12 @@ struct TaskSidebarView: View {
         .onDisappear {
             endTaskDrag()
             endWorkspaceDrag()
+            indexRebuildScheduler.cancel()
         }
-        .onChange(of: sidebarTasksVersion) { rebuildTaskIndex(animated: true) }
+        // Coalesced: `taskActivitySignature` moves on every turn-request write
+        // and each move re-laid out the whole rail. Search below stays
+        // uncoalesced; a query lagging the keystroke reads as a broken field.
+        .onChange(of: sidebarTasksVersion) { indexRebuildScheduler.schedule { rebuildTaskIndex(animated: true) } }
         .onChange(of: searchText) {
             rebuildTaskIndex()
             setAccordionState(WorkspaceSidebarAccordion.searchChanged(in: accordion))
@@ -1383,7 +1410,7 @@ struct TaskSidebarView: View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
         let hasTasks = !workspaceTasks.isEmpty
-        let hasAny = hasAnyTask(in: workspace, using: taskIndex)
+        let hasAny = hasAnyTask(in: workspace, isExpanded: isExpanded, using: taskIndex)
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(workspaceTasks, isShowingAll: isShowingAll)
         let hiddenTaskCount = SidebarWorkspaceTaskList.hiddenTaskCount(
@@ -1392,6 +1419,11 @@ struct TaskSidebarView: View {
         )
         let workspaceAppRows = appsForWorkspace(workspace)
         let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
+        let showsEmptyDrawer = SidebarWorkspaceDrawer.showsEmptyState(
+            hasDrawerTasks: hasTasks,
+            holdsWork: hasAny,
+            hasApps: !workspaceAppRows.isEmpty
+        )
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
@@ -1408,7 +1440,8 @@ struct TaskSidebarView: View {
                             onOpen: { onOpenWorkspaceApp?(app) }
                         )
                     }
-                    if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
+                    let _ = SidebarWorkspaceDrawerLog.record(workspace, empty: showsEmptyDrawer, tasks: workspaceTasks.count)
+                    if showsEmptyDrawer {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
                         if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
@@ -2061,8 +2094,19 @@ struct TaskSidebarView: View {
         )
     }
 
-    private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
-        taskIndex.hasAnyTask(in: workspace)
+    /// Whether the workspace holds any work at all — the test that decides
+    /// between an empty drawer and a silent one. See `SidebarWorkspaceDrawer`
+    /// for why the index alone cannot be trusted with it.
+    private func hasAnyTask(
+        in workspace: Workspace,
+        isExpanded: Bool,
+        using taskIndex: SidebarTaskIndex
+    ) -> Bool {
+        SidebarWorkspaceDrawer.holdsWork(
+            isExpanded: isExpanded,
+            indexHasAnyTask: taskIndex.hasAnyTask(in: workspace),
+            workspaceHoldsTasks: { !workspace.tasks.isEmpty }
+        )
     }
 
     /// The apps belonging to a workspace, name-sorted and search-filtered like chat rows.

@@ -1819,18 +1819,20 @@ struct RunPermissionManifestTests {
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira Connector Probe", primaryPath: "/tmp/jira-connector-probe")
+        let workspace = Workspace(name: "Portal Connector Probe", primaryPath: "/tmp/portal-connector-probe")
+        // Unbrokered on purpose: a brokered connector is stripped from the
+        // launch environment, so there is no manifest for the agent to probe.
         let connector = Connector(
-            name: "Jira-new",
-            serviceType: "jira",
-            connectorDescription: "Atlassian Jira REST API v3",
-            baseURL: "https://stanfordmed.atlassian.net",
-            authMethod: "basic"
+            name: "Study Portal",
+            serviceType: "custom_http",
+            connectorDescription: "Study portal REST API",
+            baseURL: "https://portal.example.edu",
+            authMethod: "api_key"
         )
         connector.workspace = workspace
-        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
-        connector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
-        let task = AgentTask(title: "Review Jira issues", goal: "List open Jira issues", workspace: workspace)
+        connector.configKeys = ["PORTAL_BASE_URL", "PORTAL_PROJECTS"]
+        connector.configValues = ["https://portal.example.edu", "SS"]
+        let task = AgentTask(title: "Review portal issues", goal: "List open portal issues", workspace: workspace)
         let run = TaskRun(task: task)
         context.insert(workspace)
         context.insert(connector)

@@ -28,19 +28,27 @@ enum AgentPromptConnectorContextBuilder {
             for: runtime ?? task.resolvedRuntimeID
         ).usesHostControlCLIRelay
 
+        var routedMutableService = false
         let connectorDescriptions = capabilityScope.connectors.map { conn in
             let serviceType = conn.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
             let hostControlTool = HostControlPlaneMCPProjection.connectorToolName(serviceType)
             let hostControlRouted = hostControlTool.map(hostControlTools.contains) == true
+            if hostControlRouted, ConnectorMutationOperations.supportsMutation(serviceType: serviceType) {
+                routedMutableService = true
+            }
             return connectorDescription(
                 connector: conn,
                 alias: aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn),
                 bindings: bindingsByConnectorID[conn.id] ?? [],
                 hostControlRouted: hostControlRouted,
-                brokerOwnsConnectorConfiguration: hostControlRouted
-                    && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(serviceType),
+                // Not gated on `hostControlRouted`: the launch environment strips a
+                // brokered connector's credentials whether or not the broker tool
+                // reached this runtime, so printing the env vars when it did not
+                // would advertise variables the process does not have.
+                brokerOwnsConnectorConfiguration: HostControlPlaneMCPProjection
+                    .brokerOwnsConnectorConfiguration(serviceType),
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             )
         }
@@ -57,7 +65,7 @@ enum AgentPromptConnectorContextBuilder {
             \(connectorAPIGuidance(
                 dockerRouted: dockerRouted,
                 usesHostControlCLIRelay: usesHostControlCLIRelay
-            ))
+            ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract : "")
             """,
             sourcePointers: connectorSourcePointers(capabilityScope.connectors)
         )
@@ -105,6 +113,12 @@ enum AgentPromptConnectorContextBuilder {
         }
         if !brokerOwnsConnectorConfiguration, !missingCredentialKeys.isEmpty {
             desc += "\n  Credentials NOT configured (ask user to fill them in workspace settings): \(missingCredentialKeys.joined(separator: ", "))"
+        }
+        if brokerOwnsConnectorConfiguration, !hostControlRouted {
+            // The distinction the agent otherwise gets wrong: this is a missing
+            // route, not a missing credential. ASTRA holds the credential and
+            // will not hand it over, so asking the user for it cannot help.
+            desc += "\n  Route UNAVAILABLE in this run: this connector is reachable only through the ASTRA host-control broker. Report that the route is unavailable - do not ask for credentials and do not call the API directly."
         }
         if !configBindings.isEmpty {
             let rendered = configBindings
@@ -163,7 +177,12 @@ enum AgentPromptConnectorContextBuilder {
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             )
         case "redcap":
-            return redcapRuntimeExample(bindings: bindings)
+            return redcapRuntimeExample(
+                alias: alias,
+                bindings: bindings,
+                hostControlRouted: hostControlRouted,
+                usesHostControlCLIRelay: usesHostControlCLIRelay
+            )
         case "gcloud", "google_cloud", "googlecloud", "gcp":
             return gcloudRuntimeExample(
                 bindings: bindings,
@@ -222,8 +241,20 @@ enum AgentPromptConnectorContextBuilder {
     }
 
     private static func redcapRuntimeExample(
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        alias: String,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        hostControlRouted: Bool,
+        usesHostControlCLIRelay: Bool
     ) -> String? {
+        if hostControlRouted {
+            if usesHostControlCLIRelay {
+                // One runnable command per line: the relay tokenizer rejects `;`.
+                return #"astra-host-control redcap --operation status --alias "\#(alias)""#
+                    + "\n  Runtime example (reads): "
+                    + #"astra-host-control redcap --operation metadata --alias "\#(alias)""#
+            }
+            return #"mcp__astra_host__redcap with {"operation":"status","alias":"\#(alias)"}; for study structure use {"operation":"metadata","alias":"\#(alias)"}, and for subject data {"operation":"record","alias":"\#(alias)"}, which writes rows to a file in the task folder and returns the path"#
+        }
         guard let url = runtimeURLBase(
             bindings: bindings,
             logicalNames: ["apiURL", "baseURL", "url"],

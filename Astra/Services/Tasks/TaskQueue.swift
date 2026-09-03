@@ -1547,7 +1547,10 @@ final class TaskQueue {
                     ?? (sourceEvent.type == TaskEventTypes.Conversation.userMessage.rawValue
                         ? sourceEvent.payload
                         : nil),
-                includeTaskInputs: request.kind == .initial || request.kind == .scheduled
+                includeTaskInputs: request.kind == .initial || request.kind == .scheduled,
+                authorship: ExecutionRequestSubmissionService.authorship(
+                    forSourceEventType: sourceEvent.type
+                )
             )
         let requestExecutionPolicy = (source?.executionPolicyOverride?.executionPolicy ?? .default)
             .withLaunchSnapshot(launchSnapshot)

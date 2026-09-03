@@ -2104,8 +2104,8 @@ struct PluginInstallSheet: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
+    /// Unfiltered: `copyableSetupSourceKey` has to see workspace-owned edits.
+    @Query private var allConnectors: [Connector]
     @State private var credentialValues: [String: String] = [:]
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
@@ -2115,6 +2115,7 @@ struct PluginInstallSheet: View {
     @State private var isValidatingSetup = false
     @State private var lastValidationTraceID: String?
     @State private var copiedSetupSourceName: String?
+    @State private var copyableSetupSources: [CopyableCapabilityInstallSource] = []
 
     private let validationPreflightCache = PreflightCache()
 
@@ -2166,7 +2167,7 @@ struct PluginInstallSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !copyableSetupSourceWorkspaces.isEmpty {
+                    if !copyableSetupSources.isEmpty {
                         copySetupSection
                     }
 
@@ -2251,6 +2252,17 @@ struct PluginInstallSheet: View {
                 }
             }
         }
+        // Keyed so the sweep runs once per real change to the source
+        // workspaces, rather than three times per keystroke into the credential
+        // fields above.
+        .task(id: copyableSetupSourceKey) {
+            copyableSetupSources = CopyableCapabilitySetupResolver.installSources(
+                for: package,
+                excluding: workspace.id,
+                sources: capabilitySetupSourceWorkspaces,
+                connectors: allConnectors
+            )
+        }
         .alert("Capability could not be installed", isPresented: Binding(
             get: { installError != nil },
             set: { if !$0 { installError = nil } }
@@ -2325,9 +2337,9 @@ struct PluginInstallSheet: View {
             Spacer()
 
             Menu {
-                ForEach(copyableSetupSourceWorkspaces, id: \.id) { sourceWorkspace in
-                    Button(sourceWorkspace.name) {
-                        copySetup(from: sourceWorkspace)
+                ForEach(copyableSetupSources) { source in
+                    Button(source.name) {
+                        copySetup(from: source)
                     }
                 }
             } label: {
@@ -2342,15 +2354,25 @@ struct PluginInstallSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 9))
     }
 
-    private var copyableSetupSourceWorkspaces: [Workspace] {
-        capabilitySetupSourceWorkspaces.filter { sourceWorkspace in
-            sourceWorkspace.id != workspace.id &&
-            hasCopyableSetupInputs(from: sourceWorkspace)
-        }
+    /// Cheap key describing when the copy-from list could have changed. Reads
+    /// only stored scalars on already-materialized rows; see
+    /// `CopyableCapabilitySetupResolver.installSources` for why it must stay
+    /// cheap.
+    ///
+    /// Delegates rather than spelling the key out again: this had drifted from
+    /// `ContentView`'s copy already, and two hand-written definitions of "when
+    /// is this cache stale" is exactly one too many for something whose failure
+    /// mode is a silently wrong list.
+    private var copyableSetupSourceKey: String {
+        CopyableCapabilitySetupResolver.key(
+            prefix: package.id,
+            sources: capabilitySetupSourceWorkspaces,
+            connectors: allConnectors
+        )
     }
 
     private var copySetupSourceSummary: String {
-        let count = copyableSetupSourceWorkspaces.count
+        let count = copyableSetupSources.count
         return count == 1 ? "1 workspace has saved setup" : "\(count) workspaces have saved setup"
     }
 
@@ -2366,31 +2388,16 @@ struct PluginInstallSheet: View {
         return values
     }
 
-    private func copySetup(from sourceWorkspace: Workspace) {
-        let inputs = CapabilitySetupCopier().installationInputs(
-            for: package,
-            from: sourceWorkspace,
-            globalConnectors: globalConnectors
-        )
+    private func copySetup(from source: CopyableCapabilityInstallSource) {
+        let inputs = source.inputs
         guard !inputs.credentialInputs.isEmpty || !inputs.configInputs.isEmpty || !inputs.baseURLOverrides.isEmpty else {
             return
         }
         credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
         configValues.merge(inputs.configInputs) { _, copied in copied }
         baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }
-        copiedSetupSourceName = sourceWorkspace.name
+        copiedSetupSourceName = source.name
         resetValidation()
-    }
-
-    private func hasCopyableSetupInputs(from sourceWorkspace: Workspace) -> Bool {
-        let inputs = CapabilitySetupCopier().installationInputs(
-            for: package,
-            from: sourceWorkspace,
-            globalConnectors: globalConnectors
-        )
-        return !inputs.credentialInputs.isEmpty ||
-            !inputs.configInputs.isEmpty ||
-            !inputs.baseURLOverrides.isEmpty
     }
 
     private var validationStatusSection: some View {

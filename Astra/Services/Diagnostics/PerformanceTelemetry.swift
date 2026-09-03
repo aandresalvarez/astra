@@ -4,9 +4,194 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAModels
 
+/// Totals for the samples a threshold hid, per event *and task*, over one flush
+/// window.
+struct PerformanceTelemetrySuppressedRollup: Equatable {
+    let event: String
+    /// The task the samples came from, or `nil` for the call sites that have no
+    /// task in hand. Carried on the rollup rather than taken from whichever
+    /// sample happened to trip the flush — see `PerformanceTelemetrySuppressedLedger`.
+    let taskID: UUID?
+    /// The severity the samples in this bucket were measured at.
+    ///
+    /// Carried for the same reason as `taskID`, and it was missed the first
+    /// time: the flush used the `level` of whichever sample closed the window,
+    /// so a debug-level sample tripping a window that also held warning-level
+    /// ones emitted those warnings at debug — below the production log
+    /// threshold, which is to say not at all. The reverse ordering promoted
+    /// debug measurements to warnings and put noise where a real regression
+    /// would be looked for.
+    let level: LogLevel
+    let count: Int
+    let totalMilliseconds: Double
+    let maxMilliseconds: Double
+    let thresholdMilliseconds: Double
+}
+
+/// Accumulates what the thresholds throw away.
+///
+/// A threshold answers "is this one call slow?" — but the stall that started
+/// this work was hundreds of individually-fast calls. During the worst typing
+/// windows the log was *quiet*, which read as "the app was doing nothing" when
+/// it meant "everything it did came in under 8 ms, several hundred times a
+/// second". A quiet log has to mean no work, or it is worse than no log.
+///
+/// Lock-protected rather than actor-isolated because `PerformanceTelemetry` is
+/// called from every thread in the app, and a diagnostic that forces a hop is
+/// a diagnostic that changes what it measures. Mirrors the `NSLock` idiom used
+/// by `UsageDashboardSummaryMemo` and `WildcardPatternMatcher`.
+final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
+    private struct Bucket {
+        var count = 0
+        var totalMilliseconds: Double = 0
+        var maxMilliseconds: Double = 0
+        var thresholdMilliseconds: Double = 0
+    }
+
+    /// Aggregation is per event *and* per task.
+    ///
+    /// Keying on the event alone folded every task's samples into one bucket,
+    /// and the flush then stamped each line with the `taskID` of whichever
+    /// sample happened to close the window. So a rollup covering work done for
+    /// task A could be logged against task B — and the logs are read by
+    /// filtering on the task, which is how this ledger gets used at all. An
+    /// attribution that is confidently wrong is worse than the `nil` the
+    /// unattributed call sites already report.
+    /// Level is part of the key, not just part of the payload. One event can be
+    /// measured at more than one severity — the same helper is called with
+    /// `.debug` from a hot path and `.warning` from a guarded one — and folding
+    /// those into a single bucket would make the level a property of the last
+    /// writer again, one layer down.
+    private struct BucketKey: Hashable {
+        let event: String
+        let taskID: UUID?
+        let level: LogLevel
+    }
+
+    private let lock = NSLock()
+    private let flushInterval: TimeInterval
+    private var buckets: [BucketKey: Bucket] = [:]
+    /// Set by the first sample rather than at construction: the ledger is built
+    /// at process start, so anchoring the window there would make the first
+    /// rollup cover an arbitrary stretch of idle time.
+    private var lastFlushAt: Date?
+
+    init(flushInterval: TimeInterval) {
+        self.flushInterval = flushInterval
+    }
+
+    /// Records one suppressed sample and, when the window has elapsed, hands
+    /// back everything accumulated since the last flush.
+    ///
+    /// The caller logs the result. Doing it this way means no background timer
+    /// to leak and no wakeups while the app is idle: rollups are emitted by the
+    /// same activity that produced them.
+    func record(
+        event: String,
+        taskID: UUID? = nil,
+        level: LogLevel = .debug,
+        milliseconds: Double,
+        thresholdMilliseconds: Double,
+        now: Date = Date()
+    ) -> [PerformanceTelemetrySuppressedRollup] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let key = BucketKey(event: event, taskID: taskID, level: level)
+        var bucket = buckets[key] ?? Bucket()
+        bucket.count += 1
+        bucket.totalMilliseconds += milliseconds
+        bucket.maxMilliseconds = max(bucket.maxMilliseconds, milliseconds)
+        bucket.thresholdMilliseconds = thresholdMilliseconds
+        buckets[key] = bucket
+
+        guard let windowStart = lastFlushAt else {
+            lastFlushAt = now
+            return []
+        }
+        guard now.timeIntervalSince(windowStart) >= flushInterval else { return [] }
+        lastFlushAt = now
+        let rollups = buckets
+            .map { key, bucket in
+                PerformanceTelemetrySuppressedRollup(
+                    event: key.event,
+                    taskID: key.taskID,
+                    level: key.level,
+                    count: bucket.count,
+                    totalMilliseconds: bucket.totalMilliseconds,
+                    maxMilliseconds: bucket.maxMilliseconds,
+                    thresholdMilliseconds: bucket.thresholdMilliseconds
+                )
+            }
+            // Stable order so consecutive lines are comparable by eye, and the
+            // costliest event reads first. The task is the last tiebreak, so two
+            // tasks doing identical work still produce a deterministic order.
+            .sorted {
+                (
+                    $0.totalMilliseconds, $0.event, $0.taskID?.uuidString ?? ""
+                ) > (
+                    $1.totalMilliseconds, $1.event, $1.taskID?.uuidString ?? ""
+                )
+            }
+        buckets.removeAll(keepingCapacity: true)
+        return rollups
+    }
+}
+
 enum PerformanceTelemetry {
     static let uiFrameThresholdMilliseconds: Double = 8
     static let backgroundThresholdMilliseconds: Double = 20
+    /// Long enough that rollups stay rare next to real events, short enough to
+    /// line up with a "the app felt slow just now" report.
+    static let suppressedRollupIntervalSeconds: TimeInterval = 30
+
+    private static let suppressedLedger = PerformanceTelemetrySuppressedLedger(
+        flushInterval: suppressedRollupIntervalSeconds
+    )
+
+    /// Books a sample a threshold is about to discard, and emits the window's
+    /// totals if this was the last sample in it.
+    private static func noteSuppressed(
+        _ event: String,
+        milliseconds: Double,
+        thresholdMilliseconds: Double,
+        level: LogLevel,
+        taskID: UUID?
+    ) {
+        let rollups = suppressedLedger.record(
+            event: event,
+            taskID: taskID,
+            level: level,
+            milliseconds: milliseconds,
+            thresholdMilliseconds: thresholdMilliseconds
+        )
+        for rollup in rollups {
+            log(
+                "perf_suppressed_rollup",
+                durationMilliseconds: rollup.totalMilliseconds,
+                // The rollup's own level, for the same reason as its own task
+                // below. A window is closed by whichever sample happens to be
+                // last, and that sample's severity has nothing to do with the
+                // severity of the buckets being drained alongside it.
+                level: rollup.level,
+                fields: [
+                    "suppressed_event": rollup.event,
+                    "suppressed_count": PerformanceTelemetryFields.count(rollup.count),
+                    "max_ms": String(format: "%.2f", rollup.maxMilliseconds),
+                    "mean_ms": String(
+                        format: "%.2f",
+                        rollup.totalMilliseconds / Double(max(rollup.count, 1))
+                    ),
+                    "threshold_ms": String(format: "%.2f", rollup.thresholdMilliseconds),
+                    "window_s": String(format: "%.0f", suppressedRollupIntervalSeconds)
+                ],
+                // The rollup's own task, not this sample's. They are usually
+                // the same and occasionally are not, and the time they are not
+                // is a burst from one task closing another task's window.
+                taskID: rollup.taskID
+            )
+        }
+    }
 
     @discardableResult
     static func measure<T>(
@@ -19,7 +204,16 @@ enum PerformanceTelemetry {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-        guard elapsed >= thresholdMilliseconds else { return result }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: nil
+            )
+            return result
+        }
 
         log(
             event,
@@ -42,7 +236,16 @@ enum PerformanceTelemetry {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
         let elapsed = elapsedMilliseconds(since: start)
-        guard elapsed >= thresholdMilliseconds else { return result }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: nil
+            )
+            return result
+        }
 
         log(
             event,
@@ -66,7 +269,16 @@ enum PerformanceTelemetry {
         taskID: UUID? = nil
     ) {
         let elapsed = elapsedMilliseconds(since: start)
-        guard elapsed >= thresholdMilliseconds else { return }
+        guard elapsed >= thresholdMilliseconds else {
+            noteSuppressed(
+                event,
+                milliseconds: elapsed,
+                thresholdMilliseconds: thresholdMilliseconds,
+                level: level,
+                taskID: taskID
+            )
+            return
+        }
         log(event, durationMilliseconds: elapsed, level: level, fields: fields, taskID: taskID)
     }
 

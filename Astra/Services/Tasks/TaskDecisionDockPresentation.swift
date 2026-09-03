@@ -19,6 +19,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case allowOnce
     case allowSimilar
     case reviewGitPublish
+    case reviewConnectorMutation
     case approveResult
     case dismissReview
     case approveCorrection
@@ -87,6 +88,11 @@ struct TaskDecisionDockPresentation: Equatable {
         var runtimePermissionAllowSimilarLabel: String?
         var canApproveSimilarRuntimePermission: Bool
         var hasGitPublishRequest: Bool = false
+        /// Destinations of the connector mutations waiting for review, e.g.
+        /// `["STAR / Bug"]`. Empty means none pending. Scope only — the ticket
+        /// body is in the staged file and is read in the review sheet, not
+        /// summarised into a dock row.
+        var pendingConnectorMutationTargets: [String] = []
         var hasExecutableApprovedPlan: Bool
         var planActionTitle: String?
         var planActionDetail: String?
@@ -159,6 +165,14 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if context.hasGitPublishRequest {
             return gitPublishPresentation(context)
+        }
+
+        // After publication, before the advisory surfaces. A staged mutation
+        // blocks nothing — the run is over and the agent is not waiting — but it
+        // is the only row here that puts something into a system outside ASTRA,
+        // so it outranks anything the user can act on later without consequence.
+        if !context.pendingConnectorMutationTargets.isEmpty {
+            return connectorMutationPresentation(context)
         }
 
         if let correction = context.mission?.correction {
@@ -281,6 +295,40 @@ struct TaskDecisionDockPresentation: Equatable {
                 context.canRetry ? action(.retry, title: "Retry agent", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
+            prefersExpandedDetails: true
+        )
+    }
+
+    private static func connectorMutationPresentation(_ context: Context) -> TaskDecisionDockPresentation {
+        let targets = context.pendingConnectorMutationTargets
+        let title = targets.count == 1
+            ? "Send approval needed"
+            : "\(targets.count) sends need approval"
+        let scopeDetail = TaskDecisionDockDetail(
+            id: "connector-mutation.targets",
+            title: targets.count == 1 ? "Destination" : "Destinations",
+            summary: targets.joined(separator: " · "),
+            systemImage: "paperplane",
+            tone: .attention
+        )
+        return TaskDecisionDockPresentation(
+            id: "connector-mutation-approval",
+            icon: "paperplane.fill",
+            tone: .attention,
+            title: title,
+            // Says who sends and with what, because the agent could not: the
+            // credential is in the Keychain and was never projected to it.
+            summary: "The agent composed this but could not send it. "
+                + "Review the exact payload before ASTRA sends it with the connector's credential.",
+            metrics: metrics(context),
+            details: details(context, additional: [scopeDetail]),
+            primaryAction: action(
+                .reviewConnectorMutation,
+                title: "Review & send",
+                systemImage: "paperplane.fill"
+            ),
+            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
             overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
@@ -989,6 +1037,7 @@ private extension TaskDecisionDockActionKind {
              .allowOnce,
              .allowSimilar,
              .reviewGitPublish,
+             .reviewConnectorMutation,
              .approveResult,
              .dismissReview,
              .approveCorrection,

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
@@ -145,6 +146,18 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
     let message: String
     let actionTitle: String
     let actionSystemImage: String
+    /// Whether retrying the identical value could succeed. False for an
+    /// admission rejection: the value itself is the problem, so offering
+    /// "Allow & Save" would just fail again and mislead about the cause.
+    let isRetryable: Bool
+
+    init(key: String, message: String, actionTitle: String, actionSystemImage: String, isRetryable: Bool = true) {
+        self.key = key
+        self.message = message
+        self.actionTitle = actionTitle
+        self.actionSystemImage = actionSystemImage
+        self.isRetryable = isRetryable
+    }
 
     static func keychainSaveFailed(key: String) -> ConnectorCredentialSaveFailurePresentation {
         ConnectorCredentialSaveFailurePresentation(
@@ -152,6 +165,22 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
             message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
             actionTitle: "Allow & Save",
             actionSystemImage: MacOSPermissionKind.keychain.systemImage
+        )
+    }
+
+    /// The value was refused before it ever reached the Keychain — it is not
+    /// a credential this connector's service can use. See
+    /// `ConnectorCredentialAdmission`.
+    static func admissionRejected(
+        key: String,
+        verdict: ConnectorCredentialAdmissionVerdict
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        ConnectorCredentialSaveFailurePresentation(
+            key: key,
+            message: verdict.message(forKey: key) ?? "\(key) is not a valid credential for this connector.",
+            actionTitle: "Not saved",
+            actionSystemImage: "exclamationmark.shield",
+            isRetryable: false
         )
     }
 }
@@ -188,7 +217,7 @@ struct ConnectorEditorView: View {
     @State private var pendingDeletion: PendingConnectorDeletion?
     @FocusState private var isNameFocused: Bool
 
-    private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+    private static let secretPatterns = RunSecretRedaction.keychainBackedKeyPatterns
 
     private static func isSecretKey(_ key: String) -> Bool {
         let upper = key.uppercased()
@@ -1037,9 +1066,9 @@ struct ConnectorEditorView: View {
     private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        let saved = connector.saveCredential(key: key, value: newCredValue, allowUserInteraction: true)
-        guard saved else {
-            credentialSaveError = .keychainSaveFailed(key: key)
+        let outcome = connector.saveCredentialChecked(key: key, value: newCredValue, allowUserInteraction: true)
+        guard outcome.isSaved else {
+            credentialSaveError = presentation(for: outcome, key: key)
             pendingCredentialSaveContext = .newCredential
             return
         }
@@ -1061,13 +1090,13 @@ struct ConnectorEditorView: View {
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        let saved = connector.saveCredential(
+        let outcome = connector.saveCredentialChecked(
             key: normalizedKey,
             value: replacementCredentialValue,
             allowUserInteraction: true
         )
-        guard saved else {
-            credentialSaveError = .keychainSaveFailed(key: normalizedKey)
+        guard outcome.isSaved else {
+            credentialSaveError = presentation(for: outcome, key: normalizedKey)
             pendingCredentialSaveContext = .replacement(key: normalizedKey)
             return
         }
@@ -1085,6 +1114,16 @@ struct ConnectorEditorView: View {
         pendingCredentialSaveContext = nil
     }
 
+    private func presentation(
+        for outcome: ConnectorCredentialSaveOutcome,
+        key: String
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        if let verdict = outcome.rejection {
+            return .admissionRejected(key: key, verdict: verdict)
+        }
+        return .keychainSaveFailed(key: key)
+    }
+
     private func credentialSaveErrorLabel(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
         Label(presentation.message, systemImage: "exclamationmark.triangle.fill")
             .font(Stanford.caption(12))
@@ -1092,16 +1131,19 @@ struct ConnectorEditorView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    @ViewBuilder
     private func retryCredentialSaveButton(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
-        Button {
-            retryPendingCredentialSave(for: presentation)
-        } label: {
-            Label(presentation.actionTitle, systemImage: presentation.actionSystemImage)
-                .font(Stanford.caption(12).weight(.semibold))
-                .lineLimit(1)
+        if presentation.isRetryable {
+            Button {
+                retryPendingCredentialSave(for: presentation)
+            } label: {
+                Label(presentation.actionTitle, systemImage: presentation.actionSystemImage)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 
     private func retryPendingCredentialSave(for presentation: ConnectorCredentialSaveFailurePresentation) {

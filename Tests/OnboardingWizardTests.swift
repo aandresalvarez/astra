@@ -516,6 +516,48 @@ struct OnboardingWizardTests {
         #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "legacy-token")
     }
 
+    @Test("Workspace capability setup never adopts another service's credential")
+    @MainActor
+    func workspaceCapabilitySetupNeverAdoptsAnotherServiceCredential() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Mixed", primaryPath: "/tmp/mixed-services")
+        context.insert(source)
+
+        // A live Jira connector plus a deleted connector whose Keychain
+        // entries survive under the unqualified `API_TOKEN` the alias table
+        // widens `REDCAP_API_TOKEN` to. Neither may seed the REDCap package.
+        let jira = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.isGlobal = true
+        jira.credentialKeys = ["JIRA_API_TOKEN"]
+        jira.credentialValues = [""]
+        context.insert(jira)
+
+        let deletedConnectorID = UUID()
+        source.enabledCapabilityIDs = ["redcap-workflow"]
+        source.enabledGlobalConnectorIDs = [deletedConnectorID.uuidString, jira.id.uuidString]
+
+        let store = MockSecretStore()
+        let atlassianToken = "ATATT3xFfGF0aaaabbbbccccddddeeeeffff0000"
+        store.save(key: "JIRA_API_TOKEN", value: atlassianToken,
+                   entityID: KeychainSecretStore.connectorEntityID(for: jira.id), label: nil)
+        store.save(key: "API_TOKEN", value: atlassianToken,
+                   entityID: "agentflow-\(deletedConnectorID.uuidString)", label: nil)
+
+        let summary = CapabilitySetupCopier(secretStore: store).copySetup(
+            from: source,
+            globalConnectors: [jira]
+        )
+
+        #expect(summary.inputsByPackageID["redcap-workflow"]?.credentialInputs["REDCAP_API_TOKEN"] == nil)
+    }
+
     @Test("Workspace capability setup copies stale global connector credentials")
     @MainActor
     func workspaceCapabilitySetupCopiesStaleGlobalConnectorCredentials() throws {

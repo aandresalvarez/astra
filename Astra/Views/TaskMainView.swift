@@ -227,6 +227,8 @@ struct TaskMainView: View {
     @State private var isShowingDiagnosticsPopover = false
     @State private var headerFileItemsCache: [TaskFileItem] = []
     @State private var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
+    /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
+    @State var decisionArtifactPathsCache: [String] = []
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -260,6 +262,7 @@ struct TaskMainView: View {
     @State var pendingForkRequest: PendingTaskForkRequest?
     @State var forkCreationError: String?
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
+    @State private var connectorMutationReview = TaskConnectorMutationReviewState()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
     @FocusState private var isComposerFocused: Bool
@@ -517,6 +520,12 @@ struct TaskMainView: View {
                 onCancel: { gitPublishProposal = nil }
             )
         }
+        .taskConnectorMutationReview(
+            state: connectorMutationReview,
+            task: task,
+            modelContext: modelContext,
+            onResolved: { threadViewModel.refreshSnapshot(for: task) }
+        )
         .alert("Couldn’t Fork Conversation", isPresented: Binding(
             get: { forkCreationError != nil },
             set: { if !$0 { forkCreationError = nil } }
@@ -551,6 +560,9 @@ struct TaskMainView: View {
         }
         .task(id: diagnosticFileGroupsInputSignature) {
             await recomputeDiagnosticFileGroups()
+        }
+        .task(id: decisionArtifactPathsInputSignature) {
+            await recomputeDecisionArtifactPaths()
         }
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
@@ -615,9 +627,8 @@ struct TaskMainView: View {
                 onGeneratedFilesChange: {
                     deferTaskViewMutation {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-                        Task {
-                            await recomputeDiagnosticFileGroups()
-                        }
+                        // Diagnostics rebuild from `.task(id:)`, which carries
+                        // the artifact count this fires on and can be cancelled.
                         refreshTaskContextState()
                         refreshForkSourceAvailabilityWarning()
                     }
@@ -943,7 +954,9 @@ struct TaskMainView: View {
             "\(currentThreadSnapshot.totalEventCount)",
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
-            "\(latestRun?.fileChangesJSONLength ?? 0)"
+            "\(latestRun?.fileChangesJSONLength ?? 0)",
+            // One fault to count; one per row to read. See `TaskGeneratedFilesTrigger`.
+            "\(task.artifacts.count)"
         ].joined(separator: "|")
     }
 
@@ -1027,18 +1040,6 @@ struct TaskMainView: View {
                 context: .taskFolder
             ) != nil
         }.count
-    }
-
-    private func isUserFacingStoredArtifactPath(_ path: String) -> Bool {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        let normalizedPath = TaskArtifactPathNormalizer.normalizedPath(path, task: task)
-        guard let relative = TaskOutputArtifactPathPolicy.relativePath(normalizedPath, under: taskFolder) else {
-            return true
-        }
-        return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
-            relative,
-            context: .taskFolder
-        ) != nil
     }
 
     private func formatHeaderFileSize(_ size: Int64) -> String {
@@ -1618,7 +1619,25 @@ struct TaskMainView: View {
                     unobscuredWidth: taskChatUnobscuredWidth
                 )
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    // `VStack`, not `LazyVStack`: the lazy stack's item-phase cache is
+                    // the write side of a layout live-lock. Every selectable `Text`
+                    // below is hosted in a SwiftUI `SelectionOverlay` NSView, and
+                    // `SelectionOverlay.updateNSView` ->
+                    // `FallbackAlignmentProvider.update(in:axis:)` -> `-[NSControl setFont:]`
+                    // invalidates that view's intrinsic content size on every layout
+                    // pass, so a row's measured height never settles.
+                    // `LazyLayoutCacheItem.AllItemsPhaseMutation` then writes the
+                    // unsettled phase back into the AttributeGraph
+                    // (`AG::Graph::value_set` -> `propagate_dirty`), re-running layout.
+                    // Both halves run inside one `GraphHost.flushTransactions()`, which
+                    // drains until empty and therefore never returns: on 2026-08-18 the
+                    // app spun there for 2h56m at 99% CPU on a FIVE-row transcript,
+                    // growing to 32 GB because the run loop never reached an
+                    // autorelease-pool drain. A plain stack has no phase cache, so the
+                    // cycle has no write side. The transcript is history-windowed
+                    // (`hasEarlierHistory` / `requestEarlierHistory`), so this renders a
+                    // bounded page rather than the whole thread.
+                    VStack(alignment: .leading, spacing: 10) {
                         Color.clear
                             .frame(height: 1)
                             .id("chatTop")
@@ -3901,6 +3920,7 @@ struct TaskMainView: View {
             pendingReviewState: pendingTaskReviewState,
             runtimePermission: runtimePermissionState,
             hasGitPublishRequest: shouldOfferGitPublishReview,
+            pendingConnectorMutationTargets: TaskConnectorMutationReviewState.pendingTargets(task: task),
             executableApprovedPlan: executableApprovedPlan,
             skipPermissions: taskSkipPermissions,
             planExecutionMode: planCheckpointExecutionMode,
@@ -3924,14 +3944,13 @@ struct TaskMainView: View {
         ))
     }
 
+    /// Cached: `body` resolves the decision dock once per pass, including the
+    /// pass a keystroke in the composer triggers, and the walk behind this list
+    /// costs O(artifacts) syscalls. Refreshed from
+    /// `TaskMainViewDecisionArtifacts.swift`; the cost is written up at
+    /// `TaskDecisionArtifactPathFilter`.
     private var taskDecisionArtifactPaths: [String] {
-        TaskDecisionDockContextBuilder.artifactPaths(
-            generatedFilePaths: threadViewModel.generatedFilePaths,
-            storedArtifactPaths: task.artifacts
-                .filter { !$0.isStale }
-                .map(\.path)
-                .filter(isUserFacingStoredArtifactPath)
-        )
+        decisionArtifactPathsCache
     }
 
     private var shouldOfferGitPublishReview: Bool {
@@ -4318,6 +4337,8 @@ struct TaskMainView: View {
             approveSimilarRuntimePermissionForTask()
         case .reviewGitPublish:
             prepareGitPublishProposal()
+        case .reviewConnectorMutation:
+            connectorMutationReview.prepare(task: task, modelContext: modelContext)
         case .approveCorrection:
             if let id = action.payload { approveMissionCorrection(id) }
         case .createCorrectionTask:
@@ -4955,7 +4976,14 @@ struct TaskMainView: View {
                         }
                         return .ignored
                     }
-                    .onChange(of: messageText) { slashSelectedIndex = 0 }
+                    // The probe was only ever armed from `ChatPanelView`, so
+                    // typing into an open task — the composer this is — logged
+                    // nothing at all. That silence is why the per-keystroke
+                    // artifact walk went unmeasured for so long.
+                    .onChange(of: messageText) {
+                        slashSelectedIndex = 0
+                        ComposerTypingStallProbe.shared.noteTyping()
+                    }
                     .disabled(task.status == .running)
 
                 Color.clear

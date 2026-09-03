@@ -114,6 +114,63 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)loginKeychainContainsService:(NSString *)service
                              account:(nullable NSString *)account;
 
+/// Consumes the pending description of why the dedicated keychain could not be
+/// opened — `stage=<what failed> status=<OSStatus> suppressed=<attempts>` — or
+/// `nil` if nothing has failed since the last call.
+///
+/// This class deliberately does no logging of its own (it handles secrets, and
+/// an `os_log` here is one careless `%@` away from printing one). It instead
+/// hands the failure to `AstraSecureKeychainStore`, which logs through the
+/// app's redacting logger. Without this, a keychain the app cannot read is
+/// completely invisible: every lookup returns `nil`, callers treat that as
+/// "not configured", and the app log stays silent while thousands of reads
+/// fail. `suppressed` counts attempts collapsed by the retry backoff, so a
+/// single line still conveys how hard the app was hammering.
+///
+/// Consuming rather than peeking keeps the caller from re-logging one failure
+/// on every poll.
++ (nullable NSString *)takeLastKeychainFailureReport;
+
+/// Test-only: how many times the keychain at `path` has actually been opened,
+/// as opposed to answered from the handle cache or skipped by the failure
+/// backoff. Lets a test assert that a burst of failing lookups costs one
+/// securityd round trip rather than one per lookup, without timing anything.
++ (NSUInteger)openAttemptCountForKeychainPath:(NSString *)path;
+
+/// Test-only: the stage at which the last open of (`path`, `bootstrapService`)
+/// failed, or `nil` if it is not currently in a backoff window.
+///
+/// Scoped to one keychain, unlike `takeLastKeychainFailureReport`, which is
+/// deliberately process-global because the app wants a single log line. Several
+/// suites in this binary drive keychains in parallel, so only a keyed lookup can
+/// assert *which* stage failed without pinning the scheduler.
++ (nullable NSString *)lastFailureStageForKeychainPath:(NSString *)path
+                                      bootstrapService:(NSString *)bootstrapService;
+
+/// Test-only: the `OSStatus` behind that stage, or `errSecSuccess` if the
+/// keychain is not currently in a backoff window.
+///
+/// This must be a *measured* status, never a placeholder. The distinction it
+/// carries is the whole diagnosis: `errSecItemNotFound` (-25300) means the
+/// bootstrap item is absent and the keychain needs re-provisioning, while
+/// `errSecAuthFailed` (-25293) / `errSecInteractionNotAllowed` (-25308) mean the
+/// item is present and *this binary* is not in its ACL partition list — which is
+/// what an ad-hoc rebuild does every time its cdhash changes.
++ (OSStatus)lastFailureStatusForKeychainPath:(NSString *)path
+                            bootstrapService:(NSString *)bootstrapService;
+
+/// Test-only: whether the keychain file at `path` is missing or structurally
+/// unusable, which is the sole condition under which the save path may rebuild
+/// it from scratch.
+///
+/// Exposed because the negative answer is the load-bearing one. Recovery drops
+/// the bootstrap password and moves the keychain aside, leaving a file no key
+/// can open; gating it on a probe of the file itself is what keeps a
+/// partition-list denial — a permission the user grants in one dialog — from
+/// erasing every stored credential instead. Note the polarity: `YES` permits
+/// destruction.
++ (BOOL)dedicatedKeychainIsBeyondRecoveryAtPath:(NSString *)path;
+
 @end
 
 NS_ASSUME_NONNULL_END

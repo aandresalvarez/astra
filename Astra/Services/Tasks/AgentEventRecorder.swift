@@ -56,7 +56,19 @@ final class AgentEventRecordingState {
         let key = conversationKey(eventType: eventType, run: run)
         if let existing = lastConversationEventByKey[key],
            existing.payload.count + text.count <= maxCoalescedPayloadLength {
-            existing.payload += text
+            // Coalescing appends straight to a payload that already went
+            // through `TaskEvent`'s redacting initializer, so this append has to
+            // carry its own pass — and it has to see across the seam, because a
+            // credential arriving as two provider deltas matches neither half.
+            let redacted = RunSecretRedactionScope.redactedAppend(
+                existing: existing.payload,
+                addition: text,
+                taskID: task.id
+            )
+            if redacted.dropFromExisting > 0 {
+                existing.payload.removeLast(redacted.dropFromExisting)
+            }
+            existing.payload += redacted.append
             let changedAt = Date()
             // The incremental transcript read (`TaskThreadHistoryReader.tailPage`)
             // only refetches rows at or after its cursor. Bumping the timestamp

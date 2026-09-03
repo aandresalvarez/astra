@@ -270,6 +270,8 @@ enum TaskRuntimePermissionOpenRequestStore {
             return normalizedToolName(toolName) ?? "Local sandbox"
         case .gitPublish:
             return "GitHub draft publication"
+        case .connectorMutation(let authorization):
+            return "\(authorization.serviceType.capitalized) \(authorization.operation)"
         }
     }
 

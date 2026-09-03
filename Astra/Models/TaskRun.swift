@@ -70,9 +70,14 @@ public final class TaskRun {
     /// writers shrink the text: the completed-summary rewrite strips markers,
     /// output capping elides the middle, and the workspace-JSON mirror
     /// truncates.
+    ///
+    /// The marker flag is derived from the text as the caller supplied it:
+    /// credential redaction runs afterwards, and a protocol marker that a
+    /// redaction happened to straddle is still a marker the parser must be
+    /// told about.
     public func setOutput(_ newValue: String) {
-        output = newValue
         hasProtocolEvents = newValue.contains(AstraRunProtocolParser.markerToken)
+        output = RunSecretRedactionScope.redact(newValue, taskID: task?.id)
     }
 
     /// Appends streamed text and keeps the marker flag exact.
@@ -80,6 +85,9 @@ public final class TaskRun {
     /// the already-stored output is re-scanned together with the new text. A
     /// never-scanned (`nil`) row stays `nil` on a miss: the appended text alone
     /// cannot prove the older output is marker-free.
+    /// A credential can straddle a chunk boundary the same way a marker can, so
+    /// the append is redacted across the seam too, which may rewrite the tail of
+    /// the text already stored.
     public func appendOutput(_ text: String) {
         if hasProtocolEvents != true {
             let token = AstraRunProtocolParser.markerToken
@@ -88,7 +96,15 @@ public final class TaskRun {
                 hasProtocolEvents = true
             }
         }
-        output += text
+        let redacted = RunSecretRedactionScope.redactedAppend(
+            existing: output,
+            addition: text,
+            taskID: task?.id
+        )
+        if redacted.dropFromExisting > 0 {
+            output.removeLast(redacted.dropFromExisting)
+        }
+        output += redacted.append
     }
 
     /// Re-derives the marker flag from the stored text without rewriting it.

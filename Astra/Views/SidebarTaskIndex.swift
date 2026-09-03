@@ -2,6 +2,13 @@ import Foundation
 import ASTRAModels
 
 struct SidebarTaskIndex {
+    /// The value a sidebar starts with, before its first real build. Shared
+    /// rather than constructed per `@State` default: SwiftUI re-evaluates that
+    /// default on every view-struct init and throws the result away, which on
+    /// a busy rail meant ~100 pointless index builds — and ~100 misleading
+    /// `sidebar_index_build` samples — every thirty seconds.
+    static let empty = SidebarTaskIndex(tasks: [], searchText: "")
+
     private let searchText: String
     private let reviewTasksByWorkspaceID: [UUID: [AgentTask]]
     private let matchingReviewTasksByWorkspaceID: [UUID: [AgentTask]]

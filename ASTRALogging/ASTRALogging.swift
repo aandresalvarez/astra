@@ -182,6 +182,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case connectorUpdated = "connector.updated"
     case connectorDeleted = "connector.deleted"
     case connectorSecretAdded = "connector.secret.added"
+    case connectorSecretRejected = "connector.secret.rejected"
     case connectorSecretRemoved = "connector.secret.removed"
     case connectorTested = "connector.tested"
 
@@ -221,6 +222,12 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case keychainSaveFailed = "keychain.save_failed"
     case keychainDeleteFailed = "keychain.delete_failed"
     case keychainSecretsMigrated = "keychain.secrets_migrated"
+    /// The dedicated keychain could not be opened, so every credential read is
+    /// returning nil. Distinct from `keychainSaveFailed`: nothing failed to
+    /// write, and no individual lookup reports an error — callers just see
+    /// "no credential configured" for everything, which is why this needs its
+    /// own event rather than being inferred from silence.
+    case keychainUnavailable = "keychain.unavailable"
 
     case isolationPrepared = "isolation.prepared"
     case isolationCleanedUp = "isolation.cleaned_up"

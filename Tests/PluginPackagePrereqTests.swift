@@ -156,19 +156,36 @@ struct PluginPackagePrereqTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == false)
     }
 
-    @Test("Built-in REDCap package has Stanford API connector")
-    func builtInREDCapHasStanfordConnector() {
-        let redcap = PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" }
-        #expect(redcap != nil)
-        #expect(redcap?.category == "Integrations")
-        #expect(redcap?.connectors.count == 1)
-        #expect(redcap?.connectors.first?.serviceType == "redcap")
-        #expect(redcap?.connectors.first?.baseURL == "https://redcap.stanford.edu/api/")
-        #expect(redcap?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
-        #expect(redcap?.localTools.map(\.command) == ["curl"])
-        #expect(redcap?.skills.first?.environmentKeys == ["REDCAP_API_URL"])
-        #expect(redcap?.skills.first?.environmentValues == ["https://redcap.stanford.edu/api/"])
-        #expect(redcap?.skills.first?.behaviorInstructions.contains("content=formEventMapping") == true)
+    @Test("Built-in REDCap package reaches Stanford through the broker, not curl")
+    func builtInREDCapReachesStanfordThroughTheBroker() throws {
+        let redcap = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
+        #expect(redcap.category == "Integrations")
+        #expect(redcap.connectors.count == 1)
+        #expect(redcap.connectors.first?.serviceType == "redcap")
+        #expect(redcap.connectors.first?.baseURL == "https://redcap.stanford.edu/api/")
+        #expect(redcap.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
+        #expect(redcap.skills.first?.environmentKeys == ["REDCAP_API_URL"])
+        #expect(redcap.skills.first?.environmentValues == ["https://redcap.stanford.edu/api/"])
+
+        // The token is brokered now, so nothing in this package may point an
+        // agent at a hand-built request or at the credential variable. The
+        // capability shipped with a `curl` tool and a table of `content=`
+        // values, which is how a project token ended up in a transcript.
+        #expect(redcap.localTools.isEmpty)
+        let instructions = try #require(redcap.skills.first?.behaviorInstructions)
+        #expect(instructions.contains("astra-host-control redcap"))
+        #expect(instructions.contains("mcp__astra_host__redcap"))
+        #expect(instructions.contains("do not use curl, Python HTTP clients, or direct REDCap API calls"))
+        #expect(!instructions.contains("curl -"))
+        #expect(!instructions.contains("content=formEventMapping"))
+        #expect(instructions.contains("export_path"))
+        for skill in redcap.skills {
+            #expect(
+                !skill.behaviorInstructions.contains("REDCAP_API_TOKEN")
+                    || skill.behaviorInstructions.contains("do not look for REDCAP_API_TOKEN"),
+                "A brokered skill must not send the agent looking for the credential variable."
+            )
+        }
     }
 
     @Test("Built-in Stanford Apple Mail package is local and text-only")
@@ -230,6 +247,117 @@ struct PluginPackagePrereqTests {
         for id in removed {
             let pkg = PluginCatalog.builtInPackages.first { $0.id == id }
             #expect(pkg == nil, "\(id) must not be in the catalog")
+        }
+    }
+}
+
+/// A built-in capability is ASTRA telling the agent how to reach a service, so
+/// a stale one is not a documentation problem — it is the app instructing the
+/// agent to work around its own broker, which is what produced the incident.
+///
+/// Two copies of every built-in exist: the bundled JSON and
+/// `PluginCatalog.fallbackBuiltInPackages`, used when the resource bundle is
+/// unreadable. Only the first is exercised in normal runs, and that is exactly
+/// how the fallback kept shipping the pre-broker REDCap workflow — a `curl`
+/// local tool and instructions to read the token from the environment — for
+/// every release after the credential moved into the broker. Both sources are
+/// held to the same rules here.
+@Suite("Built-in capability broker parity")
+@MainActor
+struct BuiltInCapabilityBrokerParityTests {
+    private static let sources: [(label: String, packages: [PluginPackage])] = [
+        ("bundled", ApprovedCapabilityBundle.packages()),
+        ("fallback", PluginCatalog.fallbackBuiltInPackages)
+    ]
+
+    /// The shape of an actual invocation, as opposed to the prohibition the
+    /// brokered skills carry ("do not use curl, Python HTTP clients, ...").
+    private static let directCallShapes = ["curl -", "curl \"", "curl '", "curl $", "curl http"]
+
+    private static func brokeredServices(in package: PluginPackage) -> [String] {
+        package.connectors
+            .map(\.serviceType)
+            .filter { HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0) }
+    }
+
+    @Test("Every built-in package for a brokered service routes through the broker")
+    func brokeredBuiltInPackagesRouteThroughTheBroker() throws {
+        for source in Self.sources {
+            #expect(!source.packages.isEmpty, "No \(source.label) built-in packages to check")
+            var checked = 0
+            for package in source.packages {
+                let services = Self.brokeredServices(in: package)
+                guard !services.isEmpty else { continue }
+                checked += 1
+                let label = "\(source.label)/\(package.id)"
+
+                for tool in package.localTools {
+                    #expect(
+                        !["curl", "wget", "http", "httpie"].contains(tool.command),
+                        "\(label) ships an HTTP client tool (\(tool.command)) for a brokered service."
+                    )
+                }
+
+                for skill in package.skills {
+                    let instructions = skill.behaviorInstructions
+                    for serviceType in services {
+                        let toolName = try #require(
+                            HostControlPlaneMCPProjection.connectorToolName(serviceType)
+                        )
+                        #expect(
+                            instructions.contains("mcp__astra_host__\(toolName)"),
+                            "\(label) skill '\(skill.name)' never names the \(serviceType) broker route."
+                        )
+                    }
+                    for shape in Self.directCallShapes {
+                        #expect(
+                            !instructions.contains(shape),
+                            "\(label) skill '\(skill.name)' instructs a direct call: \(shape)"
+                        )
+                    }
+                    // The same lint the skill editor shows authors. ASTRA's own
+                    // capabilities have to pass it, or the warning is noise.
+                    let findings = BrokeredSkillInstructionLint.findings(
+                        instructions: instructions,
+                        environmentKeys: skill.environmentKeys
+                    )
+                    let flagged = findings.map(\.environmentKey).joined(separator: ", ")
+                    #expect(
+                        findings.isEmpty,
+                        "\(label) skill '\(skill.name)' fails the brokered lint: \(flagged)"
+                    )
+                }
+            }
+            #expect(checked > 0, "No \(source.label) package declares a brokered connector")
+        }
+    }
+
+    /// The fallback drifting *behind* the bundled definition is the failure
+    /// mode: it is edited only when someone remembers it exists.
+    @Test("The fallback definition of a brokered package matches the bundled one")
+    func fallbackBrokeredPackagesMatchTheBundledDefinition() throws {
+        let bundled = ApprovedCapabilityBundle.packages()
+        try #require(!bundled.isEmpty)
+
+        for package in PluginCatalog.fallbackBuiltInPackages
+        where !Self.brokeredServices(in: package).isEmpty {
+            let match = bundled.first { $0.id == package.id }
+            let shipped = try #require(
+                match,
+                Comment(rawValue: "Fallback ships brokered package \(package.id) that the bundle does not.")
+            )
+            #expect(package.version == shipped.version, "\(package.id): fallback version is stale.")
+            #expect(
+                package.skills.map(\.behaviorInstructions) == shipped.skills.map(\.behaviorInstructions),
+                "\(package.id): fallback instructions differ from the bundled definition."
+            )
+            #expect(package.localTools.map(\.command) == shipped.localTools.map(\.command))
+            #expect(
+                package.governance.requiresExplicitUserConsent
+                    == shipped.governance.requiresExplicitUserConsent,
+                "\(package.id): fallback grants the capability more freely than the bundled one."
+            )
+            #expect(package.governance.riskLevel == shipped.governance.riskLevel)
         }
     }
 }
