@@ -842,6 +842,56 @@ struct ProcessMonitorTests {
         #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) != nil)
     }
 
+    @Test("Claude tool input delta is actionable progress")
+    func claudeToolInputDeltaIsActionableProgress() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\": \"/tmp/SPECS.md\""}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        guard case .control(let type) = parsed else {
+            Issue.record("expected a control event, got \(parsed)")
+            return
+        }
+        #expect(type == StreamEventParser.toolInputDeltaControlType)
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .actionableProgress)
+        // One large Write arrives as thousands of these chunks, so they must
+        // stay out of the repetition detector.
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) == nil)
+    }
+
+    @Test("Content block delta without content stays provider liveness")
+    func contentBlockDeltaWithoutContentStaysProviderLiveness() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .providerLiveness)
+    }
+
+    @Test("Tool input deltas establish semantic progress")
+    func toolInputDeltasEstablishSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let deltaStopped = monitor.processEvent(
+            .control(type: StreamEventParser.toolInputDeltaControlType),
+            process: process
+        )
+        // The first breach buys one extension rather than a kill, so the
+        // terminal decision is on the second evaluation.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(deltaStopped == false)
+        #expect(firstEvaluation == false)
+        #expect(watchdogStopped == true)
+        // Liveness-only activity reports `provider_no_actionable_progress`.
+        // Reaching the after-progress guard instead proves the deltas
+        // registered as real progress.
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
     @Test("Thinking-only provider activity stops as no actionable progress")
     func thinkingOnlyProviderActivityStopsAsNoActionableProgress() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -854,9 +904,12 @@ struct ProcessMonitorTests {
             .thinking(text: "The user wants a Masterball page"),
             process: process
         )
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(shouldKillEvent == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_no_actionable_progress")
@@ -873,10 +926,13 @@ struct ProcessMonitorTests {
 
         let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
         let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(visibleProgressStopped == false)
         #expect(livenessStopped == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
@@ -3482,11 +3538,15 @@ struct RuntimeBudgetProfileTests {
 
     @Test("Effective budget scales team budgets without audit side effects")
     func effectiveBudgetScalesTeamBudgets() {
+        // An unset budget resolves to a bounded default, not `Int.max`: the
+        // silence watchdog is no longer the app's de-facto spend limit, so the
+        // spend limit has to be an actual number.
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: true,
             teamSize: 3
-        ) == Int.max)
+        ) == RuntimeProgressSignals.defaultTokenBudget)
+        #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 100_000,
             usesAgentTeam: false,

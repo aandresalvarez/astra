@@ -220,14 +220,26 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             phase: "run",
             idleTimeoutSeconds: 30
         ) == 60)
+        // A resume is where the deliverable usually gets written, so it needs
+        // the wide window at least as much as the first run does.
         #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: artifactTask,
             phase: "resume",
             idleTimeoutSeconds: 240
-        ) == 180)
+        ) == 360)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "approved_plan",
+            idleTimeoutSeconds: 240
+        ) == 360)
         #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: informationalTask,
             phase: "run",
+            idleTimeoutSeconds: 240
+        ) == 180)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: informationalTask,
+            phase: "resume",
             idleTimeoutSeconds: 240
         ) == 180)
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(namedDeliverableTask))

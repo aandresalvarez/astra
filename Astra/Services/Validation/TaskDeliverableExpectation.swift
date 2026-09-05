@@ -37,10 +37,27 @@ enum TaskDeliverableExpectation {
             return false
         }
 
-        return containsAny(text, [
+        // Distinctive enough to match anywhere in the text.
+        let artifactPhrases = [
             "web page", "webpage", "html", "javascript", "css", ".html", ".js", ".css",
-            "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck"
-        ])
+            "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck",
+            "user interface", "web site", "spreadsheet", "wireframe", "mockup", "prototype",
+            "dashboard", "notebook", "readme", "markdown"
+        ]
+        // Short nouns have to match as whole words. Substring matching would
+        // turn "ui" into a hit for "build", "guide" and "require", and "app"
+        // into a hit for "happens" and "appropriate".
+        let artifactWords = [
+            "app", "ui", "website", "report", "document", "doc", "diagram",
+            "md", "csv", "json", "sql", "py", "ts", "tsx", "jsx"
+        ]
+
+        // The action word above already established that the user asked for
+        // something to be produced; this only decides whether the thing is the
+        // kind that lands on disk. Missing a whole class of ordinary requests
+        // ("create a UI", "build a local app") mattered more than the risk of
+        // occasionally expecting a file that never arrives.
+        return containsAny(text, artifactPhrases) || containsAnyWholeWord(text, artifactWords)
     }
 
     static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {

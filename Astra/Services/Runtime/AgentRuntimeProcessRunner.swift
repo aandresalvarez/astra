@@ -914,6 +914,10 @@ final class AgentRuntimeProcessRunner {
             )
 
             let handleLine: (String) -> Void = { line in
+                // Counted before any parsing, and for every line whatever it
+                // turns out to be. This is the progress signal that survives the
+                // parser not recognising a frame.
+                monitor.recordStreamVolume(bytes: line.utf8.count)
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else {
                     // Plain-text providers use blank lines as paragraph
@@ -1044,6 +1048,19 @@ final class AgentRuntimeProcessRunner {
                         level: .error,
                         fieldMaxLength: 900
                     )
+                }
+                // Always on, unlike the opt-in stream debug capture. Frames the
+                // parser could not classify are the upstream cause of runs being
+                // killed while they are still working, so the count has to be
+                // visible by default rather than only when someone already
+                // suspected a parser gap.
+                if monitor.unrecognizedEventCount > 0 {
+                    AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: taskID, fields: [
+                        "runtime": plan.runtime.rawValue,
+                        "unknown_events": String(monitor.unrecognizedEventCount),
+                        "stream_bytes": String(monitor.streamBytesObserved),
+                        "exit_code": String(Int(proc.terminationStatus))
+                    ], level: .warning)
                 }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
@@ -1394,7 +1411,12 @@ final class AgentRuntimeProcessRunner {
 
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
         if baseBudget == 0 {
-            return Int.max
+            // "No budget set" used to mean literally unbounded, which left the
+            // silence watchdog as the only thing standing between a runaway
+            // task and an open-ended bill. It is a default, not a limit the
+            // user chose, so it sits above the worst run seen in production
+            // rather than anywhere near typical usage.
+            return RuntimeProgressSignals.defaultTokenBudget
         }
         if usesAgentTeam {
             return baseBudget * max(2, teamSize)

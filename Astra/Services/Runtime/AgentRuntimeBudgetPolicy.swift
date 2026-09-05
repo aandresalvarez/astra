@@ -7,26 +7,45 @@ import ASTRAPersistence
 struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     let effectiveTokenBudget: Int
     let tokensUsed: Int
+    /// Whether the user actually chose this budget.
+    ///
+    /// An unset budget used to resolve to `Int.max`, which let one value mean
+    /// two different things: "no ceiling exists" and "do not show the user
+    /// budget messages". Now that an unset budget resolves to a finite runaway
+    /// ceiling, those have to be tracked separately — the ceiling is real and
+    /// should stop a run, but the messages quote `task.tokenBudget`, which is
+    /// still 0.
+    let isUserConfigured: Bool
 
-    init(effectiveTokenBudget: Int, tokensUsed: Int) {
+    init(effectiveTokenBudget: Int, tokensUsed: Int, isUserConfigured: Bool? = nil) {
         self.effectiveTokenBudget = effectiveTokenBudget
         self.tokensUsed = tokensUsed
+        self.isUserConfigured = isUserConfigured ?? (effectiveTokenBudget != Int.max)
     }
 
     @MainActor
     init(task: AgentTask) {
         self.init(
             effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: task),
-            tokensUsed: task.tokensUsed
+            tokensUsed: task.tokensUsed,
+            isUserConfigured: task.tokenBudget != 0
         )
     }
 
     var hasReportedTokensAboveBudget: Bool {
-        hasEnabledBudget && tokensUsed > effectiveTokenBudget
+        hasEnforceableBudget && tokensUsed > effectiveTokenBudget
     }
 
-    var hasEnabledBudget: Bool {
+    /// Whether any ceiling applies — the user's budget or the implicit runaway
+    /// default. Gates enforcement.
+    var hasEnforceableBudget: Bool {
         effectiveTokenBudget != Int.max
+    }
+
+    /// Whether budget reporting is meaningful to the user. Gates the warning
+    /// event, whose text quotes a budget the user never set.
+    var hasEnabledBudget: Bool {
+        isUserConfigured
     }
 }
 
@@ -114,7 +133,10 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        guard budget.hasEnabledBudget else { return false }
+        // Enforcement, not reporting: a run that blows through the implicit
+        // runaway ceiling still has to be stopped and labelled, even though the
+        // user never set a budget of their own.
+        guard budget.hasEnforceableBudget else { return false }
         return result.budgetExceeded ||
             (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }

@@ -1,0 +1,497 @@
+import Testing
+import Foundation
+import ASTRAPersistence
+import ASTRAModels
+@testable import ASTRA
+import ASTRACore
+
+private final class ProgressSignalMockProcess: AgentRuntimeProcessControl {
+    private(set) var didTerminate = false
+    private(set) var didRequestGracefulStop = false
+    /// Recorded so a test can prove the graceful stop happened *before* the
+    /// signal, not merely that both happened.
+    private(set) var gracefulStopPrecededTerminate = false
+
+    var isRunning: Bool { !didTerminate }
+    var terminationStatus: Int32 { didTerminate ? 143 : 0 }
+
+    func terminate() {
+        if didRequestGracefulStop, !didTerminate {
+            gracefulStopPrecededTerminate = true
+        }
+        didTerminate = true
+    }
+
+    func requestGracefulStop() {
+        didRequestGracefulStop = true
+    }
+}
+
+private func makeMonitor(
+    noSemanticProgressTimeoutSeconds: TimeInterval = 0,
+    idleTimeoutSeconds: TimeInterval = 600,
+    maxRunSeconds: TimeInterval? = nil
+) -> AgentRuntimeWorker.ProcessMonitor {
+    AgentRuntimeWorker.ProcessMonitor(
+        tokenBudget: Int.max,
+        idleTimeoutSeconds: idleTimeoutSeconds,
+        noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+        maxRunSeconds: maxRunSeconds
+    )
+}
+
+/// Drives the watchdog past its one free extension so a test can assert on the
+/// terminal decision rather than the escalation step.
+@discardableResult
+private func evaluateUntilStopped(
+    _ monitor: AgentRuntimeWorker.ProcessMonitor,
+    process: AgentRuntimeProcessControl,
+    attempts: Int = 4
+) -> Bool {
+    for _ in 0..<attempts where monitor.evaluateWatchdogTimeoutForTesting(process: process) {
+        return true
+    }
+    return false
+}
+
+// MARK: - Phase 1: no runtime hides work behind a liveness-only frame
+
+@Suite("Runtime progress classification")
+@MainActor
+struct RuntimeProgressClassificationTests {
+
+    @Test("Every progress-bearing control type classifies as actionable progress")
+    func progressBearingControlTypesAreActionable() {
+        for type in RuntimeProgressSignals.progressBearingControlTypes {
+            #expect(
+                AgentRuntimeWorker.ProcessMonitor.progressKind(for: .control(type: type)) == .actionableProgress,
+                "\(type) must count as progress; classifying it as liveness kills runs mid-write"
+            )
+        }
+    }
+
+    @Test("Copilot streams tool arguments through a control frame that counts as progress")
+    func copilotToolCallDeltaIsActionableProgress() {
+        // Copilot's equivalent of Claude's `input_json_delta`: one tool call's
+        // arguments arrive as many deltas before `tool.execution_start`. This is
+        // the same shape of bug that killed a run mid-`Write` on claude_code.
+        let line = #"{"type":"assistant.tool_call_delta","delta":{"arguments":"{\"path\":\"/tmp/SPECS.md\""}}"#
+        let parsed = CopilotStreamEventParser.parseAll(line: line)
+        let control = parsed.compactMap { event -> String? in
+            guard case .control(let type) = event else { return nil }
+            return type
+        }
+
+        #expect(control.contains("assistant.tool_call_delta"))
+        for event in parsed {
+            #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: event) == .actionableProgress)
+        }
+    }
+
+    @Test("Copilot live tool output counts as progress")
+    func copilotPartialToolOutputIsActionableProgress() {
+        for type in ["tool.execution_partial_result", "tool.execution_progress"] {
+            let parsed = CopilotStreamEventParser.parseAll(line: #"{"type":"\#(type)"}"#)
+            #expect(!parsed.isEmpty)
+            for event in parsed {
+                #expect(
+                    AgentRuntimeWorker.ProcessMonitor.progressKind(for: event) == .actionableProgress,
+                    "\(type) is stdout from a running tool — the most direct evidence of work there is"
+                )
+            }
+        }
+    }
+
+    @Test("Genuinely contentless frames stay liveness")
+    func contentlessFramesStayLiveness() {
+        // The widening must not swallow the distinction it is built on: a frame
+        // that carries no work still has to look like idle chatter.
+        for type in ["assistant.turn_start", "assistant.idle", "system.status", "stream_event.content_block_delta"] {
+            #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: .control(type: type)) == .providerLiveness)
+        }
+    }
+}
+
+// MARK: - Phase 2: unrecognised traffic is not evidence of idleness
+
+@Suite("Unrecognised stream traffic")
+@MainActor
+struct UnrecognizedStreamTrafficTests {
+
+    @Test("Unknown frames in the silence window defer the semantic kill")
+    func unknownFramesDeferSemanticKill() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        // Establish progress, then go quiet except for frames the parser cannot
+        // classify. The provider is plainly still emitting; the taxonomy just
+        // cannot say what. That is a parser gap, not a stalled run.
+        _ = monitor.processEvent(.text(text: "starting"), process: process)
+        _ = monitor.processEvent(.unknown(type: "provider.new_frame_shape"), process: process)
+
+        #expect(evaluateUntilStopped(monitor, process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.unrecognizedEventCount == 1)
+    }
+
+    @Test("Recognised silence after unknown traffic still stops the run")
+    func recognizedSilenceAfterUnknownTrafficStillStops() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.unknown(type: "provider.new_frame_shape"), process: process)
+        // A later recognised progress event resets the window, so the unknown
+        // frame is no longer inside it and the watchdog regains its standing.
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+
+        #expect(evaluateUntilStopped(monitor, process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
+    @Test("The outer idle timeout still bounds a stream of pure unknowns")
+    func unknownTrafficStillBoundedByOuterIdleTimeout() {
+        // Deferring is not forgiving. The backstop has to remain reachable, or
+        // a provider emitting junk forever would be immortal.
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 0, idleTimeoutSeconds: 0)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.unknown(type: "provider.new_frame_shape"), process: process)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.timedOut)
+    }
+}
+
+// MARK: - Phase 3: raw volume is progress the parser cannot hide
+
+@Suite("Stream volume progress signal")
+@MainActor
+struct StreamVolumeProgressTests {
+
+    @Test("Enough raw output counts as progress on its own")
+    func streamVolumeEstablishesProgress() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        monitor.recordStreamVolume(bytes: RuntimeProgressSignals.semanticProgressByteThreshold)
+
+        #expect(monitor.streamBytesObserved == RuntimeProgressSignals.semanticProgressByteThreshold)
+        // Reaching the after-progress guard (rather than the metadata-only or
+        // liveness-only guards) proves the bytes registered as real progress.
+        #expect(evaluateUntilStopped(monitor, process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
+    @Test("Volume below the threshold is not progress")
+    func belowThresholdVolumeIsNotProgress() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        monitor.recordStreamVolume(bytes: RuntimeProgressSignals.semanticProgressByteThreshold - 1)
+        _ = monitor.processEvent(.systemInit(model: "claude-opus-5", sessionId: "s1"), process: process)
+
+        #expect(monitor.streamBytesObserved == RuntimeProgressSignals.semanticProgressByteThreshold - 1)
+        // Not enough bytes to earn progress, so this has to read as a provider
+        // that only ever emitted lifecycle metadata. Landing on the
+        // stalled-after-progress reason instead would mean sub-threshold volume
+        // had quietly been credited.
+        #expect(evaluateUntilStopped(monitor, process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_no_semantic_progress")
+    }
+
+    @Test("Volume accumulates across lines before crossing the threshold")
+    func volumeAccumulatesAcrossLines() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+        let chunk = 1_024
+
+        for _ in 0..<(RuntimeProgressSignals.semanticProgressByteThreshold / chunk) {
+            monitor.recordStreamVolume(bytes: chunk)
+        }
+
+        #expect(evaluateUntilStopped(monitor, process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+}
+
+// MARK: - Phase 4: a bound that silence detection cannot launder
+
+@Suite("Run cost bounds")
+@MainActor
+struct RunCostBoundTests {
+
+    @Test("A busy run still hits the wall clock")
+    func busyRunHitsWallClock() {
+        // The whole point: this provider is streaming happily, so every
+        // silence-based timeout is satisfied. Only the wall clock can stop it.
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 600, maxRunSeconds: 0.01)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "still working"), process: process)
+        Thread.sleep(forTimeInterval: 0.05)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_run_wall_clock_exceeded")
+        #expect(process.didTerminate)
+    }
+
+    @Test("The wall clock does not fire early")
+    func wallClockDoesNotFireEarly() {
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 600, maxRunSeconds: 3600)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "working"), process: process)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("An unset token budget resolves to a finite default")
+    func unsetTokenBudgetIsBounded() {
+        #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: false,
+            teamSize: 1
+        ) == RuntimeProgressSignals.defaultTokenBudget)
+        // Above the worst run actually observed in production (17.3M tokens),
+        // so nothing that completes today starts failing.
+        #expect(RuntimeProgressSignals.defaultTokenBudget > 17_300_000)
+    }
+}
+
+// MARK: - Phase 5: a breach is not automatically a death sentence
+
+@Suite("Watchdog escalation")
+@MainActor
+struct WatchdogEscalationTests {
+
+    @Test("The first breach extends the window instead of killing")
+    func firstBreachExtendsWindow() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("The second breach stops the run")
+    func secondBreachStopsRun() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        _ = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(process.didTerminate)
+    }
+
+    @Test("Progress between breaches restores the full extension budget")
+    func progressRestoresExtensionBudget() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        _ = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        // Real progress means the earlier breach was a false positive, so the
+        // run should not carry a strike into the next quiet stretch.
+        _ = monitor.processEvent(.text(text: "more output"), process: process)
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+    }
+
+    @Test("An extension outranks the generic idle backstop while it is live")
+    func extensionSuppressesGenericIdleTimeout() {
+        // The semantic window is always <= the idle window, and defaults to
+        // exactly equal whenever the idle window is under 180s — which is what
+        // every short-timeout task gets. Without the reprieve covering both
+        // clocks, the extension is granted and then overruled by the backstop
+        // in the very same evaluation, so escalation buys the run nothing and
+        // the stop is reported as a bare "timeout" instead of naming the cause.
+        // Both windows equal and short, which is what `min(idleTimeout, 180)`
+        // produces for any task under three minutes. Real sleeps, because the
+        // reprieve is a wall-clock deadline.
+        let window: TimeInterval = 0.4
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: window, idleTimeoutSeconds: window)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.systemInit(model: "claude-opus-5", sessionId: "s1"), process: process)
+
+        Thread.sleep(forTimeInterval: window + 0.1)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.timedOut == false)
+
+        Thread.sleep(forTimeInterval: window + 0.1)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_no_semantic_progress")
+        // The specific diagnosis has to survive: "emitted startup metadata and
+        // then went quiet" is actionable, "timeout" is not.
+        #expect(monitor.timedOut == false)
+    }
+
+    @Test("The provider is asked to wind down before it is signalled")
+    func gracefulStopPrecedesTermination() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        evaluateUntilStopped(monitor, process: process)
+
+        #expect(process.didTerminate)
+        #expect(process.didRequestGracefulStop)
+        #expect(process.gracefulStopPrecededTerminate)
+    }
+}
+
+// MARK: - Cross-cutting: replay a real stream shape end to end
+
+@Suite("Runtime stream replay")
+@MainActor
+struct RuntimeStreamReplayTests {
+
+    /// Replays the stream shape that actually killed task 4DD4B29F: the agent
+    /// spent five minutes composing one large `Write`, which reaches ASTRA as
+    /// thousands of tool-input deltas and nothing else. Before the fix this
+    /// looked like a dead run.
+    @Test("A long tool-input stream is never mistaken for a stall")
+    func longToolInputStreamSurvives() {
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 0)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "I'll rewrite SPECS.md now."), process: process)
+        _ = monitor.processEvent(
+            .control(type: StreamEventParser.toolInputDeltaControlType),
+            process: process
+        )
+
+        // Every delta must leave the run credited with progress, whatever the
+        // watchdog is doing on its own schedule.
+        #expect(
+            AgentRuntimeWorker.ProcessMonitor.progressKind(
+                for: .control(type: StreamEventParser.toolInputDeltaControlType)
+            ) == .actionableProgress
+        )
+        // And they must not read as a repetition loop: one Write is thousands
+        // of identical-looking frames.
+        #expect(
+            AgentRuntimeWorker.ProcessMonitor.repetitionSignature(
+                .control(type: StreamEventParser.toolInputDeltaControlType)
+            ) == nil
+        )
+    }
+
+    @Test("A provider streaming only unparsed bytes is not killed as idle")
+    func unparsedByteStreamSurvives() {
+        // The general case behind the specific bug: ASTRA cannot decode any of
+        // this, but a megabyte of output is not an idle process.
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        for _ in 0..<64 {
+            monitor.recordStreamVolume(bytes: 4_096)
+            _ = monitor.processEvent(.unknown(type: "provider.v2_frame"), process: process)
+        }
+
+        #expect(evaluateUntilStopped(monitor, process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.streamBytesObserved == 64 * 4_096)
+    }
+
+    @Test("A truly silent provider is still killed")
+    func silentProviderStillKilled() {
+        // The control that keeps every other test in this suite honest.
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.systemInit(model: "claude-opus-5", sessionId: "s1"), process: process)
+
+        #expect(evaluateUntilStopped(monitor, process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_no_semantic_progress")
+        #expect(process.didTerminate)
+    }
+}
+
+// MARK: - Phase 6: deliverable detection covers ordinary requests
+
+@Suite("Deliverable expectation coverage")
+@MainActor
+struct DeliverableExpectationCoverageTests {
+
+    private func task(_ goal: String, title: String = "Task") -> AgentTask {
+        AgentTask(
+            title: title,
+            goal: goal,
+            workspace: Workspace(name: "Deliverable", primaryPath: "/tmp/deliverable")
+        )
+    }
+
+    @Test("The real BigQuery task goal is recognised as expecting an artifact")
+    func bigQueryGoalExpectsArtifact() {
+        // Verbatim from task 4DD4B29F, typos and all. The keyword whitelist
+        // missed it entirely: "local app" is not "demo app", and "UI" was not
+        // in the vocabulary at all.
+        let goal = """
+        I want to create a UI that conects to the Bigquery tables , to facilitate the searhc \
+        process for all of the users of this .. propsoes some idas about how to build it .. \
+        wit hthe minimun infrastructure and so it works in windows and mac.. aslo it should be \
+        a local app so they can installe it a n start making questions to the historical sales \
+        force cases
+        """
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)))
+    }
+
+    @Test("Common artifact requests are recognised")
+    func commonArtifactRequestsRecognised() {
+        for goal in [
+            "build a dashboard for the sales data",
+            "create a report summarising the findings",
+            "write a document describing the migration",
+            "generate a prototype of the new onboarding flow",
+            "make a csv of the results"
+        ] {
+            #expect(
+                TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)),
+                "expected an artifact for: \(goal)"
+            )
+        }
+    }
+
+    @Test("Short nouns match as whole words only")
+    func shortNounsMatchWholeWordsOnly() {
+        // "ui" hides inside "build", "guide" and "require"; "app" inside
+        // "happens" and "appropriate". Substring matching here would mark
+        // nearly every task as owing a file.
+        for goal in [
+            "create a guide explaining what happens when the build requires approval",
+            "write an explanation of appropriate escalation paths"
+        ] {
+            #expect(
+                TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)) == false,
+                "unexpected artifact expectation for: \(goal)"
+            )
+        }
+    }
+
+    @Test("Informational requests still expect nothing on disk")
+    func informationalRequestsUnchanged() {
+        for goal in [
+            "explain the Masterball puzzle",
+            "what are the tradeoffs between the two approaches",
+            "review the auth code and tell me what you find"
+        ] {
+            #expect(
+                TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)) == false,
+                "unexpected artifact expectation for: \(goal)"
+            )
+        }
+    }
+}

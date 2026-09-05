@@ -1960,7 +1960,9 @@ struct ArchitectureFitnessTests {
             // stops a budget line from being a number someone raised once.
             // 2_250 -> 2_256: the sidebar rebuild-coalescing entry above, and
             // this line, which is the same bargain applied to itself.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_256, .owner("Architecture fitness test suite")),
+            // 2_256 -> 2_270: the two watchdog entries below, one recording a
+            // ratchet-down after a file split and one a raise, plus this line.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_270, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1983,7 +1985,13 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
             // policy observation without a user-visible outcome now audits it.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_160, .owner("Runtime process stream support")),
+            // 2_160 -> 2_095 on 2026-09-04 (watchdog progress signals): stream-volume
+            // progress, the run wall clock, and kill escalation pushed this file past
+            // its ceiling, so AgentExecutionScopedProcess and its two supporting types
+            // moved to AgentExecutionScopedProcess.swift. Ratcheted down to what is
+            // left rather than banking the headroom — this file is the stream monitor
+            // now, and process-launch plumbing belongs in the other one.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_095, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2025,7 +2033,11 @@ struct ArchitectureFitnessTests {
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_040, .owner("Host-control MCP tool")),
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
-            "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_510 -> 3_570 (watchdog escalation): a breached silence window now
+            // buys one extension before the kill, so the cases that used to assert
+            // "one evaluation terminates" have to drive the escalation step too and
+            // say why the first call returns false.
+            "Tests/ProcessMonitorTests.swift": .init(3_570, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
