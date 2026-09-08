@@ -2,6 +2,27 @@ import Foundation
 import Testing
 import ASTRACore
 
+/// Budget for the tests whose subject is *what* the runner does, not how fast
+/// it does it. It is a hang breaker, not a latency assertion: a runner that
+/// never writes the stdin payload, never closes the write end, or never reaps
+/// the child leaves `/bin/cat` blocked forever, and something has to end that.
+///
+/// It has to sit far above anything the machine can plausibly cost us. At 3
+/// seconds it did not: a full `swift test` run on 2026-09-04 was slow enough
+/// spawning `/bin/cat` that the stdin test's own budget expired and it reported
+/// `exitCode == nil`, while the same test passed in isolation in under a
+/// second. Suites in this binary have been measured at ~70 s of wall clock
+/// under that contention, so any budget in the same order as normal execution
+/// is measuring how busy the machine was rather than whether the runner is
+/// correct. A genuine hang still fails these tests — just slowly.
+///
+/// Timeout *classification* is asserted separately, by the tests that pass a
+/// deliberately short budget against a deliberately long-running child. Those
+/// stay honest under the same load by construction: contention can only push
+/// the child further past its deadline, never under it. Don't fold the two
+/// kinds of budget back together.
+private let hangBreakerTimeout: TimeInterval = 120
+
 @Suite("ProcessBinaryRunner")
 struct ProcessBinaryRunnerTests {
     @Test("Hardened process executor provides synchronous PATH lookup and stdin")
@@ -10,7 +31,7 @@ struct ProcessBinaryRunnerTests {
             HardenedProcessRequest(
                 executable: "cat",
                 standardInput: Data("mail input".utf8),
-                timeout: 3
+                timeout: hangBreakerTimeout
             )
         )
 
@@ -42,7 +63,7 @@ struct ProcessBinaryRunnerTests {
             HardenedProcessRequest(
                 executable: "/bin/sh",
                 arguments: ["-c", "printf 1234567890"],
-                timeout: 3,
+                timeout: hangBreakerTimeout,
                 maximumOutputBytes: 4
             )
         )
@@ -63,7 +84,7 @@ struct ProcessBinaryRunnerTests {
             HardenedProcessRequest(
                 executable: "/bin/sh",
                 arguments: ["-c", "printf 'AB\\346\\227\\245'"],
-                timeout: 3,
+                timeout: hangBreakerTimeout,
                 maximumOutputBytes: 4
             )
         )
@@ -93,7 +114,7 @@ struct ProcessBinaryRunnerTests {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/sh",
             args: ["-c", "printf ok"],
-            timeout: 3,
+            timeout: hangBreakerTimeout,
             environment: nil
         )
 
@@ -117,7 +138,7 @@ struct ProcessBinaryRunnerTests {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/sh",
             args: ["-c", "cat marker.txt"],
-            timeout: 3,
+            timeout: hangBreakerTimeout,
             environment: nil,
             currentDirectory: directory.path
         )
@@ -131,12 +152,20 @@ struct ProcessBinaryRunnerTests {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/cat",
             args: [],
-            timeout: 3,
+            timeout: hangBreakerTimeout,
             environment: nil,
             stdin: Data("ping over stdin".utf8)
         )
 
-        #expect(result.exitCode == 0)
+        // `cat` exits only once its stdin is closed, so the exit itself is half
+        // the assertion: a runner that writes the payload but leaves the write
+        // end open reads back as a timeout, not as wrong output. Asserted on
+        // `outcome` rather than `exitCode` so that failure says `.timedOut`
+        // instead of `nil`, which reads like the child never ran.
+        #expect(
+            result.outcome == .exited(code: 0),
+            "cat did not exit, so stdin was never closed: \(result.outcome)"
+        )
         #expect(result.stdout == "ping over stdin")
     }
 
@@ -145,11 +174,17 @@ struct ProcessBinaryRunnerTests {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/cat",
             args: [],
-            timeout: 3,
+            timeout: hangBreakerTimeout,
             environment: nil
         )
 
-        #expect(result.exitCode == 0)
+        // No payload means the child should get /dev/null, already at EOF. The
+        // regression is a runner that hands it an open pipe nobody closes, and
+        // that shows up here as a timeout rather than as unexpected output.
+        #expect(
+            result.outcome == .exited(code: 0),
+            "cat did not exit, so its stdin was left open: \(result.outcome)"
+        )
         #expect(result.stdout.isEmpty)
     }
 
@@ -216,13 +251,20 @@ struct ProcessBinaryRunnerTests {
         )
 
         #expect(result.outcome == .timedOut)
-        try await Task.sleep(nanoseconds: 800_000_000)
-        let childPID = try Int32(String(contentsOf: pidFile).trimmingCharacters(in: .whitespacesAndNewlines))
-        guard let childPID else {
+
+        // `run` returns the moment the timeout is stamped, before the group has
+        // even been signalled: the runner then sends SIGTERM, waits 500 ms for
+        // the grace period, and SIGKILLs. Waiting that out with one fixed sleep
+        // measured how busy the machine was, so poll for the descendant to go
+        // away instead — same reasoning as `hangBreakerTimeout` above, and the
+        // poll floor in `waitUntil` covers a starved cooperative pool that has
+        // not yet run the runner's own kill task.
+        guard let childPID = await waitForValue({ readPID(from: pidFile) }) else {
             Issue.record("Expected child PID to be captured")
             return
         }
-        if kill(childPID, 0) == 0 {
+        let descendantIsGone = await waitUntil { !isAlive(childPID) }
+        if !descendantIsGone {
             kill(childPID, SIGKILL)
             Issue.record("Timed-out process group left descendant process \(childPID) alive")
         }
@@ -233,7 +275,7 @@ struct ProcessBinaryRunnerTests {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/sh",
             args: ["-c", "printf '%s %s' \"$$\" \"$(ps -o pgid= -p $$ | tr -d ' ')\""],
-            timeout: 3,
+            timeout: hangBreakerTimeout,
             environment: nil,
             currentDirectory: nil,
             terminateProcessGroup: true
@@ -268,5 +310,49 @@ struct ProcessBinaryRunnerTests {
         #expect(result.cancelled == true)
         #expect(result.isSuccess == false)
         #expect(result.outcome == .cancelled)
+    }
+
+    // MARK: - Waiting
+
+    /// Polls rather than sleeping a fixed amount, so a slow machine waits
+    /// longer instead of failing.
+    ///
+    /// Both bounds have to be exhausted before this gives up: the deadline
+    /// stops a genuinely stuck runner from hanging the suite, and the poll
+    /// floor stops a starved one from being mistaken for it. A satisfied
+    /// predicate still returns on the next turn, so neither bound slows the
+    /// happy path.
+    private func waitUntil(timeout: TimeInterval = 30, _ predicate: () -> Bool) async -> Bool {
+        await waitForValue(timeout: timeout) { () -> Bool? in predicate() ? true : nil } ?? false
+    }
+
+    /// `waitUntil` for a value that does not exist yet — here, a PID file the
+    /// child may not have written by the time the parent was killed.
+    private func waitForValue<Value>(
+        timeout: TimeInterval = 30,
+        _ produce: () -> Value?
+    ) async -> Value? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var polls = 0
+        var value = produce()
+        while value == nil, polls < 40 || Date() < deadline {
+            polls += 1
+            try? await Task.sleep(nanoseconds: 25_000_000)
+            value = produce()
+        }
+        return value
+    }
+
+    private func readPID(from file: URL) -> Int32? {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// `kill(pid, 0)` fails with EPERM for a process that exists but is not
+    /// ours to signal, which must not be read as "it exited."
+    private func isAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
     }
 }
