@@ -43,6 +43,12 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let policyViolation: TaskRunStopReason = "policy_violation"
     public static let providerNoActionableProgress: TaskRunStopReason = "provider_no_actionable_progress"
     public static let providerNoSemanticProgress: TaskRunStopReason = "provider_no_semantic_progress"
+    /// The run hit its wall-clock ceiling. Deterministic and not approvable —
+    /// no answer from the user makes four hours have been three — so it has to
+    /// be spelled here rather than left as a `custom(_:)` raw string, which
+    /// `AgentRuntimeWorker.isTerminalRuntimeStop` cannot classify and would
+    /// therefore park in `pendingUser` as if it were awaiting review.
+    public static let providerRunWallClockExceeded: TaskRunStopReason = "provider_run_wall_clock_exceeded"
     public static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
     public static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
     public static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"

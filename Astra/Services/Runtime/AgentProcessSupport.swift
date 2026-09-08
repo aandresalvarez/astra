@@ -349,6 +349,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     let tokenBudget: Int
     let budgetEnforcementMode: BudgetEnforcementMode
+    /// False when `tokenBudget` is the implicit runaway ceiling rather than a
+    /// number the user chose. See `effectiveBudgetEnforcementMode`.
+    let isUserConfiguredBudget: Bool
     let maxTurns: Int
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
@@ -428,6 +431,24 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var unknownEventCount = 0
     private var lastUnknownEventTime: Date?
 
+    /// Which silence window's unrecognised-stream deferrals have been traced,
+    /// and for which reasons within it.
+    ///
+    /// The deferral is a diagnostic, not a decision: it advances no clock and
+    /// records no state, so re-entering it differs in nothing from the last
+    /// time. The watchdog polls at least every 30 seconds, and a provider that
+    /// keeps sending unrecognised frames refreshes the outer idle timeout as it
+    /// goes — so without this the single "the parser is behind" trace becomes
+    /// hundreds of identical lines over a four-hour run, which is the kind of
+    /// log wall the rest of this branch exists to remove. Keyed on the window
+    /// start (`lastActivityTime`, which moves only when progress is observed or
+    /// forgiven) so a genuinely new window traces again, and on the reason so a
+    /// window that changes character is not silently swallowed. Reset per
+    /// window, so it holds at most one entry per silence branch.
+    private var tracedDeferralWindowStart: Date?
+    private var tracedDeferralReasons: Set<String> = []
+    private var _unrecognizedDeferralTraceCount = 0
+
     /// Semantic-window breaches forgiven so far. The first breach buys one
     /// extension rather than a kill.
     private var semanticProgressExtensionsUsed = 0
@@ -460,9 +481,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
     var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
+    /// Which enforcement mode actually applies to `tokenBudget`.
+    ///
+    /// `budgetEnforcementMode` is a preference about *the user's* budget: in
+    /// `.warning` mode ASTRA says "you have gone past what you asked for" and
+    /// keeps going, which is the right answer for a number the user chose and
+    /// can revise. The implicit runaway ceiling is not that number. It exists
+    /// only to bound a provider that has stopped making sense, the user never
+    /// set it, and no preference they expressed was about it — so warning on it
+    /// would log a line nobody asked for and then let the run keep spending. It
+    /// stops, whatever the mode says.
+    private var effectiveBudgetEnforcementMode: BudgetEnforcementMode {
+        isUserConfiguredBudget ? budgetEnforcementMode : .hardStop
+    }
     init(
         tokenBudget: Int,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
+        isUserConfiguredBudget: Bool = true,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
@@ -479,6 +514,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
+        self.isUserConfiguredBudget = isUserConfiguredBudget
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
@@ -671,7 +707,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if budgetEnforcementMode == .warning {
+                if effectiveBudgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "stream_usage_budget_exceeded",
                         fields: [
@@ -693,7 +729,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if budgetEnforcementMode == .warning {
+                if effectiveBudgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "reported_budget_exceeded",
                         fields: [
@@ -746,7 +782,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 "estimated_tokens": String(_estimatedTokens),
                 "token_budget": String(tokenBudget)
             ]
-            if budgetEnforcementMode == .warning {
+            if effectiveBudgetEnforcementMode == .warning {
                 return recordBudgetWarning(
                     reason: "estimated_budget_exceeded",
                     fields: fields,
@@ -1535,6 +1571,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         var auditFields = fields
         auditFields["reason"] = reason
         auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
+        // Without this, a hard stop under an app configured for Warning Only
+        // reads as a bug in the log. It isn't: the ceiling that fired is the
+        // implicit one, which the mode does not govern.
+        auditFields["budget_source"] = isUserConfiguredBudget ? "user" : "runaway_ceiling"
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .error)
         _budgetExceeded = true
         process?.terminate()
@@ -1627,12 +1667,35 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
                 if self.evaluateWatchdogTimeout(
                     gracefulStop: { processBox.requestGracefulStop() },
+                    awaitGracefulExit: {
+                        Self.waitForExit(processBox, timeout: Self.gracefulStopGraceSeconds)
+                    },
                     terminate: { processBox.terminate() }
                 ) {
                     return
                 }
             }
         }
+    }
+
+    /// How long a provider gets to act on stdin EOF before the signal ladder
+    /// starts. Short enough that a wedged provider is not held onto, long
+    /// enough for an event loop to come round and write a buffered result.
+    static let gracefulStopGraceSeconds: TimeInterval = 2
+
+    /// Polls, because `AgentRuntimeProcessControl` publishes liveness and gives
+    /// nothing to block on. It costs nothing: this runs on the watchdog's own
+    /// thread, which spends the rest of the run asleep.
+    private static func waitForExit(
+        _ process: AgentRuntimeProcessControlBox,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return true
     }
 
     static func watchdogCheckInterval(
@@ -1644,10 +1707,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
+    /// `awaitGracefulExit` defaults to "it did not exit", so a test still
+    /// observes the terminate it is asserting on without sleeping through the
+    /// real grace period.
     @discardableResult
-    func evaluateWatchdogTimeoutForTesting(process: AgentRuntimeProcessControl? = nil) -> Bool {
+    func evaluateWatchdogTimeoutForTesting(
+        process: AgentRuntimeProcessControl? = nil,
+        awaitGracefulExit: () -> Bool = { false }
+    ) -> Bool {
         evaluateWatchdogTimeout(
             gracefulStop: { process?.requestGracefulStop() },
+            awaitGracefulExit: awaitGracefulExit,
             terminate: { process?.terminate() }
         )
     }
@@ -1655,6 +1725,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     @discardableResult
     private func evaluateWatchdogTimeout(
         gracefulStop: () -> Void = {},
+        awaitGracefulExit: () -> Bool = { false },
         terminate: () -> Void
     ) -> Bool {
         lock.lock()
@@ -1671,10 +1742,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let hasActiveToolUse = !activeToolUseIDs.isEmpty
         let hasActiveManagedWorkspaceJob = !activeManagedWorkspaceJobs.isEmpty
         let hasActiveRuntimeWork = hasActiveToolUse || hasActiveManagedWorkspaceJob
+        // `anyIdleDuration < idleTimeoutSeconds` is a precedence rule, not a
+        // second deadline: a provider that has gone *completely* silent past the
+        // outer idle timeout is a plain timeout, and that branch should own the
+        // kill rather than this one. But the semantic timeout is
+        // `min(idleTimeoutSeconds, 180)`, so any idle timeout at or below 180s
+        // makes the two deadlines identical — and then this predicate is false
+        // at the very moment it should be true, every time. The run falls
+        // through to the idle branch and is killed outright, never receiving the
+        // one extension this watchdog exists to grant. When the deadlines
+        // coincide there is no precedence question to answer, and this branch is
+        // the better-informed of the two: it knows progress happened earlier,
+        // and it escalates before it stops.
+        let deadlinesCoincide = noSemanticProgressTimeoutSeconds >= idleTimeoutSeconds
         let hasStalledAfterProgress = hasSeenProgressActivity
             && terminalIdleDuration == nil
             && !hasActiveRuntimeWork
-            && anyIdleDuration < idleTimeoutSeconds
+            && (deadlinesCoincide || anyIdleDuration < idleTimeoutSeconds)
             && idleDuration >= noSemanticProgressTimeoutSeconds
         // An unrecognised frame inside the current silence window means the
         // event taxonomy is behind the provider's stream format. "No recognised
@@ -1708,8 +1792,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 _runtimeStopMessage = message
             }
             lock.unlock()
-            gracefulStop()
-            terminate()
+            Self.stopProvider(gracefulStop: gracefulStop, awaitGracefulExit: awaitGracefulExit, terminate: terminate)
             return true
         }
 
@@ -1784,6 +1867,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
                 now: now,
                 gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
                 terminate: terminate
             ) {
                 return true
@@ -1803,6 +1887,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
                 now: now,
                 gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
                 terminate: terminate
             ) {
                 return true
@@ -1820,6 +1905,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
                 now: now,
                 gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
                 terminate: terminate
             ) {
                 return true
@@ -1861,9 +1947,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         deferForUnrecognizedTraffic: Bool,
         now: Date,
         gracefulStop: () -> Void,
+        awaitGracefulExit: () -> Bool,
         terminate: () -> Void
     ) -> Bool {
         if deferForUnrecognizedTraffic {
+            guard claimUnrecognizedDeferralTrace(reason: reason) else { return false }
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: auditFields.merging([
                 "reason": reason,
                 "outcome": "deferred_unrecognized_stream"
@@ -1903,9 +1991,54 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             _runtimeStopMessage = message
         }
         lock.unlock()
-        gracefulStop()
-        terminate()
+        Self.stopProvider(gracefulStop: gracefulStop, awaitGracefulExit: awaitGracefulExit, terminate: terminate)
         return true
+    }
+
+    /// Closes the provider's stdin, gives it a moment to act on the EOF, and
+    /// only then starts signalling.
+    ///
+    /// `requestGracefulStop` exists so an interactive stream-JSON provider can
+    /// notice the run is over and flush the result it is already holding.
+    /// Sending SIGTERM in the very next statement takes that back: the default
+    /// disposition for SIGTERM is to die, so a provider whose event loop has not
+    /// yet come round to the EOF is killed before it can write anything, and the
+    /// call was pure ceremony. The three-second delay inside `terminate()` does
+    /// not help — it sits between SIGTERM and SIGKILL, by which point the
+    /// process is already unwinding.
+    private static func stopProvider(
+        gracefulStop: () -> Void,
+        awaitGracefulExit: () -> Bool,
+        terminate: () -> Void
+    ) {
+        gracefulStop()
+        guard !awaitGracefulExit() else { return }
+        terminate()
+    }
+
+    /// True the first time `reason` defers inside the current silence window.
+    ///
+    /// See `tracedDeferralWindowStart` for why the deferral has to be rationed:
+    /// it is the one branch of the watchdog that leaves the run exactly as it
+    /// found it, so the poll after it looks identical to the poll before it.
+    private func claimUnrecognizedDeferralTrace(reason: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let windowStart = lastActivityTime
+        if tracedDeferralWindowStart != windowStart {
+            tracedDeferralWindowStart = windowStart
+            tracedDeferralReasons = []
+        }
+        guard tracedDeferralReasons.insert(reason).inserted else { return false }
+        _unrecognizedDeferralTraceCount += 1
+        return true
+    }
+
+    /// How many deferral traces have actually been written. The log line itself
+    /// is the thing being rationed and a test cannot read the log, so the count
+    /// stands in for it.
+    var unrecognizedDeferralTraceCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _unrecognizedDeferralTraceCount
     }
 
     private func refreshManagedWorkspaceJobs(now: Date) -> ManagedWorkspaceJobContext? {

@@ -839,6 +839,10 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
+        // `effectiveTokenBudget` substitutes the implicit runaway ceiling for an
+        // unset budget, so the monitor can no longer tell the two apart — and it
+        // must, because the enforcement mode governs only the one the user chose.
+        let isUserConfiguredBudget = task.tokenBudget != 0
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that
@@ -896,6 +900,7 @@ final class AgentRuntimeProcessRunner {
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 budgetEnforcementMode: budgetEnforcementMode,
+                isUserConfiguredBudget: isUserConfiguredBudget,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -914,10 +919,6 @@ final class AgentRuntimeProcessRunner {
             )
 
             let handleLine: (String) -> Void = { line in
-                // Counted before any parsing, and for every line whatever it
-                // turns out to be. This is the progress signal that survives the
-                // parser not recognising a frame.
-                monitor.recordStreamVolume(bytes: line.utf8.count)
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else {
                     // Plain-text providers use blank lines as paragraph
@@ -989,10 +990,16 @@ final class AgentRuntimeProcessRunner {
             // that window: whichever side reaches the lock first fully
             // drains-and-processes what it read before the other side can
             // even perform its own read.
+            // Stream volume is counted here, off the raw chunk, and never per
+            // parsed line: `appendAndProcessLinesLocked` calls `handleLine` only
+            // once it finds a newline, so one large frame would hold the tally
+            // flat while the pipe is busy and the watchdog would read the run as
+            // silent. See `StreamVolumeAccountingTests`, which pins both sites.
             process.stdoutFileHandle.readabilityHandler = { handle in
                 lineBuffer.synchronized {
                     let data = handle.availableData
                     guard !data.isEmpty else { return }
+                    monitor.recordStreamVolume(bytes: data.count)
                     let chunk = String(decoding: data, as: UTF8.self)
                     lineBuffer.appendAndProcessLinesLocked(chunk, handleLine)
                 }
@@ -1011,7 +1018,12 @@ final class AgentRuntimeProcessRunner {
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
                 lineBuffer.synchronized {
-                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    let finalStdoutData = proc.stdoutFileHandle.readDataToEndOfFile()
+                    // Too late to hold off a watchdog that has already decided,
+                    // but `stream_bytes` is also what the exit audit reports,
+                    // and a tally stopping short of EOF understates short runs.
+                    monitor.recordStreamVolume(bytes: finalStdoutData.count)
+                    let finalStdoutChunk = String(decoding: finalStdoutData, as: UTF8.self)
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }

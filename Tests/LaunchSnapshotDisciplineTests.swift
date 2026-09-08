@@ -125,14 +125,10 @@ struct LaunchSnapshotDisciplineTests {
             classification: .knownGap,
             reason: "KNOWN GAP (diagnostic): names the model in AgentRuntimeFailureDiagnostic.classify, so a failure can be reported against a model this run never launched with. Should be launchTask.model, as the taskStarted audit and the policy manifest already are."
         ),
-        .init(
-            file: Self.workerPath,
-            symbol: "task.tokenBudget",
-            line: #"payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)"#,
-            count: 1,
-            classification: .knownGap,
-            reason: "KNOWN GAP (cosmetic): the budget-exceeded event prints a limit that is NOT the one enforced two lines above (enforcement uses effectiveTokenBudget(for: launchTask)). tokensUsed is correctly live."
-        ),
+        // The budget-exceeded event's "cosmetic" known gap is closed (PR #383
+        // review follow-up): both wordings now quote
+        // `budgetSnapshot.effectiveTokenBudget`, which is the number enforcement
+        // used, so there is no live `task.tokenBudget` read left to allowlist.
         .init(
             file: Self.workerPath,
             symbol: "task.tokenBudget",

@@ -160,14 +160,14 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
     }
 
     /// `diagnosis` is the keychain layer's own account of why the write failed,
-    /// from `AstraSecureKeychainStore.latestFailure`. It has always been in the
-    /// log and never on screen, so both of its cases got the access-prompt
-    /// message below — including the one where no prompt will ever appear
-    /// because there is no item to be denied. `nil` keeps that default, which is
-    /// the right guess when the layer offered no diagnosis at all.
+    /// carried back by the write itself. It has always been in the log and
+    /// never on screen, so both of its cases got the access-prompt message
+    /// below — including the one where no prompt will ever appear because there
+    /// is no item to be denied. `nil` keeps that default, which is the right
+    /// guess when the layer offered no diagnosis at all.
     static func keychainSaveFailed(
         key: String,
-        diagnosis: AstraKeychainFailureReport.Diagnosis? = nil
+        diagnosis: KeychainWriteDiagnosis? = nil
     ) -> ConnectorCredentialSaveFailurePresentation {
         switch diagnosis {
         case .notConfigured:
@@ -186,6 +186,25 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
                 actionSystemImage: MacOSPermissionKind.keychain.systemImage
             )
         }
+    }
+
+    /// The presentation a failed save earns, read entirely off the outcome the
+    /// write returned.
+    ///
+    /// Nothing here consults `AstraSecureKeychainStore.latestFailure`. That is a
+    /// single process-global slot filled by a destructive drain, so between the
+    /// write and this call another failing write — or one of the batch drains on
+    /// the startup, workspace-setup and capability-install paths — can replace or
+    /// empty it, and the user is then told to grant Keychain access for a
+    /// keychain that is merely unconfigured, or the reverse.
+    static func forFailedSave(
+        _ outcome: ConnectorCredentialSaveOutcome,
+        key: String
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        if let verdict = outcome.rejection {
+            return .admissionRejected(key: key, verdict: verdict)
+        }
+        return .keychainSaveFailed(key: key, diagnosis: outcome.keychainDiagnosis)
     }
 
     /// The value was refused before it ever reached the Keychain — it is not
@@ -1138,12 +1157,7 @@ struct ConnectorEditorView: View {
         for outcome: ConnectorCredentialSaveOutcome,
         key: String
     ) -> ConnectorCredentialSaveFailurePresentation {
-        if let verdict = outcome.rejection {
-            return .admissionRejected(key: key, verdict: verdict)
-        }
-        // The write drains the keychain layer's pending failure on its way out,
-        // so by the time this runs `latestFailure` describes *this* attempt.
-        return .keychainSaveFailed(key: key, diagnosis: AstraSecureKeychainStore.latestFailure?.diagnosis)
+        .forFailedSave(outcome, key: key)
     }
 
     private func credentialSaveErrorLabel(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {

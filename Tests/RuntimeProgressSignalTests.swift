@@ -495,3 +495,224 @@ struct DeliverableExpectationCoverageTests {
         }
     }
 }
+
+// MARK: - Review follow-ups: the watchdog's own edge cases
+
+@Suite("Watchdog deadline coincidence")
+@MainActor
+struct WatchdogDeadlineCoincidenceTests {
+
+    /// `noSemanticProgressTimeoutSeconds` defaults to `min(idleTimeout, 180)`,
+    /// so every task with an idle timeout of three minutes or less has both
+    /// deadlines land on the same instant. The stalled-after-progress branch
+    /// used to require `anyIdleDuration < idleTimeoutSeconds` — a precedence
+    /// rule meant to leave a completely silent provider to the idle branch —
+    /// and that predicate is false exactly when the two deadlines coincide. The
+    /// run then fell through to the idle branch and was killed outright on its
+    /// first breach, never receiving the extension this watchdog exists to
+    /// grant, and the kill was reported as a bare timeout.
+    @Test("A stall after real progress still earns its extension when both deadlines coincide")
+    func coincidingDeadlinesStillExtend() {
+        let window: TimeInterval = 0.4
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: window, idleTimeoutSeconds: window)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "real work happened here"), process: process)
+
+        Thread.sleep(forTimeInterval: window + 0.1)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.timedOut == false)
+
+        Thread.sleep(forTimeInterval: window + 0.1)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        // Named, not a bare timeout: "produced work and then stopped advancing"
+        // is a different diagnosis from "never said anything".
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(monitor.timedOut == false)
+    }
+
+    /// The precedence rule still has to hold where it was meant to apply: when
+    /// the idle window is genuinely longer, a provider that has gone completely
+    /// silent belongs to the idle branch, not to this one.
+    @Test("A wider idle window keeps the two branches distinct")
+    func distinctDeadlinesKeepPrecedence() {
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 0.2, idleTimeoutSeconds: 3600)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "real work happened here"), process: process)
+
+        // First breach: the extension, not the idle backstop, even though the
+        // provider has been silent — the semantic deadline is the earlier one.
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+
+        // The extension runs another `noSemanticProgressTimeoutSeconds`, and
+        // the idle window is nowhere near expiry, so what fires second is still
+        // the semantic branch rather than a bare idle timeout.
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(monitor.timedOut == false)
+    }
+}
+
+@Suite("Watchdog stop classification")
+@MainActor
+struct WatchdogStopClassificationTests {
+
+    /// The wall clock is deterministic and unappealable — no answer from the
+    /// user makes four hours have been three. If its reason is not a declared
+    /// `TaskRunStopReason`, `isTerminalRuntimeStop` cannot classify it and the
+    /// worker parks the task in `pendingUser`, waiting for a review that can
+    /// never change the outcome.
+    @Test("The wall-clock stop is a declared, terminal stop reason")
+    func wallClockStopIsTerminal() {
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 600, maxRunSeconds: 0.01)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "still working"), process: process)
+        Thread.sleep(forTimeInterval: 0.05)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+
+        let reason = monitor.runtimeStopReason ?? ""
+        #expect(reason == TaskRunStopReason.providerRunWallClockExceeded.rawValue)
+        #expect(TaskRunStopReason(rawValue: reason) != nil)
+        #expect(AgentRuntimeWorker.isTerminalRuntimeStop(reason))
+    }
+
+    /// Every other stop this watchdog can reach has to classify too, or the
+    /// same silent parking happens one branch over.
+    @Test("Every watchdog stop reason is terminal")
+    func everyWatchdogStopIsTerminal() {
+        for reason in [
+            "provider_no_semantic_progress",
+            "provider_no_actionable_progress",
+            "provider_semantic_progress_stalled",
+            "provider_active_tool_stalled",
+            "provider_workspace_job_stalled",
+            "provider_run_wall_clock_exceeded"
+        ] {
+            #expect(AgentRuntimeWorker.isTerminalRuntimeStop(reason), "not terminal: \(reason)")
+        }
+    }
+}
+
+@Suite("Watchdog graceful stop")
+@MainActor
+struct WatchdogGracefulStopTests {
+
+    /// `requestGracefulStop` closes stdin so an interactive stream-JSON provider
+    /// can notice the run is over and flush the result it is already holding.
+    /// Sending SIGTERM in the next statement took that back — the default
+    /// disposition for SIGTERM is to die, so a provider whose event loop had not
+    /// yet reached the EOF was killed before it could write anything.
+    @Test("A provider that exits on the graceful stop is never signalled")
+    func gracefulExitSkipsTermination() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        _ = monitor.evaluateWatchdogTimeoutForTesting(process: process, awaitGracefulExit: { true })
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process, awaitGracefulExit: { true }) == true)
+        #expect(process.didRequestGracefulStop)
+        #expect(process.didTerminate == false)
+    }
+
+    /// And the grace period is bounded, so a wedged provider is not held onto.
+    @Test("A provider that ignores the graceful stop is still signalled")
+    func ignoredGracefulStopStillTerminates() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        evaluateUntilStopped(monitor, process: process)
+
+        #expect(process.didRequestGracefulStop)
+        #expect(process.didTerminate)
+        #expect(process.gracefulStopPrecededTerminate)
+        #expect(AgentRuntimeWorker.ProcessMonitor.gracefulStopGraceSeconds > 0)
+    }
+}
+
+@Suite("Watchdog deferral tracing")
+@MainActor
+struct WatchdogDeferralTracingTests {
+
+    /// The unrecognised-stream deferral advances no clock and records no state,
+    /// so every poll after the first is identical to it. The watchdog polls at
+    /// least every 30 seconds and the outer idle timeout keeps being refreshed
+    /// by the very traffic being deferred on, so an untraced-once deferral turns
+    /// one useful "the parser is behind" line into hundreds over a long run.
+    @Test("A deferral traces once per silence window, not once per poll")
+    func deferralTracesOncePerWindow() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        for _ in 0..<64 {
+            monitor.recordStreamVolume(bytes: 4_096)
+            _ = monitor.processEvent(.unknown(type: "provider.v2_frame"), process: process)
+        }
+
+        for _ in 0..<5 {
+            #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        }
+        let afterFivePolls = monitor.unrecognizedDeferralTraceCount
+        #expect(afterFivePolls > 0, "the deferral never traced at all")
+
+        for _ in 0..<45 {
+            #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        }
+        #expect(monitor.unrecognizedDeferralTraceCount == afterFivePolls)
+        #expect(process.didTerminate == false)
+    }
+}
+
+// MARK: - Review follow-ups: raw stream volume is counted at the pipe
+
+@Suite("Stream volume accounting")
+struct StreamVolumeAccountingTests {
+
+    /// Why the byte counter cannot live in the per-line handler: the buffer only
+    /// calls it once it finds a newline. A provider streaming one very large
+    /// frame — a big tool result, or a JSON object written incrementally — puts
+    /// nothing through it for as long as that frame takes, so the tally stays
+    /// flat while the pipe is visibly busy and the watchdog reads the run as
+    /// silent.
+    @Test("A frame with no newline yields no line callbacks")
+    func partialFrameProducesNoLineCallbacks() {
+        let buffer = AgentLockedBuffer()
+        var handled: [String] = []
+
+        buffer.synchronized {
+            buffer.appendAndProcessLinesLocked(String(repeating: "x", count: 512 * 1_024)) { handled.append($0) }
+        }
+
+        #expect(handled.isEmpty)
+        #expect(buffer.value.utf8.count == 512 * 1_024)
+    }
+
+    /// So the counter is at the pipe, where bytes arrive when they arrive — and
+    /// at the final EOF drain, because `stream_bytes` is also what the exit
+    /// audit reports and a tally that stops short of EOF understates every short
+    /// run. Pinned in the source: the two call sites are the whole fix, and
+    /// nothing observable distinguishes them from the per-line version until a
+    /// provider happens to send a multi-megabyte frame.
+    @Test("Stream volume is recorded off the pipe, not per parsed line")
+    func streamVolumeIsRecordedAtThePipe() throws {
+        let runnerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+
+        #expect(source.contains("monitor.recordStreamVolume(bytes: data.count)"))
+        #expect(source.contains("monitor.recordStreamVolume(bytes: finalStdoutData.count)"))
+        #expect(!source.contains("monitor.recordStreamVolume(bytes: line.utf8.count)"))
+    }
+}

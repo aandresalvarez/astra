@@ -16,19 +16,12 @@ import ASTRACore
 /// screen naming the keychain at all.
 public struct AstraKeychainFailureReport: Equatable, Sendable {
     /// What the person in front of the app can actually do about it.
-    public enum Diagnosis: Equatable, Sendable {
-        /// The item exists and access was refused. Retrying interactively is
-        /// the remedy: that is the attempt allowed to raise securityd's
-        /// "allow access?" dialog.
-        case accessDenied
-        /// There is no bootstrap item to unlock the keychain with. Retrying a
-        /// write can succeed on its own — a write is permitted to rebuild the
-        /// store, unlike a read — so the message should not send the user to
-        /// an access prompt that will never appear.
-        case notConfigured
-        /// Some other OSStatus. Reported as-is rather than guessed at.
-        case unknown
-    }
+    ///
+    /// Defined in `ASTRACore` so it can also be an outcome the UI is handed by
+    /// the write itself, rather than something the UI has to go and fetch from
+    /// a shared slot afterwards. Aliased rather than moved so every existing
+    /// `AstraKeychainFailureReport.Diagnosis` spelling still reads correctly.
+    public typealias Diagnosis = KeychainWriteDiagnosis
 
     /// Which step failed, e.g. `bootstrap-password`. A fixed set of identifiers
     /// from the Obj-C layer; never a path, account, or secret.
@@ -140,7 +133,38 @@ public enum AstraSecureKeychainStore {
         label: String?,
         allowUserInteraction: Bool = false
     ) -> Bool {
-        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        saveReportingFailure(
+            service: service,
+            account: account,
+            value: value,
+            label: label,
+            allowUserInteraction: allowUserInteraction
+        ).didWrite
+    }
+
+    /// `save`, but it hands back the diagnosis behind a failure instead of
+    /// leaving the caller to go and read `latestFailure`.
+    ///
+    /// Use this wherever a human is waiting on the answer. `latestFailure` is a
+    /// single process-global slot and the drain that fills it is destructive,
+    /// so between a failing write and the view that explains it, any other
+    /// failing write — or any of the batch drains on the startup,
+    /// workspace-setup and capability-install paths — can replace or empty it.
+    /// The window is small and the consequence is quiet: the credential sheet
+    /// tells the user to grant Keychain access when the real problem was a
+    /// missing bootstrap item, or vice versa, and the remedy it offers cannot
+    /// work. Holding the write and its drain together under `writeLock` closes
+    /// it.
+    public static func saveReportingFailure(
+        service: String,
+        account: String,
+        value: String,
+        label: String?,
+        allowUserInteraction: Bool = false
+    ) -> KeychainWriteOutcome {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return .failed(diagnosis: nil) }
+        writeLock.lock()
+        defer { writeLock.unlock() }
         let saved: Bool
         if allowUserInteraction {
             saved = AstraSecureKeychain.saveSecretAllowingUserInteraction(
@@ -161,25 +185,23 @@ public enum AstraSecureKeychainStore {
                 bootstrapService: bootstrapService
             )
         }
-        if !saved {
-            // Drain here, at the one chokepoint every write passes through,
-            // rather than at each caller — a new writer then cannot be silent by
-            // omission. Before this the only drains were on the startup,
-            // workspace_setup and capability_install paths, so eleven
-            // consecutive connector failures on 2026-08-17 logged
-            // `keychain.save_failed scope=connector` eleven times and not one
-            // `keychain.unavailable`; the -25293 behind them had to be
-            // recovered from securityd's own log. A failed write is the one
-            // moment the app knows something is wrong *and* knows a human is
-            // waiting on it.
-            //
-            // Accepted cost: `suppressed=` stops being additive across scopes,
-            // since this competes with the other drains for one process-global
-            // counter. Attributing a failure when it happens is worth more than
-            // a hoarded count.
-            logPendingKeychainFailure(scope: "keychain_write")
-        }
-        return saved
+        guard !saved else { return .written }
+        // Drain here, at the one chokepoint every write passes through,
+        // rather than at each caller — a new writer then cannot be silent by
+        // omission. Before this the only drains were on the startup,
+        // workspace_setup and capability_install paths, so eleven
+        // consecutive connector failures on 2026-08-17 logged
+        // `keychain.save_failed scope=connector` eleven times and not one
+        // `keychain.unavailable`; the -25293 behind them had to be
+        // recovered from securityd's own log. A failed write is the one
+        // moment the app knows something is wrong *and* knows a human is
+        // waiting on it.
+        //
+        // Accepted cost: `suppressed=` stops being additive across scopes,
+        // since this competes with the other drains for one process-global
+        // counter. Attributing a failure when it happens is worth more than
+        // a hoarded count.
+        return .failed(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_write")?.diagnosis)
     }
 
     public static func load(service: String, account: String) -> String? {
@@ -249,6 +271,17 @@ public enum AstraSecureKeychainStore {
 
     // MARK: - Last drained diagnosis
 
+    /// Serializes a write with the drain that explains it, and each drain with
+    /// every other one.
+    ///
+    /// `AstraSecureKeychain.takeLastFailureReport()` empties a process-global
+    /// slot, so two failures racing to it produce one report claimed by the
+    /// wrong write and one write with no report at all. Coarse on purpose: the
+    /// contention here is a handful of user-initiated credential writes, and an
+    /// interactive one is already blocking the thread that started it on
+    /// securityd's dialog. Reads and deletes do not take it.
+    private static let writeLock = NSLock()
+
     private static let latestFailureLock = NSLock()
     private static var latestFailureStorage: AstraKeychainFailureReport?
 
@@ -279,6 +312,17 @@ public enum AstraSecureKeychainStore {
     /// keeps a degraded keychain from writing a log line per credential.
     @discardableResult
     public static func logPendingKeychainFailure(scope: String) -> AstraKeychainFailureReport? {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        return drainPendingKeychainFailureLocked(scope: scope)
+    }
+
+    /// The body of `logPendingKeychainFailure`, for callers already holding
+    /// `writeLock`. `NSLock` is not recursive, so the split is the point: a
+    /// failing write needs the drain to happen inside the same critical section
+    /// as the write, and every other caller needs it to take the lock first.
+    @discardableResult
+    private static func drainPendingKeychainFailureLocked(scope: String) -> AstraKeychainFailureReport? {
         // Obj-C `takeLastKeychainFailureReport`; Swift drops the redundant
         // "Keychain", as it does for `secretForAccount:` → `secret(forAccount:)`.
         guard let report = AstraSecureKeychain.takeLastFailureReport() else {

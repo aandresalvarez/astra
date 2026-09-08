@@ -137,8 +137,16 @@ enum AgentRuntimeBudgetPolicy {
         // runaway ceiling still has to be stopped and labelled, even though the
         // user never set a budget of their own.
         guard budget.hasEnforceableBudget else { return false }
+        // `.warning` is a preference about the user's own budget — go past the
+        // number you chose and ASTRA tells you rather than stopping you. It says
+        // nothing about the runaway ceiling, which the user never chose, so a
+        // ceiling breach is a hard stop in either mode. Matches
+        // `AgentProcessMonitor.effectiveBudgetEnforcementMode`, which decides the
+        // same question mid-stream; this is the post-hoc half, for the tokens the
+        // provider only reports at the end.
+        let enforcesReportedOverage = budgetEnforcementMode == .hardStop || !budget.isUserConfigured
         return result.budgetExceeded ||
-            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
+            (enforcesReportedOverage && hasReportedTokensAboveBudget(budget: budget))
     }
 
     @MainActor

@@ -3564,3 +3564,121 @@ struct RuntimeBudgetProfileTests {
         ) == 300_000)
     }
 }
+
+// MARK: - Review follow-up: the implicit ceiling is not the user's budget
+
+/// `BudgetEnforcementMode.warning` is a preference about the budget the *user*
+/// chose: go past the number you set and ASTRA tells you rather than stopping
+/// you. The implicit runaway ceiling is a different thing — the user never set
+/// it, it exists only to bound a provider that has stopped making sense, and
+/// warning on it would log a line nobody asked for and then let the run keep
+/// spending. `.warning` is also the app's default enforcement mode, so this is
+/// the configuration almost every run is in.
+@Suite("Implicit runaway ceiling enforcement")
+@MainActor
+struct ImplicitBudgetCeilingTests {
+
+    @Test("The implicit ceiling hard-stops even when the app is in warning mode")
+    func implicitCeilingHardStopsInWarningMode() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1_000,
+            budgetEnforcementMode: .warning,
+            isUserConfiguredBudget: false
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: process
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.budgetExceeded == true)
+        #expect(monitor.budgetWarning == false)
+        #expect(process.didTerminate)
+    }
+
+    @Test("A budget the user chose still honours warning mode")
+    func userConfiguredBudgetStillWarns() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1_000,
+            budgetEnforcementMode: .warning,
+            isUserConfiguredBudget: true
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
+        #expect(process.didTerminate == false)
+    }
+
+    /// The reported-usage half of the same rule. `shouldTreatAsBudgetExceeded`
+    /// runs after the process exits, on the tokens the provider only accounts
+    /// for at the end, and it gated on `budgetEnforcementMode == .hardStop`
+    /// alone — so a run that sailed past the ceiling and then reported it was
+    /// recorded as a normal completion.
+    @Test("Reported usage above the implicit ceiling is enforced in either mode")
+    func reportedUsageAboveImplicitCeilingIsEnforced() {
+        let ceiling = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: RuntimeProgressSignals.defaultTokenBudget,
+            tokensUsed: RuntimeProgressSignals.defaultTokenBudget + 1,
+            isUserConfigured: false
+        )
+        let result = AgentProcessResult(exitCode: 0)
+
+        #expect(ceiling.hasEnforceableBudget)
+        #expect(ceiling.hasReportedTokensAboveBudget)
+        for mode in [BudgetEnforcementMode.hardStop, .warning] {
+            #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+                result: result,
+                budget: ceiling,
+                budgetEnforcementMode: mode
+            ), "ceiling not enforced in \(mode.rawValue) mode")
+        }
+    }
+
+    /// And the user's own budget keeps the behaviour it had: warning mode is
+    /// still allowed to let a reported overage through.
+    @Test("Reported usage above a chosen budget still follows the mode")
+    func reportedUsageAboveChosenBudgetFollowsMode() {
+        let chosen = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: 10,
+            tokensUsed: 11,
+            isUserConfigured: true
+        )
+        let result = AgentProcessResult(exitCode: 0)
+
+        #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .hardStop
+        ))
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .warning
+        ))
+    }
+
+    /// The snapshot's own default infers `isUserConfigured` from
+    /// `effectiveTokenBudget != Int.max`. That was a fair proxy while an unset
+    /// budget resolved to `Int.max`; now that it resolves to a finite ceiling,
+    /// anything reading the ceiling through that default sees a user-configured
+    /// budget, so the two live call sites have to state it.
+    @Test("An unset task budget produces a snapshot that is not user-configured")
+    func unsetTaskBudgetIsNotUserConfigured() {
+        let task = AgentTask(title: "Ceiling", goal: "Goal", tokenBudget: 0)
+        let snapshot = AgentRuntimeBudgetSnapshot(task: task)
+
+        #expect(snapshot.isUserConfigured == false)
+        #expect(snapshot.hasEnabledBudget == false)
+        #expect(snapshot.hasEnforceableBudget)
+        #expect(snapshot.effectiveTokenBudget == RuntimeProgressSignals.defaultTokenBudget)
+    }
+}

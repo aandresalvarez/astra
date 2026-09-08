@@ -1967,7 +1967,12 @@ struct ArchitectureFitnessTests {
             // 2_270 -> 2_273: the keychain-report allowlist receiver, plus this
             // line. GitService briefly earned its first entry here at 2_035;
             // moving `GitProcessState` out put it back under the threshold.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_273, .owner("Architecture fitness test suite")),
+            // 2_273 -> 2_300: the three PR #383 raises above, each carrying the
+            // reason it was raised, plus this line. AgentRuntimeProcessRunner
+            // reached 2_001 on the same branch and was trimmed back under rather
+            // than opening a new entry — a first entry is the ratchet that
+            // matters most, and it should cost more than a comment.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_300, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1996,7 +2001,15 @@ struct ArchitectureFitnessTests {
             // moved to AgentExecutionScopedProcess.swift. Ratcheted down to what is
             // left rather than banking the headroom — this file is the stream monitor
             // now, and process-launch plumbing belongs in the other one.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_095, .owner("Runtime process stream support")),
+            // 2_095 -> 2_225 on 2026-09-08 (PR #383 review follow-up): four
+            // stream-monitor decisions the file could not make before, each
+            // needing its "why" inline — the implicit runaway ceiling is not
+            // governed by the user's enforcement mode, the semantic-stall branch
+            // must still win when its deadline coincides with the idle one, a
+            // provider gets a bounded wait to act on stdin EOF before the signal
+            // ladder, and a repeated deferral traces once per silence window
+            // rather than once per poll.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_225, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2016,7 +2029,15 @@ struct ArchitectureFitnessTests {
             // of post-run awaits that follow — and the save going through the
             // persistence coordinator means a refusal is reported rather than
             // swallowed.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_161, .owner("Runtime worker execution")),
+            // 2_161 -> 2_190 on 2026-09-08 (PR #383 review follow-up): the
+            // budget branch decides and explains itself from one snapshot taken
+            // before the outcome chain, because "no budget was set, so ASTRA's
+            // own ceiling applied" and "you went past the number you chose" are
+            // different things to tell the user and only the snapshot knows
+            // which one fired. Quoting the snapshot in both wordings also closed
+            // the allowlisted cosmetic gap where the event named a limit that
+            // was not the one enforced.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_190, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -2042,7 +2063,11 @@ struct ArchitectureFitnessTests {
             // buys one extension before the kill, so the cases that used to assert
             // "one evaluation terminates" have to drive the escalation step too and
             // say why the first call returns false.
-            "Tests/ProcessMonitorTests.swift": .init(3_570, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_570 -> 3_685 (PR #383 review follow-up): the implicit runaway
+            // ceiling enforces itself in Warning Only mode, which is only
+            // observable by driving the monitor in both modes against both a
+            // chosen budget and an unset one.
+            "Tests/ProcessMonitorTests.swift": .init(3_685, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
