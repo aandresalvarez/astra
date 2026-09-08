@@ -317,116 +317,6 @@ private struct GitHubPullRequestChecksViewResponse: Decodable {
     }
 }
 
-/// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
-///
-/// Encapsulates the concurrency-sensitive state shared between the stdout/stderr
-/// readability handlers, the termination handler, and the timeout watchdog so
-/// `GitService.runGit` resumes its continuation exactly once, regardless of the
-/// order in which those events fire.
-private final class GitProcessState: @unchecked Sendable {
-    enum Stream { case standardOutput, standardError }
-
-    private let lock = NSLock()
-    private var outData = Data()
-    private var errData = Data()
-    private var outClosed = false
-    private var errClosed = false
-    private var exitStatus: Int32?
-    private var command = ""
-    private var terminalError: Error?
-    private var outcomeConsumed = false
-    /// Severity for a non-zero exit, chosen by the caller. See
-    /// `GitService.runGit(at:arguments:timeout:failureLogLevel:)`.
-    private let failureLogLevel: LogLevel
-
-    init(failureLogLevel: LogLevel) {
-        self.failureLogLevel = failureLogLevel
-    }
-
-    func append(_ chunk: Data, to stream: Stream) {
-        lock.lock(); defer { lock.unlock() }
-        switch stream {
-        case .standardOutput: outData.append(chunk)
-        case .standardError: errData.append(chunk)
-        }
-    }
-
-    func markStreamClosed(_ stream: Stream) {
-        lock.lock(); defer { lock.unlock() }
-        switch stream {
-        case .standardOutput: outClosed = true
-        case .standardError: errClosed = true
-        }
-    }
-
-    func markExited(status: Int32, command: String) {
-        lock.lock(); defer { lock.unlock() }
-        exitStatus = status
-        self.command = command
-    }
-
-    func markTimedOut(after seconds: TimeInterval) {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError == nil {
-            terminalError = NSError(
-                domain: "GitError",
-                code: 124,
-                userInfo: [NSLocalizedDescriptionKey: "git timed out after \(Int(seconds))s"]
-            )
-        }
-    }
-
-    func markLaunchFailure(_ error: Error) {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError == nil { terminalError = error }
-    }
-
-    /// True once a terminal outcome is known: either a fatal error (timeout /
-    /// launch failure) occurred, or the process exited and both streams drained.
-    var isComplete: Bool {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError != nil { return true }
-        return exitStatus != nil && outClosed && errClosed
-    }
-
-    var hasFinished: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return outcomeConsumed
-    }
-
-    /// Returns the resolved outcome exactly once; subsequent calls return nil.
-    fileprivate func consumeOutcome() -> ResolvedOutcome? {
-        lock.lock(); defer { lock.unlock() }
-        guard !outcomeConsumed else { return nil }
-        if let terminalError {
-            outcomeConsumed = true
-            return .failure(terminalError)
-        }
-        guard let exitStatus, outClosed, errClosed else { return nil }
-        outcomeConsumed = true
-        if exitStatus != 0 {
-            let message = String(data: errData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            AppLogger.log(
-                failureLogLevel,
-                "git command failed: \(command) — \(message)",
-                category: "Git"
-            )
-            return .failure(NSError(
-                domain: "GitError",
-                code: Int(exitStatus),
-                userInfo: [NSLocalizedDescriptionKey: message]
-            ))
-        }
-        return .success(String(data: outData, encoding: .utf8) ?? "")
-    }
-
-    enum ResolvedOutcome {
-        case success(String)
-        case failure(Error)
-    }
-}
-
 /// Environment variables git uses to scope an invocation to one specific
 /// repository (the set `git rev-parse --local-env-vars` reports). Git exports
 /// these to every hook and child process, so a `git`/shell subprocess spawned
@@ -523,9 +413,11 @@ class GitService: GitRepositoryOperating {
     private func isUsableGitRepository(at path: String) async -> Bool {
         guard WorkspacePathPresentation.isGitRepository(at: path) else { return false }
         do {
-            // A configured path that is not a repository is an ordinary outcome
-            // of this scan — the `catch` below is where it is reported, at the
-            // level it deserves.
+            // The guard above already dropped anything without a `.git`, so what
+            // reaches git here is a path that looks like a repository and may
+            // not be one — a broken checkout, or a `.git` file pointing at a
+            // worktree that is gone. That is an ordinary outcome of this scan;
+            // the `catch` below reports it at the level it deserves.
             let inside = try await runGit(
                 at: path,
                 arguments: ["rev-parse", "--is-inside-work-tree"],
@@ -612,12 +504,12 @@ class GitService: GitRepositoryOperating {
     ///
     /// `failureLogLevel` is for the callers that ask git a *question* rather
     /// than give it an order. For those, a non-zero exit is one of the two
-    /// normal answers — `rev-parse --is-inside-work-tree` on a plain directory
-    /// exits 128, and that is the whole point of running it. Logging every such
-    /// answer at ERROR meant the caller's own considered `.debug` audit line sat
-    /// next to an ERROR saying the same thing, and the ERROR channel stopped
-    /// being a list of things that went wrong. Leave it at the default for any
-    /// command whose failure is genuinely a failure.
+    /// normal answers — every branch that has never been pushed makes
+    /// `rev-parse @{u}` exit 128 with "no upstream configured", which is the
+    /// whole point of running it. Logging that at ERROR meant the caller's own
+    /// considered `nil` sat next to an ERROR contradicting it, and the ERROR
+    /// channel stopped being a list of things that went wrong. Leave it at the
+    /// default for any command whose failure is genuinely a failure.
     func runGit(
         at repoPath: String,
         arguments: [String],

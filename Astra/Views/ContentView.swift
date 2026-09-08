@@ -1847,30 +1847,17 @@ struct ContentView: View {
             )
             guard browserSessionPolicyRefreshGate.accept(policy, for: token) else { return }
             syncBrowserPresentation()
-            // A refresh that resolves to the policy already in force is the
-            // overwhelmingly common case — 98.0% of the 5,555 fires in three
-            // production log rotations were byte-identical to the line above
-            // them — because the refresh is driven by `AgentTask.updatedAt`,
-            // which moves for reasons that have nothing to do with browser
-            // policy. Two fields turn that from an unreadable wall into data:
-            // `changed` says whether the work mattered, and `duration_ms` says
-            // what it cost (the disk hop for package definitions and approval
-            // records is not free). No-ops drop to debug so the info channel
-            // carries only the transitions; the count is still recoverable from
-            // a debug-level capture.
-            let changed = lastPublishedBrowserSessionPolicy != policy
+            // Most of these fires are no-ops; `BrowserSessionPolicyRefreshAudit`
+            // owns why that is and what it costs to say so.
+            let audit = BrowserSessionPolicyRefreshAudit(
+                source: source,
+                previous: lastPublishedBrowserSessionPolicy,
+                published: policy,
+                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt)
+            )
             lastPublishedBrowserSessionPolicy = policy
-            AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: [
-                "event": "browser_session_policy_refreshed",
-                "source": source,
-                "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
-                "github_read_only_mode": String(policy.githubReadOnlyMode),
-                "changed": String(changed),
-                "duration_ms": String(
-                    format: "%.2f",
-                    PerformanceTelemetry.elapsedMilliseconds(since: startedAt)
-                )
-            ], level: changed ? .info : .debug)
+            AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID,
+                            fields: audit.fields, level: audit.level)
         }
     }
     private func handleBrowserPolicyTaskEventInsertion(_ insertion: DurableTaskEventInsertion) {

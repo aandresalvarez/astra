@@ -169,6 +169,48 @@ struct BrowserSessionPolicyRefreshGate {
     }
 }
 
+/// What one accepted refresh should say about itself in the log.
+///
+/// A refresh that resolves to the policy already in force is the overwhelmingly
+/// common case: across the three retained production log rotations
+/// (2026-08-31 to 2026-09-08) the event fired 3,607 times and 3,498 of those —
+/// 97.0% — reported the same policy for the same task as the line above them,
+/// out of 65 distinct states in the whole window. The refresh is driven by
+/// `AgentTask.updatedAt`, which moves for reasons that have nothing to do with
+/// browser policy. Two fields turn that wall into data: `changed` says whether
+/// the work mattered, and `duration_ms` says what it cost (the disk hop for
+/// package definitions and approval records is not free). No-ops drop to debug
+/// so the info channel carries only the transitions; the count is still
+/// recoverable from a debug-level capture.
+///
+/// This lives outside the view because the decision — not the logging — is the
+/// part worth pinning: `previous` is the last *published* policy, not the gate's
+/// current one, since `BrowserSessionPolicyRefreshGate.begin()` resets the gate
+/// to `.failClosed` and would make every refresh look like a transition.
+struct BrowserSessionPolicyRefreshAudit: Equatable {
+    var source: String
+    var previous: BrowserSessionPolicy?
+    var published: BrowserSessionPolicy
+    var durationMilliseconds: Double
+
+    /// The first publish counts as a change: there was no policy in force, and
+    /// the value the session starts at is worth one info line.
+    var changed: Bool { previous != published }
+
+    var level: LogLevel { changed ? .info : .debug }
+
+    var fields: [String: String] {
+        [
+            "event": "browser_session_policy_refreshed",
+            "source": source,
+            "enabled_browser_adapters": published.enabledBrowserAdapters.joined(separator: ","),
+            "github_read_only_mode": String(published.githubReadOnlyMode),
+            "changed": String(changed),
+            "duration_ms": String(format: "%.2f", durationMilliseconds)
+        ]
+    }
+}
+
 /// Allocation-light identity observed by SwiftUI. Expensive approval/package
 /// fingerprints and event payload inspection deliberately do not participate;
 /// they are captured only after this key schedules an asynchronous refresh.
