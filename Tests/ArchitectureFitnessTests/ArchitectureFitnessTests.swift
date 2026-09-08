@@ -1845,6 +1845,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/TaskSchedule.swift": ["self"],
             "Astra/Models/TaskValidationContract.swift": ["self"],
             "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
+            // `AstraKeychainFailureReport.status` is an OSStatus, not a task's.
+            "Astra/Services/Persistence/AstraSecureKeychainStore.swift": ["self"],
             "Astra/Services/Persistence/SessionScanner.swift": ["run"],
             "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
@@ -1962,7 +1964,9 @@ struct ArchitectureFitnessTests {
             // this line, which is the same bargain applied to itself.
             // 2_256 -> 2_270: the two watchdog entries below, one recording a
             // ratchet-down after a file split and one a raise, plus this line.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_270, .owner("Architecture fitness test suite")),
+            // 2_270 -> 2_285: GitService's first budget entry above, the
+            // keychain-report receiver in the allowlist, and this line.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_285, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2023,6 +2027,14 @@ struct ArchitectureFitnessTests {
             // an approved plan that completed without ever running has to step
             // through `.running` because `.admitted` has no edge to `.completed`.
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
+            // First entry, at 1_978 -> 2_035 on 2026-09-08 (log-review fixes):
+            // a non-zero git exit is now logged at a severity the *caller*
+            // chooses, because the callers that ask git a question — is this a
+            // repo, is there an upstream, does this branch exist — were filing
+            // an ERROR per expected "no". Ten of those call sites had to say,
+            // individually, why their failure is an ordinary answer; a shared
+            // note would be a note about nothing.
+            "Astra/Services/Git/GitService.swift": .init(2_040, .owner("Git command transport")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
             // 2_160 -> 2_040 on 2026-08-19: `propose_issue` pushed this file past

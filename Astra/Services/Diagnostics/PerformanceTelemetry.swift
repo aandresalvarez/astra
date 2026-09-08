@@ -26,6 +26,17 @@ struct PerformanceTelemetrySuppressedRollup: Equatable {
     let totalMilliseconds: Double
     let maxMilliseconds: Double
     let thresholdMilliseconds: Double
+    /// How long this window actually ran, which is *not* the flush interval.
+    ///
+    /// A window is closed by the first sample to arrive after the interval has
+    /// elapsed, and nothing arrives while the app is idle — so the interval is a
+    /// floor, not a duration. Reporting the configured 30 s made every rate
+    /// derived from a rollup wrong by whatever the idle gap was: real windows in
+    /// the production logs ran to a median of 35.3 s and a maximum of 38,801 s,
+    /// all of them labelled `window_s=30`. That turns "212 suppressed samples"
+    /// from "7/s, a hot loop" into "0.005/s, background noise" and back again
+    /// depending on a number the line did not carry.
+    let windowSeconds: TimeInterval
 }
 
 /// Accumulates what the thresholds throw away.
@@ -109,7 +120,8 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
             lastFlushAt = now
             return []
         }
-        guard now.timeIntervalSince(windowStart) >= flushInterval else { return [] }
+        let elapsed = now.timeIntervalSince(windowStart)
+        guard elapsed >= flushInterval else { return [] }
         lastFlushAt = now
         let rollups = buckets
             .map { key, bucket in
@@ -120,7 +132,8 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
                     count: bucket.count,
                     totalMilliseconds: bucket.totalMilliseconds,
                     maxMilliseconds: bucket.maxMilliseconds,
-                    thresholdMilliseconds: bucket.thresholdMilliseconds
+                    thresholdMilliseconds: bucket.thresholdMilliseconds,
+                    windowSeconds: elapsed
                 )
             }
             // Stable order so consecutive lines are comparable by eye, and the
@@ -142,7 +155,9 @@ enum PerformanceTelemetry {
     static let uiFrameThresholdMilliseconds: Double = 8
     static let backgroundThresholdMilliseconds: Double = 20
     /// Long enough that rollups stay rare next to real events, short enough to
-    /// line up with a "the app felt slow just now" report.
+    /// line up with a "the app felt slow just now" report. A floor rather than a
+    /// period: a window closes on the next sample after it, which may be a long
+    /// idle stretch later. The emitted `window_s` reports what elapsed.
     static let suppressedRollupIntervalSeconds: TimeInterval = 30
 
     private static let suppressedLedger = PerformanceTelemetrySuppressedLedger(
@@ -183,7 +198,9 @@ enum PerformanceTelemetry {
                         rollup.totalMilliseconds / Double(max(rollup.count, 1))
                     ),
                     "threshold_ms": String(format: "%.2f", rollup.thresholdMilliseconds),
-                    "window_s": String(format: "%.0f", suppressedRollupIntervalSeconds)
+                    // The measured window, not `suppressedRollupIntervalSeconds`
+                    // — see `PerformanceTelemetrySuppressedRollup.windowSeconds`.
+                    "window_s": String(format: "%.2f", rollup.windowSeconds)
                 ],
                 // The rollup's own task, not this sample's. They are usually
                 // the same and occasionally are not, and the time they are not

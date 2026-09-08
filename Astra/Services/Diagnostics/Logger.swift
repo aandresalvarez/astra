@@ -114,6 +114,14 @@ enum AppLogger: Sendable {
         emit(.error, LogSanitizer.sanitize(message), category: category, taskID: taskID)
     }
 
+    /// For a call site whose severity is decided by its caller rather than
+    /// fixed at the log statement. `audit` has always taken a `level`; a plain
+    /// message could not, so anything that needed one had to switch over
+    /// `LogLevel` and call the four fixed-severity methods by hand.
+    static func log(_ level: LogLevel, _ message: String, category: String = "General", taskID: UUID? = nil) {
+        emit(level, LogSanitizer.sanitize(message), category: category, taskID: taskID)
+    }
+
     static func audit(
         _ event: AuditEvent,
         category: String = "Audit",

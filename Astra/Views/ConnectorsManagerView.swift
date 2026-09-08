@@ -159,13 +159,33 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
         self.isRetryable = isRetryable
     }
 
-    static func keychainSaveFailed(key: String) -> ConnectorCredentialSaveFailurePresentation {
-        ConnectorCredentialSaveFailurePresentation(
-            key: key,
-            message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
-            actionTitle: "Allow & Save",
-            actionSystemImage: MacOSPermissionKind.keychain.systemImage
-        )
+    /// `diagnosis` is the keychain layer's own account of why the write failed,
+    /// from `AstraSecureKeychainStore.latestFailure`. It has always been in the
+    /// log and never on screen, so both of its cases got the access-prompt
+    /// message below — including the one where no prompt will ever appear
+    /// because there is no item to be denied. `nil` keeps that default, which is
+    /// the right guess when the layer offered no diagnosis at all.
+    static func keychainSaveFailed(
+        key: String,
+        diagnosis: AstraKeychainFailureReport.Diagnosis? = nil
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        switch diagnosis {
+        case .notConfigured:
+            return ConnectorCredentialSaveFailurePresentation(
+                key: key,
+                message: "Could not save \(key): ASTRA's Keychain is missing the item that unlocks it, "
+                    + "so nothing can be stored yet. Retry to rebuild it.",
+                actionTitle: "Retry",
+                actionSystemImage: "arrow.clockwise"
+            )
+        case .accessDenied, .unknown, .none:
+            return ConnectorCredentialSaveFailurePresentation(
+                key: key,
+                message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
+                actionTitle: "Allow & Save",
+                actionSystemImage: MacOSPermissionKind.keychain.systemImage
+            )
+        }
     }
 
     /// The value was refused before it ever reached the Keychain — it is not
@@ -1121,7 +1141,9 @@ struct ConnectorEditorView: View {
         if let verdict = outcome.rejection {
             return .admissionRejected(key: key, verdict: verdict)
         }
-        return .keychainSaveFailed(key: key)
+        // The write drains the keychain layer's pending failure on its way out,
+        // so by the time this runs `latestFailure` describes *this* attempt.
+        return .keychainSaveFailed(key: key, diagnosis: AstraSecureKeychainStore.latestFailure?.diagnosis)
     }
 
     private func credentialSaveErrorLabel(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {

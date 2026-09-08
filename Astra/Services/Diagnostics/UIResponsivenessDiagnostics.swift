@@ -46,6 +46,9 @@ enum UIResponsivenessDiagnostics {
         "files_shelf_index_scan",
         "files_shelf_preview_load"
     ]
+    /// Written by `TaskThreadMainActorStallSampler` onto an unrelated host
+    /// event. See `mainActorStallMeasurement(entry:fields:)`.
+    private static let mainActorStallField = "main_actor_max_stall_ms"
 
     private struct Measurement {
         let event: String
@@ -75,8 +78,11 @@ enum UIResponsivenessDiagnostics {
                 level: entry.logLevel
             )
         }
+        let stallMeasurements = fieldsByEntry.compactMap { entry, fields in
+            mainActorStallMeasurement(entry: entry, fields: fields)
+        }
 
-        let eventSummaries = Dictionary(grouping: measurements, by: \.event)
+        let eventSummaries = Dictionary(grouping: measurements + stallMeasurements, by: \.event)
             .map { event, samples in
                 let durations = samples.map(\.durationMilliseconds).sorted()
                 return UIResponsivenessEventSummary(
@@ -171,6 +177,46 @@ enum UIResponsivenessDiagnostics {
             || filesShelfReadinessEvents.contains(event)
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
+    }
+
+    /// Lifts `main_actor_max_stall_ms` out of whichever event carried it and
+    /// treats it as a measurement in its own right.
+    ///
+    /// `TaskThreadMainActorStallSampler` writes the field as a *passenger* on
+    /// `chat_stream_snapshot_cadence` and `composer_typing_stall`, whose own
+    /// `duration_ms` measures the streaming/typing window rather than the
+    /// blockage inside it. The summary therefore never showed the number the
+    /// sampler exists to produce: three log rotations held 2,378 samples of it
+    /// and the report read none of them. Worse, `composer_typing_stall` matches
+    /// no `isResponsivenessEvent` prefix, so that host event contributed nothing
+    /// at all.
+    ///
+    /// The synthetic event keeps the host's name (`main_actor_stall:<event>`)
+    /// rather than folding both hosts into one bucket. A stall while streaming
+    /// and a stall while typing have different causes and different fixes, and
+    /// the typing figures are the ones distorted by the sampler's own pooling
+    /// window — merging them would hide that.
+    private static func mainActorStallMeasurement(
+        entry: LogEntry,
+        fields: [String: String]
+    ) -> Measurement? {
+        guard entry.category == "Performance",
+              let rawEvent = fields["event"],
+              let rawStall = fields[mainActorStallField],
+              let stall = Double(rawStall), stall >= 0
+        else { return nil }
+
+        return Measurement(
+            event: "main_actor_stall:\(displayEvent(rawEvent, fields: fields))",
+            durationMilliseconds: stall,
+            // Deliberately unset: these share a trace with their host event, and
+            // claiming that trace here would let a stall outrank the endpoint
+            // measurement it was sampled inside of in `slowestTraces`.
+            traceID: nil,
+            taskID: fields["task_id"] ?? entry.taskID.map(PerformanceTelemetryFields.abbreviatedID) ?? "none",
+            cacheState: fields["snapshot_cache_state"] ?? fields["cache_state"],
+            level: entry.logLevel
+        )
     }
 
     private static func displayEvent(_ event: String, fields: [String: String]) -> String {

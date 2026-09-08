@@ -162,13 +162,26 @@ enum TaskFileIndex {
 
         var files: [TaskFileItem] = []
         while let url = enumerator.nextObject() as? URL {
-            let itemURL = url
-                .resolvingSymlinksInPath()
-                .standardizedFileURL
-            if hostFileAccess.shouldSkip(itemURL, intent: accessIntent) {
-                enumerator.skipDescendants()
-                continue
-            }
+            // Standardized only, and no second containment check: both were
+            // already done, twice, before this line ran.
+            //
+            // `HostFileAccessBroker.enumerator` wraps its base in a filtering
+            // enumerator that runs `shouldSkip` on every child and calls
+            // `skipDescendants()` itself, so nothing outside the root can reach
+            // here. `shouldSkip` for `.astraManagedStorage` resolves symlinks on
+            // both the child *and* the root to do that — meaning this loop used
+            // to pay five symlink resolutions per file: two inside the
+            // enumerator, one here, and two more in the duplicate `shouldSkip`
+            // below it. Each is a `getattrlist(2)` per path component, on the
+            // main actor, over a folder that reached 13,295 artifacts. A freeze
+            // sample caught the main thread inside `__getattrlist` on 6,333 of
+            // 6,333 samples; four fifths of those calls were re-answering a
+            // question the enumerator had already answered.
+            //
+            // What remains is pure string work. The `rootPath` prefix guard
+            // below still holds because the enumerator builds every child by
+            // appending to `rootURL`, which was resolved above.
+            let itemURL = url.standardizedFileURL
             guard itemURL.path.hasPrefix(rootPath) else { continue }
             let relativePath = String(itemURL.path.dropFirst(rootPath.count))
             guard TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath) else { continue }

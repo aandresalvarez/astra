@@ -1,6 +1,70 @@
 import Foundation
+import Security
 import AstraObjCSupport
 import ASTRACore
+
+/// The structured form of the `keychain.unavailable` log line.
+///
+/// The Obj-C layer already distinguishes the two ways the dedicated keychain
+/// becomes unopenable, and the distinction decides what the user should do:
+/// `errSecItemNotFound` means the bootstrap item is gone, `errSecAuthFailed` /
+/// `errSecInteractionNotAllowed` mean it is there and this binary was refused
+/// it by the ACL partition list. Until now that difference reached exactly one
+/// place — a warning line in the log — while the UI said "Allow ASTRA to access
+/// its Keychain item, then retry" for both. Production ran 17 days of
+/// `status=-25293` behind 13 silent credential-save failures with nothing on
+/// screen naming the keychain at all.
+public struct AstraKeychainFailureReport: Equatable, Sendable {
+    /// What the person in front of the app can actually do about it.
+    public enum Diagnosis: Equatable, Sendable {
+        /// The item exists and access was refused. Retrying interactively is
+        /// the remedy: that is the attempt allowed to raise securityd's
+        /// "allow access?" dialog.
+        case accessDenied
+        /// There is no bootstrap item to unlock the keychain with. Retrying a
+        /// write can succeed on its own — a write is permitted to rebuild the
+        /// store, unlike a read — so the message should not send the user to
+        /// an access prompt that will never appear.
+        case notConfigured
+        /// Some other OSStatus. Reported as-is rather than guessed at.
+        case unknown
+    }
+
+    /// Which step failed, e.g. `bootstrap-password`. A fixed set of identifiers
+    /// from the Obj-C layer; never a path, account, or secret.
+    public let stage: String
+    public let status: OSStatus
+    /// Failures folded into this report since the last drain. Large counts are
+    /// the signature of a degraded keychain being retried per credential.
+    public let suppressedCount: Int
+
+    public var diagnosis: Diagnosis {
+        switch status {
+        case errSecAuthFailed, errSecInteractionNotAllowed: return .accessDenied
+        case errSecItemNotFound: return .notConfigured
+        default: return .unknown
+        }
+    }
+
+    /// Parses `stage=… status=… suppressed=…` as emitted by
+    /// `AstraSecureKeychain.takeLastKeychainFailureReport`. Returns `nil` for
+    /// anything that does not carry a stage and a status, so a format change in
+    /// the Obj-C layer degrades to "no diagnosis" rather than to a wrong one.
+    public init?(rawReport: String) {
+        var parsed: [String: String] = [:]
+        for component in rawReport.split(separator: " ") {
+            let pair = component.split(separator: "=", maxSplits: 1)
+            guard pair.count == 2 else { continue }
+            parsed[String(pair[0])] = String(pair[1])
+        }
+        guard let stage = parsed["stage"], !stage.isEmpty,
+              let rawStatus = parsed["status"], let status = Int32(rawStatus)
+        else { return nil }
+        self.stage = stage
+        self.status = status
+        suppressedCount = parsed["suppressed"].flatMap(Int.init) ?? 0
+    }
+}
 
 /// Single internal chokepoint for storing ASTRA's *own* secrets (connector and
 /// skill credentials). Routes them into a dedicated keychain file — separate
@@ -183,8 +247,24 @@ public enum AstraSecureKeychainStore {
         return AstraSecureKeychain.loginKeychainContainsService(service, account: account)
     }
 
+    // MARK: - Last drained diagnosis
+
+    private static let latestFailureLock = NSLock()
+    private static var latestFailureStorage: AstraKeychainFailureReport?
+
+    /// The most recent diagnosis drained by `logPendingKeychainFailure`, or
+    /// `nil` when the last drain found nothing to report.
+    ///
+    /// Exists so a failed write can be explained on screen and not only in the
+    /// log. Reading it does not drain anything — the log line remains the
+    /// system of record, and this is a copy of the last one.
+    public static var latestFailure: AstraKeychainFailureReport? {
+        latestFailureLock.lock(); defer { latestFailureLock.unlock() }
+        return latestFailureStorage
+    }
+
     /// Emits `keychain.unavailable` if the dedicated keychain has failed to open
-    /// since this was last called, and reports whether it did.
+    /// since this was last called, and returns the diagnosis behind it.
     ///
     /// "Fails closed" is the right behavior for a read, but on its own it is
     /// indistinguishable from "the user never configured this". When the
@@ -198,10 +278,18 @@ public enum AstraSecureKeychainStore {
     /// report already carries the suppressed-attempt count, and draining it here
     /// keeps a degraded keychain from writing a log line per credential.
     @discardableResult
-    public static func logPendingKeychainFailure(scope: String) -> Bool {
+    public static func logPendingKeychainFailure(scope: String) -> AstraKeychainFailureReport? {
         // Obj-C `takeLastKeychainFailureReport`; Swift drops the redundant
         // "Keychain", as it does for `secretForAccount:` → `secret(forAccount:)`.
-        guard let report = AstraSecureKeychain.takeLastFailureReport() else { return false }
+        guard let report = AstraSecureKeychain.takeLastFailureReport() else {
+            // Nothing pending means the layer is currently reporting nothing
+            // wrong. Holding on to the previous diagnosis would let a keychain
+            // that has since recovered keep explaining unrelated failures.
+            latestFailureLock.lock()
+            latestFailureStorage = nil
+            latestFailureLock.unlock()
+            return nil
+        }
         // `report` is `stage=… status=… suppressed=…` built from an OSStatus and
         // a fixed set of stage names. It never contains a secret, an account, or
         // a path, so it is safe to log verbatim.
@@ -209,6 +297,10 @@ public enum AstraSecureKeychainStore {
             "scope": scope,
             "detail": report
         ], level: .warning)
-        return true
+        let parsed = AstraKeychainFailureReport(rawReport: report)
+        latestFailureLock.lock()
+        latestFailureStorage = parsed
+        latestFailureLock.unlock()
+        return parsed
     }
 }
