@@ -743,7 +743,12 @@ extension HeadlessChatScenarioTests {
         )
         let scopedConnectors = signature.scopedConnectorDescriptors.joined(separator: " ").lowercased()
         #expect(scopedConnectors.contains("jira"))
-        #expect(!scopedConnectors.contains("gcloud"))
+        // Both connectors are attached to this task, so both are reachable and
+        // the signature records both - it exists to say what the run could do.
+        // The decoy losing is visible in the two assertions that follow: the
+        // approval sentence did not pull the gcloud skill into the prompt, and
+        // did not hand the run the gcloud host route.
+        #expect(scopedConnectors.contains("gcloud"))
         #expect(signature.scopedSkillNames == ["SS Ticket Reader"])
         #expect(signature.allowedTools.contains(
             HostControlPlaneMCPProjection.providerToolPermission(for: "jira")

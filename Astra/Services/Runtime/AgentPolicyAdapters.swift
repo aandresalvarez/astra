@@ -1062,12 +1062,21 @@ enum AgentPolicyManifestService {
         // need": reuse the launch resolver's already-computed requirement set
         // when available (the normal launch path) rather than re-deriving it
         // from a second, independently-captured capability scope.
-        let hostControlTools = precomputedRuntimeRequirements?.hostControlTools ?? HostControlPlaneMCPProjection.enabledToolNames(
+        let hostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools ?? HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope
         )
+        // The subset the turn depends on. Only this may block the render or
+        // withdraw the provider's shell; the wider list above only adds routes.
+        let requiredHostControlTools = precomputedRuntimeRequirements?.hostControlTools
+            ?? HostControlPlaneMCPProjection.requiredToolNames(
+                task: task,
+                environment: executionEnvironment,
+                contextText: contextText,
+                capabilityScope: taskCapabilityScope
+            )
         // Report the environment the agent actually gets, not the resolution it
         // was built from. These differ by exactly the brokered credentials, and
         // reporting the pre-strip set is what listed a Jira token against a run
@@ -1129,7 +1138,8 @@ enum AgentPolicyManifestService {
             runtime: runtime,
             runtimeCapabilityProfile: runtimeCapabilityProfile,
             executionEnvironment: executionEnvironment,
-            hostControlTools: hostControlTools
+            hostControlTools: hostControlTools,
+            requiredHostControlTools: requiredHostControlTools
         )
         render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
         render.allowedShellPatterns = uniqueStrings(
@@ -1149,7 +1159,7 @@ enum AgentPolicyManifestService {
             executionEnvironment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope,
-            hostControlTools: hostControlTools
+            hostControlTools: requiredHostControlTools
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         // Effective authority must be visible wherever it changes. The run that
@@ -1400,7 +1410,8 @@ enum AgentPolicyManifestService {
         runtime: AgentRuntimeID,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        hostControlTools: [String]
+        hostControlTools: [String],
+        requiredHostControlTools: [String]
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
@@ -1410,7 +1421,7 @@ enum AgentPolicyManifestService {
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: permissionPolicy,
-            requiredTools: hostControlTools
+            requiredTools: requiredHostControlTools
         ) && !usesHostControlCLIRelay
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
@@ -1441,18 +1452,22 @@ enum AgentPolicyManifestService {
                 } else {
                     updated.askFirstTools = uniqueStrings(updated.askFirstTools + ["Bash"])
                 }
-            } else {
+            } else if !requiredHostControlTools.isEmpty {
+                // Blocked only when the turn actually needs the plane. A runtime
+                // that cannot carry an *offered* route simply does not get it:
+                // the alternative is that switching a connector on turns every
+                // unrelated turn of that task into a blocked run.
                 updated.diagnostics.append(PolicyDiagnostic(
                     id: "\(runtime.rawValue).host-control-plane-unsupported",
                     severity: .blocked,
                     title: "Host control-plane route is unavailable",
                     message: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeDetail(
                         runtime: runtime,
-                        requiredTools: hostControlTools
+                        requiredTools: requiredHostControlTools
                     ),
                     affectedCapability: "control_plane",
                     remediation: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeRemediation(
-                        requiredTools: hostControlTools
+                        requiredTools: requiredHostControlTools
                     )
                 ))
             }
@@ -1695,7 +1710,10 @@ enum AgentPolicyManifestService {
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String
     ) -> [String] {
-        var commands: [String] = capabilityScope.localTools.compactMap { tool in
+        // The permission allowlist is reachability, not narration. A `Bash(bq *)`
+        // grant dropped because the turn said "table" instead of "bigquery" does
+        // not focus the run, it denies a tool the workspace enabled.
+        var commands: [String] = capabilityScope.reachableLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -1719,7 +1737,7 @@ enum AgentPolicyManifestService {
     private static func credentialLabels(for task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> [String] {
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorLabels = ConnectorRuntimeProjection(
-            connectors: capabilityScope.connectors,
+            connectors: capabilityScope.reachableConnectors,
             credentialExposurePolicy: .approvedLabels(
                 Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
             )

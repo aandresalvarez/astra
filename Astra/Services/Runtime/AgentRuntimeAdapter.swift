@@ -1906,10 +1906,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
+        // The attached list above includes offered routes. Shell denial follows
+        // the required subset, so an enabled-but-unmentioned connector does not
+        // cost this turn its native shell.
+        let requiredHostControlTools = context.runtimeRequirements?.hostControlTools ?? hostControlTools
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: providerLaunchPermissionPolicy,
-            requiredTools: hostControlTools
+            requiredTools: requiredHostControlTools
         )
         let providerAllowed = deniesNativeShellForHostControl
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
@@ -1932,7 +1936,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         if deniesNativeShellForHostControl {
             localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
                 localToolCommands,
-                requiredTools: hostControlTools
+                requiredTools: requiredHostControlTools
             )
         }
         if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {

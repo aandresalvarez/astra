@@ -18,8 +18,12 @@ enum BrokeredConnectorEnvironment {
     /// credential the broker owns does not become the agent's to hold because
     /// the runtime could not deliver the tool — the run fails closed and says
     /// so, which is recoverable. Handing the raw token over instead is not.
+    /// Reads the reachable set, matching `CapabilitySnapshot`: a connector the
+    /// broker will serve this run is exactly one whose route that snapshot
+    /// projects. Reading the narrated subset here would strip a smaller set than
+    /// the broker owns and leak the difference into the agent's environment.
     static func brokeredConnectors(in capabilityScope: TaskCapabilityPromptScope) -> [Connector] {
-        capabilityScope.connectors.filter {
+        capabilityScope.reachableConnectors.filter {
             HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
         }
     }

@@ -1977,7 +1977,12 @@ struct ArchitectureFitnessTests {
             // because "the earlier fix was necessary and not sufficient" is the
             // part a future reader needs and a rewritten comment would lose.
             // 2_320 -> 2_330: the two review-fix entries below, plus this line.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_330, .owner("Architecture fitness test suite")),
+            // 2_330 -> 2_345: the two reachability-vs-narration raises below, plus
+            // this line. AgentRuntimeProcessRunner crossed 2_000 again on the same
+            // branch and was again trimmed back under rather than opening a first
+            // entry — naming the value for what it is cost fewer lines than
+            // explaining it, and the explanation belongs on the field it reads.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_345, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2097,7 +2102,12 @@ struct ArchitectureFitnessTests {
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
-            "Tests/TaskCapabilityResolverTests.swift": .init(3_015, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_015 -> 3_070 (reachability vs narration): the three halves of the
+            // split each need their own fixture — the misspelled turn that keeps
+            // its route, the credential that still does not travel with it, and
+            // the connector the workspace never enabled that stays out. Collapsing
+            // them would let "everything is reachable" pass.
+            "Tests/TaskCapabilityResolverTests.swift": .init(3_070, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
@@ -2115,7 +2125,11 @@ struct ArchitectureFitnessTests {
             // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
             // ship local tool grants on the real Copilot command line, asserted against a
             // `.build` control so the test cannot pass vacuously.
-            "Tests/AgentPolicyTests.swift": .init(2_660, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_660 -> 2_665 (reachability vs narration): the pruned-capability
+            // manifest case now has to say which half it is asserting — the
+            // command grant follows enablement, the environment does not — and
+            // an assertion that inverted needs its reason next to it.
+            "Tests/AgentPolicyTests.swift": .init(2_665, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Budget raised for runtimeExplicitlySelected export/import round-trip
             // coverage (PR #281 review follow-up) - two new tests matching this

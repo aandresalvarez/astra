@@ -1230,7 +1230,7 @@ enum TaskLaunchResourceResolver {
             ))
         }
 
-        let hasGCloudConnector = capabilityScope.connectors.contains { connector in
+        let hasGCloudConnector = capabilityScope.reachableConnectors.contains { connector in
             let normalized = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -1258,7 +1258,13 @@ enum TaskLaunchResourceResolver {
             )
         }
 
-        for connector in capabilityScope.connectors {
+        // Reachable, not narrated: this loop wires environment, control-plane
+        // resources and credential grants. Omitting a connector here does not
+        // make the run tidier, it makes the connector unusable — and the
+        // credential side stays gated by `connectorCredentialExposurePolicy`,
+        // which is built from approved grants, so a connector without an
+        // approval still projects config and still prompts for its secret.
+        for connector in capabilityScope.reachableConnectors {
             let normalizedServiceType = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -1328,7 +1334,7 @@ enum TaskLaunchResourceResolver {
         }
         appendSkillControlPlaneResources(
             skills: capabilityScope.behaviorSkills,
-            localTools: capabilityScope.localTools,
+            localTools: capabilityScope.reachableLocalTools,
             controlPlaneResources: &controlPlaneResources
         )
     }

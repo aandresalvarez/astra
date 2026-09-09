@@ -12,8 +12,11 @@ enum AgentPromptConnectorContextBuilder {
         let exposurePolicy = credentialExposurePolicy ?? .approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
         )
+        // Aliases resolve over the reachable set so they match the ones the
+        // launch environment and the broker routes use; only the descriptions
+        // below are limited to what this turn narrates.
         let projection = ConnectorRuntimeProjection(
-            connectors: capabilityScope.connectors,
+            connectors: capabilityScope.reachableConnectors,
             credentialExposurePolicy: exposurePolicy
         )
         let aliasesByID = projection.aliasesByConnectorID
@@ -52,14 +55,51 @@ enum AgentPromptConnectorContextBuilder {
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             )
         }
-        guard !connectorDescriptions.isEmpty else { return nil }
+        // Turn-relevance decides what gets described in full, never what the run
+        // can reach. Anything reachable but not described still gets named with
+        // its route, because the failure this prevents is the agent reading a
+        // silent prompt and telling the user it has no access to a connector
+        // they enabled and can see marked Ready.
+        let alsoReachable = capabilityScope.reachableButNotNarratedConnectors.map { conn in
+            let serviceType = conn.serviceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
+            let route: String
+            if let tool = HostControlPlaneMCPProjection.connectorToolName(serviceType),
+               hostControlTools.contains(tool) {
+                route = usesHostControlCLIRelay
+                    ? #"astra-host-control \#(tool) --operation status --alias "\#(alias)""#
+                    : #"mcp__astra_host__\#(tool) with {"operation":"status","alias":"\#(alias)"}"#
+            } else {
+                route = "connector env vars, alias \(alias)"
+            }
+            return "[\(conn.name)] \(conn.serviceType) - \(route)"
+        }
 
-        return PromptContextSection(
-            kind: .tools,
-            text: """
+        guard !connectorDescriptions.isEmpty || !alsoReachable.isEmpty else { return nil }
+
+        var body = ""
+        if !connectorDescriptions.isEmpty {
+            body += """
             Available Connectors (ASTRA lists only provider-visible env vars; brokered connector credentials remain inside ASTRA):
             \(connectorDescriptions.joined(separator: "\n\n"))
 
+
+            """
+        }
+        if !alsoReachable.isEmpty {
+            body += """
+            Also connected and callable in this run (details omitted because this turn did not appear to need them - if the user asks for one of these, use it, do not report it as unavailable):
+            \(alsoReachable.joined(separator: "\n"))
+
+
+            """
+        }
+
+        return PromptContextSection(
+            kind: .tools,
+            text: body + """
             The connector details and runtime routes above are authoritative for this run. Use env vars only when they are explicitly listed. When more than one connector of the same service is available, use its name or alias. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
             \(connectorAPIGuidance(
@@ -67,7 +107,7 @@ enum AgentPromptConnectorContextBuilder {
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract : "")
             """,
-            sourcePointers: connectorSourcePointers(capabilityScope.connectors)
+            sourcePointers: connectorSourcePointers(capabilityScope.reachableConnectors)
         )
     }
 

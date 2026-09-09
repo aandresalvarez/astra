@@ -96,7 +96,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         let brokeredTools = Set(requiredTools.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
-        let brokeredConnectors = capabilityScope.connectors.filter {
+        let brokeredConnectors = capabilityScope.reachableConnectors.filter {
             HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
                 && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
                     .map(brokeredTools.contains) == true

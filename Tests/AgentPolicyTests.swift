@@ -2522,9 +2522,13 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
+        // Pruning is narration, so what it removes is the skill's instructions
+        // and its environment - the exposure. The command grant follows what the
+        // user attached to the task, because a permission allowlist that shrinks
+        // when a sentence changes wording denies capabilities the user enabled.
         #expect(manifest.environmentKeyNames.isEmpty)
-        #expect(!manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
-        #expect(!manifest.providerRender.generatedConfigPreview.contains("stanford-graph-mail"))
+        #expect(manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
+        #expect(!manifest.providerRender.generatedConfigPreview.contains("MAIL_PROFILE"))
     }
 
     @Test("Preflight manifest includes catalog-approved MCP servers")

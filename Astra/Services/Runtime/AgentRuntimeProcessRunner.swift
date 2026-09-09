@@ -742,12 +742,12 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             )
         }
-        let brokerPrepared = requiresHostControlBroker
+        let brokerPrepared = supportsHostControlBroker && effectiveRequirements.offersHostControlPlane
             && hostControlBrokerSessionManager.prepare(
             task: task,
             runID: runID,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
-            requiredTools: effectiveRequirements.hostControlTools,
+            requiredTools: effectiveRequirements.offeredHostControlTools,
             currentDirectory: workspacePath
         )
         if requiresHostControlBroker, !brokerPrepared {
@@ -1399,7 +1399,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func runtimeLocalToolCommands(in capabilityScope: TaskCapabilityPromptScope) -> [String] {
-        return Array(Set(capabilityScope.localTools.compactMap { tool in
+        return Array(Set(capabilityScope.reachableLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -1882,14 +1882,14 @@ final class AgentRuntimeProcessRunner {
             for: task,
             providerLaunchContextText: contextText
         ).providerLaunch
-        return scope.localTools.contains { tool in
+        return scope.reachableLocalTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
     private static func hasStanfordOutlookMailAccess(in capabilityScope: TaskCapabilityPromptScope) -> Bool {
-        capabilityScope.connectors.contains { $0.isStanfordOutlookMail } ||
-            capabilityScope.localTools.contains { $0.command == StanfordOutlookMail.toolCommand }
+        capabilityScope.reachableConnectors.contains { $0.isStanfordOutlookMail } ||
+            capabilityScope.reachableLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     static func providerAllowedTools(
