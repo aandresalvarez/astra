@@ -583,7 +583,11 @@ struct DeliverableExpectationCoverageTests {
             "make the API return json instead of xml",
             "create a diagram of the auth flow",
             "write sql to count the active users",
-            "generate a summary in markdown"
+            "generate a summary in markdown",
+            // The two phrasings the PR review used to describe this exact
+            // false positive: inline text a user reads, not a file on disk.
+            "write a sql query that lists the overdue invoices",
+            "generate json for this response"
         ] {
             #expect(
                 TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)) == false,

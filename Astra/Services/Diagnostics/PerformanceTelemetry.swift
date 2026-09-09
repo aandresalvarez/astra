@@ -37,6 +37,18 @@ struct PerformanceTelemetrySuppressedRollup: Equatable {
     /// from "7/s, a hot loop" into "0.005/s, background noise" and back again
     /// depending on a number the line did not carry.
     let windowSeconds: TimeInterval
+    /// How long this bucket's samples were actually arriving: first sample to
+    /// last, within the window.
+    ///
+    /// The window is shared by every bucket it drains, and a bucket can open
+    /// late in it — most often by the very sample that closes it, arriving
+    /// after a long idle stretch. Dividing that bucket's one sample by the
+    /// window would call it "one event over hours" when it existed for a single
+    /// call; dividing a hot burst that ended after two seconds by a window the
+    /// app then idled through would call the burst background noise. Rates
+    /// belong to this span; `windowSeconds` says how long the ledger was
+    /// listening.
+    let activeSeconds: TimeInterval
 }
 
 /// Accumulates what the thresholds throw away.
@@ -57,6 +69,13 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         var totalMilliseconds: Double = 0
         var maxMilliseconds: Double = 0
         var thresholdMilliseconds: Double = 0
+        var firstSampleAt: Date?
+        var lastSampleAt: Date?
+
+        var activeSeconds: TimeInterval {
+            guard let firstSampleAt, let lastSampleAt else { return 0 }
+            return lastSampleAt.timeIntervalSince(firstSampleAt)
+        }
     }
 
     /// Aggregation is per event *and* per task.
@@ -114,6 +133,8 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
         bucket.totalMilliseconds += milliseconds
         bucket.maxMilliseconds = max(bucket.maxMilliseconds, milliseconds)
         bucket.thresholdMilliseconds = thresholdMilliseconds
+        if bucket.firstSampleAt == nil { bucket.firstSampleAt = now }
+        bucket.lastSampleAt = now
         buckets[key] = bucket
 
         guard let windowStart = lastFlushAt else {
@@ -133,7 +154,8 @@ final class PerformanceTelemetrySuppressedLedger: @unchecked Sendable {
                     totalMilliseconds: bucket.totalMilliseconds,
                     maxMilliseconds: bucket.maxMilliseconds,
                     thresholdMilliseconds: bucket.thresholdMilliseconds,
-                    windowSeconds: elapsed
+                    windowSeconds: elapsed,
+                    activeSeconds: bucket.activeSeconds
                 )
             }
             // Stable order so consecutive lines are comparable by eye, and the
@@ -200,7 +222,10 @@ enum PerformanceTelemetry {
                     "threshold_ms": String(format: "%.2f", rollup.thresholdMilliseconds),
                     // The measured window, not `suppressedRollupIntervalSeconds`
                     // — see `PerformanceTelemetrySuppressedRollup.windowSeconds`.
-                    "window_s": String(format: "%.2f", rollup.windowSeconds)
+                    "window_s": String(format: "%.2f", rollup.windowSeconds),
+                    // First sample to last for *this* bucket — the span a rate
+                    // should divide by. See `activeSeconds`.
+                    "active_s": String(format: "%.2f", rollup.activeSeconds)
                 ],
                 // The rollup's own task, not this sample's. They are usually
                 // the same and occasionally are not, and the time they are not

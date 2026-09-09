@@ -278,6 +278,33 @@ struct PerformanceTelemetrySuppressedRollupTests {
         #expect(abs(try #require(first.first).windowSeconds - 11) < 0.001)
         #expect(abs(try #require(second.first).windowSeconds - 14) < 0.001)
     }
+
+    /// The window is shared; a bucket's lifetime is its own. A hot burst that
+    /// ended two seconds into an hour-long window is a hot burst, not noise,
+    /// and a bucket opened by the very sample that closes the window existed
+    /// for one call, not for the hour. Each rollup carries its own span so a
+    /// rate can divide by the time the samples were actually arriving.
+    @Test("A rollup reports how long its own samples were arriving")
+    func rollupReportsItsOwnActiveSpan() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 30)
+
+        // A burst over two seconds, then a long idle.
+        for offset in [0.0, 1.0, 2.0] {
+            _ = ledger.record(event: "burst", milliseconds: 1, thresholdMilliseconds: 8,
+                              now: epoch.addingTimeInterval(offset))
+        }
+        // The sample that closes the window opens a bucket of its own.
+        let rollups = ledger.record(event: "late", milliseconds: 1, thresholdMilliseconds: 8,
+                                    now: epoch.addingTimeInterval(3_600))
+
+        let burst = try #require(rollups.first { $0.event == "burst" })
+        let late = try #require(rollups.first { $0.event == "late" })
+        #expect(abs(burst.windowSeconds - 3_600) < 0.001)
+        #expect(abs(burst.activeSeconds - 2) < 0.001, "The burst lasted two seconds, not an hour")
+        #expect(abs(late.windowSeconds - 3_600) < 0.001)
+        #expect(late.activeSeconds == 0, "One sample has no span")
+        #expect(late.count == 1)
+    }
 }
 
 /// The stall sampler used to exist only while a task streamed, so the window
