@@ -16,7 +16,7 @@ private func makeCodexRuntimeTestContainer() throws -> ModelContainer {
 
 @Suite("Codex CLI Runtime")
 struct CodexCLIRuntimeTests {
-    @Test("Codex model suggestions match supported CLI models")
+    @Test("Codex offline model suggestions remain available before discovery")
     func codexModelSuggestionsMatchSupportedCLIModels() {
         #expect(CodexCLIRuntime.availableModelNames() == [
             "gpt-5.5",

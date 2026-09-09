@@ -15,11 +15,13 @@ struct RuntimeModelDetail: Codable, Equatable, Sendable {
     var value: String
     var displayName: String?
     var description: String?
+    var codex: CodexModelInfo?
 
-    init(value: String, displayName: String? = nil, description: String? = nil) {
+    init(value: String, displayName: String? = nil, description: String? = nil, codex: CodexModelInfo? = nil) {
         self.value = value
         self.displayName = displayName
         self.description = description
+        self.codex = codex
     }
 }
 
@@ -323,11 +325,7 @@ enum RuntimeModelAvailability {
         if suggestions.contains(trimmed) {
             return trimmed
         }
-        let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
-        if suggestions.contains(runtimeDefaultModel) {
-            return runtimeDefaultModel
-        }
-        return suggestions.first ?? runtimeDefaultModel
+        return defaultSuggestion(for: runtime, suggestions: suggestions)
     }
 
     static func modelForRuntimeSwitch(
@@ -400,7 +398,7 @@ enum RuntimeModelAvailability {
     ) {
         let cleaned = cleanProviderModelDetails(details)
         guard !cleaned.isEmpty else { return }
-        let hasMetadata = cleaned.contains { $0.displayName != nil || $0.description != nil }
+        let hasMetadata = cleaned.contains { $0.displayName != nil || $0.description != nil || $0.codex != nil }
         let snapshot = RuntimeModelAvailabilitySnapshot(
             runtimeID: runtime.rawValue,
             models: cleaned.map(\.value),
@@ -487,7 +485,8 @@ enum RuntimeModelAvailability {
             cleaned.append(RuntimeModelDetail(
                 value: value,
                 displayName: normalizedDisplayString(detail.displayName),
-                description: normalizedDisplayString(detail.description)
+                description: normalizedDisplayString(detail.description),
+                codex: detail.codex
             ))
         }
         return cleaned
@@ -584,7 +583,10 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
-        if cachedListIsAuthoritative {
+        // Codex model/list describes picker visibility, not an execution
+        // allowlist. This also prevents older, incorrectly authoritative
+        // bundled snapshots from rewriting explicit model selections.
+        if cachedListIsAuthoritative && runtime != .codexCLI {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
@@ -595,7 +597,7 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
-        if isKnownModel(trimmed, outside: runtime) {
+        if runtime != .codexCLI && isKnownModel(trimmed, outside: runtime) {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
@@ -618,6 +620,9 @@ enum RuntimeModelAvailability {
     }
 
     private static func defaultSuggestion(for runtime: AgentRuntimeID, suggestions: [String]) -> String {
+        // Codex discovery puts its recommended default first. Explicit task
+        // selections are resolved separately and never rewritten by refresh.
+        if runtime == .codexCLI, let first = suggestions.first { return first }
         let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
         if suggestions.contains(runtimeDefaultModel) {
             return runtimeDefaultModel

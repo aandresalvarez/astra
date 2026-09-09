@@ -26,6 +26,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         supportsNativeContinuation: true,
         supportsMCPServers: true
     )
+    let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
     let readinessCheckID = "codex-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .codexCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
@@ -173,16 +174,25 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        let models = CodexCLIRuntime.availableModelNames()
-        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
-        return RuntimeReadinessCheck(
-            id: "codex-models",
-            title: "Codex models",
-            detail: "Available: \(models.joined(separator: ", "))",
-            state: .ready,
-            remediation: nil
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let result = await CodexModelAvailabilityService().refreshAndPersist(
+            executablePath: configuration.executablePath(for: id),
+            homeDirectory: configuration.providerSettings.homeDirectory(for: id)
         )
+        switch result {
+        case .available(let models):
+            return RuntimeReadinessCheck(
+                id: "codex-models", title: "Codex models",
+                detail: "Available: \(models.map(\.value).joined(separator: ", "))",
+                state: .ready, remediation: nil
+            )
+        case .unavailable(let reason):
+            return RuntimeReadinessCheck(
+                id: "codex-models", title: "Codex models",
+                detail: "Using cached or default model choices until Codex model discovery succeeds.",
+                state: .warning, remediation: reason
+            )
+        }
     }
 
     @MainActor
