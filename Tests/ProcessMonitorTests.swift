@@ -3624,10 +3624,18 @@ struct RuntimeBudgetProfileTests {
     func effectiveBudgetScalesTeamBudgets() {
         // An unset budget resolves to a bounded default, not `Int.max`: the
         // silence watchdog is no longer the app's de-facto spend limit, so the
-        // spend limit has to be an actual number.
+        // spend limit has to be an actual number. And a team multiplies it the
+        // way it multiplies a chosen budget — the usage a team reports is the
+        // sum over its members, so a flat ceiling would fire on healthy team
+        // runs before anything else.
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: true,
+            teamSize: 3
+        ) == RuntimeProgressSignals.defaultTokenBudget * 3)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: false,
             teamSize: 3
         ) == RuntimeProgressSignals.defaultTokenBudget)
         #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)

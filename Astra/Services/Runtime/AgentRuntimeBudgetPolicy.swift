@@ -15,12 +15,19 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     /// ceiling, those have to be tracked separately — the ceiling is real and
     /// should stop a run, but the messages quote `task.tokenBudget`, which is
     /// still 0.
+    ///
+    /// Stated by every caller, never inferred. Deriving it from
+    /// `effectiveTokenBudget != Int.max` was a fair proxy while an unset budget
+    /// resolved to `Int.max`; now that it resolves to a finite ceiling that test
+    /// answers "user-configured" for every run, so a call site that left it to a
+    /// default would silently hand the ceiling the user's Warning Only
+    /// preference — the exact bug this flag exists to prevent.
     let isUserConfigured: Bool
 
-    init(effectiveTokenBudget: Int, tokensUsed: Int, isUserConfigured: Bool? = nil) {
+    init(effectiveTokenBudget: Int, tokensUsed: Int, isUserConfigured: Bool) {
         self.effectiveTokenBudget = effectiveTokenBudget
         self.tokensUsed = tokensUsed
-        self.isUserConfigured = isUserConfigured ?? (effectiveTokenBudget != Int.max)
+        self.isUserConfigured = isUserConfigured
     }
 
     @MainActor
@@ -61,7 +68,6 @@ enum AgentRuntimeBudgetPolicy {
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
         let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
-        guard tokenBudget != Int.max else { return true }
 
         let promptTokens = AgentProcessMonitor.estimatedTokenCount(for: prompt)
         let launchOverhead = AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)

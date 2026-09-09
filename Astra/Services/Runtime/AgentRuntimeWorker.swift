@@ -1076,6 +1076,7 @@ final class AgentRuntimeWorker {
             runtimeRequirements: appliedRuntime.requirements,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
+            maxRunSeconds: maxRunSeconds,
             onInteractiveAsk: Self.interactiveAskHandler(
                 runtime: selectedRuntime, task: task, run: run,
                 permissionPolicy: runPermissionPolicy, manifest: manifest,
@@ -1263,11 +1264,8 @@ final class AgentRuntimeWorker {
         let budgetSnapshot = AgentRuntimeBudgetSnapshot(
             effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
             tokensUsed: task.tokensUsed,
-            // Stated, not inferred. The default derives this from
-            // `effectiveTokenBudget != Int.max`, which was a fair proxy while an
-            // unset budget resolved to `Int.max`; now that it resolves to a
-            // finite ceiling that test answers "user-configured" for every run,
-            // and the ceiling would inherit Warning Only along with it.
+            // The ceiling is real but unchosen; `tokenBudget` is the only record
+            // of which one this run is under.
             isUserConfigured: executionTask.tokenBudget != 0
         )
 
@@ -2175,6 +2173,8 @@ final class AgentRuntimeWorker {
     }
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
+    /// Wall-clock ceiling on one provider run, net of managed-job time.
+    var maxRunSeconds: TimeInterval = RuntimeProgressSignals.defaultMaxRunSeconds
 
     /// Permission policy applied to CLI runs. Review/restricted is the safe default;
     /// the composer security gate can opt into autonomous runs for trusted work.

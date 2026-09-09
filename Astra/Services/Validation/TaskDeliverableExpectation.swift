@@ -42,21 +42,24 @@ enum TaskDeliverableExpectation {
             "web page", "webpage", "html", "javascript", "css", ".html", ".js", ".css",
             "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck",
             "user interface", "web site", "spreadsheet", "wireframe", "mockup", "prototype",
-            "dashboard", "notebook", "readme", "markdown"
+            "dashboard", "notebook", "readme"
         ]
         // Short nouns have to match as whole words. Substring matching would
         // turn "ui" into a hit for "build", "guide" and "require", and "app"
         // into a hit for "happens" and "appropriate".
-        let artifactWords = [
-            "app", "ui", "website", "report", "document", "doc", "diagram",
-            "md", "csv", "json", "sql", "py", "ts", "tsx", "jsx"
-        ]
+        let artifactWords = ["app", "ui", "website", "csv"]
 
         // The action word above already established that the user asked for
         // something to be produced; this only decides whether the thing is the
-        // kind that lands on disk. Missing a whole class of ordinary requests
-        // ("create a UI", "build a local app") mattered more than the risk of
-        // occasionally expecting a file that never arrives.
+        // kind that lands on disk. The vocabulary is precise rather than broad
+        // because the two mistakes do not cost the same. Missing an artifact
+        // request tightens a watchdog window. Inventing one rewrites the prompt
+        // around a file the user never asked for — the first-action contract in
+        // `AgentPromptBuilder` — and then blocks completion when that file does
+        // not appear. So nouns that name a *shape* of answer as readily as a
+        // file — "report", "document", "diagram", a format like "json" or "sql"
+        // — stay out, and only nouns that can scarcely be delivered any other
+        // way are in.
         return containsAny(text, artifactPhrases) || containsAnyWholeWord(text, artifactWords)
     }
 

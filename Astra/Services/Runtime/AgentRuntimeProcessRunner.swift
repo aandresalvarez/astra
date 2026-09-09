@@ -85,6 +85,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult
@@ -692,6 +693,7 @@ final class AgentRuntimeProcessRunner {
         runtimeRequirements: TaskRuntimeRequirementSet? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        maxRunSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -797,6 +799,7 @@ final class AgentRuntimeProcessRunner {
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -820,6 +823,7 @@ final class AgentRuntimeProcessRunner {
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+            maxRunSeconds: maxRunSeconds,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -835,6 +839,7 @@ final class AgentRuntimeProcessRunner {
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -905,6 +910,7 @@ final class AgentRuntimeProcessRunner {
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 taskID: task.id,
                 policyGuard: permissionManifest.map {
                     AgentRuntimePolicyGuard(manifest: $0, boundary: RunBoundary(manifest: $0, plan: plan))
@@ -990,11 +996,9 @@ final class AgentRuntimeProcessRunner {
             // that window: whichever side reaches the lock first fully
             // drains-and-processes what it read before the other side can
             // even perform its own read.
-            // Stream volume is counted here, off the raw chunk, and never per
-            // parsed line: `appendAndProcessLinesLocked` calls `handleLine` only
-            // once it finds a newline, so one large frame would hold the tally
-            // flat while the pipe is busy and the watchdog would read the run as
-            // silent. See `StreamVolumeAccountingTests`, which pins both sites.
+            // Stream volume is counted off the raw chunk, never per parsed line:
+            // `handleLine` only runs on a newline, so one large frame would hold
+            // the tally flat. `StreamVolumeAccountingTests` pins both sites.
             process.stdoutFileHandle.readabilityHandler = { handle in
                 lineBuffer.synchronized {
                     let data = handle.availableData
@@ -1422,18 +1426,15 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        if baseBudget == 0 {
-            // "No budget set" used to mean literally unbounded, which left the
-            // silence watchdog as the only thing standing between a runaway
-            // task and an open-ended bill. It is a default, not a limit the
-            // user chose, so it sits above the worst run seen in production
-            // rather than anywhere near typical usage.
-            return RuntimeProgressSignals.defaultTokenBudget
-        }
-        if usesAgentTeam {
-            return baseBudget * max(2, teamSize)
-        }
-        return baseBudget
+        // "No budget set" used to mean literally unbounded, which left the
+        // silence watchdog as the only thing between a runaway task and an
+        // open-ended bill. The default is a per-run allowance the user never
+        // chose, sized above the worst single run seen in production. A team
+        // multiplies it exactly as it multiplies a chosen budget: the usage a
+        // team reports is the sum over its members, and a ceiling that ignored
+        // that would fire on healthy team runs first.
+        let budget = baseBudget == 0 ? RuntimeProgressSignals.defaultTokenBudget : baseBudget
+        return usesAgentTeam ? budget * max(2, teamSize) : budget
     }
 
     static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {

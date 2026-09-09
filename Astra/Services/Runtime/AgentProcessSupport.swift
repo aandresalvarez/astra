@@ -4,17 +4,20 @@ protocol AgentRuntimeProcessControl: AnyObject {
     var isRunning: Bool { get }
     var terminationStatus: Int32 { get }
     func terminate()
-    /// Asks the provider to wind down before it is signalled.
+    /// Asks the provider to wind down before it is signalled, and reports
+    /// whether there was a channel to ask through.
     ///
     /// A watchdog kill discards everything the run produced, so it is worth one
     /// cheap attempt to let the provider notice the run is over and flush what
-    /// it already has. Defaults to a no-op for process types with no such
-    /// channel.
-    func requestGracefulStop()
+    /// it already has. Returns false for process types with no such channel,
+    /// so the caller knows not to wait for an answer that cannot come.
+    @discardableResult
+    func requestGracefulStop() -> Bool
 }
 
 extension AgentRuntimeProcessControl {
-    func requestGracefulStop() {}
+    @discardableResult
+    func requestGracefulStop() -> Bool { false }
 }
 
 extension Process: AgentRuntimeProcessControl {}
@@ -32,7 +35,7 @@ final class AgentRuntimeProcessControlBox: @unchecked Sendable {
         process.terminate()
     }
 
-    func requestGracefulStop() {
+    func requestGracefulStop() -> Bool {
         process.requestGracefulStop()
     }
 }
@@ -418,6 +421,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var hasSeenProgressActivity = false
     private var watchdogRunning = false
     private let runStartedAt = Date()
+    /// Wall-clock time spent inside a managed workspace job, which the run
+    /// ceiling does not count. A heartbeating job is bounded by its own stall
+    /// detector and cannot be laundered by stream volume — the only thing the
+    /// ceiling exists to bound — and this monitor already allows such a job six
+    /// hours of quiet. Counting that time would kill a run for having waited on
+    /// the job it was told to wait on, at the moment the job returned.
+    private var excludedRunSeconds: TimeInterval = 0
+    private var managedJobExclusionStartedAt: Date?
 
     /// Raw stdout volume, used as a parser-independent progress signal. Shape
     /// analysis can only recognise frames some parser already models; byte
@@ -425,11 +436,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var cumulativeStreamBytes = 0
     private var streamBytesAtLastProgress = 0
 
-    /// Unrecognised frames seen in the current silence window. Their presence
-    /// means the taxonomy is out of date, so it is not trustworthy enough to
-    /// justify an aggressive kill.
+    /// Unrecognised frames seen so far, and where the last one fell relative
+    /// to the current silence window. Their presence inside it means the
+    /// taxonomy is out of date, so it is not trustworthy enough to justify an
+    /// aggressive kill.
+    ///
+    /// Ordered by a per-event sequence number, never by timestamp. `Date()`
+    /// resolves to about a microsecond here, and consecutive events parsed from
+    /// one pipe chunk are processed back-to-back inside a single readability
+    /// callback — so two of them routinely carry the *same* `Date`, and "did
+    /// the unknown frame arrive before or after the progress frame?" cannot be
+    /// answered by comparing clocks. Sequence numbers answer it exactly.
+    private var eventSequence = 0
     private var unknownEventCount = 0
-    private var lastUnknownEventTime: Date?
+    private var lastUnknownEventSequence: Int?
+    /// The sequence number in force when the current silence window opened:
+    /// the last event processed before progress was observed or forgiven.
+    private var silenceWindowStartSequence = 0
 
     /// Which silence window's unrecognised-stream deferrals have been traced,
     /// and for which reasons within it.
@@ -441,11 +464,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// goes — so without this the single "the parser is behind" trace becomes
     /// hundreds of identical lines over a four-hour run, which is the kind of
     /// log wall the rest of this branch exists to remove. Keyed on the window
-    /// start (`lastActivityTime`, which moves only when progress is observed or
-    /// forgiven) so a genuinely new window traces again, and on the reason so a
-    /// window that changes character is not silently swallowed. Reset per
-    /// window, so it holds at most one entry per silence branch.
-    private var tracedDeferralWindowStart: Date?
+    /// start (`silenceWindowStartSequence`, which moves only when progress is
+    /// observed or forgiven) so a genuinely new window traces again, and on the
+    /// reason so a window that changes character is not silently swallowed.
+    /// Reset per window, so it holds at most one entry per silence branch.
+    private var tracedDeferralWindowStart: Int?
     private var tracedDeferralReasons: Set<String> = []
     private var _unrecognizedDeferralTraceCount = 0
 
@@ -541,6 +564,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         defer { lock.unlock() }
 
         let now = Date()
+        eventSequence += 1
         lastAnyActivityTime = now
         hasSeenAnyActivity = true
         let progressKind = Self.progressKind(for: parsed)
@@ -554,7 +578,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             // Remember it: the kill branches below consult this before deciding
             // that "no recognised progress" means "no progress".
             unknownEventCount += 1
-            lastUnknownEventTime = now
+            lastUnknownEventSequence = eventSequence
         }
         if Self.isSuccessfulTerminalProgress(parsed) {
             lastTerminalProgressTime = now
@@ -1634,6 +1658,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// must already hold `lock`.
     private func markSemanticProgressLocked(now: Date) {
         lastActivityTime = now
+        silenceWindowStartSequence = eventSequence
         hasSeenProgressActivity = true
         streamBytesAtLastProgress = cumulativeStreamBytes
         semanticProgressExtensionsUsed = 0
@@ -1716,7 +1741,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         awaitGracefulExit: () -> Bool = { false }
     ) -> Bool {
         evaluateWatchdogTimeout(
-            gracefulStop: { process?.requestGracefulStop() },
+            gracefulStop: { process?.requestGracefulStop() ?? false },
             awaitGracefulExit: awaitGracefulExit,
             terminate: { process?.terminate() }
         )
@@ -1724,7 +1749,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     @discardableResult
     private func evaluateWatchdogTimeout(
-        gracefulStop: () -> Void = {},
+        gracefulStop: () -> Bool = { false },
         awaitGracefulExit: () -> Bool = { false },
         terminate: () -> Void
     ) -> Bool {
@@ -1742,6 +1767,18 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let hasActiveToolUse = !activeToolUseIDs.isEmpty
         let hasActiveManagedWorkspaceJob = !activeManagedWorkspaceJobs.isEmpty
         let hasActiveRuntimeWork = hasActiveToolUse || hasActiveManagedWorkspaceJob
+        // Poll-granular: the exclusion opens at the first poll that sees a job
+        // and closes at the first that does not, so up to one check interval of
+        // job time is still counted. Close enough for a four-hour ceiling, and
+        // it keeps the job mutation sites out of the wall clock's business.
+        if hasActiveManagedWorkspaceJob {
+            if managedJobExclusionStartedAt == nil { managedJobExclusionStartedAt = now }
+        } else if let startedAt = managedJobExclusionStartedAt {
+            excludedRunSeconds += now.timeIntervalSince(startedAt)
+            managedJobExclusionStartedAt = nil
+        }
+        let excludedSeconds = excludedRunSeconds
+            + (managedJobExclusionStartedAt.map { now.timeIntervalSince($0) } ?? 0)
         // `anyIdleDuration < idleTimeoutSeconds` is a precedence rule, not a
         // second deadline: a provider that has gone *completely* silent past the
         // outer idle timeout is a plain timeout, and that branch should own the
@@ -1785,13 +1822,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         // event taxonomy is behind the provider's stream format. "No recognised
         // progress" then stops being evidence of "no progress", so the
         // aggressive kills stand down and the outer idle timeout takes over.
-        let hasUnrecognizedTrafficInWindow = lastUnknownEventTime.map { $0 >= lastActivityTime } ?? false
-        let runDuration = now.timeIntervalSince(runStartedAt)
+        let hasUnrecognizedTrafficInWindow = lastUnknownEventSequence.map { $0 > silenceWindowStartSequence } ?? false
+        let runDuration = now.timeIntervalSince(runStartedAt) - excludedSeconds
         let progressDiagnostics = [
             "stream_bytes": String(cumulativeStreamBytes),
             "stream_bytes_since_progress": String(cumulativeStreamBytes - streamBytesAtLastProgress),
             "unknown_events": String(unknownEventCount),
-            "run_seconds": String(Int(runDuration))
+            "run_seconds": String(Int(runDuration)),
+            "managed_job_excluded_seconds": String(Int(excludedSeconds))
         ]
         lock.unlock()
 
@@ -1801,7 +1839,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             let reason = "provider_run_wall_clock_exceeded"
             let message = """
             ASTRA stopped the provider because the run hit its \(Int(maxRunSeconds / 60))-minute wall-clock ceiling.
-            Every other runtime timeout measures silence, so a provider that keeps streaming can hold them off indefinitely; this ceiling bounds the run regardless of how busy it looks.
+            Every other runtime timeout measures silence, so a provider that keeps streaming can hold them off indefinitely; this ceiling bounds the run regardless of how busy it looks. Time spent waiting on a managed workspace job is not counted: the job's own heartbeat bound covers it.
             """
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: progressDiagnostics.merging([
                 "reason": reason,
@@ -1972,7 +2010,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         auditFields: [String: String],
         deferForUnrecognizedTraffic: Bool,
         now: Date,
-        gracefulStop: () -> Void,
+        gracefulStop: () -> Bool,
         awaitGracefulExit: () -> Bool,
         terminate: () -> Void
     ) -> Bool {
@@ -1994,6 +2032,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             // and the audit trail should keep saying how long the provider has
             // really been quiet.
             lastActivityTime = now
+            silenceWindowStartSequence = eventSequence
             semanticProgressExtensionExpiresAt = now.addingTimeInterval(noSemanticProgressTimeoutSeconds)
             lock.unlock()
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: auditFields.merging([
@@ -2033,12 +2072,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// not help — it sits between SIGTERM and SIGKILL, by which point the
     /// process is already unwinding.
     private static func stopProvider(
-        gracefulStop: () -> Void,
+        gracefulStop: () -> Bool,
         awaitGracefulExit: () -> Bool,
         terminate: () -> Void
     ) {
-        gracefulStop()
-        guard !awaitGracefulExit() else { return }
+        // The wait is only owed when there was a channel to close. A provider
+        // with no stdin pipe has nothing to act on, and the grace period would
+        // be two seconds of pure delay on a kill that is already decided.
+        if gracefulStop(), awaitGracefulExit() { return }
         terminate()
     }
 
@@ -2050,9 +2091,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private func claimUnrecognizedDeferralTrace(reason: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let windowStart = lastActivityTime
-        if tracedDeferralWindowStart != windowStart {
-            tracedDeferralWindowStart = windowStart
+        if tracedDeferralWindowStart != silenceWindowStartSequence {
+            tracedDeferralWindowStart = silenceWindowStartSequence
             tracedDeferralReasons = []
         }
         guard tracedDeferralReasons.insert(reason).inserted else { return false }

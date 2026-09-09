@@ -244,7 +244,9 @@ extension HeadlessChatScenarioTests {
     /// so the stall belongs to the semantic branch. Contrast the Claude case
     /// above, where the only thing on the wire is a `system/init` frame —
     /// lifecycle metadata, never semantic progress, so it takes the
-    /// metadata-only branch and stops without an extension.
+    /// metadata-only branch. That branch escalates too: its first breach buys
+    /// the same single extension, and its second reports
+    /// `provider_no_semantic_progress` rather than a stall after progress.
     @Test("Antigravity idle timeout kills process and records a semantic stall")
     func antigravityIdleTimeoutKillsProcess() async throws {
         let harness = try HeadlessChatHarness()

@@ -196,6 +196,12 @@ enum UIResponsivenessDiagnostics {
     /// and a stall while typing have different causes and different fixes, and
     /// the typing figures are the ones distorted by the sampler's own pooling
     /// window — merging them would hide that.
+    ///
+    /// A window with no overshoot writes `0.00`, and that is not a stall. The
+    /// sampler emits the field on every cadence line whether or not the main
+    /// actor hitched, so counting zeros would make the summary describe windows
+    /// rather than blockages: p50 pinned at zero, p95 diluted by every quiet
+    /// stretch, and a sample count that reports how often the probe ran.
     private static func mainActorStallMeasurement(
         entry: LogEntry,
         fields: [String: String]
@@ -203,7 +209,7 @@ enum UIResponsivenessDiagnostics {
         guard entry.category == "Performance",
               let rawEvent = fields["event"],
               let rawStall = fields[mainActorStallField],
-              let stall = Double(rawStall), stall >= 0
+              let stall = Double(rawStall), stall > 0
         else { return nil }
 
         return Measurement(

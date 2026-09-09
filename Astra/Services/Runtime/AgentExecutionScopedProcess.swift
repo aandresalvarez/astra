@@ -90,14 +90,18 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     /// Signals end-of-conversation: stream-json providers keep waiting for the
-    /// next stdin message after a turn, so EOF is what lets them exit.
-    func closeStdinChannel() {
-        guard let stdinPipe else { return }
+    /// next stdin message after a turn, so EOF is what lets them exit. Returns
+    /// true only when this call closed a live channel — false when there is no
+    /// pipe, or when it was already closed and the provider has had its EOF.
+    @discardableResult
+    func closeStdinChannel() -> Bool {
+        guard let stdinPipe else { return false }
         stdinLock.lock()
         defer { stdinLock.unlock() }
-        guard !stdinClosed else { return }
+        guard !stdinClosed else { return false }
         stdinClosed = true
         stdinPipe.fileHandleForWriting.closeFile()
+        return true
     }
 
     func run() throws {
@@ -179,10 +183,11 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     /// Closes stdin so a stream-json provider sees EOF and can wind its turn
-    /// down on its own terms. The SIGTERM ladder in `terminate()` still runs
-    /// immediately after; this only widens the window in which the provider
-    /// can flush work it has already done.
-    func requestGracefulStop() {
+    /// down on its own terms, and says whether there was anything to close. The
+    /// watchdog waits on the answer only when there was: a provider with no
+    /// stdin pipe cannot notice an EOF it was never sent.
+    @discardableResult
+    func requestGracefulStop() -> Bool {
         closeStdinChannel()
     }
 

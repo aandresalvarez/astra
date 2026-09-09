@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 import ASTRAPersistence
 import ASTRAModels
 @testable import ASTRA
@@ -11,6 +12,10 @@ private final class ProgressSignalMockProcess: AgentRuntimeProcessControl {
     /// Recorded so a test can prove the graceful stop happened *before* the
     /// signal, not merely that both happened.
     private(set) var gracefulStopPrecededTerminate = false
+    /// Whether there is a stdin channel to close. A provider launched without
+    /// one reports that it could not be asked, and the watchdog must not wait
+    /// for an answer that cannot come.
+    var hasGracefulStopChannel = true
 
     var isRunning: Bool { !didTerminate }
     var terminationStatus: Int32 { didTerminate ? 143 : 0 }
@@ -22,8 +27,9 @@ private final class ProgressSignalMockProcess: AgentRuntimeProcessControl {
         didTerminate = true
     }
 
-    func requestGracefulStop() {
+    func requestGracefulStop() -> Bool {
         didRequestGracefulStop = true
+        return hasGracefulStopChannel
     }
 }
 
@@ -149,6 +155,41 @@ struct UnrecognizedStreamTrafficTests {
         #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
     }
 
+    /// Ordering is by event sequence, never by clock. `Date()` resolves to
+    /// about a microsecond, and two back-to-back `processEvent` calls routinely
+    /// land in the same tick — on the machine this was measured on, 98.5% of
+    /// consecutive `Date()` pairs compared *equal*. A timestamp comparison
+    /// therefore scored an unknown frame as inside the window it preceded, and
+    /// the watchdog stood down for the rest of the run. The test above lost
+    /// that race once in a parallel full-suite run and passed in isolation;
+    /// this one runs the same sequence back-to-back often enough that a
+    /// clock-based implementation cannot pass it, whatever the machine.
+    @Test("An unknown frame that preceded progress is outside the window, every time")
+    func unknownBeforeProgressIsAlwaysOutsideTheWindow() {
+        for _ in 0..<100 {
+            let monitor = makeMonitor()
+            let process = ProgressSignalMockProcess()
+            _ = monitor.processEvent(.unknown(type: "provider.new_frame_shape"), process: process)
+            _ = monitor.processEvent(.text(text: "hello"), process: process)
+            #expect(evaluateUntilStopped(monitor, process: process) == true)
+        }
+    }
+
+    /// The mirror image, which a `>` on timestamps would get wrong instead: an
+    /// unknown frame that *followed* progress is inside the window even when
+    /// it shares the progress frame's timestamp.
+    @Test("An unknown frame that followed progress is inside the window, every time")
+    func unknownAfterProgressIsAlwaysInsideTheWindow() {
+        for _ in 0..<100 {
+            let monitor = makeMonitor()
+            let process = ProgressSignalMockProcess()
+            _ = monitor.processEvent(.text(text: "hello"), process: process)
+            _ = monitor.processEvent(.unknown(type: "provider.new_frame_shape"), process: process)
+            #expect(evaluateUntilStopped(monitor, process: process) == false)
+            #expect(process.didTerminate == false)
+        }
+    }
+
     @Test("The outer idle timeout still bounds a stream of pure unknowns")
     func unknownTrafficStillBoundedByOuterIdleTimeout() {
         // Deferring is not forgiving. The backstop has to remain reachable, or
@@ -231,6 +272,66 @@ struct RunCostBoundTests {
         _ = monitor.processEvent(.text(text: "still working"), process: process)
         Thread.sleep(forTimeInterval: 0.05)
 
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_run_wall_clock_exceeded")
+        #expect(process.didTerminate)
+    }
+
+    /// The ceiling exists to bound what stream volume can launder, and a
+    /// managed workspace job is not that: its liveness is a heartbeat file
+    /// that must keep changing, it has its own stall bound, and this monitor
+    /// already allows it six hours of quiet. Counting its time would kill a
+    /// run for having waited on the job it was told to wait on — at the
+    /// moment the job returned, before the provider could read the result.
+    /// So the wall clock pauses while a job is active and resumes after.
+    @Test("Time inside a managed workspace job does not count against the wall clock")
+    func managedJobTimeIsExcludedFromWallClock() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-wall-clock-job-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let heartbeat = root.appendingPathComponent("heartbeat.json", isDirectory: false)
+        let result = root.appendingPathComponent("result.json", isDirectory: false)
+        let formatter = ISO8601DateFormatter()
+        try #"{"status":"running","timestamp":"\#(formatter.string(from: Date()))"}"#
+            .write(to: heartbeat, atomically: true, encoding: .utf8)
+
+        let ceiling: TimeInterval = 0.3
+        let monitor = makeMonitor(noSemanticProgressTimeoutSeconds: 600, maxRunSeconds: ceiling)
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Started the build as a managed workspace job"), process: process)
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "job-start",
+                content: """
+                job_id: build
+                status: running
+                runtime: docker
+                command: make all
+                heartbeat: \(heartbeat.path)
+                result: \(result.path)
+                """
+            ),
+            process: process
+        )
+        // The first poll that sees the job opens the exclusion.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+
+        // Wall time is now past the ceiling, and all of it was inside the job.
+        Thread.sleep(forTimeInterval: ceiling * 2)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(monitor.runtimeStopReason == nil)
+
+        // The job returns. The provider's own clock has barely started, so it
+        // gets to read the result rather than being killed on the spot.
+        try #"{"status":"succeeded","timestamp":"\#(formatter.string(from: Date()))"}"#
+            .write(to: result, atomically: true, encoding: .utf8)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(monitor.runtimeStopReason == nil)
+
+        // And the ceiling is a pause, not a waiver: it resumes once the job is gone.
+        Thread.sleep(forTimeInterval: ceiling * 2)
         #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
         #expect(monitor.runtimeStopReason == "provider_run_wall_clock_exceeded")
         #expect(process.didTerminate)
@@ -453,9 +554,11 @@ struct DeliverableExpectationCoverageTests {
     func commonArtifactRequestsRecognised() {
         for goal in [
             "build a dashboard for the sales data",
-            "create a report summarising the findings",
-            "write a document describing the migration",
+            "create a UI for browsing the support tickets",
+            "build a local app so the team can install it",
+            "make a website for the reading group",
             "generate a prototype of the new onboarding flow",
+            "create a spreadsheet of the vendor quotes",
             "make a csv of the results"
         ] {
             #expect(
@@ -463,6 +566,88 @@ struct DeliverableExpectationCoverageTests {
                 "expected an artifact for: \(goal)"
             )
         }
+    }
+
+    /// The two mistakes do not cost the same. A missed artifact request only
+    /// tightens a watchdog window; an invented one rewrites the prompt around
+    /// a file the user never asked for and then blocks completion when it does
+    /// not appear. So a noun that names a shape of *answer* as readily as a
+    /// file — a report, a document, a diagram, a data format — must not be
+    /// enough on its own, or "make the API return json" becomes a task that
+    /// owes a deliverable and fails for want of one.
+    @Test("Answer-shaped nouns do not owe a file")
+    func answerShapedNounsDoNotOweAFile() {
+        for goal in [
+            "write a report summarising the findings",
+            "create a document describing the migration",
+            "make the API return json instead of xml",
+            "create a diagram of the auth flow",
+            "write sql to count the active users",
+            "generate a summary in markdown"
+        ] {
+            #expect(
+                TaskDeliverableExpectation.requiresStandaloneArtifact(task(goal)) == false,
+                "unexpected artifact expectation for: \(goal)"
+            )
+        }
+    }
+
+    /// Where a false positive actually lands, asserted at both consumers: the
+    /// prompt tells the provider its first action must be a file write, and
+    /// completion is blocked when that file never appears. A request that is
+    /// plainly a code change must get neither, so the vocabulary cannot widen
+    /// again without this failing.
+    @Test("A code-change request neither rewrites the prompt nor blocks completion")
+    func codeChangeRequestIsNotAnArtifactTask() throws {
+        let fixture = try insertedTask(goal: "make the API return json instead of xml")
+        withExtendedLifetime(fixture.container) {
+            fixture.run.setOutput("Switched the serializer to JSON and updated the tests.")
+
+            #expect(!AgentPromptBuilder.buildPrompt(for: fixture.task).contains("Artifact first-action requirement:"))
+            #expect(!TaskCompletionPolicy.decideSuccessfulCompletion(task: fixture.task, run: fixture.run).shouldBlockCompletion)
+        }
+    }
+
+    /// The inverse, so the test above is not passing by accident of the
+    /// harness: an unmistakable artifact request still gets both.
+    @Test("An artifact request still rewrites the prompt and gates completion")
+    func artifactRequestIsStillAnArtifactTask() throws {
+        let fixture = try insertedTask(goal: "build a local app so the team can install it")
+        withExtendedLifetime(fixture.container) {
+            fixture.run.setOutput("I'll create it.")
+
+            #expect(AgentPromptBuilder.buildPrompt(for: fixture.task).contains("Artifact first-action requirement:"))
+            let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: fixture.task, run: fixture.run)
+            #expect(decision.shouldBlockCompletion)
+            #expect(decision.gate == .manualArtifactRequirement)
+        }
+    }
+
+    /// The consumers read relationships, so the task has to live in a store —
+    /// and the store has to outlive the assertions. A container that goes out
+    /// of scope resets its context, and every model it handed out dies with
+    /// it, which SwiftData reports as a fatal error rather than a failure.
+    private struct InsertedTask {
+        let container: ModelContainer
+        let task: AgentTask
+        let run: TaskRun
+    }
+
+    private func insertedTask(goal: String) throws -> InsertedTask {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Deliverable", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Task", goal: goal, workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        return InsertedTask(container: container, task: task, run: run)
     }
 
     @Test("Short nouns match as whole words only")
@@ -634,6 +819,26 @@ struct WatchdogGracefulStopTests {
         #expect(process.didTerminate)
         #expect(process.gracefulStopPrecededTerminate)
         #expect(AgentRuntimeWorker.ProcessMonitor.gracefulStopGraceSeconds > 0)
+    }
+
+    /// The grace period is owed only when there was a channel to close. Every
+    /// provider launched without a stdin pipe used to pay it anyway: two
+    /// seconds of polling for an EOF that was never sent, on every kill.
+    @Test("A provider with no stdin channel is signalled without waiting")
+    func noChannelSkipsTheWait() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+        process.hasGracefulStopChannel = false
+        var waited = false
+
+        _ = monitor.processEvent(.text(text: "hello"), process: process)
+        _ = monitor.evaluateWatchdogTimeoutForTesting(process: process, awaitGracefulExit: { waited = true; return false })
+        let stopped = monitor.evaluateWatchdogTimeoutForTesting(process: process, awaitGracefulExit: { waited = true; return false })
+
+        #expect(stopped)
+        #expect(process.didRequestGracefulStop, "It is still asked; there is just nothing to wait for")
+        #expect(process.didTerminate)
+        #expect(waited == false)
     }
 }
 

@@ -219,8 +219,8 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
     /// The presentation a failed save earns, read entirely off the outcome the
     /// write returned.
     ///
-    /// Nothing here consults `AstraSecureKeychainStore.latestFailure`. That is a
-    /// single process-global slot filled by a destructive drain, so between the
+    /// Nothing here goes back to the Obj-C layer's failure slot after the fact.
+    /// That is one process-global slot emptied by a destructive drain, so between the
     /// write and this call another failing write — or one of the batch drains on
     /// the startup, workspace-setup and capability-install paths — can replace or
     /// empty it, and the user is then told to grant Keychain access for a

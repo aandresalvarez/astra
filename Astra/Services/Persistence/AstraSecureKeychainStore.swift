@@ -34,7 +34,13 @@ public struct AstraKeychainFailureReport: Equatable, Sendable {
     public var diagnosis: Diagnosis {
         switch status {
         case errSecAuthFailed, errSecInteractionNotAllowed: return .accessDenied
-        case errSecItemNotFound: return .notConfigured
+        // Stage-gated on purpose. `bootstrap-password` is the one stage that
+        // reports -25300 to mean "the file is on disk and its key is gone", and
+        // that is the only reading `.notConfigured`'s remedy — an explanation,
+        // no retry — is correct for. The same status from any other stage is a
+        // different fact about a different item, and the honest answer is that
+        // this app cannot turn it into advice.
+        case errSecItemNotFound where stage == "bootstrap-password": return .notConfigured
         default: return .unknown
         }
     }
@@ -142,11 +148,10 @@ public enum AstraSecureKeychainStore {
         ).didWrite
     }
 
-    /// `save`, but it hands back the diagnosis behind a failure instead of
-    /// leaving the caller to go and read `latestFailure`.
+    /// `save`, but it hands back the diagnosis behind a failure.
     ///
-    /// Use this wherever a human is waiting on the answer. `latestFailure` is a
-    /// single process-global slot and the drain that fills it is destructive,
+    /// Use this wherever a human is waiting on the answer. The Obj-C layer keeps
+    /// one process-global failure slot and the drain that reads it is destructive,
     /// so between a failing write and the view that explains it, any other
     /// failing write — or any of the batch drains on the startup,
     /// workspace-setup and capability-install paths — can replace or empty it.
@@ -280,7 +285,7 @@ public enum AstraSecureKeychainStore {
         return AstraSecureKeychain.loginKeychainContainsService(service, account: account)
     }
 
-    // MARK: - Last drained diagnosis
+    // MARK: - Write serialization
 
     /// Serializes a write with the drain that explains it, and each drain with
     /// every other one.
@@ -302,20 +307,6 @@ public enum AstraSecureKeychainStore {
     /// nothing to do with the connector waiting on the sheet, which is why that
     /// one had to come inside.
     private static let writeLock = NSLock()
-
-    private static let latestFailureLock = NSLock()
-    private static var latestFailureStorage: AstraKeychainFailureReport?
-
-    /// The most recent diagnosis drained by `logPendingKeychainFailure`, or
-    /// `nil` when the last drain found nothing to report.
-    ///
-    /// Exists so a failed write can be explained on screen and not only in the
-    /// log. Reading it does not drain anything — the log line remains the
-    /// system of record, and this is a copy of the last one.
-    public static var latestFailure: AstraKeychainFailureReport? {
-        latestFailureLock.lock(); defer { latestFailureLock.unlock() }
-        return latestFailureStorage
-    }
 
     /// Emits `keychain.unavailable` if the dedicated keychain has failed to open
     /// since this was last called, and returns the diagnosis behind it.
@@ -346,15 +337,7 @@ public enum AstraSecureKeychainStore {
     private static func drainPendingKeychainFailureLocked(scope: String) -> AstraKeychainFailureReport? {
         // Obj-C `takeLastKeychainFailureReport`; Swift drops the redundant
         // "Keychain", as it does for `secretForAccount:` → `secret(forAccount:)`.
-        guard let report = AstraSecureKeychain.takeLastFailureReport() else {
-            // Nothing pending means the layer is currently reporting nothing
-            // wrong. Holding on to the previous diagnosis would let a keychain
-            // that has since recovered keep explaining unrelated failures.
-            latestFailureLock.lock()
-            latestFailureStorage = nil
-            latestFailureLock.unlock()
-            return nil
-        }
+        guard let report = AstraSecureKeychain.takeLastFailureReport() else { return nil }
         // `report` is `stage=… status=… suppressed=…` built from an OSStatus and
         // a fixed set of stage names. It never contains a secret, an account, or
         // a path, so it is safe to log verbatim.
@@ -362,10 +345,9 @@ public enum AstraSecureKeychainStore {
             "scope": scope,
             "detail": report
         ], level: .warning)
-        let parsed = AstraKeychainFailureReport(rawReport: report)
-        latestFailureLock.lock()
-        latestFailureStorage = parsed
-        latestFailureLock.unlock()
-        return parsed
+        // Returned to the caller that owns the write, and kept nowhere else: a
+        // remembered copy would let a keychain that has since recovered keep
+        // explaining unrelated failures, and the sheet no longer reads one.
+        return AstraKeychainFailureReport(rawReport: report)
     }
 }

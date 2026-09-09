@@ -94,6 +94,11 @@ struct UIResponsivenessDiagnosticsTests {
                         suffix: " main_actor_max_stall_ms=12.00"),
             measurement("chat_stream_snapshot_cadence", 2_000, traceID: "s2", cacheState: "hit",
                         suffix: " main_actor_max_stall_ms=48.00"),
+            // The sampler writes the field on every cadence line, hitch or no
+            // hitch. A quiet window is `0.00`, and it is not a stall sample: the
+            // summary describes blockages, not how often the probe ran.
+            measurement("chat_stream_snapshot_cadence", 2_000, traceID: "s3", cacheState: "hit",
+                        suffix: " main_actor_max_stall_ms=0.00"),
             // Matches none of the `isResponsivenessEvent` prefixes, so its own
             // duration is still not summarized — but its stall is the entire
             // reason the sampler was extended to the composer.
@@ -109,13 +114,15 @@ struct UIResponsivenessDiagnosticsTests {
         let streaming = try #require(
             report.eventSummaries.first { $0.event == "main_actor_stall:chat_stream_snapshot_cadence" }
         )
-        #expect(streaming.sampleCount == 2)
+        #expect(streaming.sampleCount == 2, "A window with no overshoot is not a stall")
+        #expect(streaming.p50Milliseconds > 0, "Quiet windows must not pin the median at zero")
         #expect(streaming.maxMilliseconds == 48)
         #expect(streaming.cacheStates == ["hit": 2])
 
         let host = try #require(
             report.eventSummaries.first { $0.event == "chat_stream_snapshot_cadence" }
         )
+        #expect(host.sampleCount == 3, "The host event keeps every line, including the quiet one")
         #expect(host.maxMilliseconds == 2_000, "The host event's own timing must be untouched")
     }
 

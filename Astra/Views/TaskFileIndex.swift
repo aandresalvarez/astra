@@ -182,8 +182,11 @@ enum TaskFileIndex {
             // `rootPath` prefix guard below still holds because the enumerator
             // builds every child by appending to `rootURL`, which was resolved
             // above.
+            // Read off the enumerator's own URL: it carries the values prefetched
+            // by `includingPropertiesForKeys`, and `standardizedFileURL` is a new
+            // URL that does not, so reading through it would re-stat every child.
+            let entryValues = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             let entryURL = url.standardizedFileURL
-            let entryValues = try? entryURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
 
             // One entry kind cannot be classified from its own attributes: a
             // symlink reports `isRegularFile == false` however ordinary the

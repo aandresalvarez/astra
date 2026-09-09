@@ -1396,7 +1396,11 @@ struct AgentRuntimeBudgetPolicyTests {
 
     @Test("Disabled budgets ignore budget result flags")
     func disabledBudgetsIgnoreBudgetResultFlags() {
-        let disabledBudget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: Int.max, tokensUsed: 1_000_000)
+        let disabledBudget = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: Int.max,
+            tokensUsed: 1_000_000,
+            isUserConfigured: false
+        )
         let result = AgentProcessResult(exitCode: 1, budgetExceeded: true)
 
         #expect(!disabledBudget.hasReportedTokensAboveBudget)

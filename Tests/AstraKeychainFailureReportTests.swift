@@ -29,7 +29,7 @@ struct AstraKeychainFailureReportTests {
     @Test("A report without a suppressed count parses as zero")
     func missingSuppressedCountDefaultsToZero() throws {
         let report = try #require(
-            AstraKeychainFailureReport(rawReport: "stage=unlock status=-25300")
+            AstraKeychainFailureReport(rawReport: "stage=bootstrap-password status=-25300")
         )
 
         #expect(report.suppressedCount == 0)
@@ -53,14 +53,30 @@ struct AstraKeychainFailureReportTests {
     /// thing it says for `-25300`.
     @Test("Access denial and a missing item are separate diagnoses")
     func diagnosisSeparatesDenialFromAbsence() throws {
-        func diagnosis(_ status: OSStatus) throws -> AstraKeychainFailureReport.Diagnosis {
-            try #require(AstraKeychainFailureReport(rawReport: "stage=unlock status=\(status)")).diagnosis
+        func diagnosis(_ status: OSStatus, stage: String = "unlock") throws -> AstraKeychainFailureReport.Diagnosis {
+            try #require(AstraKeychainFailureReport(rawReport: "stage=\(stage) status=\(status)")).diagnosis
         }
 
         #expect(try diagnosis(errSecAuthFailed) == .accessDenied)
         #expect(try diagnosis(errSecInteractionNotAllowed) == .accessDenied)
-        #expect(try diagnosis(errSecItemNotFound) == .notConfigured)
+        #expect(try diagnosis(errSecItemNotFound, stage: "bootstrap-password") == .notConfigured)
         #expect(try diagnosis(errSecSuccess) == .unknown)
         #expect(try diagnosis(-34018) == .unknown)
+    }
+
+    /// `.notConfigured` drives the one message with no button — "the key that
+    /// unlocks the store is gone, and saving again will not help" — so it has
+    /// to mean exactly the thing it says. Only the `bootstrap-password` stage
+    /// reports -25300 with that meaning; the Obj-C layer filters it out of
+    /// `item-delete` and no other stage produces it today. If one ever does,
+    /// the status alone must not be allowed to put that message on screen.
+    @Test("A missing item outside the bootstrap stage is not the missing-key diagnosis")
+    func missingItemIsStageGated() throws {
+        for stage in ["open", "unlock", "create", "search-list-restore", "item-delete", "item-add"] {
+            let report = try #require(
+                AstraKeychainFailureReport(rawReport: "stage=\(stage) status=\(errSecItemNotFound)")
+            )
+            #expect(report.diagnosis == .unknown, "stage \(stage) must not read as a lost bootstrap key")
+        }
     }
 }

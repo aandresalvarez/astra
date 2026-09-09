@@ -2506,6 +2506,7 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
