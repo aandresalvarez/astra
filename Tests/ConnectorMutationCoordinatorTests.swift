@@ -795,9 +795,7 @@ private final class RecordingSender: ConnectorMutationSending, @unchecked Sendab
     }
 
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse {
-        lock.lock()
-        recorded.append(request)
-        lock.unlock()
+        lock.withLock { recorded.append(request) }
         if let failure { throw failure }
         return response
     }

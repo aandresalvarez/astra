@@ -97,7 +97,9 @@ struct SidebarTaskStoreSignalIntegrationTests {
     private func settle(until predicate: () -> Bool, turns: Int = 600) async {
         for _ in 0..<turns {
             if predicate() { return }
-            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.005))
+            _ = await MainActor.run {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.005))
+            }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
     }
