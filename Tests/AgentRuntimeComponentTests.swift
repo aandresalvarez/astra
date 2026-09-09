@@ -1257,6 +1257,87 @@ struct AgentRuntimeBudgetPolicyTests {
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
 
+    /// The third place the implicit ceiling had to be told apart from the user's
+    /// own budget, and the one that was missed. `effectiveTokenBudget(for:)`
+    /// substitutes ASTRA's 25M runaway ceiling when `tokenBudget == 0`, so a
+    /// finite number reaches this check either way and the mode branches could
+    /// not tell whose limit it was. Warning Only is a preference about a number
+    /// the user chose; they did not choose this one, and a prompt already past
+    /// it before the provider has read a token is precisely the runaway the
+    /// pre-launch check exists to stop.
+    ///
+    /// Costs about a second and 100 MB of transient string, because the ceiling
+    /// is not injectable and 25M tokens is 100 MB of prompt. Paid deliberately:
+    /// a version of this test that stubbed the estimate would assert the branch
+    /// and not the thing the branch is for.
+    @Test("The runaway ceiling stops a launch even in warning mode")
+    func implicitCeilingHardStopsBeforeLaunchInWarningMode() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        // No budget set — the user's ordinary case, and the one that used to
+        // start the provider on a prompt this size.
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let prompt = String(repeating: "x", count: 100_400_000)
+        #expect(AgentProcessMonitor.estimatedTokenCount(for: prompt) == 25_100_000)
+        #expect(RuntimeProgressSignals.defaultTokenBudget == 25_000_000)
+
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(!allowed)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(!task.events.contains { $0.type == "budget.warning" })
+        // And it says which limit fired. "The task budget" names a number the
+        // user could go and change; there is no such number here, and sending
+        // them to look for one is the failure the worker's event already fixed.
+        #expect(task.events.contains {
+            $0.type == "budget.exceeded"
+                && $0.payload.contains("runaway safety ceiling")
+                && $0.payload.contains("No token budget was set")
+        })
+    }
+
+    /// The other half: a budget the user did set still honours Warning Only.
+    /// Without this the fix reads as "ignore the preference", which is not what
+    /// it says.
+    @Test("A configured budget still honours warning mode before launch")
+    func configuredBudgetStillWarnsBeforeLaunch() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 1)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: "this prompt is long enough on its own to exceed the tiny budget",
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(allowed)
+        #expect(task.status == .draft)
+        #expect(task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
     @Test("Reported usage above budget is enforced only in hard stop mode")
     func reportedUsageAboveBudgetFollowsEnforcementMode() {
         let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 10)

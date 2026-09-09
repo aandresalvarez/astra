@@ -39,10 +39,14 @@ struct GitProbeFailureLevelTests {
     func unpublishedBranchProbesAreQuiet() async throws {
         // The branch name is the marker: git echoes it into the stderr the
         // transport logs, which is what isolates these lines from any other
-        // suite's git output without resetting the shared buffer.
+        // suite's git output.
         let branch = "astra-noupstream-\(UUID().uuidString.prefix(8).lowercased())"
         let repository = try makeTemporaryRepository(onBranch: branch)
         defer { try? FileManager.default.removeItem(atPath: repository) }
+
+        // Opened before the probes run: it collects what it is sent, so
+        // anything logged earlier is not in it.
+        let capture = LogCapture()
 
         let hasUpstream = await GitService.shared.hasUpstream(at: repository)
         let upstreamRef = await GitService.shared.getUpstreamBranchRef(at: repository)
@@ -52,8 +56,7 @@ struct GitProbeFailureLevelTests {
         #expect(upstreamRef == nil)
         #expect(aheadBehind == nil)
 
-        AppLogger.flushForTesting()
-        let entries = AppLogger.entries.filter { $0.category == "Git" && $0.message.contains(branch) }
+        let entries = capture.entries { $0.category == "Git" && $0.message.contains(branch) }
         #expect(!entries.isEmpty, "git must actually have refused for this to prove anything")
         #expect(entries.allSatisfy { $0.logLevel == .debug })
     }
@@ -106,6 +109,8 @@ struct GitProbeFailureLevelTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
+        let capture = LogCapture()
+
         // Not a repository, so this exits 128 whatever the ref is.
         let arguments = ["rev-parse", "--verify", "--quiet", marker]
         await #expect(throws: (any Error).self) {
@@ -120,11 +125,63 @@ struct GitProbeFailureLevelTests {
             }
         }
 
-        AppLogger.flushForTesting()
-        return AppLogger.entries.filter {
+        return capture.entries {
             $0.category == "Git"
                 && $0.message.contains("git command failed")
                 && $0.message.contains(marker)
+        }
+    }
+}
+
+/// Collects log entries as they are emitted instead of reading them back out
+/// of `AppLogger.entries` afterwards.
+///
+/// `entries` is a 2000-line ring buffer shared by the entire process, and the
+/// test binary is one process running hundreds of suites in parallel. Between
+/// the probe and the read-back, other suites can emit 2000 lines and evict the
+/// ones being asserted on — a marker in the message keeps this suite from
+/// reading *someone else's* line, but nothing keeps its own line from being
+/// dropped. `unpublishedBranchProbesAreQuiet` lost that race in a full run
+/// while passing in isolation, which is the signature; it runs a `git init`
+/// and three probes, so it holds the widest window of the three.
+///
+/// `appLoggerDidAppendEntry` is what `LogViewerView` already listens to, so
+/// this needs no test-only seam in `AppLogger`. It is posted synchronously
+/// from `emit`, on the thread that logged: `GitProcessState.consumeOutcome`
+/// logs the failure and then returns it to the awaiting caller, so every line
+/// a probe produced is already collected by the time `await` resumes. Nothing
+/// here is bounded, so nothing can be evicted.
+private final class LogCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var collected: [LogEntry] = []
+    private var observer: (any NSObjectProtocol)?
+
+    init() {
+        observer = NotificationCenter.default.addObserver(
+            forName: .appLoggerDidAppendEntry,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self, let entry = notification.userInfo?["entry"] as? LogEntry else { return }
+            // The post is synchronous on the logging thread, and every suite in
+            // the binary logs, so this runs concurrently and needs the lock.
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            self.collected.append(entry)
+        }
+    }
+
+    func entries(matching isIncluded: (LogEntry) -> Bool) -> [LogEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return collected.filter(isIncluded)
+    }
+
+    // `[weak self]` above keeps the observer token from retaining this back
+    // into a cycle, so the capture really is torn down at end of scope.
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 }

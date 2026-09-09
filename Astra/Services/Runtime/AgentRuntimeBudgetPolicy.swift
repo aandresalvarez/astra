@@ -68,6 +68,18 @@ enum AgentRuntimeBudgetPolicy {
         let estimatedInputTokens = promptTokens + launchOverhead
         guard estimatedInputTokens > tokenBudget else { return true }
 
+        // The third of three places this distinction has to be made, and the
+        // one that was missed. `effectiveTokenBudget(for:)` substitutes ASTRA's
+        // runaway ceiling when the user set no budget, so `tokenBudget` is
+        // finite here either way and the branches below could not tell the two
+        // apart. Warning Only is a preference about *your* number; the ceiling
+        // is ASTRA's, and a prompt that clears it before the provider has read
+        // a single token is exactly the runaway this pre-launch check exists to
+        // catch. Same rule as `AgentProcessMonitor.effectiveBudgetEnforcementMode`
+        // mid-stream and `shouldTreatAsBudgetExceeded` after exit.
+        let isUserConfiguredBudget = task.tokenBudget != 0
+        let effectiveMode: BudgetEnforcementMode = isUserConfiguredBudget ? budgetEnforcementMode : .hardStop
+
         // The launch overhead models the provider's fixed billed runtime context
         // (e.g. Claude Code's system prompt + tool schemas), not task work the user
         // can trim. When the prompt itself fits the budget and only the fixed floor
@@ -87,15 +99,21 @@ enum AgentRuntimeBudgetPolicy {
             "runtime": runtime.rawValue,
             "token_budget": String(tokenBudget),
             "configured_task_budget": String(task.tokenBudget),
-            "enforcement": budgetEnforcementMode.rawValue
+            "budget_source": isUserConfiguredBudget ? "task" : "runaway_ceiling",
+            // The mode that decided this, not the one that was asked for. They
+            // differ exactly when the ceiling overrode Warning Only, and a log
+            // reading `enforcement=warning` next to a stopped run would be the
+            // one line that makes the stop look like a bug.
+            "enforcement": effectiveMode.rawValue,
+            "configured_enforcement": budgetEnforcementMode.rawValue
         ]
 
-        if budgetEnforcementMode == .warning && isLaunchOverheadFloor {
+        if effectiveMode == .warning && isLaunchOverheadFloor {
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .debug)
             return true
         }
 
-        if budgetEnforcementMode == .warning {
+        if effectiveMode == .warning {
             let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
             modelContext.insert(TaskEvent(
                 task: task,
@@ -111,7 +129,15 @@ enum AgentRuntimeBudgetPolicy {
         run.completedAt = Date()
         run.typedStopReason = .maxBudgetReached
         TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
-        let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
+        // Two wordings, for the same reason the budget-exceeded event in
+        // `AgentRuntimeWorker` has two: "the task budget" names a number the
+        // user can go and change, and when the ceiling is what fired there is
+        // no such number — `task.tokenBudget` is 0. Telling someone to raise a
+        // budget they never set sends them looking for a setting that would not
+        // have prevented this.
+        let message = isUserConfiguredBudget
+            ? "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
+            : "Launch estimate exceeds ASTRA's runaway safety ceiling before launch (\(estimatedInputTokens)/\(tokenBudget) tokens). No token budget was set for this task, so this ceiling applied. Provider was not started."
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.Budget.exceeded,

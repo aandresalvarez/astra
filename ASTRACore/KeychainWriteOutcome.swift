@@ -13,10 +13,15 @@ public enum KeychainWriteDiagnosis: Equatable, Sendable {
     /// remedy: that is the attempt allowed to raise securityd's "allow access?"
     /// dialog.
     case accessDenied
-    /// There is no bootstrap item to unlock the keychain with. Retrying a write
-    /// can succeed on its own — a write is permitted to rebuild the store,
-    /// unlike a read — so the message should not send the user to an access
-    /// prompt that will never appear.
+    /// There is no bootstrap item to unlock the keychain with, so the message
+    /// should not send the user to an access prompt that will never appear:
+    /// there is no item for anyone to deny.
+    ///
+    /// A write can rebuild the store where a read may not — but only the
+    /// non-interactive variant. `saveSecretAllowingUserInteraction` passes
+    /// `recoverUnreadableKeychain:false`, so a retry that keeps asking for the
+    /// dialog gets neither the dialog nor the rebuild. Whatever offers the
+    /// remedy has to route this case to the plain `saveSecret`.
     case notConfigured
     /// Some other OSStatus. Reported as-is rather than guessed at.
     case unknown

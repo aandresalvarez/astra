@@ -530,6 +530,117 @@ struct AstraSecureKeychainTests {
     }
 }
 
+/// The failure report is one process-global slot that the first reader empties,
+/// so a diagnosis only belongs to the write that caused it if the write and the
+/// drain that claims it happen inside the same critical section. `writeLock`
+/// does that — but only for the operations that take it, and a migration did
+/// not. Startup runs one migration per connector and per skill, each of which
+/// opens the dedicated keychain and copies items into it, while the credential
+/// sheet is reachable: enough overlap to hand a user's failed save a stage from
+/// some unrelated skill's legacy item, or to consume the report the sheet was
+/// waiting for and leave it with the generic wording.
+///
+/// Asserted off the source because the defect is an absent lock. A behavioural
+/// test would have to lose the race on purpose, which is exactly the thing that
+/// only happens sometimes.
+@Suite("Keychain failure reports are serialized with the writes that produce them")
+struct AstraSecureKeychainStoreLockingTests {
+
+    /// Calls that can leave a report in the global slot, or take one out of it.
+    ///
+    /// Reads and deletes are deliberately absent, and the store says why: the
+    /// only report a failing read can produce is "this keychain will not open",
+    /// which is true for every caller at once and so misattributes nothing. A
+    /// migration's failures are per-item and name a stage belonging to a
+    /// different credential entirely.
+    private static let reportProducingCalls = [
+        "AstraSecureKeychain.saveSecret(",
+        "AstraSecureKeychain.saveSecretAllowingUserInteraction(",
+        "AstraSecureKeychain.migrateService(",
+        "AstraSecureKeychain.takeLastFailureReport("
+    ]
+
+    @Test("Every write and drain in the store holds the write lock")
+    func reportProducingEntryPointsTakeTheWriteLock() throws {
+        let functions = try astraSecureKeychainStoreFunctions()
+        try #require(!functions.isEmpty)
+
+        var checked: [String] = []
+        for function in functions {
+            guard Self.reportProducingCalls.contains(where: { function.body.contains($0) }) else { continue }
+            checked.append(function.name)
+            // `…Locked` is the naming for a body whose caller already holds it.
+            // `NSLock` is not recursive, so taking it again would deadlock.
+            guard !function.name.hasSuffix("Locked") else {
+                #expect(!function.body.contains("writeLock.lock()"), "\(function.name) would deadlock")
+                continue
+            }
+            #expect(
+                function.body.contains("writeLock.lock()"),
+                "\(function.name) can fill or empty the global failure report without holding writeLock"
+            )
+        }
+
+        // The set itself, so deleting a function silently is not how this test
+        // starts passing. Migration is the one this suite was added for.
+        #expect(checked.contains("saveReportingFailure"))
+        #expect(checked.contains("migrateServiceFromLoginKeychain"))
+        #expect(checked.contains("drainPendingKeychainFailureLocked"))
+    }
+
+    /// The migration is not called from inside the lock anywhere, which is what
+    /// makes taking it safe. `KeychainService.migrate` is the only production
+    /// caller and it runs outside any critical section; nesting one under
+    /// `saveReportingFailure` would deadlock on the spot.
+    @Test("Nothing calls the migration while already holding the lock")
+    func migrationIsNeverCalledUnderTheLock() throws {
+        let functions = try astraSecureKeychainStoreFunctions()
+        for function in functions where function.body.contains("writeLock.lock()") {
+            guard function.name != "migrateServiceFromLoginKeychain" else { continue }
+            #expect(!function.body.contains("migrateServiceFromLoginKeychain("))
+        }
+    }
+}
+
+/// Function bodies of `AstraSecureKeychainStore`, comment lines stripped.
+///
+/// Stripping matters: the doc comment on `writeLock` names every call this file
+/// asserts on, and it sits between two functions, so leaving comments in would
+/// attach it to whichever function precedes it and turn the assertion into a
+/// test of prose.
+private func astraSecureKeychainStoreFunctions() throws -> [(name: String, body: String)] {
+    let testFile = URL(filePath: #filePath)
+    let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
+    let sourceURL = repoRoot.appending(path: "Astra/Services/Persistence/AstraSecureKeychainStore.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    var functions: [(name: String, body: String)] = []
+    var current: (name: String, lines: [String])?
+    for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = String(rawLine)
+        guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { continue }
+        if let name = declaredSwiftFunctionName(in: line) {
+            if let open = current { functions.append((open.name, open.lines.joined(separator: "\n"))) }
+            current = (name, [line])
+        } else {
+            current?.lines.append(line)
+        }
+    }
+    if let open = current { functions.append((open.name, open.lines.joined(separator: "\n"))) }
+    return functions
+}
+
+private func declaredSwiftFunctionName(in line: String) -> String? {
+    guard let funcRange = line.range(of: "func ") else { return nil }
+    let prefix = line[..<funcRange.lowerBound].trimmingCharacters(in: .whitespaces)
+    // A `func` inside an expression or a string is not a declaration.
+    guard prefix.isEmpty || prefix.allSatisfy({ !$0.isPunctuation || $0 == "@" || $0 == "_" }) else { return nil }
+    let afterFunc = line[funcRange.upperBound...]
+    guard let paren = afterFunc.firstIndex(of: "(") else { return nil }
+    let name = afterFunc[..<paren].trimmingCharacters(in: .whitespaces)
+    return name.isEmpty ? nil : name
+}
+
 private func astraSecureKeychainSource() throws -> String {
     let testFile = URL(filePath: #filePath)
     let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()

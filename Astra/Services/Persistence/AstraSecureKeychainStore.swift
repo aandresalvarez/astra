@@ -251,9 +251,20 @@ public enum AstraSecureKeychainStore {
     /// keychain into the dedicated keychain. Returns the number of items moved
     /// (`0` when there was nothing to migrate, `-1` on a hard failure). Driven
     /// per-entity from the existing launch migration hooks.
+    ///
+    /// Takes `writeLock` because a migration *is* a write: it opens the
+    /// dedicated keychain and copies items into it, and every one of those
+    /// steps can leave a report in the same process-global slot a connector
+    /// save is about to drain. Startup runs one of these per connector and per
+    /// skill while the credential sheet is reachable, so the overlap is not
+    /// hypothetical — an unlocked migration could hand the sheet a stage from
+    /// some unrelated skill's legacy item, or consume the report the sheet was
+    /// waiting for and leave it with nothing to explain.
     @discardableResult
     public static func migrateServiceFromLoginKeychain(service: String) -> Int {
         guard !shouldBlockUnscopedTestKeychainAccess else { return -1 }
+        writeLock.lock()
+        defer { writeLock.unlock() }
         return AstraSecureKeychain.migrateService(
             fromLoginKeychain: service,
             keychainPath: keychainPath,
@@ -279,7 +290,17 @@ public enum AstraSecureKeychainStore {
     /// wrong write and one write with no report at all. Coarse on purpose: the
     /// contention here is a handful of user-initiated credential writes, and an
     /// interactive one is already blocking the thread that started it on
-    /// securityd's dialog. Reads and deletes do not take it.
+    /// securityd's dialog.
+    ///
+    /// Held by everything that writes and by every drain: `saveReportingFailure`,
+    /// `migrateServiceFromLoginKeychain`, `logPendingKeychainFailure`. Reads and
+    /// deletes still do not take it, and that is a judgement rather than a
+    /// guarantee — a failing *open* on a read does fill the slot. What it can
+    /// only ever say is "this keychain will not open", the one diagnosis that is
+    /// true for every caller at once, so a read stealing it does not misattribute
+    /// anything. A migration's failures are per-item and name a stage that has
+    /// nothing to do with the connector waiting on the sheet, which is why that
+    /// one had to come inside.
     private static let writeLock = NSLock()
 
     private static let latestFailureLock = NSLock()
