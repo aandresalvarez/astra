@@ -169,6 +169,25 @@ struct BrowserSessionPolicyRefreshGate {
     }
 }
 
+/// Which session a published policy belonged to.
+///
+/// `BrowserSessionPolicy` carries no identity, so a policy remembered across a
+/// task or workspace switch is indistinguishable from one the new session
+/// resolved for itself. Comparing the two answers a question nobody asked —
+/// "does the new session agree with the old one?" — in place of the one the
+/// audit below exists to answer.
+struct BrowserSessionPolicyPublication: Equatable {
+    var taskID: UUID?
+    var workspaceID: UUID?
+    var policy: BrowserSessionPolicy
+
+    /// Only a publication from the same session can be the `previous` one.
+    func policyForSession(taskID: UUID?, workspaceID: UUID?) -> BrowserSessionPolicy? {
+        guard self.taskID == taskID, self.workspaceID == workspaceID else { return nil }
+        return policy
+    }
+}
+
 /// What one accepted refresh should say about itself in the log.
 ///
 /// A refresh that resolves to the policy already in force is the overwhelmingly
@@ -189,12 +208,18 @@ struct BrowserSessionPolicyRefreshGate {
 /// to `.failClosed` and would make every refresh look like a transition.
 struct BrowserSessionPolicyRefreshAudit: Equatable {
     var source: String
+    /// The policy this *same* session last published, or nil when this is its
+    /// first. A carried-over value from another task or workspace is not a
+    /// previous policy — see `BrowserSessionPolicyPublication`.
     var previous: BrowserSessionPolicy?
     var published: BrowserSessionPolicy
     var durationMilliseconds: Double
 
     /// The first publish counts as a change: there was no policy in force, and
-    /// the value the session starts at is worth one info line.
+    /// the value the session starts at is worth one info line. That holds per
+    /// session, not per process — switching tasks starts a new one, and its
+    /// baseline is the line task-scoped diagnostics need most. Two sessions
+    /// that happen to resolve the same policy would otherwise silence it.
     var changed: Bool { previous != published }
 
     var level: LogLevel { changed ? .info : .debug }

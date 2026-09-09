@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 
@@ -91,5 +92,84 @@ struct BrowserSessionPolicyRefreshAuditTests {
             "changed": "true",
             "duration_ms": "41.24"
         ])
+    }
+}
+
+/// "First publish is a change" is a claim about a *session*, and the view that
+/// stores the previous policy outlives every session it observes. A bare
+/// `BrowserSessionPolicy?` carried across a task switch made the new session's
+/// opening line read as agreement with a policy that belonged to the task the
+/// user had just left — and only when the two happened to be equal, which is
+/// the common case, since most tasks resolve the same adapters. The baseline
+/// line for the new session went missing exactly where task-scoped diagnostics
+/// need it most.
+@Suite("A published browser policy belongs to one session")
+struct BrowserSessionPolicyPublicationTests {
+
+    private static let github = BrowserSessionPolicy(
+        enabledBrowserAdapters: ["github"],
+        githubReadOnlyMode: true
+    )
+    private static let taskA = UUID()
+    private static let taskB = UUID()
+    private static let workspace = UUID()
+
+    private static func publication(task: UUID?, workspace: UUID?) -> BrowserSessionPolicyPublication {
+        BrowserSessionPolicyPublication(taskID: task, workspaceID: workspace, policy: github)
+    }
+
+    @Test("The same session reads back its own policy")
+    func sameSessionSeesItsPreviousPolicy() {
+        let published = Self.publication(task: Self.taskA, workspace: Self.workspace)
+
+        #expect(published.policyForSession(taskID: Self.taskA, workspaceID: Self.workspace) == Self.github)
+    }
+
+    /// The regression, stated directly: an identical policy from another task
+    /// must not answer as this task's previous one.
+    @Test("Another task's identical policy is not a previous policy")
+    func adifferentTaskGetsNoPreviousPolicy() {
+        let published = Self.publication(task: Self.taskA, workspace: Self.workspace)
+
+        #expect(published.policyForSession(taskID: Self.taskB, workspaceID: Self.workspace) == nil)
+    }
+
+    @Test("A workspace switch also starts a new session")
+    func adifferentWorkspaceGetsNoPreviousPolicy() {
+        let published = Self.publication(task: Self.taskA, workspace: Self.workspace)
+
+        #expect(published.policyForSession(taskID: Self.taskA, workspaceID: UUID()) == nil)
+    }
+
+    /// No task selected is a session too, and it must not inherit from one that
+    /// had a task.
+    @Test("A session with no task does not inherit from one that had a task")
+    func noTaskIsItsOwnSession() {
+        let published = Self.publication(task: Self.taskA, workspace: Self.workspace)
+
+        #expect(published.policyForSession(taskID: nil, workspaceID: Self.workspace) == nil)
+        #expect(Self.publication(task: nil, workspace: Self.workspace)
+            .policyForSession(taskID: nil, workspaceID: Self.workspace) == Self.github)
+    }
+
+    /// End to end through the audit, which is what actually reaches the log:
+    /// the same policy is a debug no-op within a session and an info line when
+    /// the session changed underneath it.
+    @Test("A task switch restores the info-level baseline line")
+    func taskSwitchIsAChangeEvenWhenThePolicyMatches() {
+        let published = Self.publication(task: Self.taskA, workspace: Self.workspace)
+
+        func audit(forTask task: UUID) -> BrowserSessionPolicyRefreshAudit {
+            BrowserSessionPolicyRefreshAudit(
+                source: "selected_task_changed",
+                previous: published.policyForSession(taskID: task, workspaceID: Self.workspace),
+                published: Self.github,
+                durationMilliseconds: 1
+            )
+        }
+
+        #expect(audit(forTask: Self.taskA).level == .debug)
+        #expect(audit(forTask: Self.taskB).level == .info)
+        #expect(audit(forTask: Self.taskB).changed)
     }
 }

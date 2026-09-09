@@ -249,6 +249,43 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             idleTimeoutSeconds: 240
         ) == 360)
     }
+
+    /// The property that makes this policy depend on the watchdog rather than
+    /// merely inform it: for a deliverable task, every idle timeout below 360s
+    /// produces a window *wider* than the idle deadline itself. The generic
+    /// idle branch therefore has to stand down while that window is live, or
+    /// the number this function returns is never reached and the widening is
+    /// dead code — which is what it was. See
+    /// `artifactWindowDefersTheGenericIdleDeadline`.
+    @Test("A deliverable window is always wider than a sub-360s idle deadline")
+    func deliverableWindowOutlivesShortIdleDeadlines() throws {
+        let workspace = Workspace(name: "Deliverable Window", primaryPath: "/tmp/deliverable-window")
+        let artifactTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace
+        )
+
+        for idleTimeout in [30.0, 60.0, 120.0, 180.0, 300.0, 359.0] {
+            let window = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+                task: artifactTask,
+                phase: "resume",
+                idleTimeoutSeconds: idleTimeout
+            )
+            #expect(window > idleTimeout, "an idle timeout of \(idleTimeout)s must widen")
+        }
+
+        // At and past the 360s cap the two orders swap back, and the semantic
+        // branch reaches its deadline first on its own. Nothing to defer.
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "resume",
+            idleTimeoutSeconds: 600
+        ) < 600)
+    }
 }
 
 @Suite("Agent Runtime Launch Preflight")

@@ -142,54 +142,30 @@ private struct PendingConnectorDeletion: Identifiable {
 }
 
 struct ConnectorCredentialSaveFailurePresentation: Equatable {
-    /// Which write the action button performs — not a detail, because the two
-    /// Keychain write variants differ in exactly the capability one of these
-    /// messages promises. `saveSecretAllowingUserInteraction` passes
-    /// `recoverUnreadableKeychain:false`; only `saveSecret` may rebuild a
-    /// keychain that is missing or unreadable. Sending every retry through the
-    /// interactive one meant "Retry to rebuild it" was offered by the single
-    /// variant that cannot rebuild.
-    enum RetryWrite: Equatable {
-        /// Interactive: lets securityd raise its "allow access?" dialog. The
-        /// remedy for a refused ACL, and the only attempt that can ever clear
-        /// one.
-        case promptForAccess
-        /// Non-interactive, and permitted to rebuild. Nothing to prompt about —
-        /// the bootstrap item is absent, so there is no ACL to be denied — and
-        /// the rebuild is gated in the Obj-C layer on the keychain file being
-        /// genuinely gone or unparseable, never merely locked or denied.
-        case rebuildStore
-        /// No write will help; the value itself is what was refused.
-        case notRetryable
-
-        /// Interaction and recovery are mutually exclusive in the layer below,
-        /// so this one flag picks the variant.
-        var allowsUserInteraction: Bool { self == .promptForAccess }
-    }
-
     let key: String
     let message: String
     let actionTitle: String
     let actionSystemImage: String
-    /// What the action button does, or that there is no button. An admission
-    /// rejection has none: the value itself is the problem, so offering
-    /// "Allow & Save" would just fail again and mislead about the cause.
-    let retry: RetryWrite
-
-    var isRetryable: Bool { retry != .notRetryable }
+    /// Whether the action button is offered at all. A button that reattempts a
+    /// write which cannot succeed is worse than no button: it puts the blame on
+    /// the user for not clicking hard enough. Two cases have none — an
+    /// admission rejection, where the value itself is the problem, and a
+    /// keychain whose bootstrap item is gone, where no write of any variant can
+    /// reach the store again.
+    let isRetryable: Bool
 
     init(
         key: String,
         message: String,
         actionTitle: String,
         actionSystemImage: String,
-        retry: RetryWrite = .promptForAccess
+        isRetryable: Bool = true
     ) {
         self.key = key
         self.message = message
         self.actionTitle = actionTitle
         self.actionSystemImage = actionSystemImage
-        self.retry = retry
+        self.isRetryable = isRetryable
     }
 
     /// `diagnosis` is the keychain layer's own account of why the write failed,
@@ -203,14 +179,31 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
         diagnosis: KeychainWriteDiagnosis? = nil
     ) -> ConnectorCredentialSaveFailurePresentation {
         switch diagnosis {
+        // No button. `.notConfigured` is `errSecItemNotFound` raised at the
+        // `bootstrap-password` stage, and that stage only asks for the password
+        // without creating one when the keychain file already exists — so this
+        // diagnosis means precisely "the store is on disk and the login-keychain
+        // item that unlocks it is gone". The bootstrap password is 32 random
+        // bytes and is the only key; once it is gone the file cannot be opened
+        // by this app or any other, and no retry changes that.
+        //
+        // Retrying is not merely useless here, it is unreachable: the recovery
+        // that would rebuild the store is fenced by
+        // `dedicatedKeychainIsBeyondRecoveryAtPath:`, which admits only a file
+        // that is missing or unparseable. An intact-but-orphaned keychain is
+        // neither, so `writeSecret` returns without recovering however the
+        // write is spelled. Offering "Rebuild & Save" promised a repair the
+        // layer below declines to perform, and the same failure came back on
+        // every click.
         case .notConfigured:
             return ConnectorCredentialSaveFailurePresentation(
                 key: key,
-                message: "Could not save \(key): ASTRA's Keychain is missing the item that unlocks it, "
-                    + "so nothing can be stored yet. Rebuild it and save again.",
-                actionTitle: "Rebuild & Save",
-                actionSystemImage: "arrow.clockwise",
-                retry: .rebuildStore
+                message: "Could not save \(key): ASTRA's Keychain is on disk but the login-keychain item "
+                    + "that unlocks it is gone, so it can no longer be opened. Credentials already in it "
+                    + "cannot be recovered, and saving again will not help.",
+                actionTitle: "Not saved",
+                actionSystemImage: "exclamationmark.shield",
+                isRetryable: false
             )
         case .accessDenied, .unknown, .none:
             return ConnectorCredentialSaveFailurePresentation(
@@ -218,7 +211,7 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
                 message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
                 actionTitle: "Allow & Save",
                 actionSystemImage: MacOSPermissionKind.keychain.systemImage,
-                retry: .promptForAccess
+                isRetryable: true
             )
         }
     }
@@ -254,7 +247,7 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
             message: verdict.message(forKey: key) ?? "\(key) is not a valid credential for this connector.",
             actionTitle: "Not saved",
             actionSystemImage: "exclamationmark.shield",
-            retry: .notRetryable
+            isRetryable: false
         )
     }
 }
@@ -1137,21 +1130,19 @@ struct ConnectorEditorView: View {
         saveSharingChange()
     }
 
-    /// `allowUserInteraction` defaults to the first attempt's choice: prompt if
-    /// securityd wants to, since a refused ACL is far and away the common
-    /// failure and the dialog is the only thing that clears it. The retry may
-    /// pass `false` to reach the recovery-capable write instead — see
-    /// `ConnectorCredentialSaveFailurePresentation.RetryWrite`. That ordering is
-    /// deliberate rather than incidental: rebuilding renames the keychain file
-    /// aside, so it should follow a user who has read what happened and pressed
-    /// a button that says so, not a first save that has explained nothing yet.
-    private func addCredential(allowUserInteraction: Bool = true) {
+    /// Always interactive, first attempt and retry alike: a refused ACL is far
+    /// and away the common failure and securityd's dialog is the only thing
+    /// that clears it. The other variant exists to rebuild an unreadable
+    /// keychain, but that recovery is fenced to a file that is missing or
+    /// unparseable — never one of the states a connector save actually reports
+    /// — so routing a retry through it would trade the dialog for nothing.
+    private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
         let outcome = connector.saveCredentialChecked(
             key: key,
             value: newCredValue,
-            allowUserInteraction: allowUserInteraction
+            allowUserInteraction: true
         )
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: key)
@@ -1173,15 +1164,14 @@ struct ConnectorEditorView: View {
         pendingCredentialSaveContext = nil
     }
 
-    /// See `addCredential(allowUserInteraction:)` for why the retry gets to
-    /// choose.
-    private func saveCredentialReplacement(for key: String, allowUserInteraction: Bool = true) {
+    /// See `addCredential()` for why this is always the interactive write.
+    private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
         let outcome = connector.saveCredentialChecked(
             key: normalizedKey,
             value: replacementCredentialValue,
-            allowUserInteraction: allowUserInteraction
+            allowUserInteraction: true
         )
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: normalizedKey)
@@ -1232,12 +1222,11 @@ struct ConnectorEditorView: View {
     }
 
     private func retryPendingCredentialSave(for presentation: ConnectorCredentialSaveFailurePresentation) {
-        let allowUserInteraction = presentation.retry.allowsUserInteraction
         switch pendingCredentialSaveContext {
         case .newCredential:
-            addCredential(allowUserInteraction: allowUserInteraction)
+            addCredential()
         case .replacement(let key):
-            saveCredentialReplacement(for: key, allowUserInteraction: allowUserInteraction)
+            saveCredentialReplacement(for: key)
         case nil:
             credentialSaveError = .keychainSaveFailed(key: presentation.key)
         }

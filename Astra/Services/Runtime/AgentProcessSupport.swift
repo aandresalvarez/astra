@@ -1760,6 +1760,27 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             && !hasActiveRuntimeWork
             && (deadlinesCoincide || anyIdleDuration < idleTimeoutSeconds)
             && idleDuration >= noSemanticProgressTimeoutSeconds
+        // Letting the branch above own the kill is not enough when its deadline
+        // lands *after* the idle one. `semanticProgressTimeout` returns
+        // `idleTimeout * 2` for a task that owes a deliverable, so every idle
+        // timeout below 360s puts the artifact window past the idle deadline —
+        // and the generic branch below would fire first, every time. The window
+        // that was widened to give a resumed deliverable room to write was
+        // therefore unreachable for exactly the short-timeout runs it was
+        // widened for: an idle timeout of 120s yields a 240s window and a kill
+        // at 120s.
+        //
+        // So the generic deadline waits while that first window is still live.
+        // It is not waived: once the window is spent, `hasStalledAfterProgress`
+        // above takes the kill, and it escalates once before it stops. Bounded
+        // at two windows, and only for a run that produced visible progress and
+        // then went quiet — a provider that never produced any is still owned by
+        // the metadata-only and liveness-only branches on their own deadlines.
+        let hasPendingArtifactWindow = hasSeenProgressActivity
+            && terminalIdleDuration == nil
+            && !hasActiveRuntimeWork
+            && noSemanticProgressTimeoutSeconds > idleTimeoutSeconds
+            && idleDuration < noSemanticProgressTimeoutSeconds
         // An unrecognised frame inside the current silence window means the
         // event taxonomy is behind the provider's stream format. "No recognised
         // progress" then stops being evidence of "no progress", so the
@@ -1912,11 +1933,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         }
 
-        if !hasActiveRuntimeWork, anyIdleDuration >= idleTimeoutSeconds, !hasLiveSemanticExtension(now: now) {
+        if !hasActiveRuntimeWork, anyIdleDuration >= idleTimeoutSeconds,
+           !hasPendingArtifactWindow, !hasLiveSemanticExtension(now: now) {
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
                 "idle_seconds": String(Int(anyIdleDuration)),
                 "semantic_idle_seconds": String(Int(idleDuration)),
-                "limit_seconds": String(Int(idleTimeoutSeconds))
+                "limit_seconds": String(Int(idleTimeoutSeconds)),
+                // The deadline that actually applied. When the artifact window
+                // is wider, a kill logged against `idleTimeoutSeconds` alone
+                // reads as having fired minutes late.
+                "semantic_limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
             ], level: .error)
             lock.lock()
             _timedOut = true

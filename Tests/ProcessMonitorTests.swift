@@ -1216,6 +1216,90 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    /// Widening the semantic window achieves nothing unless the generic idle
+    /// deadline waits for it. `AgentRuntimeProgressTimeoutPolicy` gives a task
+    /// that owes a deliverable `idleTimeout * 2`, so for every idle timeout
+    /// below 360s the artifact window lands *after* the idle one — and the idle
+    /// branch fired first, killing the resumed deliverable at the very deadline
+    /// the wider window was meant to move. Modelled here with the extreme of
+    /// that shape: an idle deadline already breached, a window that is not.
+    @Test("A live artifact window outranks a shorter idle deadline")
+    func artifactWindowDefersTheGenericIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    /// The deferral is scoped, not a waiver. It is owed to a provider that
+    /// produced visible progress and then went quiet; one that never produced
+    /// any has no artifact to be mid-write of, and the idle deadline still owns
+    /// it. Without this the same change would make every silent run immortal
+    /// for the length of the wider window.
+    @Test("A run that never produced progress still times out on the idle deadline")
+    func silentRunStillHitsTheIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.timedOut == true)
+    }
+
+    /// And it is bounded. Once the window is spent the semantic branch takes the
+    /// kill it was deferred to — it escalates once first, which is the existing
+    /// ladder, so the run ends under a reason that says what happened rather
+    /// than a bare timeout.
+    ///
+    /// The window has to be a real positive interval here, because the deferral
+    /// only engages while `idleDuration` is *inside* it; a zero window is spent
+    /// before it opens and would exercise nothing. Hence the sleeps. They are
+    /// load-safe in the direction that matters: a slow machine only puts more
+    /// time between the event and the poll, and every assertion below wants the
+    /// window already behind it.
+    @Test("A spent artifact window hands the kill to the semantic branch")
+    func spentArtifactWindowStopsUnderTheSemanticReason() {
+        let window: TimeInterval = 0.05
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: window
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+
+        // First breach buys the one extension; the second spends it.
+        Thread.sleep(forTimeInterval: window * 2)
+        let firstBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        Thread.sleep(forTimeInterval: window * 2)
+        let secondBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(firstBreach == false)
+        #expect(secondBreach == true)
+        #expect(process.didTerminate == true)
+        // Not `timedOut`: the idle branch never gets it, so the run is reported
+        // as a stall after progress rather than as silence from the start.
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
     // MARK: - ProcessResult
 
     @Test("ProcessResult defaults")

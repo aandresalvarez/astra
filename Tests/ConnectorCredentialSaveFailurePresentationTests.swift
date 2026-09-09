@@ -21,17 +21,17 @@ struct ConnectorCredentialSaveFailurePresentationTests {
 
     /// `errSecItemNotFound` means the bootstrap item is gone, not that access
     /// was refused — there is no ACL prompt for the user to allow, so "Allow &
-    /// Save" sends them looking for a dialog that will never appear. A rebuild
-    /// is the actual remedy: a write may rebuild the store, unlike a read.
+    /// Save" sends them looking for a dialog that will never appear. Nor is a
+    /// rebuild the remedy: see `ConnectorCredentialRetryWriteTests`.
     @Test("A missing bootstrap item is not presented as a denied prompt")
-    func missingKeychainItemOffersARebuildInstead() {
+    func missingKeychainItemIsNotPresentedAsADeniedPrompt() {
         let presentation = ConnectorCredentialSaveFailurePresentation.keychainSaveFailed(
             key: "JIRA_EMAIL",
             diagnosis: .notConfigured
         )
 
         #expect(presentation.message.contains("JIRA_EMAIL"))
-        #expect(presentation.actionTitle == "Rebuild & Save")
+        #expect(presentation.actionTitle == "Not saved")
         #expect(!presentation.message.contains("Allow ASTRA"))
     }
 
@@ -68,7 +68,7 @@ struct ConnectorCredentialSaveOutcomeDiagnosisTests {
             .keychainWriteFailed(diagnosis: .notConfigured),
             key: "JIRA_EMAIL"
         )
-        #expect(missingItem.actionTitle == "Rebuild & Save")
+        #expect(missingItem.actionTitle == "Not saved")
         #expect(!missingItem.message.contains("Allow ASTRA"))
 
         let refused = ConnectorCredentialSaveFailurePresentation.forFailedSave(
@@ -177,65 +177,87 @@ struct KeychainWriteOutcomeTests {
     }
 }
 
-/// The button offered a remedy the write behind it could not perform. Every
-/// retry went through `saveCredentialChecked(..., allowUserInteraction: true)`,
-/// which is `saveSecretAllowingUserInteraction`, which passes
-/// `recoverUnreadableKeychain:false` — so "Retry to rebuild it", shown for the
-/// one diagnosis that means the keychain needs rebuilding, was wired to the one
-/// variant forbidden from rebuilding it. Pressing it re-ran the identical failing
-/// write, and the message stayed on screen with no way forward.
-@Suite("Credential retry uses a write that can deliver the remedy")
+/// The button promised a repair the layer below refuses to perform.
+///
+/// `.notConfigured` is `errSecItemNotFound` raised at the `bootstrap-password`
+/// stage, and that stage asks for the password without creating one only when
+/// the keychain file already exists — so the diagnosis means "the store is on
+/// disk and the item that unlocks it is gone". A rebuild sounds like the
+/// remedy, and it is not available: recovery is fenced by
+/// `dedicatedKeychainIsBeyondRecoveryAtPath:`, which admits only a file that is
+/// missing or unparseable. An orphaned-but-intact keychain opens fine and
+/// reports a healthy status, so the fence holds it back and `writeSecret`
+/// returns without recovering — whichever variant is called.
+///
+/// Both halves have to be checked, and checking only one is how the wrong fix
+/// got written: that the fence never *misfires* on a healthy keychain is a
+/// different question from whether it ever *fires* for this diagnosis. It does
+/// not. So there is no button.
+@Suite("Credential retry never offers a write that cannot succeed")
 struct ConnectorCredentialRetryWriteTests {
 
-    @Test("A missing bootstrap item retries through the rebuild-capable write")
-    func missingBootstrapItemRetriesWithoutInteraction() {
+    @Test("A missing bootstrap item offers no retry at all")
+    func missingBootstrapItemOffersNoRetry() {
         let presentation = ConnectorCredentialSaveFailurePresentation.keychainSaveFailed(
             key: "JIRA_EMAIL",
             diagnosis: .notConfigured
         )
 
-        #expect(presentation.retry == .rebuildStore)
-        // Non-interactive is not a downgrade here, it is the whole point:
-        // `recoverUnreadableKeychain` is only true on the variant that does not
-        // prompt, and there is nothing to prompt about when the item is absent.
-        #expect(presentation.retry.allowsUserInteraction == false)
-        #expect(presentation.isRetryable)
+        #expect(presentation.isRetryable == false)
+        // The message has to say the credentials are gone. Anything softer
+        // reads as "try again later", which is the state this replaced.
+        #expect(presentation.message.contains("cannot be recovered"))
+        #expect(presentation.message.contains("will not help"))
     }
 
     /// The inverse must not drift. A refused ACL is cleared by securityd's
-    /// dialog and by nothing else, so this case has to keep the interactive
-    /// write — and must never reach the rebuild, which would answer "you are not
-    /// on this item's ACL" by deleting the item.
-    @Test("A refused ACL retries through the prompting write")
-    func deniedAccessRetriesInteractively() {
+    /// dialog and by nothing else, so this case keeps its button.
+    @Test("A refused ACL is still retryable")
+    func deniedAccessStaysRetryable() {
         for diagnosis: KeychainWriteDiagnosis? in [.accessDenied, .unknown, nil] {
             let presentation = ConnectorCredentialSaveFailurePresentation.keychainSaveFailed(
                 key: "JIRA_EMAIL",
                 diagnosis: diagnosis
             )
-            #expect(presentation.retry == .promptForAccess)
-            #expect(presentation.retry.allowsUserInteraction)
+            #expect(presentation.isRetryable)
+            #expect(presentation.actionTitle == "Allow & Save")
         }
     }
 
     @Test("An admission rejection offers no write at all")
-    func rejectionHasNoRetryWrite() {
+    func rejectionIsNotRetryable() {
         let presentation = ConnectorCredentialSaveFailurePresentation.forFailedSave(
             .rejected(.formatMismatch(expectation: "an email address", observedShape: "opaque token")),
             key: "JIRA_EMAIL"
         )
 
-        #expect(presentation.retry == .notRetryable)
         #expect(presentation.isRetryable == false)
     }
 
-    /// `RetryWrite` describing the right write is worth nothing if the button
-    /// ignores it, and the failure mode is silent — the enum stays correct, the
-    /// retry keeps calling the same interactive save, and only a user with a
-    /// missing bootstrap item ever finds out. Read off the source because the
-    /// alternative is standing up a SwiftUI view around a real Keychain.
-    @Test("The retry actually passes the choice down to the write")
-    func retryThreadsTheChoiceToTheSave() throws {
+    /// The assertion that would have caught the wrong fix, stated against the
+    /// layer that decides it rather than against the UI that guessed.
+    /// `keychainStatusIsBeyondRecovery:` is the entire gate, and `.notConfigured`
+    /// carries `errSecItemNotFound` — if that code is ever added here a rebuild
+    /// becomes reachable and the presentation above should be revisited, which
+    /// is exactly when this should fail.
+    @Test("The recovery gate cannot fire for a missing bootstrap item")
+    func recoveryGateExcludesTheMissingItemStatus() throws {
+        let gate = try objCMethodBody(
+            startingWith: "+ (BOOL)keychainStatusIsBeyondRecovery:",
+            endingBefore: "+ (BOOL)recoverUnreadableDedicatedKeychainAtPath:",
+            in: try astraSecureKeychainSource()
+        )
+
+        #expect(gate.contains("errSecInvalidKeychain"))
+        #expect(gate.contains("errSecNoSuchKeychain"))
+        #expect(!gate.contains("errSecItemNotFound"))
+    }
+
+    /// With no rebuild to route to, the retry has one job: raise securityd's
+    /// dialog. A non-interactive save here would silently remove the only
+    /// remedy the button still has.
+    @Test("The retry uses the interactive write")
+    func retryUsesTheInteractiveWrite() throws {
         let source = try connectorsManagerViewSource()
         let retryBody = try viewMethodBody(
             startingWith: "private func retryPendingCredentialSave(",
@@ -243,13 +265,27 @@ struct ConnectorCredentialRetryWriteTests {
             in: source
         )
 
-        #expect(retryBody.contains("presentation.retry.allowsUserInteraction"))
-        #expect(retryBody.contains("addCredential(allowUserInteraction: allowUserInteraction)"))
-        #expect(retryBody.contains("saveCredentialReplacement(for: key, allowUserInteraction: allowUserInteraction)"))
-        // A hardcoded `true` on either save is the regression this whole suite
-        // is about, so neither may reappear inside the retry.
-        #expect(!retryBody.contains("allowUserInteraction: true"))
+        #expect(retryBody.contains("addCredential()"))
+        #expect(retryBody.contains("saveCredentialReplacement(for: key)"))
+
+        for method in ["private func addCredential()", "private func saveCredentialReplacement(for key: String)"] {
+            #expect(source.contains(method), "\(method) must not regrow an interaction parameter")
+        }
     }
+}
+
+private func astraSecureKeychainSource() throws -> String {
+    let testFile = URL(filePath: #filePath)
+    let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
+    let sourceURL = repoRoot.appending(path: "AstraObjCSupport/AstraSecureKeychain.m")
+    return try String(contentsOf: sourceURL, encoding: .utf8)
+}
+
+private func objCMethodBody(startingWith start: String, endingBefore end: String, in source: String) throws -> String {
+    let startRange = try #require(source.range(of: start))
+    let remaining = source[startRange.lowerBound...]
+    let endRange = try #require(remaining.range(of: end))
+    return String(remaining[..<endRange.lowerBound])
 }
 
 private func connectorsManagerViewSource() throws -> String {

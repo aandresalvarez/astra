@@ -17,11 +17,15 @@ public enum KeychainWriteDiagnosis: Equatable, Sendable {
     /// should not send the user to an access prompt that will never appear:
     /// there is no item for anyone to deny.
     ///
-    /// A write can rebuild the store where a read may not — but only the
-    /// non-interactive variant. `saveSecretAllowingUserInteraction` passes
-    /// `recoverUnreadableKeychain:false`, so a retry that keeps asking for the
-    /// dialog gets neither the dialog nor the rebuild. Whatever offers the
-    /// remedy has to route this case to the plain `saveSecret`.
+    /// Nor to a rebuild. This is `errSecItemNotFound` from the
+    /// `bootstrap-password` stage, which asks without creating only when the
+    /// keychain file already exists — so it means the store is on disk and its
+    /// key is gone, and that pair is what `dedicatedKeychainIsBeyondRecoveryAtPath:`
+    /// deliberately refuses to treat as recoverable: the file opens and reports
+    /// a healthy status, which is indistinguishable from a keychain the user
+    /// still needs. Both write variants therefore return without rebuilding.
+    /// Nothing the UI can call resolves this, so the remedy is an explanation,
+    /// not a button.
     case notConfigured
     /// Some other OSStatus. Reported as-is rather than guessed at.
     case unknown

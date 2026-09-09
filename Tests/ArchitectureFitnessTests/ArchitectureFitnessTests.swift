@@ -1972,7 +1972,11 @@ struct ArchitectureFitnessTests {
             // reached 2_001 on the same branch and was trimmed back under rather
             // than opening a new entry — a first entry is the ratchet that
             // matters most, and it should cost more than a comment.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_300, .owner("Architecture fitness test suite")),
+            // 2_300 -> 2_320: the two third-round raises above. The watchdog one
+            // amends a raise from the round before it rather than replacing it,
+            // because "the earlier fix was necessary and not sufficient" is the
+            // part a future reader needs and a rewritten comment would lose.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_320, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2009,7 +2013,14 @@ struct ArchitectureFitnessTests {
             // provider gets a bounded wait to act on stdin EOF before the signal
             // ladder, and a repeated deferral traces once per silence window
             // rather than once per poll.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_225, .owner("Runtime process stream support")),
+            // 2_225 -> 2_255 on 2026-09-08 (PR #383, third review round): the
+            // coincident-deadline fix above was necessary and not sufficient —
+            // a deliverable task's window is `idleTimeout * 2`, so under 360s it
+            // lands *after* the idle deadline and the generic branch killed the
+            // run first, every time. The new predicate holds that branch while
+            // the first window is live, and the arithmetic that makes it dead
+            // code otherwise is the whole of its "why".
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_255, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2067,7 +2078,12 @@ struct ArchitectureFitnessTests {
             // ceiling enforces itself in Warning Only mode, which is only
             // observable by driving the monitor in both modes against both a
             // chosen budget and an unset one.
-            "Tests/ProcessMonitorTests.swift": .init(3_685, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_685 -> 3_775 (PR #383, third review round): the artifact window
+            // now outranks a shorter idle deadline, and that is three tests, not
+            // one — it defers, a run with no progress at all is still killed on
+            // the idle deadline, and the deferral ends. Dropping the middle one
+            // would let "every silent run is immortal for an extra window" pass.
+            "Tests/ProcessMonitorTests.swift": .init(3_775, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.

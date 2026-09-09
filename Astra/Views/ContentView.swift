@@ -153,7 +153,11 @@ struct ContentView: View {
     /// change?" because `begin()` resets it to `.failClosed` at the start of
     /// every refresh, so by the time a refresh finishes the gate has already
     /// forgotten what it was showing.
-    @State private var lastPublishedBrowserSessionPolicy: BrowserSessionPolicy?
+    ///
+    /// Tagged with the session it came from. This view outlives any one task,
+    /// so an untagged policy silently becomes the `previous` for whatever the
+    /// user switches to next.
+    @State private var lastPublishedBrowserSessionPolicy: BrowserSessionPolicyPublication?
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -1849,13 +1853,23 @@ struct ContentView: View {
             syncBrowserPresentation()
             // Most of these fires are no-ops; `BrowserSessionPolicyRefreshAudit`
             // owns why that is and what it costs to say so.
+            // Read against this refresh's own identity, so a policy left over
+            // from the task the user just switched away from is treated as no
+            // previous policy at all rather than as agreement.
             let audit = BrowserSessionPolicyRefreshAudit(
                 source: source,
-                previous: lastPublishedBrowserSessionPolicy,
+                previous: lastPublishedBrowserSessionPolicy?.policyForSession(
+                    taskID: signature.taskID,
+                    workspaceID: signature.workspaceID
+                ),
                 published: policy,
                 durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt)
             )
-            lastPublishedBrowserSessionPolicy = policy
+            lastPublishedBrowserSessionPolicy = BrowserSessionPolicyPublication(
+                taskID: signature.taskID,
+                workspaceID: signature.workspaceID,
+                policy: policy
+            )
             AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID,
                             fields: audit.fields, level: audit.level)
         }
