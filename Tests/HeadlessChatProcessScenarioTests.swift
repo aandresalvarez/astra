@@ -157,7 +157,14 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("137") })
     }
 
-    @Test("Copilot idle timeout kills process and records timeout status")
+    /// Copilot emits a real `agent_message_chunk` before it hangs, so this is a
+    /// provider that produced work and then stopped advancing — the semantic
+    /// branch, not a bare idle timeout. It used to be reported as the latter
+    /// only because the two deadlines coincide at a 2-second idle timeout
+    /// (`noSemanticProgressTimeoutSeconds` is `min(idleTimeout, 180)`) and the
+    /// semantic branch's precedence rule excluded exactly that case. The kill is
+    /// also one escalation later now: the first breach buys an extension.
+    @Test("Copilot idle timeout kills process and records a semantic stall")
     func copilotIdleTimeoutKillsProcess() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -182,10 +189,12 @@ extension HeadlessChatScenarioTests {
         let run = try #require(task.runs.first)
         #expect(FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.status == .failed)
-        #expect(run.status == .timeout)
-        #expect(run.stopReason == "timeout")
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "provider_semantic_progress_stalled")
         #expect(!worker.isRunning)
-        #expect(task.events.contains { $0.type == "error" && $0.payload.lowercased().contains("timeout") })
+        #expect(task.events.contains {
+            $0.type == "error" && $0.payload.contains("stopped advancing the task")
+        })
     }
 
     @Test("Claude idle timeout kills process and records failed status")
@@ -231,7 +240,14 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "error" })
     }
 
-    @Test("Antigravity idle timeout kills process and records timeout status")
+    /// Same shape as the Copilot case: `Started working` is plain-text progress,
+    /// so the stall belongs to the semantic branch. Contrast the Claude case
+    /// above, where the only thing on the wire is a `system/init` frame —
+    /// lifecycle metadata, never semantic progress, so it takes the
+    /// metadata-only branch. That branch escalates too: its first breach buys
+    /// the same single extension, and its second reports
+    /// `provider_no_semantic_progress` rather than a stall after progress.
+    @Test("Antigravity idle timeout kills process and records a semantic stall")
     func antigravityIdleTimeoutKillsProcess() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -265,10 +281,12 @@ extension HeadlessChatScenarioTests {
         let run = try #require(task.runs.first)
         #expect(FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.status == .failed)
-        #expect(run.status == .timeout)
-        #expect(run.stopReason == "timeout")
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "provider_semantic_progress_stalled")
         #expect(!worker.isRunning)
-        #expect(task.events.contains { $0.type == "error" && $0.payload.lowercased().contains("timeout") })
+        #expect(task.events.contains {
+            $0.type == "error" && $0.payload.contains("stopped advancing the task")
+        })
     }
 
     // MARK: - Task cancellation mid-run

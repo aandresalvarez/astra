@@ -85,6 +85,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult
@@ -692,6 +693,7 @@ final class AgentRuntimeProcessRunner {
         runtimeRequirements: TaskRuntimeRequirementSet? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        maxRunSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -797,6 +799,7 @@ final class AgentRuntimeProcessRunner {
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -820,6 +823,7 @@ final class AgentRuntimeProcessRunner {
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+            maxRunSeconds: maxRunSeconds,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -835,10 +839,15 @@ final class AgentRuntimeProcessRunner {
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
+        // `effectiveTokenBudget` substitutes the implicit runaway ceiling for an
+        // unset budget, so the monitor can no longer tell the two apart — and it
+        // must, because the enforcement mode governs only the one the user chose.
+        let isUserConfiguredBudget = task.tokenBudget != 0
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that
@@ -896,10 +905,12 @@ final class AgentRuntimeProcessRunner {
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 budgetEnforcementMode: budgetEnforcementMode,
+                isUserConfiguredBudget: isUserConfiguredBudget,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 taskID: task.id,
                 policyGuard: permissionManifest.map {
                     AgentRuntimePolicyGuard(manifest: $0, boundary: RunBoundary(manifest: $0, plan: plan))
@@ -985,10 +996,14 @@ final class AgentRuntimeProcessRunner {
             // that window: whichever side reaches the lock first fully
             // drains-and-processes what it read before the other side can
             // even perform its own read.
+            // Stream volume is counted off the raw chunk, never per parsed line:
+            // `handleLine` only runs on a newline, so one large frame would hold
+            // the tally flat. `StreamVolumeAccountingTests` pins both sites.
             process.stdoutFileHandle.readabilityHandler = { handle in
                 lineBuffer.synchronized {
                     let data = handle.availableData
                     guard !data.isEmpty else { return }
+                    monitor.recordStreamVolume(bytes: data.count)
                     let chunk = String(decoding: data, as: UTF8.self)
                     lineBuffer.appendAndProcessLinesLocked(chunk, handleLine)
                 }
@@ -1007,7 +1022,12 @@ final class AgentRuntimeProcessRunner {
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
                 lineBuffer.synchronized {
-                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    let finalStdoutData = proc.stdoutFileHandle.readDataToEndOfFile()
+                    // Too late to hold off a watchdog that has already decided,
+                    // but `stream_bytes` is also what the exit audit reports,
+                    // and a tally stopping short of EOF understates short runs.
+                    monitor.recordStreamVolume(bytes: finalStdoutData.count)
+                    let finalStdoutChunk = String(decoding: finalStdoutData, as: UTF8.self)
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }
@@ -1044,6 +1064,19 @@ final class AgentRuntimeProcessRunner {
                         level: .error,
                         fieldMaxLength: 900
                     )
+                }
+                // Always on, unlike the opt-in stream debug capture. Frames the
+                // parser could not classify are the upstream cause of runs being
+                // killed while they are still working, so the count has to be
+                // visible by default rather than only when someone already
+                // suspected a parser gap.
+                if monitor.unrecognizedEventCount > 0 {
+                    AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: taskID, fields: [
+                        "runtime": plan.runtime.rawValue,
+                        "unknown_events": String(monitor.unrecognizedEventCount),
+                        "stream_bytes": String(monitor.streamBytesObserved),
+                        "exit_code": String(Int(proc.terminationStatus))
+                    ], level: .warning)
                 }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
@@ -1393,13 +1426,15 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        if baseBudget == 0 {
-            return Int.max
-        }
-        if usesAgentTeam {
-            return baseBudget * max(2, teamSize)
-        }
-        return baseBudget
+        // "No budget set" used to mean literally unbounded, which left the
+        // silence watchdog as the only thing between a runaway task and an
+        // open-ended bill. The default is a per-run allowance the user never
+        // chose, sized above the worst single run seen in production. A team
+        // multiplies it exactly as it multiplies a chosen budget: the usage a
+        // team reports is the sum over its members, and a ceiling that ignored
+        // that would fire on healthy team runs first.
+        let budget = baseBudget == 0 ? RuntimeProgressSignals.defaultTokenBudget : baseBudget
+        return usesAgentTeam ? budget * max(2, teamSize) : budget
     }
 
     static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {

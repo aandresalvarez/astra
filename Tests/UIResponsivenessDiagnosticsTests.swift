@@ -83,6 +83,63 @@ struct UIResponsivenessDiagnosticsTests {
         #expect(report.notices.contains(where: { $0.id == "performance.responsiveness.task_selection_to_shell_visible" }))
     }
 
+    /// `TaskThreadMainActorStallSampler` writes `main_actor_max_stall_ms` as a
+    /// passenger on an unrelated host event, and this parser only ever read
+    /// `duration_ms`. Three production log rotations carried 2,378 samples of
+    /// the field and the report summarized none of them.
+    @Test("Main-actor stalls are summarized apart from the event carrying them")
+    func mainActorStallsAreSummarized() throws {
+        let report = UIResponsivenessDiagnostics.makeReport(entries: [
+            measurement("chat_stream_snapshot_cadence", 2_000, traceID: "s1", cacheState: "hit",
+                        suffix: " main_actor_max_stall_ms=12.00"),
+            measurement("chat_stream_snapshot_cadence", 2_000, traceID: "s2", cacheState: "hit",
+                        suffix: " main_actor_max_stall_ms=48.00"),
+            // The sampler writes the field on every cadence line, hitch or no
+            // hitch. A quiet window is `0.00`, and it is not a stall sample: the
+            // summary describes blockages, not how often the probe ran.
+            measurement("chat_stream_snapshot_cadence", 2_000, traceID: "s3", cacheState: "hit",
+                        suffix: " main_actor_max_stall_ms=0.00"),
+            // Matches none of the `isResponsivenessEvent` prefixes, so its own
+            // duration is still not summarized — but its stall is the entire
+            // reason the sampler was extended to the composer.
+            measurement("composer_typing_stall", 1_262, traceID: "t1", cacheState: "none",
+                        suffix: " main_actor_max_stall_ms=310.00")
+        ])
+        let events = report.eventSummaries.map(\.event)
+
+        #expect(events.contains("main_actor_stall:chat_stream_snapshot_cadence"))
+        #expect(events.contains("main_actor_stall:composer_typing_stall"))
+        #expect(!events.contains("composer_typing_stall"))
+
+        let streaming = try #require(
+            report.eventSummaries.first { $0.event == "main_actor_stall:chat_stream_snapshot_cadence" }
+        )
+        #expect(streaming.sampleCount == 2, "A window with no overshoot is not a stall")
+        #expect(streaming.p50Milliseconds > 0, "Quiet windows must not pin the median at zero")
+        #expect(streaming.maxMilliseconds == 48)
+        #expect(streaming.cacheStates == ["hit": 2])
+
+        let host = try #require(
+            report.eventSummaries.first { $0.event == "chat_stream_snapshot_cadence" }
+        )
+        #expect(host.sampleCount == 3, "The host event keeps every line, including the quiet one")
+        #expect(host.maxMilliseconds == 2_000, "The host event's own timing must be untouched")
+    }
+
+    /// A stall shares its host's trace ID. Letting it claim that trace would
+    /// rank the blockage above the interaction it was measured inside of, and
+    /// report a shorter duration for a trace whose endpoint took longer.
+    @Test("Stall samples stay out of the slow-trace list")
+    func stallsDoNotEnterSlowTraces() {
+        let report = UIResponsivenessDiagnostics.makeReport(entries: [
+            measurement("chat_stream_snapshot_cadence", 900, traceID: "stream", cacheState: "miss",
+                        suffix: " main_actor_max_stall_ms=400.00")
+        ])
+
+        #expect(report.slowestTraces.map(\.durationMilliseconds) == [900])
+        #expect(report.slowestTraces.map(\.event) == ["chat_stream_snapshot_cadence"])
+    }
+
     private func measurement(
         _ event: String,
         _ duration: Double,

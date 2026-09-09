@@ -842,6 +842,56 @@ struct ProcessMonitorTests {
         #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) != nil)
     }
 
+    @Test("Claude tool input delta is actionable progress")
+    func claudeToolInputDeltaIsActionableProgress() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\": \"/tmp/SPECS.md\""}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        guard case .control(let type) = parsed else {
+            Issue.record("expected a control event, got \(parsed)")
+            return
+        }
+        #expect(type == StreamEventParser.toolInputDeltaControlType)
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .actionableProgress)
+        // One large Write arrives as thousands of these chunks, so they must
+        // stay out of the repetition detector.
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) == nil)
+    }
+
+    @Test("Content block delta without content stays provider liveness")
+    func contentBlockDeltaWithoutContentStaysProviderLiveness() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .providerLiveness)
+    }
+
+    @Test("Tool input deltas establish semantic progress")
+    func toolInputDeltasEstablishSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let deltaStopped = monitor.processEvent(
+            .control(type: StreamEventParser.toolInputDeltaControlType),
+            process: process
+        )
+        // The first breach buys one extension rather than a kill, so the
+        // terminal decision is on the second evaluation.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(deltaStopped == false)
+        #expect(firstEvaluation == false)
+        #expect(watchdogStopped == true)
+        // Liveness-only activity reports `provider_no_actionable_progress`.
+        // Reaching the after-progress guard instead proves the deltas
+        // registered as real progress.
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
     @Test("Thinking-only provider activity stops as no actionable progress")
     func thinkingOnlyProviderActivityStopsAsNoActionableProgress() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -854,9 +904,12 @@ struct ProcessMonitorTests {
             .thinking(text: "The user wants a Masterball page"),
             process: process
         )
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(shouldKillEvent == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_no_actionable_progress")
@@ -873,10 +926,13 @@ struct ProcessMonitorTests {
 
         let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
         let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(visibleProgressStopped == false)
         #expect(livenessStopped == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
@@ -1158,6 +1214,90 @@ struct ProcessMonitorTests {
         #expect(watchdogStopped == false)
         #expect(process.didTerminate == false)
         #expect(monitor.runtimeStopReason == nil)
+    }
+
+    /// Widening the semantic window achieves nothing unless the generic idle
+    /// deadline waits for it. `AgentRuntimeProgressTimeoutPolicy` gives a task
+    /// that owes a deliverable `idleTimeout * 2`, so for every idle timeout
+    /// below 360s the artifact window lands *after* the idle one — and the idle
+    /// branch fired first, killing the resumed deliverable at the very deadline
+    /// the wider window was meant to move. Modelled here with the extreme of
+    /// that shape: an idle deadline already breached, a window that is not.
+    @Test("A live artifact window outranks a shorter idle deadline")
+    func artifactWindowDefersTheGenericIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    /// The deferral is scoped, not a waiver. It is owed to a provider that
+    /// produced visible progress and then went quiet; one that never produced
+    /// any has no artifact to be mid-write of, and the idle deadline still owns
+    /// it. Without this the same change would make every silent run immortal
+    /// for the length of the wider window.
+    @Test("A run that never produced progress still times out on the idle deadline")
+    func silentRunStillHitsTheIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.timedOut == true)
+    }
+
+    /// And it is bounded. Once the window is spent the semantic branch takes the
+    /// kill it was deferred to — it escalates once first, which is the existing
+    /// ladder, so the run ends under a reason that says what happened rather
+    /// than a bare timeout.
+    ///
+    /// The window has to be a real positive interval here, because the deferral
+    /// only engages while `idleDuration` is *inside* it; a zero window is spent
+    /// before it opens and would exercise nothing. Hence the sleeps. They are
+    /// load-safe in the direction that matters: a slow machine only puts more
+    /// time between the event and the poll, and every assertion below wants the
+    /// window already behind it.
+    @Test("A spent artifact window hands the kill to the semantic branch")
+    func spentArtifactWindowStopsUnderTheSemanticReason() {
+        let window: TimeInterval = 0.05
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: window
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+
+        // First breach buys the one extension; the second spends it.
+        Thread.sleep(forTimeInterval: window * 2)
+        let firstBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        Thread.sleep(forTimeInterval: window * 2)
+        let secondBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(firstBreach == false)
+        #expect(secondBreach == true)
+        #expect(process.didTerminate == true)
+        // Not `timedOut`: the idle branch never gets it, so the run is reported
+        // as a stall after progress rather than as silence from the start.
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
     }
 
     // MARK: - ProcessResult
@@ -3482,11 +3622,23 @@ struct RuntimeBudgetProfileTests {
 
     @Test("Effective budget scales team budgets without audit side effects")
     func effectiveBudgetScalesTeamBudgets() {
+        // An unset budget resolves to a bounded default, not `Int.max`: the
+        // silence watchdog is no longer the app's de-facto spend limit, so the
+        // spend limit has to be an actual number. And a team multiplies it the
+        // way it multiplies a chosen budget — the usage a team reports is the
+        // sum over its members, so a flat ceiling would fire on healthy team
+        // runs before anything else.
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: true,
             teamSize: 3
-        ) == Int.max)
+        ) == RuntimeProgressSignals.defaultTokenBudget * 3)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: false,
+            teamSize: 3
+        ) == RuntimeProgressSignals.defaultTokenBudget)
+        #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 100_000,
             usesAgentTeam: false,
@@ -3502,5 +3654,123 @@ struct RuntimeBudgetProfileTests {
             usesAgentTeam: true,
             teamSize: 3
         ) == 300_000)
+    }
+}
+
+// MARK: - Review follow-up: the implicit ceiling is not the user's budget
+
+/// `BudgetEnforcementMode.warning` is a preference about the budget the *user*
+/// chose: go past the number you set and ASTRA tells you rather than stopping
+/// you. The implicit runaway ceiling is a different thing — the user never set
+/// it, it exists only to bound a provider that has stopped making sense, and
+/// warning on it would log a line nobody asked for and then let the run keep
+/// spending. `.warning` is also the app's default enforcement mode, so this is
+/// the configuration almost every run is in.
+@Suite("Implicit runaway ceiling enforcement")
+@MainActor
+struct ImplicitBudgetCeilingTests {
+
+    @Test("The implicit ceiling hard-stops even when the app is in warning mode")
+    func implicitCeilingHardStopsInWarningMode() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1_000,
+            budgetEnforcementMode: .warning,
+            isUserConfiguredBudget: false
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: process
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.budgetExceeded == true)
+        #expect(monitor.budgetWarning == false)
+        #expect(process.didTerminate)
+    }
+
+    @Test("A budget the user chose still honours warning mode")
+    func userConfiguredBudgetStillWarns() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1_000,
+            budgetEnforcementMode: .warning,
+            isUserConfiguredBudget: true
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
+        #expect(process.didTerminate == false)
+    }
+
+    /// The reported-usage half of the same rule. `shouldTreatAsBudgetExceeded`
+    /// runs after the process exits, on the tokens the provider only accounts
+    /// for at the end, and it gated on `budgetEnforcementMode == .hardStop`
+    /// alone — so a run that sailed past the ceiling and then reported it was
+    /// recorded as a normal completion.
+    @Test("Reported usage above the implicit ceiling is enforced in either mode")
+    func reportedUsageAboveImplicitCeilingIsEnforced() {
+        let ceiling = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: RuntimeProgressSignals.defaultTokenBudget,
+            tokensUsed: RuntimeProgressSignals.defaultTokenBudget + 1,
+            isUserConfigured: false
+        )
+        let result = AgentProcessResult(exitCode: 0)
+
+        #expect(ceiling.hasEnforceableBudget)
+        #expect(ceiling.hasReportedTokensAboveBudget)
+        for mode in [BudgetEnforcementMode.hardStop, .warning] {
+            #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+                result: result,
+                budget: ceiling,
+                budgetEnforcementMode: mode
+            ), "ceiling not enforced in \(mode.rawValue) mode")
+        }
+    }
+
+    /// And the user's own budget keeps the behaviour it had: warning mode is
+    /// still allowed to let a reported overage through.
+    @Test("Reported usage above a chosen budget still follows the mode")
+    func reportedUsageAboveChosenBudgetFollowsMode() {
+        let chosen = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: 10,
+            tokensUsed: 11,
+            isUserConfigured: true
+        )
+        let result = AgentProcessResult(exitCode: 0)
+
+        #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .hardStop
+        ))
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .warning
+        ))
+    }
+
+    /// The snapshot's own default infers `isUserConfigured` from
+    /// `effectiveTokenBudget != Int.max`. That was a fair proxy while an unset
+    /// budget resolved to `Int.max`; now that it resolves to a finite ceiling,
+    /// anything reading the ceiling through that default sees a user-configured
+    /// budget, so the two live call sites have to state it.
+    @Test("An unset task budget produces a snapshot that is not user-configured")
+    func unsetTaskBudgetIsNotUserConfigured() {
+        let task = AgentTask(title: "Ceiling", goal: "Goal", tokenBudget: 0)
+        let snapshot = AgentRuntimeBudgetSnapshot(task: task)
+
+        #expect(snapshot.isUserConfigured == false)
+        #expect(snapshot.hasEnabledBudget == false)
+        #expect(snapshot.hasEnforceableBudget)
+        #expect(snapshot.effectiveTokenBudget == RuntimeProgressSignals.defaultTokenBudget)
     }
 }

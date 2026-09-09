@@ -1845,6 +1845,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/TaskSchedule.swift": ["self"],
             "Astra/Models/TaskValidationContract.swift": ["self"],
             "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
+            // `AstraKeychainFailureReport.status` is an OSStatus, not a task's.
+            "Astra/Services/Persistence/AstraSecureKeychainStore.swift": ["self"],
             "Astra/Services/Persistence/SessionScanner.swift": ["run"],
             "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
@@ -1960,7 +1962,22 @@ struct ArchitectureFitnessTests {
             // stops a budget line from being a number someone raised once.
             // 2_250 -> 2_256: the sidebar rebuild-coalescing entry above, and
             // this line, which is the same bargain applied to itself.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_256, .owner("Architecture fitness test suite")),
+            // 2_256 -> 2_270: the two watchdog entries below, one recording a
+            // ratchet-down after a file split and one a raise, plus this line.
+            // 2_270 -> 2_273: the keychain-report allowlist receiver, plus this
+            // line. GitService briefly earned its first entry here at 2_035;
+            // moving `GitProcessState` out put it back under the threshold.
+            // 2_273 -> 2_300: the three PR #383 raises above, each carrying the
+            // reason it was raised, plus this line. AgentRuntimeProcessRunner
+            // reached 2_001 on the same branch and was trimmed back under rather
+            // than opening a new entry — a first entry is the ratchet that
+            // matters most, and it should cost more than a comment.
+            // 2_300 -> 2_320: the two third-round raises above. The watchdog one
+            // amends a raise from the round before it rather than replacing it,
+            // because "the earlier fix was necessary and not sufficient" is the
+            // part a future reader needs and a rewritten comment would lose.
+            // 2_320 -> 2_330: the two review-fix entries below, plus this line.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_330, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -1983,7 +2000,35 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
             // policy observation without a user-visible outcome now audits it.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_160, .owner("Runtime process stream support")),
+            // 2_160 -> 2_095 on 2026-09-04 (watchdog progress signals): stream-volume
+            // progress, the run wall clock, and kill escalation pushed this file past
+            // its ceiling, so AgentExecutionScopedProcess and its two supporting types
+            // moved to AgentExecutionScopedProcess.swift. Ratcheted down to what is
+            // left rather than banking the headroom — this file is the stream monitor
+            // now, and process-launch plumbing belongs in the other one.
+            // 2_095 -> 2_225 on 2026-09-08 (PR #383 review follow-up): four
+            // stream-monitor decisions the file could not make before, each
+            // needing its "why" inline — the implicit runaway ceiling is not
+            // governed by the user's enforcement mode, the semantic-stall branch
+            // must still win when its deadline coincides with the idle one, a
+            // provider gets a bounded wait to act on stdin EOF before the signal
+            // ladder, and a repeated deferral traces once per silence window
+            // rather than once per poll.
+            // 2_225 -> 2_255 on 2026-09-08 (PR #383, third review round): the
+            // coincident-deadline fix above was necessary and not sufficient —
+            // a deliverable task's window is `idleTimeout * 2`, so under 360s it
+            // lands *after* the idle deadline and the generic branch killed the
+            // run first, every time. The new predicate holds that branch while
+            // the first window is live, and the arithmetic that makes it dead
+            // code otherwise is the whole of its "why".
+            // 2_255 -> 2_295 on 2026-09-08 (PR #383, review fixes): the
+            // unknown-frame deferral orders events by sequence number instead
+            // of by `Date()` — which resolves to ~1 µs and made back-to-back
+            // events carry the same timestamp — the wall clock pauses while a
+            // managed workspace job is heartbeating rather than killing a run
+            // the job was told to wait on, and the graceful-stop wait is paid
+            // only when there was a stdin channel to close.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_295, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2003,7 +2048,15 @@ struct ArchitectureFitnessTests {
             // of post-run awaits that follow — and the save going through the
             // persistence coordinator means a refusal is reported rather than
             // swallowed.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_161, .owner("Runtime worker execution")),
+            // 2_161 -> 2_190 on 2026-09-08 (PR #383 review follow-up): the
+            // budget branch decides and explains itself from one snapshot taken
+            // before the outcome chain, because "no budget was set, so ASTRA's
+            // own ceiling applied" and "you went past the number you chose" are
+            // different things to tell the user and only the snapshot knows
+            // which one fired. Quoting the snapshot in both wordings also closed
+            // the allowlisted cosmetic gap where the event named a limit that
+            // was not the one enforced.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_190, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -2025,7 +2078,22 @@ struct ArchitectureFitnessTests {
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_040, .owner("Host-control MCP tool")),
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
-            "Tests/ProcessMonitorTests.swift": .init(3_510, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_510 -> 3_570 (watchdog escalation): a breached silence window now
+            // buys one extension before the kill, so the cases that used to assert
+            // "one evaluation terminates" have to drive the escalation step too and
+            // say why the first call returns false.
+            // 3_570 -> 3_685 (PR #383 review follow-up): the implicit runaway
+            // ceiling enforces itself in Warning Only mode, which is only
+            // observable by driving the monitor in both modes against both a
+            // chosen budget and an unset one.
+            // 3_685 -> 3_775 (PR #383, third review round): the artifact window
+            // now outranks a shorter idle deadline, and that is three tests, not
+            // one — it defers, a run with no progress at all is still killed on
+            // the idle deadline, and the deferral ends. Dropping the middle one
+            // would let "every silent run is immortal for an extra window" pass.
+            // 3_775 -> 3_780 (PR #383 review fixes): the implicit ceiling now
+            // scales with team size, the way a chosen budget already did.
+            "Tests/ProcessMonitorTests.swift": .init(3_780, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
@@ -2041,7 +2109,9 @@ struct ArchitectureFitnessTests {
             // whether or not the event survived, so "persisted before the next
             // await" is the invariant, and it is only checkable against the
             // source.
-            "Tests/AgentRuntimeWorkerTests.swift": .init(2_565, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_565 -> 2_570 (PR #383 review fixes): the process-runner fake gained
+            // the `maxRunSeconds` parameter the protocol now carries.
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_570, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
             // ship local tool grants on the real Copilot command line, asserted against a
             // `.build` control so the test cannot pass vacuously.

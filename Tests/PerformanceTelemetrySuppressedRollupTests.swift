@@ -234,6 +234,77 @@ struct PerformanceTelemetrySuppressedRollupTests {
         )
         #expect(due.first?.count == 3)
     }
+
+    /// A window closes on the first sample *after* the interval, and while the
+    /// app is idle nothing arrives — so the interval is a floor, not a period.
+    /// The emitted line used to state the configured 30 s regardless: real
+    /// production windows ran to a median of 35.3 s and a maximum of 38,801 s,
+    /// every one of them labelled `window_s=30`. Any rate derived from a rollup
+    /// was wrong by whatever the idle gap was.
+    @Test("A rollup reports the window it actually covered")
+    func rollupReportsMeasuredWindow() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 30)
+
+        _ = ledger.record(event: "idle_probe", milliseconds: 1, thresholdMilliseconds: 8, now: epoch)
+        let rollups = ledger.record(
+            event: "idle_probe",
+            milliseconds: 1,
+            thresholdMilliseconds: 8,
+            now: epoch.addingTimeInterval(3_600)
+        )
+
+        let rollup = try #require(rollups.first)
+        #expect(
+            abs(rollup.windowSeconds - 3_600) < 0.001,
+            "An hour of idle must not be reported as the 30 s flush interval"
+        )
+    }
+
+    /// Each window has to measure from the previous flush rather than from the
+    /// ledger's first sample, or `window_s` grows without bound and the rates
+    /// derived from it shrink toward zero over a long-lived process.
+    @Test("Consecutive windows each measure from the previous flush")
+    func consecutiveWindowsMeasureIndependently() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 10)
+
+        _ = ledger.record(event: "probe", milliseconds: 1, thresholdMilliseconds: 8, now: epoch)
+        let first = ledger.record(
+            event: "probe", milliseconds: 1, thresholdMilliseconds: 8,
+            now: epoch.addingTimeInterval(11))
+        let second = ledger.record(
+            event: "probe", milliseconds: 1, thresholdMilliseconds: 8,
+            now: epoch.addingTimeInterval(25))
+
+        #expect(abs(try #require(first.first).windowSeconds - 11) < 0.001)
+        #expect(abs(try #require(second.first).windowSeconds - 14) < 0.001)
+    }
+
+    /// The window is shared; a bucket's lifetime is its own. A hot burst that
+    /// ended two seconds into an hour-long window is a hot burst, not noise,
+    /// and a bucket opened by the very sample that closes the window existed
+    /// for one call, not for the hour. Each rollup carries its own span so a
+    /// rate can divide by the time the samples were actually arriving.
+    @Test("A rollup reports how long its own samples were arriving")
+    func rollupReportsItsOwnActiveSpan() throws {
+        let ledger = PerformanceTelemetrySuppressedLedger(flushInterval: 30)
+
+        // A burst over two seconds, then a long idle.
+        for offset in [0.0, 1.0, 2.0] {
+            _ = ledger.record(event: "burst", milliseconds: 1, thresholdMilliseconds: 8,
+                              now: epoch.addingTimeInterval(offset))
+        }
+        // The sample that closes the window opens a bucket of its own.
+        let rollups = ledger.record(event: "late", milliseconds: 1, thresholdMilliseconds: 8,
+                                    now: epoch.addingTimeInterval(3_600))
+
+        let burst = try #require(rollups.first { $0.event == "burst" })
+        let late = try #require(rollups.first { $0.event == "late" })
+        #expect(abs(burst.windowSeconds - 3_600) < 0.001)
+        #expect(abs(burst.activeSeconds - 2) < 0.001, "The burst lasted two seconds, not an hour")
+        #expect(abs(late.windowSeconds - 3_600) < 0.001)
+        #expect(late.activeSeconds == 0, "One sample has no span")
+        #expect(late.count == 1)
+    }
 }
 
 /// The stall sampler used to exist only while a task streamed, so the window

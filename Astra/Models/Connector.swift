@@ -143,14 +143,14 @@ public final class Connector {
             recordCredentialRejection(key: upperKey, verdict: decision.verdict)
             return .rejected(decision.verdict)
         }
-        let saved = ConnectorSecretSeam.required.saveCredential(
+        let outcome = ConnectorSecretSeam.required.saveCredentialReportingFailure(
             decision.normalizedValue,
             key: upperKey,
             facts: secretFacts,
             allowUserInteraction: allowUserInteraction
         )
-        recordCredentialSaveResult(key: upperKey, saved: saved)
-        return saved ? .saved : .keychainWriteFailed
+        recordCredentialSaveResult(key: upperKey, saved: outcome.didWrite)
+        return outcome.didWrite ? .saved : .keychainWriteFailed(diagnosis: outcome.diagnosis)
     }
 
     /// Puts back a value this connector was already holding, without asking
@@ -230,7 +230,9 @@ public final class Connector {
             ], level: .warning)
         }
         recordCredentialSaveResult(key: upperKey, saved: ok)
-        return ok ? .saved : .keychainWriteFailed
+        // No diagnosis: this twin writes through an injected `SecretStore`, so
+        // there is no Keychain layer under it to have an opinion.
+        return ok ? .saved : .keychainWriteFailed(diagnosis: nil)
     }
 
     /// The cross-service reuse rule is the only one that needs the rest of

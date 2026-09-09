@@ -1,11 +1,25 @@
-import Darwin
 import Foundation
 import ASTRACore
 protocol AgentRuntimeProcessControl: AnyObject {
     var isRunning: Bool { get }
     var terminationStatus: Int32 { get }
     func terminate()
+    /// Asks the provider to wind down before it is signalled, and reports
+    /// whether there was a channel to ask through.
+    ///
+    /// A watchdog kill discards everything the run produced, so it is worth one
+    /// cheap attempt to let the provider notice the run is over and flush what
+    /// it already has. Returns false for process types with no such channel,
+    /// so the caller knows not to wait for an answer that cannot come.
+    @discardableResult
+    func requestGracefulStop() -> Bool
 }
+
+extension AgentRuntimeProcessControl {
+    @discardableResult
+    func requestGracefulStop() -> Bool { false }
+}
+
 extension Process: AgentRuntimeProcessControl {}
 
 final class AgentRuntimeProcessControlBox: @unchecked Sendable {
@@ -20,288 +34,9 @@ final class AgentRuntimeProcessControlBox: @unchecked Sendable {
     func terminate() {
         process.terminate()
     }
-}
 
-struct AgentExecutionScopedProcessError: LocalizedError {
-    let operation: String
-    let code: Int32
-
-    var errorDescription: String? {
-        "\(operation) failed: \(String(cString: strerror(code)))"
-    }
-}
-
-enum AgentExecutionScopedProcessStdinMode {
-    case inherited
-    case closed
-    case pipe
-}
-
-/// Launches a provider in its own process group so cancellation can clean up
-/// tool subprocesses that the provider starts or backgrounds.
-final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
-    private let executablePath: String
-    private let arguments: [String]
-    private let currentDirectory: String
-    private let environment: [String: String]
-    private let stdinMode: AgentExecutionScopedProcessStdinMode
-    private let lock = NSLock()
-
-    private var processID: pid_t = 0
-    private var processGroupID: pid_t = 0
-    private var running = false
-    private var status: Int32 = 0
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    // Created only when the provider speaks a stdin control protocol; other
-    // providers keep inheriting the parent's stdin unchanged. Writes and the
-    // close run on different threads (approval tasks vs the stdout handler
-    // closing on `.result`), so handle operations serialize under their own
-    // lock — separate from `lock` so a large stdin write can't stall
-    // process-state reads like isRunning/terminate.
-    private let stdinPipe: Pipe?
-    private let stdinLock = NSLock()
-    private var stdinClosed = false
-    var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
-
-    var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
-    var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
-
-    var isRunning: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return running
-    }
-
-    var terminationStatus: Int32 {
-        lock.lock()
-        defer { lock.unlock() }
-        return status
-    }
-
-    var processIdentifier: Int32 { lock.withLock { processID } }
-
-    init(
-        executablePath: String,
-        arguments: [String],
-        currentDirectory: String,
-        environment: [String: String],
-        stdinMode: AgentExecutionScopedProcessStdinMode = .inherited,
-        providesStdinChannel: Bool = false
-    ) {
-        self.executablePath = executablePath
-        self.arguments = arguments
-        self.currentDirectory = currentDirectory
-        self.environment = environment
-        self.stdinMode = providesStdinChannel ? .pipe : stdinMode
-        self.stdinPipe = self.stdinMode == .pipe ? Pipe() : nil
-    }
-
-    /// Writes one line to the child's stdin. Safe to call after the child has
-    /// exited; a broken pipe is swallowed. Serialized with the close so a
-    /// write can never race the handle being closed.
-    func writeStdinLine(_ line: String) {
-        guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
-        stdinLock.lock()
-        defer { stdinLock.unlock() }
-        guard !stdinClosed else { return }
-        try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
-    }
-
-    /// Signals end-of-conversation: stream-json providers keep waiting for the
-    /// next stdin message after a turn, so EOF is what lets them exit.
-    func closeStdinChannel() {
-        guard let stdinPipe else { return }
-        stdinLock.lock()
-        defer { stdinLock.unlock() }
-        guard !stdinClosed else { return }
-        stdinClosed = true
-        stdinPipe.fileHandleForWriting.closeFile()
-    }
-
-    func run() throws {
-        var actions: posix_spawn_file_actions_t? = nil
-        var attr: posix_spawnattr_t? = nil
-        var childPID = pid_t(0)
-
-        guard posix_spawn_file_actions_init(&actions) == 0 else {
-            throw AgentExecutionScopedProcessError(operation: "posix_spawn_file_actions_init", code: errno)
-        }
-        defer { posix_spawn_file_actions_destroy(&actions) }
-
-        guard posix_spawnattr_init(&attr) == 0 else {
-            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_init", code: errno)
-        }
-        defer { posix_spawnattr_destroy(&attr) }
-
-        try check(posix_spawn_file_actions_adddup2(&actions, stdoutPipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO),
-                  operation: "posix_spawn_file_actions_adddup2(stdout)")
-        try check(posix_spawn_file_actions_adddup2(&actions, stderrPipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO),
-                  operation: "posix_spawn_file_actions_adddup2(stderr)")
-        try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe.fileHandleForReading.fileDescriptor),
-                  operation: "posix_spawn_file_actions_addclose(stdout_read)")
-        try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
-                  operation: "posix_spawn_file_actions_addclose(stderr_read)")
-        if let stdinPipe {
-            try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
-                      operation: "posix_spawn_file_actions_adddup2(stdin)")
-            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForReading.fileDescriptor),
-                      operation: "posix_spawn_file_actions_addclose(stdin_read)")
-            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
-                      operation: "posix_spawn_file_actions_addclose(stdin_write)")
-        } else if stdinMode == .closed {
-            try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
-                      operation: "posix_spawn_file_actions_addopen(stdin)")
-        }
-        try addWorkingDirectory(to: &actions)
-
-        guard ProcessGroupSpawn.configureNewProcessGroup(&attr) else {
-            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_setflags", code: errno)
-        }
-
-        var argv = makeCStringArray([executablePath] + arguments)
-        var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
-        defer {
-            freeCStringArray(argv)
-            freeCStringArray(envp)
-        }
-
-        let spawnResult = executablePath.withCString { executable in
-            argv.withUnsafeMutableBufferPointer { argvBuffer in
-                envp.withUnsafeMutableBufferPointer { envBuffer in
-                    posix_spawn(
-                        &childPID,
-                        executable,
-                        &actions,
-                        &attr,
-                        argvBuffer.baseAddress,
-                        envBuffer.baseAddress
-                    )
-                }
-            }
-        }
-        try check(spawnResult, operation: "posix_spawn")
-
-        stdoutPipe.fileHandleForWriting.closeFile()
-        stderrPipe.fileHandleForWriting.closeFile()
-        stdinPipe?.fileHandleForReading.closeFile()
-
-        lock.lock()
-        processID = childPID
-        processGroupID = childPID
-        running = true
-        lock.unlock()
-
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.reapProcess(pid: childPID)
-        }
-    }
-
-    func terminate() {
-        let ids = currentIDs()
-        guard ids.isRunning else { return }
-
-        Self.signal(processGroupID: ids.processGroupID, processID: ids.processID, signal: SIGTERM)
-
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
-            guard let self else { return }
-            let latest = self.currentIDs()
-            guard latest.isRunning else { return }
-            Self.signal(processGroupID: latest.processGroupID, processID: latest.processID, signal: SIGKILL)
-        }
-    }
-
-    /// Signals the whole process group (guarded against signalling our own
-    /// foreground group) so background children the provider spawned can't
-    /// outlive it, falling back to the bare pid if no group was recorded.
-    private static func signal(processGroupID: pid_t, processID: pid_t, signal: Int32) {
-        if processGroupID > 0, processGroupID != getpgrp() {
-            ProcessGroupSpawn.signalProcessGroup(processGroupID, signal: signal)
-        } else if processID > 0 {
-            kill(processID, signal)
-        }
-    }
-
-    private func addWorkingDirectory(to actions: inout posix_spawn_file_actions_t?) throws {
-        let result = currentDirectory.withCString { path in
-            if #available(macOS 26.0, *) {
-                return posix_spawn_file_actions_addchdir(&actions, path)
-            } else {
-                return posix_spawn_file_actions_addchdir_np(&actions, path)
-            }
-        }
-        try check(result, operation: "posix_spawn_file_actions_addchdir")
-    }
-
-    private func reapProcess(pid: pid_t) {
-        var waitStatus: Int32 = 0
-        var result: pid_t
-        repeat {
-            result = waitpid(pid, &waitStatus, 0)
-        } while result == -1 && errno == EINTR
-
-        let exitStatus: Int32
-        if result == pid {
-            exitStatus = Self.exitCode(from: waitStatus)
-        } else {
-            exitStatus = -1
-        }
-
-        cleanupResidualProcessGroup()
-
-        closeStdinChannel()
-
-        lock.lock()
-        status = exitStatus
-        running = false
-        lock.unlock()
-
-        terminationHandler?(self)
-    }
-
-    private func cleanupResidualProcessGroup() {
-        let ids = currentIDs()
-        guard ids.processGroupID > 0, ids.processGroupID != getpgrp() else {
-            return
-        }
-
-        if kill(-ids.processGroupID, SIGTERM) == 0 {
-            usleep(200_000)
-        }
-        ProcessGroupSpawn.signalProcessGroup(ids.processGroupID, signal: SIGKILL)
-    }
-
-    private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (processID, processGroupID, running)
-    }
-
-    private func check(_ result: Int32, operation: String) throws {
-        guard result == 0 else {
-            throw AgentExecutionScopedProcessError(operation: operation, code: result)
-        }
-    }
-
-    private static func exitCode(from waitStatus: Int32) -> Int32 {
-        let signal = waitStatus & 0x7f
-        if signal == 0 {
-            return (waitStatus >> 8) & 0xff
-        }
-        return 128 + signal
-    }
-
-    private func makeCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
-        strings.map { strdup($0) } + [nil]
-    }
-
-    private func freeCStringArray(_ array: [UnsafeMutablePointer<CChar>?]) {
-        for pointer in array {
-            if let pointer {
-                free(pointer)
-            }
-        }
+    func requestGracefulStop() -> Bool {
+        process.requestGracefulStop()
     }
 }
 
@@ -617,6 +352,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     let tokenBudget: Int
     let budgetEnforcementMode: BudgetEnforcementMode
+    /// False when `tokenBudget` is the implicit runaway ceiling rather than a
+    /// number the user chose. See `effectiveBudgetEnforcementMode`.
+    let isUserConfiguredBudget: Bool
     let maxTurns: Int
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
@@ -624,6 +362,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let activeToolIdleTimeoutSeconds: TimeInterval
     let managedWorkspaceJobIdleTimeoutSeconds: TimeInterval
     let terminalProgressExitGraceSeconds: TimeInterval
+    /// Hard ceiling on the whole run's wall clock. Every other timeout here
+    /// measures *silence*, so a provider that keeps emitting can hold them all
+    /// off forever. This is the one bound that cannot be talked out of firing.
+    let maxRunSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
     /// True when the provider's live permission prompt (the stdio control
@@ -678,6 +420,73 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var hasSeenProviderLivenessActivity = false
     private var hasSeenProgressActivity = false
     private var watchdogRunning = false
+    private let runStartedAt = Date()
+    /// Wall-clock time spent inside a managed workspace job, which the run
+    /// ceiling does not count. A heartbeating job is bounded by its own stall
+    /// detector and cannot be laundered by stream volume — the only thing the
+    /// ceiling exists to bound — and this monitor already allows such a job six
+    /// hours of quiet. Counting that time would kill a run for having waited on
+    /// the job it was told to wait on, at the moment the job returned.
+    private var excludedRunSeconds: TimeInterval = 0
+    private var managedJobExclusionStartedAt: Date?
+
+    /// Raw stdout volume, used as a parser-independent progress signal. Shape
+    /// analysis can only recognise frames some parser already models; byte
+    /// count keeps working when the provider changes its stream format.
+    private var cumulativeStreamBytes = 0
+    private var streamBytesAtLastProgress = 0
+
+    /// Unrecognised frames seen so far, and where the last one fell relative
+    /// to the current silence window. Their presence inside it means the
+    /// taxonomy is out of date, so it is not trustworthy enough to justify an
+    /// aggressive kill.
+    ///
+    /// Ordered by a per-event sequence number, never by timestamp. `Date()`
+    /// resolves to about a microsecond here, and consecutive events parsed from
+    /// one pipe chunk are processed back-to-back inside a single readability
+    /// callback — so two of them routinely carry the *same* `Date`, and "did
+    /// the unknown frame arrive before or after the progress frame?" cannot be
+    /// answered by comparing clocks. Sequence numbers answer it exactly.
+    private var eventSequence = 0
+    private var unknownEventCount = 0
+    private var lastUnknownEventSequence: Int?
+    /// The sequence number in force when the current silence window opened:
+    /// the last event processed before progress was observed or forgiven.
+    private var silenceWindowStartSequence = 0
+
+    /// Which silence window's unrecognised-stream deferrals have been traced,
+    /// and for which reasons within it.
+    ///
+    /// The deferral is a diagnostic, not a decision: it advances no clock and
+    /// records no state, so re-entering it differs in nothing from the last
+    /// time. The watchdog polls at least every 30 seconds, and a provider that
+    /// keeps sending unrecognised frames refreshes the outer idle timeout as it
+    /// goes — so without this the single "the parser is behind" trace becomes
+    /// hundreds of identical lines over a four-hour run, which is the kind of
+    /// log wall the rest of this branch exists to remove. Keyed on the window
+    /// start (`silenceWindowStartSequence`, which moves only when progress is
+    /// observed or forgiven) so a genuinely new window traces again, and on the
+    /// reason so a window that changes character is not silently swallowed.
+    /// Reset per window, so it holds at most one entry per silence branch.
+    private var tracedDeferralWindowStart: Int?
+    private var tracedDeferralReasons: Set<String> = []
+    private var _unrecognizedDeferralTraceCount = 0
+
+    /// Semantic-window breaches forgiven so far. The first breach buys one
+    /// extension rather than a kill.
+    private var semanticProgressExtensionsUsed = 0
+
+    /// When the current reprieve runs out, or nil if none is live.
+    ///
+    /// The generic idle timeout stands down while this is in the future. The
+    /// semantic window is always the shorter of the two, so without this the
+    /// extension would be handed out and then immediately overruled by the
+    /// backstop — the reprieve has to cover both clocks to mean anything.
+    private var semanticProgressExtensionExpiresAt: Date?
+
+    /// One extension per run. Two consecutive full windows of genuine silence
+    /// is a real stall; one is usually a provider about to produce output.
+    static let maxSemanticProgressExtensions = 1
 
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
     var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
@@ -695,9 +504,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
     var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
+    /// Which enforcement mode actually applies to `tokenBudget`.
+    ///
+    /// `budgetEnforcementMode` is a preference about *the user's* budget: in
+    /// `.warning` mode ASTRA says "you have gone past what you asked for" and
+    /// keeps going, which is the right answer for a number the user chose and
+    /// can revise. The implicit runaway ceiling is not that number. It exists
+    /// only to bound a provider that has stopped making sense, the user never
+    /// set it, and no preference they expressed was about it — so warning on it
+    /// would log a line nobody asked for and then let the run keep spending. It
+    /// stops, whatever the mode says.
+    private var effectiveBudgetEnforcementMode: BudgetEnforcementMode {
+        isUserConfiguredBudget ? budgetEnforcementMode : .hardStop
+    }
     init(
         tokenBudget: Int,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
+        isUserConfiguredBudget: Bool = true,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
@@ -705,6 +528,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         activeToolIdleTimeoutSeconds: TimeInterval? = nil,
         managedWorkspaceJobIdleTimeoutSeconds: TimeInterval? = nil,
         terminalProgressExitGraceSeconds: TimeInterval? = nil,
+        maxRunSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
         liveApprovalsActive: Bool = false,
@@ -713,6 +537,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
+        self.isUserConfiguredBudget = isUserConfiguredBudget
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
@@ -721,6 +546,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.activeToolIdleTimeoutSeconds = resolvedActiveToolIdleTimeoutSeconds
         self.managedWorkspaceJobIdleTimeoutSeconds = managedWorkspaceJobIdleTimeoutSeconds ?? max(resolvedActiveToolIdleTimeoutSeconds, 6 * 3600)
         self.terminalProgressExitGraceSeconds = terminalProgressExitGraceSeconds ?? min(self.noSemanticProgressTimeoutSeconds, 30)
+        self.maxRunSeconds = maxRunSeconds ?? RuntimeProgressSignals.defaultMaxRunSeconds
         self.taskID = taskID
         self.policyGuard = policyGuard
         self.liveApprovalsActive = liveApprovalsActive
@@ -738,14 +564,21 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         defer { lock.unlock() }
 
         let now = Date()
+        eventSequence += 1
         lastAnyActivityTime = now
         hasSeenAnyActivity = true
         let progressKind = Self.progressKind(for: parsed)
         if Self.refreshesRuntimeActivity(progressKind) {
-            lastActivityTime = now
-            hasSeenProgressActivity = true
+            markSemanticProgressLocked(now: now)
         } else if progressKind == .providerLiveness || progressKind == .accounting {
             hasSeenProviderLivenessActivity = true
+        }
+        if case .unknown = parsed {
+            // The taxonomy just failed to describe something the provider sent.
+            // Remember it: the kill branches below consult this before deciding
+            // that "no recognised progress" means "no progress".
+            unknownEventCount += 1
+            lastUnknownEventSequence = eventSequence
         }
         if Self.isSuccessfulTerminalProgress(parsed) {
             lastTerminalProgressTime = now
@@ -898,7 +731,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if budgetEnforcementMode == .warning {
+                if effectiveBudgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "stream_usage_budget_exceeded",
                         fields: [
@@ -920,7 +753,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if budgetEnforcementMode == .warning {
+                if effectiveBudgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "reported_budget_exceeded",
                         fields: [
@@ -973,7 +806,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 "estimated_tokens": String(_estimatedTokens),
                 "token_budget": String(tokenBudget)
             ]
-            if budgetEnforcementMode == .warning {
+            if effectiveBudgetEnforcementMode == .warning {
                 return recordBudgetWarning(
                     reason: "estimated_budget_exceeded",
                     fields: fields,
@@ -1762,6 +1595,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         var auditFields = fields
         auditFields["reason"] = reason
         auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
+        // Without this, a hard stop under an app configured for Warning Only
+        // reads as a bug in the log. It isn't: the ceiling that fired is the
+        // implicit one, which the mode does not govern.
+        auditFields["budget_source"] = isUserConfiguredBudget ? "user" : "runaway_ceiling"
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .error)
         _budgetExceeded = true
         process?.terminate()
@@ -1781,12 +1618,60 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     func recordActivity() {
         lock.lock()
         let now = Date()
-        lastActivityTime = now
         lastAnyActivityTime = now
         hasSeenAnyActivity = true
         hasSeenProviderLivenessActivity = true
-        hasSeenProgressActivity = true
+        markSemanticProgressLocked(now: now)
         lock.unlock()
+    }
+
+    /// Records raw stream volume, independent of what the bytes parsed into.
+    ///
+    /// This is the fix for the whole class of "the parser did not recognise the
+    /// frame, so the watchdog concluded the provider was idle" failures. A
+    /// provider that has pushed a meaningful amount of output since the last
+    /// recognised progress event is observably working, so the semantic clock
+    /// advances on volume alone. The run-wall-clock ceiling is what keeps this
+    /// from becoming an unbounded licence to burn tokens.
+    func recordStreamVolume(bytes: Int) {
+        guard bytes > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+
+        cumulativeStreamBytes += bytes
+        guard cumulativeStreamBytes - streamBytesAtLastProgress
+                >= RuntimeProgressSignals.semanticProgressByteThreshold else {
+            return
+        }
+
+        let now = Date()
+        lastAnyActivityTime = now
+        hasSeenAnyActivity = true
+        markSemanticProgressLocked(now: now)
+    }
+
+    var streamBytesObserved: Int { lock.lock(); defer { lock.unlock() }; return cumulativeStreamBytes }
+    var unrecognizedEventCount: Int { lock.lock(); defer { lock.unlock() }; return unknownEventCount }
+
+    /// The single place the semantic-progress clock advances, so the byte mark
+    /// and the escalation budget can never drift out of step with it. Callers
+    /// must already hold `lock`.
+    private func markSemanticProgressLocked(now: Date) {
+        lastActivityTime = now
+        silenceWindowStartSequence = eventSequence
+        hasSeenProgressActivity = true
+        streamBytesAtLastProgress = cumulativeStreamBytes
+        semanticProgressExtensionsUsed = 0
+        semanticProgressExtensionExpiresAt = nil
+    }
+
+    /// Read live rather than from the evaluation's opening snapshot: a semantic
+    /// branch earlier in the same pass may have just granted the reprieve.
+    private func hasLiveSemanticExtension(now: Date) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let expiry = semanticProgressExtensionExpiresAt else { return false }
+        return now < expiry
     }
 
     func startWatchdog(process: AgentRuntimeProcessControl) {
@@ -1805,11 +1690,37 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 Thread.sleep(forTimeInterval: checkInterval)
                 guard let self, processBox.isRunning else { return }
 
-                if self.evaluateWatchdogTimeout(terminate: { processBox.terminate() }) {
+                if self.evaluateWatchdogTimeout(
+                    gracefulStop: { processBox.requestGracefulStop() },
+                    awaitGracefulExit: {
+                        Self.waitForExit(processBox, timeout: Self.gracefulStopGraceSeconds)
+                    },
+                    terminate: { processBox.terminate() }
+                ) {
                     return
                 }
             }
         }
+    }
+
+    /// How long a provider gets to act on stdin EOF before the signal ladder
+    /// starts. Short enough that a wedged provider is not held onto, long
+    /// enough for an event loop to come round and write a buffered result.
+    static let gracefulStopGraceSeconds: TimeInterval = 2
+
+    /// Polls, because `AgentRuntimeProcessControl` publishes liveness and gives
+    /// nothing to block on. It costs nothing: this runs on the watchdog's own
+    /// thread, which spends the rest of the run asleep.
+    private static func waitForExit(
+        _ process: AgentRuntimeProcessControlBox,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return true
     }
 
     static func watchdogCheckInterval(
@@ -1821,13 +1732,27 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
+    /// `awaitGracefulExit` defaults to "it did not exit", so a test still
+    /// observes the terminate it is asserting on without sleeping through the
+    /// real grace period.
     @discardableResult
-    func evaluateWatchdogTimeoutForTesting(process: AgentRuntimeProcessControl? = nil) -> Bool {
-        evaluateWatchdogTimeout(terminate: { process?.terminate() })
+    func evaluateWatchdogTimeoutForTesting(
+        process: AgentRuntimeProcessControl? = nil,
+        awaitGracefulExit: () -> Bool = { false }
+    ) -> Bool {
+        evaluateWatchdogTimeout(
+            gracefulStop: { process?.requestGracefulStop() ?? false },
+            awaitGracefulExit: awaitGracefulExit,
+            terminate: { process?.terminate() }
+        )
     }
 
     @discardableResult
-    private func evaluateWatchdogTimeout(terminate: () -> Void) -> Bool {
+    private func evaluateWatchdogTimeout(
+        gracefulStop: () -> Bool = { false },
+        awaitGracefulExit: () -> Bool = { false },
+        terminate: () -> Void
+    ) -> Bool {
         lock.lock()
         let now = Date()
         let idleDuration = now.timeIntervalSince(lastActivityTime)
@@ -1842,12 +1767,93 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let hasActiveToolUse = !activeToolUseIDs.isEmpty
         let hasActiveManagedWorkspaceJob = !activeManagedWorkspaceJobs.isEmpty
         let hasActiveRuntimeWork = hasActiveToolUse || hasActiveManagedWorkspaceJob
+        // Poll-granular: the exclusion opens at the first poll that sees a job
+        // and closes at the first that does not, so up to one check interval of
+        // job time is still counted. Close enough for a four-hour ceiling, and
+        // it keeps the job mutation sites out of the wall clock's business.
+        if hasActiveManagedWorkspaceJob {
+            if managedJobExclusionStartedAt == nil { managedJobExclusionStartedAt = now }
+        } else if let startedAt = managedJobExclusionStartedAt {
+            excludedRunSeconds += now.timeIntervalSince(startedAt)
+            managedJobExclusionStartedAt = nil
+        }
+        let excludedSeconds = excludedRunSeconds
+            + (managedJobExclusionStartedAt.map { now.timeIntervalSince($0) } ?? 0)
+        // `anyIdleDuration < idleTimeoutSeconds` is a precedence rule, not a
+        // second deadline: a provider that has gone *completely* silent past the
+        // outer idle timeout is a plain timeout, and that branch should own the
+        // kill rather than this one. But the semantic timeout is
+        // `min(idleTimeoutSeconds, 180)`, so any idle timeout at or below 180s
+        // makes the two deadlines identical — and then this predicate is false
+        // at the very moment it should be true, every time. The run falls
+        // through to the idle branch and is killed outright, never receiving the
+        // one extension this watchdog exists to grant. When the deadlines
+        // coincide there is no precedence question to answer, and this branch is
+        // the better-informed of the two: it knows progress happened earlier,
+        // and it escalates before it stops.
+        let deadlinesCoincide = noSemanticProgressTimeoutSeconds >= idleTimeoutSeconds
         let hasStalledAfterProgress = hasSeenProgressActivity
             && terminalIdleDuration == nil
             && !hasActiveRuntimeWork
-            && anyIdleDuration < idleTimeoutSeconds
+            && (deadlinesCoincide || anyIdleDuration < idleTimeoutSeconds)
             && idleDuration >= noSemanticProgressTimeoutSeconds
+        // Letting the branch above own the kill is not enough when its deadline
+        // lands *after* the idle one. `semanticProgressTimeout` returns
+        // `idleTimeout * 2` for a task that owes a deliverable, so every idle
+        // timeout below 360s puts the artifact window past the idle deadline —
+        // and the generic branch below would fire first, every time. The window
+        // that was widened to give a resumed deliverable room to write was
+        // therefore unreachable for exactly the short-timeout runs it was
+        // widened for: an idle timeout of 120s yields a 240s window and a kill
+        // at 120s.
+        //
+        // So the generic deadline waits while that first window is still live.
+        // It is not waived: once the window is spent, `hasStalledAfterProgress`
+        // above takes the kill, and it escalates once before it stops. Bounded
+        // at two windows, and only for a run that produced visible progress and
+        // then went quiet — a provider that never produced any is still owned by
+        // the metadata-only and liveness-only branches on their own deadlines.
+        let hasPendingArtifactWindow = hasSeenProgressActivity
+            && terminalIdleDuration == nil
+            && !hasActiveRuntimeWork
+            && noSemanticProgressTimeoutSeconds > idleTimeoutSeconds
+            && idleDuration < noSemanticProgressTimeoutSeconds
+        // An unrecognised frame inside the current silence window means the
+        // event taxonomy is behind the provider's stream format. "No recognised
+        // progress" then stops being evidence of "no progress", so the
+        // aggressive kills stand down and the outer idle timeout takes over.
+        let hasUnrecognizedTrafficInWindow = lastUnknownEventSequence.map { $0 > silenceWindowStartSequence } ?? false
+        let runDuration = now.timeIntervalSince(runStartedAt) - excludedSeconds
+        let progressDiagnostics = [
+            "stream_bytes": String(cumulativeStreamBytes),
+            "stream_bytes_since_progress": String(cumulativeStreamBytes - streamBytesAtLastProgress),
+            "unknown_events": String(unknownEventCount),
+            "run_seconds": String(Int(runDuration)),
+            "managed_job_excluded_seconds": String(Int(excludedSeconds))
+        ]
         lock.unlock()
+
+        // Checked before every silence-based branch: those all measure how long
+        // the provider has been quiet, so a chatty runaway never reaches them.
+        if maxRunSeconds > 0, runDuration >= maxRunSeconds {
+            let reason = "provider_run_wall_clock_exceeded"
+            let message = """
+            ASTRA stopped the provider because the run hit its \(Int(maxRunSeconds / 60))-minute wall-clock ceiling.
+            Every other runtime timeout measures silence, so a provider that keeps streaming can hold them off indefinitely; this ceiling bounds the run regardless of how busy it looks. Time spent waiting on a managed workspace job is not counted: the job's own heartbeat bound covers it.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: progressDiagnostics.merging([
+                "reason": reason,
+                "limit_seconds": String(Int(maxRunSeconds))
+            ]) { _, new in new }, level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            Self.stopProvider(gracefulStop: gracefulStop, awaitGracefulExit: awaitGracefulExit, terminate: terminate)
+            return true
+        }
 
         if let terminalIdleDuration,
            terminalIdleDuration >= terminalProgressExitGraceSeconds {
@@ -1903,77 +1909,78 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
+        let sharedIdleFields = progressDiagnostics.merging([
+            "semantic_idle_seconds": String(Int(idleDuration)),
+            "last_event_age_seconds": String(Int(anyIdleDuration)),
+            "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+        ]) { _, new in new }
+
         if !hasActiveRuntimeWork && hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
-            let reason = "provider_no_semantic_progress"
-            let message = """
-            ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
-            Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
-            """
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
-                "reason": reason,
-                "semantic_idle_seconds": String(Int(idleDuration)),
-                "last_event_age_seconds": String(Int(anyIdleDuration)),
-                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
-            ], level: .error)
-            lock.lock()
-            if _runtimeStopReason == nil {
-                _runtimeStopReason = reason
-                _runtimeStopMessage = message
+            if escalateOrStopForSilence(
+                reason: "provider_no_semantic_progress",
+                message: """
+                ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
+                Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+                """,
+                auditFields: sharedIdleFields,
+                deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
+                now: now,
+                gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
+                terminate: terminate
+            ) {
+                return true
             }
-            lock.unlock()
-            terminate()
-            return true
         }
 
         if !hasActiveRuntimeWork && hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
-            let reason = "provider_no_actionable_progress"
-            let message = """
-            ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a file change, or a result.
-            Liveness-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
-            """
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
-                "reason": reason,
-                "actionable_idle_seconds": String(Int(idleDuration)),
-                "last_event_age_seconds": String(Int(anyIdleDuration)),
-                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
-            ], level: .error)
-            lock.lock()
-            if _runtimeStopReason == nil {
-                _runtimeStopReason = reason
-                _runtimeStopMessage = message
+            if escalateOrStopForSilence(
+                reason: "provider_no_actionable_progress",
+                message: """
+                ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a result, or enough raw stream output to count as progress.
+                Liveness-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+                """,
+                auditFields: sharedIdleFields.merging([
+                    "actionable_idle_seconds": String(Int(idleDuration))
+                ]) { _, new in new },
+                deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
+                now: now,
+                gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
+                terminate: terminate
+            ) {
+                return true
             }
-            lock.unlock()
-            terminate()
-            return true
         }
 
         if hasStalledAfterProgress {
-            let reason = "provider_semantic_progress_stalled"
-            let message = """
-            ASTRA stopped the provider because it had produced semantic progress earlier but stopped advancing the task.
-            No visible text, tool use, tool output, file change, or result arrived for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
-            """
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
-                "reason": reason,
-                "semantic_idle_seconds": String(Int(idleDuration)),
-                "last_event_age_seconds": String(Int(anyIdleDuration)),
-                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
-            ], level: .error)
-            lock.lock()
-            if _runtimeStopReason == nil {
-                _runtimeStopReason = reason
-                _runtimeStopMessage = message
+            if escalateOrStopForSilence(
+                reason: "provider_semantic_progress_stalled",
+                message: """
+                ASTRA stopped the provider because it had produced semantic progress earlier but stopped advancing the task.
+                No visible text, tool use, tool output, result, or meaningful stream output arrived for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+                """,
+                auditFields: sharedIdleFields,
+                deferForUnrecognizedTraffic: hasUnrecognizedTrafficInWindow,
+                now: now,
+                gracefulStop: gracefulStop,
+                awaitGracefulExit: awaitGracefulExit,
+                terminate: terminate
+            ) {
+                return true
             }
-            lock.unlock()
-            terminate()
-            return true
         }
 
-        if !hasActiveRuntimeWork && anyIdleDuration >= idleTimeoutSeconds {
+        if !hasActiveRuntimeWork, anyIdleDuration >= idleTimeoutSeconds,
+           !hasPendingArtifactWindow, !hasLiveSemanticExtension(now: now) {
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
                 "idle_seconds": String(Int(anyIdleDuration)),
                 "semantic_idle_seconds": String(Int(idleDuration)),
-                "limit_seconds": String(Int(idleTimeoutSeconds))
+                "limit_seconds": String(Int(idleTimeoutSeconds)),
+                // The deadline that actually applied. When the artifact window
+                // is wider, a kill logged against `idleTimeoutSeconds` alone
+                // reads as having fired minutes late.
+                "semantic_limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
             ], level: .error)
             lock.lock()
             _timedOut = true
@@ -1983,6 +1990,121 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    /// Decides what a breached silence window actually earns.
+    ///
+    /// Three outcomes, in order of how much the watchdog trusts itself:
+    ///
+    /// 1. Unrecognised frames arrived inside the window — the taxonomy is out of
+    ///    date, so this branch has no standing to kill. Defer to the outer idle
+    ///    timeout and leave a trace so the parser gap is findable.
+    /// 2. First breach — extend once. A kill throws away the entire run, and the
+    ///    common false positive is a provider that is seconds from emitting.
+    /// 3. Breached again after the extension — stop the run.
+    ///
+    /// Returns true only when the run was stopped.
+    private func escalateOrStopForSilence(
+        reason: String,
+        message: String,
+        auditFields: [String: String],
+        deferForUnrecognizedTraffic: Bool,
+        now: Date,
+        gracefulStop: () -> Bool,
+        awaitGracefulExit: () -> Bool,
+        terminate: () -> Void
+    ) -> Bool {
+        if deferForUnrecognizedTraffic {
+            guard claimUnrecognizedDeferralTrace(reason: reason) else { return false }
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: auditFields.merging([
+                "reason": reason,
+                "outcome": "deferred_unrecognized_stream"
+            ]) { _, new in new }, level: .warning)
+            return false
+        }
+
+        lock.lock()
+        let extensionsUsed = semanticProgressExtensionsUsed
+        if extensionsUsed < Self.maxSemanticProgressExtensions {
+            semanticProgressExtensionsUsed = extensionsUsed + 1
+            // Extend the window without rebasing the byte mark or
+            // `lastAnyActivityTime`: no progress was observed, only forgiven,
+            // and the audit trail should keep saying how long the provider has
+            // really been quiet.
+            lastActivityTime = now
+            silenceWindowStartSequence = eventSequence
+            semanticProgressExtensionExpiresAt = now.addingTimeInterval(noSemanticProgressTimeoutSeconds)
+            lock.unlock()
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: auditFields.merging([
+                "reason": reason,
+                "outcome": "window_extended",
+                "extension": String(extensionsUsed + 1)
+            ]) { _, new in new }, level: .warning)
+            return false
+        }
+        lock.unlock()
+
+        AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: auditFields.merging([
+            "reason": reason,
+            "outcome": "terminated",
+            "extensions_used": String(extensionsUsed)
+        ]) { _, new in new }, level: .error)
+
+        lock.lock()
+        if _runtimeStopReason == nil {
+            _runtimeStopReason = reason
+            _runtimeStopMessage = message
+        }
+        lock.unlock()
+        Self.stopProvider(gracefulStop: gracefulStop, awaitGracefulExit: awaitGracefulExit, terminate: terminate)
+        return true
+    }
+
+    /// Closes the provider's stdin, gives it a moment to act on the EOF, and
+    /// only then starts signalling.
+    ///
+    /// `requestGracefulStop` exists so an interactive stream-JSON provider can
+    /// notice the run is over and flush the result it is already holding.
+    /// Sending SIGTERM in the very next statement takes that back: the default
+    /// disposition for SIGTERM is to die, so a provider whose event loop has not
+    /// yet come round to the EOF is killed before it can write anything, and the
+    /// call was pure ceremony. The three-second delay inside `terminate()` does
+    /// not help — it sits between SIGTERM and SIGKILL, by which point the
+    /// process is already unwinding.
+    private static func stopProvider(
+        gracefulStop: () -> Bool,
+        awaitGracefulExit: () -> Bool,
+        terminate: () -> Void
+    ) {
+        // The wait is only owed when there was a channel to close. A provider
+        // with no stdin pipe has nothing to act on, and the grace period would
+        // be two seconds of pure delay on a kill that is already decided.
+        if gracefulStop(), awaitGracefulExit() { return }
+        terminate()
+    }
+
+    /// True the first time `reason` defers inside the current silence window.
+    ///
+    /// See `tracedDeferralWindowStart` for why the deferral has to be rationed:
+    /// it is the one branch of the watchdog that leaves the run exactly as it
+    /// found it, so the poll after it looks identical to the poll before it.
+    private func claimUnrecognizedDeferralTrace(reason: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if tracedDeferralWindowStart != silenceWindowStartSequence {
+            tracedDeferralWindowStart = silenceWindowStartSequence
+            tracedDeferralReasons = []
+        }
+        guard tracedDeferralReasons.insert(reason).inserted else { return false }
+        _unrecognizedDeferralTraceCount += 1
+        return true
+    }
+
+    /// How many deferral traces have actually been written. The log line itself
+    /// is the thing being rationed and a test cannot read the log, so the count
+    /// stands in for it.
+    var unrecognizedDeferralTraceCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _unrecognizedDeferralTraceCount
     }
 
     private func refreshManagedWorkspaceJobs(now: Date) -> ManagedWorkspaceJobContext? {
@@ -2030,7 +2152,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {
         switch parsed {
-        case .control: return .providerLiveness
+        case .control(let type):
+            // Streaming a tool call's arguments, or a running tool's partial
+            // stdout, is generation work rather than idle chatter: it can hold
+            // the stream for minutes emitting nothing else, and treating it as
+            // liveness gets the run killed mid-write by the semantic-progress
+            // watchdog. Every runtime that streams work this way registers its
+            // control type in `RuntimeProgressSignals`.
+            return RuntimeProgressSignals.isProgressBearingControl(type)
+                ? .actionableProgress
+                : .providerLiveness
         case .systemInit: return .lifecycleMetadata
         case .unknown:
             return .diagnostic

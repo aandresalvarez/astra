@@ -69,6 +69,16 @@ public protocol ConnectorSecretPersisting: Sendable {
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]
     @discardableResult
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool
+    /// The same write, reporting why it failed rather than only that it did.
+    /// Callers with a human waiting on the answer should use this one; see
+    /// `KeychainWriteOutcome`.
+    @discardableResult
+    static func saveCredentialReportingFailure(
+        _ value: String,
+        key: String,
+        facts: ConnectorSecretFacts,
+        allowUserInteraction: Bool
+    ) -> KeychainWriteOutcome
     /// Store-injectable twin of `saveCredential(_:key:facts:allowUserInteraction:)`,
     /// used only by `Connector`'s test seam (`saveCredential(key:value:store:)`)
     /// so tests can exercise the same per-namespace fan-out with a fake
@@ -88,4 +98,22 @@ public protocol ConnectorSecretPersisting: Sendable {
     /// for every key with a non-empty value in one namespace, backfill it
     /// into every other namespace `facts` resolves to.
     static func synchronizeCredentialNamespaces(keys: [String], facts: ConnectorSecretFacts)
+}
+
+public extension ConnectorSecretPersisting {
+    /// Defaulted so a conformer that has no real Keychain under it — every test
+    /// fake — keeps compiling and keeps behaving exactly as before. "It failed
+    /// and I have nothing to say about why" is the honest answer from a fake,
+    /// and it is the answer the UI already assumes when no diagnosis arrives.
+    @discardableResult
+    static func saveCredentialReportingFailure(
+        _ value: String,
+        key: String,
+        facts: ConnectorSecretFacts,
+        allowUserInteraction: Bool
+    ) -> KeychainWriteOutcome {
+        saveCredential(value, key: key, facts: facts, allowUserInteraction: allowUserInteraction)
+            ? .written
+            : .failed(diagnosis: nil)
+    }
 }

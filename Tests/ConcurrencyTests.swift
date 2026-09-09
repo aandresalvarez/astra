@@ -107,7 +107,7 @@ struct RuntimeSnapshotBackgroundWorkTests {
     func budgetClassificationUsesSendableSnapshotsOffMainActor() async {
         let exceeded = await Task.detached {
             let result = AgentProcessResult(exitCode: 0)
-            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11)
+            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11, isUserConfigured: true)
             return AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
                 result: result,
                 budget: snapshot,
@@ -117,7 +117,7 @@ struct RuntimeSnapshotBackgroundWorkTests {
 
         let warningOnly = await Task.detached {
             let result = AgentProcessResult(exitCode: 0)
-            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11)
+            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11, isUserConfigured: true)
             return AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
                 result: result,
                 budget: snapshot,

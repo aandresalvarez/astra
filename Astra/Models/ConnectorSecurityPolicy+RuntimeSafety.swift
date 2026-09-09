@@ -25,12 +25,23 @@ public extension ConnectorSecurityPolicy {
 public enum ConnectorCredentialSaveOutcome: Sendable, Equatable {
     case saved
     case rejected(ConnectorCredentialAdmissionVerdict)
-    case keychainWriteFailed
+    /// `diagnosis` travels with the outcome rather than being looked up
+    /// afterwards. The Keychain layer keeps one process-global slot for the
+    /// most recent failure and reading it empties it, so a second failing write
+    /// or an unrelated batch drain can answer for this one — and the UI would
+    /// then offer a remedy for a problem the user does not have. Nil when the
+    /// layer had nothing to say; see `KeychainWriteOutcome`.
+    case keychainWriteFailed(diagnosis: KeychainWriteDiagnosis?)
 
     public var isSaved: Bool { self == .saved }
 
     public var rejection: ConnectorCredentialAdmissionVerdict? {
         if case .rejected(let verdict) = self { return verdict }
+        return nil
+    }
+
+    public var keychainDiagnosis: KeychainWriteDiagnosis? {
+        if case .keychainWriteFailed(let diagnosis) = self { return diagnosis }
         return nil
     }
 }

@@ -108,7 +108,11 @@ enum AgentRuntimeStreamDiagnostics {
                     "sample_index": String(index + 1),
                     "shape": shape
                 ],
-                level: .debug,
+                // Warning, not debug: an unrecognised frame shape means the
+                // parser is behind the provider's stream format, which is the
+                // upstream cause of runs being killed while they are working.
+                // It should be findable without knowing to look for it.
+                level: .warning,
                 fieldMaxLength: 500
             )
         }

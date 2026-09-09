@@ -1076,6 +1076,7 @@ final class AgentRuntimeWorker {
             runtimeRequirements: appliedRuntime.requirements,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
+            maxRunSeconds: maxRunSeconds,
             onInteractiveAsk: Self.interactiveAskHandler(
                 runtime: selectedRuntime, task: task, run: run,
                 permissionPolicy: runPermissionPolicy, manifest: manifest,
@@ -1257,6 +1258,17 @@ final class AgentRuntimeWorker {
             }
         }
 
+        // Built before the outcome chain so the budget branch can decide and
+        // explain itself from the same snapshot. Limit frozen on
+        // `executionTask` — what this run launched with; usage live on `task`.
+        let budgetSnapshot = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+            tokensUsed: task.tokensUsed,
+            // The ceiling is real but unchosen; `tokenBudget` is the only record
+            // of which one this run is under.
+            isUserConfigured: executionTask.tokenBudget != 0
+        )
+
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled
@@ -1300,20 +1312,28 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            // Limit frozen on launchTask; usage is live on task.
-            budget: AgentRuntimeBudgetSnapshot(
-                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
-                tokensUsed: task.tokensUsed
-            ),
+            budget: budgetSnapshot,
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
             run.typedStopReason = .maxBudgetReached
             TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
-            let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
+            // Two different things to say, because two different limits can get
+            // here. `task.tokenBudget` is 0 when the user set none, so the
+            // configured wording would render "(25000000/0)" and read as a bug —
+            // and it would name a limit the user could go change, when the one
+            // that actually fired is ASTRA's own.
+            //
+            // Both branches quote the snapshot rather than the live task, so the
+            // number printed is the number enforced: frozen at launch, and
+            // already multiplied by team size for a team run. Reading
+            // `task.tokenBudget` here used to print neither.
+            let payload = budgetSnapshot.isUserConfigured
+                ? "Token budget exceeded (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
+                : "Run stopped at ASTRA's runaway safety ceiling (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget) tokens). No token budget was set for this task, so this ceiling applied. \(outcome)"
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
+                                  payload: payload, run: run)
             modelContext.insert(event)
         } else if processSucceeded,
                   runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
@@ -2026,7 +2046,13 @@ final class AgentRuntimeWorker {
         return true
     }
 
-    private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
+    /// Whether a runtime stop is final or the run should wait for the user.
+    ///
+    /// Internal rather than private so a test can pin the membership directly:
+    /// the failure mode this list guards against — a deterministic stop parked
+    /// in `pendingUser`, waiting on an approval that changes nothing — is
+    /// invisible from the outside until someone notices a run that never moves.
+    static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
         if stopReason.isDockerRuntimeBlocked {
             return true
@@ -2038,7 +2064,8 @@ final class AgentRuntimeWorker {
             .providerNoSemanticProgress,
             .providerSemanticProgressStalled,
             .providerActiveToolStalled,
-            .providerWorkspaceJobStalled
+            .providerWorkspaceJobStalled,
+            .providerRunWallClockExceeded
         ].contains(stopReason)
     }
 
@@ -2146,6 +2173,8 @@ final class AgentRuntimeWorker {
     }
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
+    /// Wall-clock ceiling on one provider run, net of managed-job time.
+    var maxRunSeconds: TimeInterval = RuntimeProgressSignals.defaultMaxRunSeconds
 
     /// Permission policy applied to CLI runs. Review/restricted is the safe default;
     /// the composer security gate can opt into autonomous runs for trusted work.

@@ -112,28 +112,55 @@ public enum KeychainService {
         label: String? = nil,
         allowUserInteraction: Bool = false
     ) -> Bool {
+        saveReportingFailure(
+            key: key,
+            value: value,
+            facts: facts,
+            label: label,
+            allowUserInteraction: allowUserInteraction
+        ).didWrite
+    }
+
+    /// Facts-based `save` that carries the Keychain layer's own account of a
+    /// failure back to the caller — see
+    /// `AstraSecureKeychainStore.saveReportingFailure`.
+    @discardableResult
+    public static func saveReportingFailure(
+        key: String,
+        value: String,
+        facts: ConnectorSecretFacts,
+        label: String? = nil,
+        allowUserInteraction: Bool = false
+    ) -> KeychainWriteOutcome {
         let services = connectorServices(facts: facts)
-        let saved = services.map { service in
-            AstraSecureKeychainStore.save(
+        // Every namespace is still attempted even after one fails — a partial
+        // write is what makes an equivalent recreated connector find the secret
+        // again. Only the first failure's diagnosis is kept: they are all the
+        // same unopenable keychain, and the later ones have nothing left to
+        // drain anyway.
+        var firstFailure: KeychainWriteOutcome?
+        for service in services {
+            let outcome = AstraSecureKeychainStore.saveReportingFailure(
                 service: service,
                 account: key,
                 value: value,
                 label: label ?? "Astra connector credential",
                 allowUserInteraction: allowUserInteraction
             )
+            if !outcome.didWrite, firstFailure == nil {
+                firstFailure = outcome
+            }
         }
-        let ok = saved.allSatisfy { $0 }
-        if !ok {
-            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
-                "scope": "connector",
-                "namespace_count": String(services.count)
-            ], level: .warning)
-            // The matching `keychain.unavailable` line, which is where the
-            // `status=-25293` actually appears, is drained one layer down in
-            // `AstraSecureKeychainStore.save` — the chokepoint every write
-            // passes through, so no writer can be silent by omission.
-        }
-        return ok
+        guard let firstFailure else { return .written }
+        AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
+            "scope": "connector",
+            "namespace_count": String(services.count)
+        ], level: .warning)
+        // The matching `keychain.unavailable` line, which is where the
+        // `status=-25293` actually appears, is drained one layer down in
+        // `AstraSecureKeychainStore.saveReportingFailure` — the chokepoint every
+        // write passes through, so no writer can be silent by omission.
+        return firstFailure
     }
 
     /// Save or update a credential value for a skill-owned secret.
