@@ -87,6 +87,19 @@ enum BrowserBridgeRuntimeLaunchGuard {
         mcpToolSupported || supportsShellToolForBrowserBridge(runtime: runtime)
     }
 
+    /// The same question asked with the profile the launch resolved, or `nil`
+    /// for "resolve it yourself". Both surfaces that *narrate* the bridge -
+    /// `OfferedToolRoutes` and `ShelfBrowserPromptSection` - receive that
+    /// profile as an optional, and a fallback that drifted between them would
+    /// put back the disagreement the shared predicate exists to prevent.
+    static func canCarryBridge(
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
+    ) -> Bool {
+        let profile = runtimeCapabilityProfile ?? .defaultProfile(for: runtime)
+        return canCarryBridge(runtime: runtime, mcpToolSupported: profile.canDeliverBrowserBridgeMCPTool)
+    }
+
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
         guard isBrowserBridgeAttached(environment: plan.environment),
               plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingBrowserControlToolReason else {

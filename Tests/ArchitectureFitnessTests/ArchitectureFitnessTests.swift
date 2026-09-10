@@ -2014,7 +2014,12 @@ struct ArchitectureFitnessTests {
             // permission list already allowlists every reachable tool; the
             // prompt named only the narrated subset, so a permitted command
             // the agent was never told about read as an absent capability.
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_355, .owner("Provider prompt assembly")),
+            // 2_355 -> 2_325: gating the Shelf browser block on the same
+            // `canCarryBridge` the launch uses needed the runtime and its
+            // profile threaded in, and the file had two lines of headroom. The
+            // block moved to ShelfBrowserPromptSection.swift instead.
+            // Ratcheted to what is left rather than banking the difference.
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_325, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
             // policy observation without a user-visible outcome now audits it.

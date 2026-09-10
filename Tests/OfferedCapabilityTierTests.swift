@@ -577,8 +577,9 @@ struct OfferedCapabilityTierTests {
         }
 
         // The offered list names a tool by command, which is the claim under
-        // test - the Shelf session block elsewhere in the prompt describes the
-        // bridge in runtime-conditional terms and is not this tier.
+        // test. The Shelf session block is a separate surface with the same
+        // gate; `promptDescribesTheShelfBrowserCatalogOnlyWhereTheLaunchCanAttachIt`
+        // covers that one.
         let offeredEntry = "- Shelf Browser Control: `\(BrowserBridgeMCPProjection.toolCommand)`"
         // With --additional-mcp-config the launch carries the bridge over the
         // browser MCP tool, so the offered list is telling the truth.
@@ -586,6 +587,52 @@ struct OfferedCapabilityTierTests {
         // Without it this Copilot build has no shell and no browser MCP, so the
         // launch drops the bridge and the prompt must not advertise it.
         #expect(!prompt(supportsAdditionalMCPConfig: false).contains(offeredEntry))
+    }
+
+    /// The same inversion, one surface over and about thirty lines heavier. The
+    /// Shelf session block hands the agent the bridge endpoint and the whole
+    /// `astra-browser` command catalog; on a Copilot build with neither a shell
+    /// tool nor a browser MCP route, `removingUndeliverableOfferedBridge` has
+    /// already stripped `ASTRA_BROWSER_URL` from the environment. Its
+    /// runtime-conditional phrasing keeps it from being false, but a hedge is
+    /// still the prompt describing the run from a capability table rather than
+    /// from what the launch attached - and it is paid for in tokens either way.
+    @Test("The prompt describes the Shelf browser catalog only where the launch can attach it")
+    func promptDescribesTheShelfBrowserCatalogOnlyWhereTheLaunchCanAttachIt() throws {
+        let fixture = try BrowserFixture(runtime: .copilotCLI)
+        defer { fixture.tearDown() }
+
+        func prompt(for task: AgentTask, supportsAdditionalMCPConfig: Bool) -> String {
+            AgentPromptBuilder.buildPrompt(
+                for: task,
+                executionPolicy: AgentRuntimeExecutionPolicy(
+                    runtimeCapabilityProfile: .copilotProfile(
+                        supportsAdditionalMCPConfig: supportsAdditionalMCPConfig
+                    )
+                )
+            )
+        }
+
+        // With --additional-mcp-config the bridge rides the browser MCP tool,
+        // so every part of the block describes something the run received.
+        let carried = prompt(for: fixture.task, supportsAdditionalMCPConfig: true)
+        #expect(carried.contains("Shelf Browser Session:"))
+        #expect(carried.contains("Bridge endpoint: \(BrowserFixture.endpoint)"))
+        #expect(carried.contains("`\(BrowserBridgeMCPProjection.toolCommand) actions`"))
+
+        // Without it the launch drops the bridge, so the endpoint and the
+        // catalog both describe a route the process never got.
+        let dropped = prompt(for: fixture.task, supportsAdditionalMCPConfig: false)
+        #expect(!dropped.contains("Shelf Browser Session:"))
+        #expect(!dropped.contains(BrowserFixture.endpoint))
+        #expect(!dropped.contains("`\(BrowserBridgeMCPProjection.toolCommand) actions`"))
+
+        // The read-only mail rider is part of the same section and tells the
+        // agent to inspect with `astra-browser read-page`, so it cannot outlive
+        // the bridge it depends on.
+        let mailTask = try fixture.makeTask(goal: "summarize the latest email in the inbox")
+        #expect(prompt(for: mailTask, supportsAdditionalMCPConfig: true).contains("Mail Read Safety:"))
+        #expect(!prompt(for: mailTask, supportsAdditionalMCPConfig: false).contains("Mail Read Safety:"))
     }
 
     /// A workspace whose Shelf browser is open and bound to an endpoint. That
@@ -602,6 +649,7 @@ struct OfferedCapabilityTierTests {
 
         static let unrelatedTurn = "Bake a chocolate sponge cake and write the recipe"
         static let browserTurn = "control the Shelf browser session and verify the outcome"
+        static let endpoint = "http://127.0.0.1:49152"
         static let helperPath = (RuntimePathResolver.astraToolsPath as NSString)
             .appendingPathComponent(BrowserBridgeMCPProjection.toolCommand)
 
@@ -654,7 +702,7 @@ struct OfferedCapabilityTierTests {
 
         private func bindShelf(to task: AgentTask) {
             ShelfBrowserBridgeRegistry.shared.update(
-                endpoint: "http://127.0.0.1:49152",
+                endpoint: Self.endpoint,
                 currentURL: nil,
                 currentTitle: nil,
                 taskID: task.id,
