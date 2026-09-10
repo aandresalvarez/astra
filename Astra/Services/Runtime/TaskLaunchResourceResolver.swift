@@ -1270,6 +1270,7 @@ enum TaskLaunchResourceResolver {
         // credential side stays gated by `connectorCredentialExposurePolicy`,
         // which is built from approved grants, so a connector without an
         // approval still projects config and still prompts for its secret.
+        let narratedConnectorIDs = Set(capabilityScope.connectors.map(\.id))
         for connector in capabilityScope.reachableConnectors {
             let normalizedServiceType = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1291,13 +1292,19 @@ enum TaskLaunchResourceResolver {
                     controlPlaneResources: &controlPlaneResources
                 )
             }
+            // The loop is reachability-wide, but `required` is a narration
+            // question. A connector this turn never mentioned is wired so it
+            // *can* be used; consumers that read `required` to pick a runtime
+            // or fail a launch must not treat it as something the turn cannot
+            // proceed without.
+            let connectorIsNarrated = narratedConnectorIDs.contains(connector.id)
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "connector:\(connector.serviceType)",
                 source: routesConnectorThroughHostControl ? .controlPlane : .connector,
                 reason: routesConnectorThroughHostControl
                     ? "\(connector.name) is delivered through ASTRA's host control plane."
                     : "Task capability scope includes connector \(connector.name).",
-                required: true
+                required: connectorIsNarrated
             ))
             guard !brokerOwnsConnectorConfiguration else { continue }
 

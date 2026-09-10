@@ -1298,8 +1298,18 @@ struct TaskCapabilityPromptScope {
     let reachableLocalTools: [LocalTool]
     let reachablePackageIDs: [String]
 
+    /// The browser bridge is wired for this run. Reachability-wide, because
+    /// attaching a route the turn never named costs nothing.
     var exposesBrowserBridge: Bool {
         reachableLocalTools.contains { $0.command == "astra-browser" }
+    }
+
+    /// This turn cannot proceed without the browser bridge. Narration-keyed,
+    /// because the answer reroutes the run to a runtime that can carry the
+    /// transport — a consequence an enabled-but-unmentioned local tool must not
+    /// be able to trigger on every turn of the workspace.
+    var requiresBrowserBridge: Bool {
+        localTools.contains { $0.command == "astra-browser" }
     }
 
     /// Capabilities the task can call but whose instructions this turn's prompt

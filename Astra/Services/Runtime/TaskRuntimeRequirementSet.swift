@@ -62,7 +62,7 @@ struct TaskRuntimeRequirementSet: Equatable, Sendable {
         task: AgentTask,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        browserBridgeAttached: Bool
+        browserBridgeRequired: Bool
     ) -> TaskRuntimeRequirementSet {
         // Docker mode grants the host-control MCP server all 5 tools
         // unconditionally (HostControlPlaneMCPProjection.enabledToolNames) —
@@ -84,7 +84,7 @@ struct TaskRuntimeRequirementSet: Equatable, Sendable {
             hostControlTools: hostControlTools,
             offeredHostControlTools: offeredHostControlTools,
             requiresDockerWorkspaceShell: DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
-            requiresBrowserControl: browserBridgeAttached
+            requiresBrowserControl: browserBridgeRequired
         )
     }
 

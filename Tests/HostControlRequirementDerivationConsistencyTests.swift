@@ -147,7 +147,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: snapshot.providerLaunch.exposesBrowserBridge
+            browserBridgeRequired: snapshot.providerLaunch.requiresBrowserBridge
         )
         #expect(requirements.offeredHostControlTools == ["jira"])
         #expect(requirements.hostControlTools.isEmpty)
@@ -265,7 +265,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             task: task,
             capabilityResolutionSnapshot: resolverSnapshot,
             executionEnvironment: executionEnvironment,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         // Mirrors AgentRuntimeWorker.executeRuntimeSession's
@@ -394,7 +394,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             task: task,
             capabilityResolutionSnapshot: resolverSnapshot,
             executionEnvironment: executionEnvironment,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
         #expect(resolverRequirements.hostControlTools == ["github"])
 

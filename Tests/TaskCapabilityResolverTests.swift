@@ -3001,15 +3001,17 @@ struct TaskCapabilityResolverTests {
 
         let scope = TaskCapabilityResolver(task: task, secretStore: store)
             .activationScope(contextText: task.goal)
-        let env = scope.resolver.resolvedEnvironmentVariables
-
-        // The task has no approved credential grant, so the token stays put even
-        // though the connector is now reachable.
-        #expect(!env.values.contains("secret-token-value"))
-        #expect(env["JIRA_JIRA_NEW_API_TOKEN"] == nil)
-        // Non-secret configuration does travel, which is what makes the route
-        // usable at all.
-        #expect(env["ASTRA_CONNECTORS"]?.contains("Jira-new") == true)
+        // Non-secret configuration travels, which is what makes the route usable.
+        let resolved = scope.resolver.resolvedEnvironmentVariables
+        #expect(resolved["ASTRA_CONNECTORS"]?.contains("Jira-new") == true)
+        // No approved grant, so the token stays sealed both here and in what the
+        // launch hands the subprocess - the second is the one that counts.
+        let launched = AgentRuntimeProcessRunner
+            .scopedEnvironmentVariables(for: task, capabilityScope: scope, contextText: task.goal)
+        for env in [resolved, launched] {
+            #expect(!env.values.contains("secret-token-value"))
+            #expect(env["JIRA_JIRA_NEW_API_TOKEN"] == nil)
+        }
     }
 
     @Test("A connector the workspace never enabled stays unreachable")

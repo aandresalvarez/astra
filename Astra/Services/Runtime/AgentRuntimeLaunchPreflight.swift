@@ -982,7 +982,7 @@ enum AgentRuntimeLaunchPreflight {
                 task: task,
                 capabilityResolutionSnapshot: resolutionSnapshot,
                 executionEnvironment: executionEnvironment,
-                browserBridgeAttached: resolutionSnapshot.providerLaunch.exposesBrowserBridge
+                browserBridgeRequired: resolutionSnapshot.providerLaunch.requiresBrowserBridge
             )
             if !hostControlRequirements.hostControlTools.isEmpty,
                let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(

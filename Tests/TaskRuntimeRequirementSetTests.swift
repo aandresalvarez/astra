@@ -43,7 +43,7 @@ struct TaskRuntimeRequirementSetTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         #expect(requirements.hostControlTools == ["github"])
@@ -72,7 +72,7 @@ struct TaskRuntimeRequirementSetTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: environment,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         #expect(requirements.requiresDockerWorkspaceShell)
@@ -99,7 +99,7 @@ struct TaskRuntimeRequirementSetTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: environment,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         // Before this fix, derive() called requiredToolNames(capabilityScope:)
@@ -130,7 +130,7 @@ struct TaskRuntimeRequirementSetTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: true
+            browserBridgeRequired: true
         )
 
         #expect(requirements.requiresBrowserControl)

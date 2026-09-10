@@ -108,7 +108,7 @@ struct TaskTurnIntentAdmissionTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
         let resolution = TaskRuntimeCompatibilityService.resolve(
             requestedRuntime: .cursorCLI,
@@ -226,7 +226,7 @@ struct TaskTurnIntentAdmissionTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         #expect(snapshot.providerLaunch.connectors.map(\.id) == [jira.id])
@@ -635,7 +635,7 @@ struct TaskTurnIntentAdmissionTests {
             task: fixture.task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
         let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: fixture.task,

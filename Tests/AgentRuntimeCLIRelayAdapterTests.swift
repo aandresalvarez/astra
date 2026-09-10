@@ -133,6 +133,111 @@ struct AgentRuntimeCLIRelayAdapterTests {
         }
     }
 
+    /// The relay is the only way a CLI runtime reaches a host tool, and the
+    /// prompt and the policy manifest both promise the offered set. Guarding
+    /// the relay environment on the required set instead makes those two lie on
+    /// exactly the turns that do not narrate the connector: the agent is told
+    /// to run `astra-host-control jira`, and the helper has no socket to find.
+    @Test("An offered-only host tool still reaches the CLI relay")
+    @MainActor
+    func offeredOnlyHostToolStillReachesTheCLIRelay() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-offered-relay-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let modelContext = container.mainContext
+        let workspace = Workspace(name: "Offered Jira", primaryPath: root.path)
+        let skill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues",
+            allowedTools: ["Bash"],
+            behaviorInstructions: "Use ASTRA's typed Jira host-control route."
+        )
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira issues",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        connector.skill = skill
+        connector.workspace = workspace
+        // The turn is about a cake: Jira is enabled, so offered, but nothing
+        // here narrates it.
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace,
+            model: "test-model",
+            runtime: .cursorCLI
+        )
+        task.skills = [skill]
+        for model in [workspace, skill, connector, task] as [any PersistentModel] {
+            modelContext.insert(model)
+        }
+        try modelContext.save()
+
+        let intent = TaskTurnIntentSnapshot(taskID: task.id, sourceEventID: nil, acceptedTurn: task.goal)
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: intent.acceptedTurn,
+            turnIntentSnapshot: intent,
+            runtime: .cursorCLI,
+            secretStore: AdapterSecretStore(values: ["JIRA_API_TOKEN": "provider-must-not-see-token"])
+        )
+        #expect(snapshot.providerLaunch.reachableConnectors.contains { $0.id == connector.id })
+        #expect(!snapshot.providerLaunch.connectors.contains { $0.id == connector.id })
+
+        let requirements = TaskRuntimeRequirementSet(
+            hostControlTools: [],
+            offeredHostControlTools: ["jira"],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        )
+        let runID = UUID()
+        #expect(HostControlBrokerSessionRegistry.shared.prepare(
+            task: task,
+            runID: runID,
+            runtime: .cursorCLI,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: requirements.offeredHostControlTools,
+            currentDirectory: workspace.primaryPath,
+            expectedHelperPath: try builtHostControlHelperPath()
+        ))
+        defer { HostControlBrokerSessionRegistry.shared.stop(taskID: task.id, runID: runID) }
+
+        let plan = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: intent.acceptedTurn,
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/echo",
+                providerHomeDirectory: root.appendingPathComponent("provider").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default.withTurnIntentSnapshot(intent),
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: intent.acceptedTurn,
+                runID: runID,
+                capabilityResolutionSnapshot: snapshot,
+                runtimeRequirements: requirements
+            ))
+
+        #expect(plan.environment[HostControlBrokerIPC.endpointEnvironmentKey]?.isEmpty == false)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "jira")
+        #expect(plan.environment["PATH"]?.split(separator: ":").contains(
+            Substring(RuntimePathResolver.astraToolsPath)
+        ) == true)
+        // Offered widened the route, not the secret.
+        #expect(!plan.environment.values.contains("provider-must-not-see-token"))
+        // And an offered route is never a reason to fail the launch.
+        #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) == nil)
+    }
+
     @Test("gcloud host tooling preserves connector project and region projection")
     @MainActor
     func gcloudHostToolingPreservesConnectorConfiguration() throws {

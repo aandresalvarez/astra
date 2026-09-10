@@ -109,10 +109,29 @@ struct CopilotMCPLaunchProjection {
             )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
-        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
-        let requiredHostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: hostControlEnvironment)
-        let hostControlPlaneSupported = !requiresHostControlPlane
-            || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
+        // `hostControlEnvironment` carries the *offered* set - every route this
+        // run may use. Only the *required* set may abort a launch. Deriving the
+        // block from the offered env means one enabled connector anywhere in
+        // the workspace fails every turn of every task on a runtime that cannot
+        // carry the transport, including the turns that never mention it.
+        let requiredHostControlTools = HostControlPlaneMCPProjection.requiredToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText,
+            precomputedRuntimeRequirements: runtimeRequirements
+        )
+        let requiresHostControlPlane = !requiredHostControlTools.isEmpty
+        let canCarryHostControlPlane = capabilities.supportsAdditionalMCPConfig && configURL != nil
+        let hostControlPlaneSupported = !requiresHostControlPlane || canCarryHostControlPlane
+        // Offered but undeliverable: drop the route rather than advertise it.
+        // The env names a broker socket, and no MCP server was written that
+        // would connect to it, so leaving it in place tells the policy manifest
+        // and the prompt that a dead route is live. A *required* route stays,
+        // undeliverable or not: the launch is blocked either way, and the guard
+        // reads this env back to name the tools in its diagnostic.
+        let deliveredHostControlEnvironment = canCarryHostControlPlane || requiresHostControlPlane
+            ? hostControlEnvironment
+            : [:]
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
@@ -136,7 +155,7 @@ struct CopilotMCPLaunchProjection {
                 availableEnvironment: explicitMCPEnvironment
             ),
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
-            hostControlEnvironment: hostControlEnvironment,
+            hostControlEnvironment: deliveredHostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
             hostControlPlaneSupported: hostControlPlaneSupported,

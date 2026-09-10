@@ -107,7 +107,7 @@ enum TaskLaunchAdmissionService {
                 task: task,
                 capabilityResolutionSnapshot: capabilitySnapshot,
                 executionEnvironment: environment,
-                browserBridgeAttached: capabilitySnapshot.providerLaunch.exposesBrowserBridge
+                browserBridgeRequired: capabilitySnapshot.providerLaunch.requiresBrowserBridge
             )
             let runtimeGrants = PermissionBroker.sanitizeApprovedGrants(
                 TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: runtime)

@@ -720,7 +720,7 @@ final class AgentRuntimeProcessRunner {
             task: task,
             capabilityResolutionSnapshot: launchContext.capabilityResolutionSnapshot,
             executionEnvironment: DockerExecutionPlanner.resolveEnvironment(for: task),
-            browserBridgeAttached: launchContext.capabilityResolutionSnapshot.providerLaunch.exposesBrowserBridge
+            browserBridgeRequired: launchContext.capabilityResolutionSnapshot.providerLaunch.requiresBrowserBridge
         )
         let requiresHostControlBroker = !effectiveRequirements.hostControlTools.isEmpty
         let supportsHostControlBroker = AgentRuntimeCapabilityProfileService.profile(
@@ -1837,11 +1837,11 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext,
         runtime: AgentRuntimeID
     ) -> [String: String] {
-        let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-        guard profile.usesHostControlCLIRelay,
-              context.runtimeRequirements?.requiresHostControlPlane == true else {
-            return [:]
-        }
+        // Offered, not required: the broker session is started for every tool
+        // the run offers, so requiring here would leave `astra-host-control
+        // jira` with no socket on exactly the turns that never narrate it.
+        guard AgentRuntimeCapabilityProfile.defaultProfile(for: runtime).usesHostControlCLIRelay,
+              context.runtimeRequirements?.offersHostControlPlane == true else { return [:] }
         let environment = HostControlPlaneMCPProjection.environmentVariables(
             task: context.task,
             environment: DockerExecutionPlanner.resolveEnvironment(for: context.task),
