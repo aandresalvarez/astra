@@ -103,6 +103,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case runtimeCommandPlanned = "runtime.command_planned"
     case runtimeModelSelection = "runtime.model_selection"
     case runtimeModelAvailability = "runtime.model_availability"
+    case runtimeMCPPolicy = "runtime.mcp_policy"
     case runtimeProviderDetected = "runtime.provider_detected"
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"

@@ -625,6 +625,7 @@ final class AgentRuntimeWorker {
             )
         }
 
+        await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,
@@ -1338,13 +1339,12 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            let blockedByDeliverableVerification = await AgentRuntimeCompletionValidation.applyDeliverableVerificationFailureIfNeeded(
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                workspacePath: executionPath
+            let blockedFromCompleting = await AgentRuntimeCompletionValidation.applyCompletionBlocksIfNeeded(
+                task: task, run: run, modelContext: modelContext,
+                workspacePath: executionPath,
+                agentReportedError: recordingState.agentReportedError(for: run)
             )
-            if !blockedByDeliverableVerification {
+            if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
                     switch executionTask.validationStrategy {

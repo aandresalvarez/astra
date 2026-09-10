@@ -115,9 +115,49 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 ))
             } else if let executable = cliStatus.executable {
                 checks.append(await checkCodexAuth(executable: executable, probes: probes))
+                checks.append(await checkCodexMCPPolicy(configuration: configuration, executable: executable))
             }
         }
         return RuntimeReadinessReport(checks: checks)
+    }
+
+    /// Asks Codex whether it would run an MCP server ASTRA hands it, and says
+    /// so here rather than letting a task discover it mid-turn. Also warms the
+    /// cache the launch path reads, the same way Copilot's capability probe is
+    /// warmed from readiness so the main-actor path never has to shell out.
+    private func checkCodexMCPPolicy(
+        configuration: RuntimeReadinessConfiguration,
+        executable: String
+    ) async -> RuntimeReadinessCheck {
+        let policy = await CodexMCPPolicyService().policy(
+            executablePath: executable,
+            homeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
+        switch policy {
+        case .permitted:
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                detail: "Codex accepts ASTRA's MCP server, so connector tools are available to this runtime.",
+                state: .ready, remediation: nil
+            )
+        case .serversDisabled(let policyName):
+            let named = policyName.map { " (\"\($0)\")" } ?? ""
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                // A warning, not a block: a `.blocked` readiness check stops
+                // every launch on this runtime, and most Codex turns never ask
+                // for a connector. Admission blocks the ones that do.
+                detail: "Your organization's Codex policy\(named) disables all MCP servers, so ASTRA's connectors cannot reach this runtime.",
+                state: .warning,
+                remediation: "Run connector tasks on Claude Code, or ask your Codex administrator to allow ASTRA's MCP server."
+            )
+        case .unknown:
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                detail: "Codex did not report its MCP server policy. ASTRA will attach connectors as usual.",
+                state: .ready, remediation: nil
+            )
+        }
     }
 
     private func checkCodexAuth(

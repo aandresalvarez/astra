@@ -125,6 +125,13 @@ public enum AppStorageKeys {
         }
     }
 
+    /// Caches what a provider last said about accepting ASTRA's MCP servers.
+    /// Keyed per runtime because the answer belongs to that provider's own
+    /// policy, not to ASTRA's opinion of the runtime.
+    public static func runtimeMCPPolicyKey(for runtime: AgentRuntimeID) -> String {
+        "astra.runtime.\(storageComponent(for: runtime)).mcpPolicy.v1"
+    }
+
     public static func runtimeModelsCheckedAtKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {
         case .claudeCode:
