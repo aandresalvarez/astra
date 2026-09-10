@@ -1469,7 +1469,7 @@ final class AgentRuntimeWorker {
                     }
                 }
             }
-        } else if Self.shouldPauseForRuntimePermissionApproval(
+        } else if RuntimePermissionApprovalGate.shouldPause(
             failureDiagnostic: failureDiagnostic,
             task: task,
             run: run
@@ -1805,20 +1805,6 @@ final class AgentRuntimeWorker {
         ], level: .warning)
         isRunning = false
         return false
-    }
-
-    @MainActor
-    private static func shouldPauseForRuntimePermissionApproval(
-        failureDiagnostic: AgentRuntimeFailureDiagnostic?,
-        task: AgentTask,
-        run: TaskRun
-    ) -> Bool {
-        if failureDiagnostic?.category == .permissionDenied {
-            return true
-        }
-        return task.events.contains { event in
-            event.type == "permission.denied" && event.run?.id == run.id
-        }
     }
 
     typealias ProcessResult = AgentProcessResult

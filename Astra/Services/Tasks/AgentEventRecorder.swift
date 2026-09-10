@@ -667,8 +667,15 @@ enum AgentEventRecorder {
 
         case .failed(let message):
             recordingState?.breakConversationCoalescing(for: run)
+            // The user-visible error event still goes in — the agent said
+            // something went wrong and that belongs in the transcript.
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message, run: run))
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            // But this is one stream event, not the run's verdict. Whether the
+            // task failed is decided when the process exits and the run status
+            // is written; a Codex turn emitted three of these at the same
+            // millisecond and still ended `run_status=completed exit_code=0`,
+            // which the log then reported as three failed tasks.
+            AppLogger.audit(.runtimeAgentReportedError, category: "Worker", taskID: task.id, fields: [
                 "reason": "agent_reported_error"
             ], level: .warning)
 
