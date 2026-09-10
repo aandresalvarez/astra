@@ -99,10 +99,15 @@ final class TaskThreadViewModel {
         let workspaceID: UUID?
         let revision: Int
         let scheduledAt: UInt64
-        let delay: TimeInterval
         let fields: [String: String]
         let responsivenessContext: TaskThreadResponsivenessContext?
-        let shouldLogLiveCadence: Bool
+        /// Whether the task was streaming when this request was built. Carried on
+        /// the request rather than recomputed at the apply so the pacer and the
+        /// cadence sample agree with the liveness test that actually produced the
+        /// work. Replaces `shouldLogLiveCadence`, which burned the 1 Hz sampling
+        /// token at request time even though the line is only emitted on a
+        /// successful apply.
+        let isLive: Bool
     }
 
     /// Managed models are only valid while their owning SwiftData container is
@@ -203,15 +208,22 @@ final class TaskThreadViewModel {
     private(set) var initialSnapshotResponsivenessTraceID: String?
     private var snapshotRevision: Int = 0
     private var responsivenessContext: TaskThreadResponsivenessContext?
-    private var deferredLiveSnapshotCount = 0
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
+    /// Invalidates a scheduled requested refresh without relying on the detached
+    /// task's own cancellation. A `Task.sleep` that has already resumed cannot be
+    /// cancelled, so a terminal drain that only called `cancel()` could still be
+    /// overtaken by the continuation it meant to replace.
+    private var requestedRefreshGeneration = 0
     private(set) var snapshotBuildCountForTesting = 0
+    private(set) var snapshotBuildCompletedCountForTesting = 0
+    private(set) var snapshotBuildCancelledCountForTesting = 0
     private(set) var historyReadCountForTesting = 0
     private(set) var historyTailReadCountForTesting = 0
     private(set) var historyFullReadCountForTesting = 0
     private let snapshotBuilder: SnapshotBuilder?
     private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
     private let mainActorStallSampler = TaskThreadMainActorStallSampler()
+    private let livePacer: TaskThreadLiveSnapshotPacer
 
     // Debug-only, like `setWorkspaceForTesting` and
     // `agePullRequestLookupBreakerForTesting`. `historyFlushResultOverride`
@@ -232,13 +244,27 @@ final class TaskThreadViewModel {
     /// `WorkspacePersistenceCoordinator`.
     @ObservationIgnored
     var historyFlushResultOverrideForTesting: (@MainActor () -> Bool)?
+    /// Exposes the sampler so back-pressure tests can inject a stall through the
+    /// same `record(wakeGapNanoseconds:)` seam the sampler's own tests use,
+    /// instead of blocking the main actor for hundreds of milliseconds to
+    /// manufacture one.
+    @ObservationIgnored
+    var mainActorStallSamplerForTesting: TaskThreadMainActorStallSampler { mainActorStallSampler }
+    @ObservationIgnored
+    var livePacerForTesting: TaskThreadLiveSnapshotPacer { livePacer }
     #endif
 
-    private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
     private static var terminalSnapshotCache = TaskThreadSnapshotCache()
 
-    init(snapshotBuilder: SnapshotBuilder? = nil) {
+    /// `livePacer` is optional rather than defaulted because a default argument
+    /// is evaluated in a nonisolated context and the pacer is main-actor
+    /// isolated.
+    init(
+        snapshotBuilder: SnapshotBuilder? = nil,
+        livePacer: TaskThreadLiveSnapshotPacer? = nil
+    ) {
         self.snapshotBuilder = snapshotBuilder
+        self.livePacer = livePacer ?? TaskThreadLiveSnapshotPacer()
     }
 
     func reset(
@@ -270,8 +296,7 @@ final class TaskThreadViewModel {
             snapshotTrigger = nil
             self.responsivenessContext?.cancel()
             pendingSnapshotRequest = nil
-            requestedRefreshTask?.cancel()
-            requestedRefreshTask = nil
+            supersedeRequestedRefresh()
             historyLoadTask?.cancel()
             historyLoadTask = nil
             pendingHistoryRead = nil
@@ -285,6 +310,7 @@ final class TaskThreadViewModel {
             // below restarts it if the incoming task is live.
             mainActorStallSampler.stop()
             _ = mainActorStallSampler.consumeTelemetryFields()
+            _ = mainActorStallSampler.consumeControlWindow()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
             initialSnapshotResponsivenessTraceID = responsivenessContext?.traceID
@@ -292,7 +318,10 @@ final class TaskThreadViewModel {
             appliedSnapshotTaskID = nil
             lastSnapshotCacheState = "pending"
             self.responsivenessContext = responsivenessContext
-            deferredLiveSnapshotCount = 0
+            // A pacer carrying a large interval from the previous task must not
+            // be able to delay this one's first transcript.
+            livePacer.reset()
+            _ = livePacer.consumeTelemetryFields()
             lastLiveSnapshotTelemetryAt = .distantPast
             snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
             refreshSnapshot(for: task)
@@ -307,23 +336,76 @@ final class TaskThreadViewModel {
     /// Coalesces high-frequency typed invalidations before they touch SwiftData.
     /// Direct user actions still call `refreshSnapshot` when they need an
     /// immediate projection; streaming changes use this bounded cadence.
+    ///
+    /// This is the only production caller of the live path
+    /// (`TaskMainView.onSnapshotChange`), which is why the duty-cycle gate lives
+    /// here rather than at the old throttle site inside `refreshSnapshot`.
+    /// Gating here suppresses the whole cost of an update -- the main-actor
+    /// `ModelContext.save()` in `flushPendingHistoryWrites`, the O(n log n) merge
+    /// in `storageBackedInput`, the build, the apply and the layout pass. Gating
+    /// at the apply, as the removed floor did, would have suppressed only the
+    /// last two after the first two had already been paid.
     func requestSnapshotRefresh(for task: AgentTask) {
         hasPendingRequestedRefresh = true
+        // A terminal transition must never wait out a pace interval that was
+        // sized for a stream which has already stopped.
+        // `WorkspacePersistenceCoordinator.flushPendingExport` has the same rule
+        // for the same reason: a delay may reorder work, it may never be the
+        // last thing that happens. Draining here is what makes the converged
+        // transcript arrive at debounce latency instead of up to
+        // `maximumPeriodNanoseconds` late.
+        if task.status != .running, task.status != .queued, livePacer.isPacing {
+            livePacer.reset()
+            supersedeRequestedRefresh()
+        }
         guard requestedRefreshTask == nil else { return }
-        let taskID = task.id
+        livePacer.observe(mainActorStallSampler.consumeControlWindow())
+        armRequestedRefresh(
+            taskID: task.id,
+            delayNanoseconds: livePacer.armDelay().delayNanoseconds
+        )
+    }
+
+    private func armRequestedRefresh(taskID: UUID, delayNanoseconds: UInt64) {
+        requestedRefreshGeneration &+= 1
+        let generation = requestedRefreshGeneration
         requestedRefreshTask = Task.detached { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else { return }
-            await self?.performRequestedRefresh(taskID: taskID)
+            await self?.performRequestedRefresh(taskID: taskID, generation: generation)
         }
     }
 
-    private func performRequestedRefresh(taskID: UUID) {
+    private func supersedeRequestedRefresh() {
+        requestedRefreshGeneration &+= 1
+        requestedRefreshTask?.cancel()
+        requestedRefreshTask = nil
+    }
+
+    private func performRequestedRefresh(taskID: UUID, generation: Int) {
+        guard requestedRefreshGeneration == generation else { return }
         requestedRefreshTask = nil
         guard historyTaskID == taskID,
               hasPendingRequestedRefresh,
               let historyTask,
               historyTask.id == taskID else {
+            return
+        }
+        // Reconcile before doing any work. Reaching this line means the main
+        // actor is free, which is itself the proof that the layout pass
+        // triggered by the previous apply has completed -- so the control window
+        // now holds that pass's real cost, which it could not have held when
+        // this refresh was armed one debounce interval before the render even
+        // started. The sleep above is therefore only an eager wakeup and this
+        // monotonic deadline is authoritative, the same split
+        // `SidebarPresentationModel.settleDeadline` uses so a delayed timer can
+        // never make a stale decision stick.
+        livePacer.observe(mainActorStallSampler.consumeControlWindow())
+        let decision = livePacer.reconcileDelay()
+        guard decision.delayNanoseconds == 0 else {
+            // `hasPendingRequestedRefresh` stays true, so the invalidation this
+            // continuation was carrying is re-armed rather than dropped.
+            armRequestedRefresh(taskID: taskID, delayNanoseconds: decision.delayNanoseconds)
             return
         }
         hasPendingRequestedRefresh = false
@@ -359,6 +441,10 @@ final class TaskThreadViewModel {
             snapshotRevision += 1
             pendingSnapshotRequest = nil
             supersedeSnapshotWorker()
+            // A cache hit is a task open, not a streamed update. Disarm so the
+            // first live refresh after the open is not paced against a period no
+            // render ever occupied.
+            livePacer.reset()
             let cacheApplyStart = DispatchTime.now().uptimeNanoseconds
             snapshot = cachedSnapshot
             appliedSnapshotRevision += 1
@@ -438,23 +524,22 @@ final class TaskThreadViewModel {
         } else {
             mainActorStallSampler.stop()
         }
-        let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
-        let minimumInterval = Self.liveSnapshotMinimumInterval
-        let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
-        if isLive, delay > 0 {
-            deferredLiveSnapshotCount += 1
-        }
+        // The 120 ms floor that used to be computed here has been removed rather
+        // than retuned. It compared `lastSnapshotApplyAt` against the moment a
+        // request reached this line, and on the storage-backed path that moment
+        // is always at least the view-mutation deferral plus the 120 ms refresh
+        // debounce plus a main-context save plus a store read after the apply --
+        // so `elapsed < 0.120` was unsatisfiable at every thread size and the
+        // branch was dead code that logged `throttle_delay_ms=0.00` forever.
+        // Live pacing now happens in `requestSnapshotRefresh`, upstream of the
+        // save and the merge, where suppressing an update actually suppresses
+        // its cost.
         let taskID = task.id
         let workspaceID = task.workspace?.id
         snapshotRevision += 1
         let revision = snapshotRevision
         let scheduledAt = DispatchTime.now().uptimeNanoseconds
         let snapshotPerformanceFields = fields
-        let shouldLogLiveCadence = isLive
-            && Date().timeIntervalSince(lastLiveSnapshotTelemetryAt) >= 1
-        if shouldLogLiveCadence {
-            lastLiveSnapshotTelemetryAt = Date()
-        }
         pendingSnapshotRequest = SnapshotRequest(
             input: input,
             trigger: resolvedTrigger,
@@ -463,16 +548,23 @@ final class TaskThreadViewModel {
             workspaceID: workspaceID,
             revision: revision,
             scheduledAt: scheduledAt,
-            delay: delay,
             fields: snapshotPerformanceFields,
             responsivenessContext: responsivenessContext,
-            shouldLogLiveCadence: shouldLogLiveCadence
+            isLive: isLive
         )
-        // A request that arrives during either the throttle sleep or detached
-        // CPU build must not wait behind obsolete work. Cancellation prevents
-        // the old generation from applying, while the identity guard in the
-        // worker's cleanup prevents it from clearing this replacement.
-        supersedeSnapshotWorker()
+        // Deliberately no `supersedeSnapshotWorker()` here. Cancelling the
+        // in-flight build on every new request was a livelock, not an
+        // optimisation: the build is genuinely cancellation-aware
+        // (`TaskThreadSnapshot(cancellableInput:)` checks per run), so with a
+        // 369 ms build and a request landing every ~180 ms every build died
+        // before finishing, no snapshot was ever applied, the transcript froze,
+        // and `thread_snapshot_build` / `chat_stream_snapshot_cadence` /
+        // `thread_snapshot_apply_hop` all went permanently silent -- exactly the
+        // recorded incident's log signature. Cancellation was never needed for
+        // correctness either: the revision guard in `applySnapshotIfCurrent`
+        // already drops a superseded generation, and the worker then picks the
+        // newer request straight out of the last-wins pending slot. A task
+        // switch still cancels, via `supersedeSnapshotWorker()` in `reset(for:)`.
         startSnapshotWorkerIfNeeded()
     }
 
@@ -489,10 +581,6 @@ final class TaskThreadViewModel {
         snapshotTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, let request = self.takePendingSnapshotRequest() {
-                if request.delay > 0 {
-                    try? await Task.sleep(nanoseconds: UInt64(request.delay * 1_000_000_000))
-                }
-                guard !Task.isCancelled else { break }
                 request.responsivenessContext?.performIfActive { traceFields in
                     let queueWait = PerformanceTelemetry.elapsedMilliseconds(since: request.scheduledAt)
                     PerformanceTelemetry.log(
@@ -538,6 +626,7 @@ final class TaskThreadViewModel {
                         buildCompletedAt = outcome.completedAtUptimeNanoseconds
                     }
                 } catch is CancellationError {
+                    self.snapshotBuildCancelledCountForTesting += 1
                     break
                 } catch {
                     if self.historyLoadState == .loading {
@@ -551,6 +640,7 @@ final class TaskThreadViewModel {
                     )
                     continue
                 }
+                self.snapshotBuildCompletedCountForTesting += 1
                 guard !Task.isCancelled else { break }
                 self.applySnapshotIfCurrent(
                     builtSnapshot,
@@ -617,6 +707,16 @@ final class TaskThreadViewModel {
         }
         lastSnapshotApplyAt = Date()
         lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+        // Close the duty-cycle loop here, at the last main-actor instruction
+        // before the run loop gets control back. Draining the control window now
+        // discards everything that happened *before* this assignment and opens a
+        // window whose first entry will be the layout pass the assignment above
+        // is about to trigger -- the cost nothing in this file has ever measured.
+        _ = mainActorStallSampler.consumeControlWindow()
+        livePacer.recordApply(
+            isLive: request.isLive,
+            synchronousApplyNanoseconds: DispatchTime.now().uptimeNanoseconds &- applyStartedAt
+        )
         request.responsivenessContext?.performIfActive { traceFields in
             PerformanceTelemetry.log(
                 "task_open_snapshot_apply",
@@ -625,24 +725,32 @@ final class TaskThreadViewModel {
                 taskID: request.taskID
             )
         }
-        if request.shouldLogLiveCadence {
+        // Decided here rather than at request creation. The token used to be
+        // consumed when the request was built but the line is only emitted on a
+        // successful apply, so every request that was later cancelled silently
+        // burned a second of sampling: cadence under-reported in exact
+        // proportion to the cancel rate, and the stall sensor went blind exactly
+        // when nothing was completing. Consuming the token at the point of
+        // emission makes the 1 Hz sample unbiased.
+        let shouldLogLiveCadence = request.isLive
+            && Date().timeIntervalSince(lastLiveSnapshotTelemetryAt) >= 1
+        if shouldLogLiveCadence {
+            lastLiveSnapshotTelemetryAt = Date()
             PerformanceTelemetry.log(
                 "chat_stream_snapshot_cadence",
                 durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildStartedAt),
                 level: .debug,
                 fields: request.fields.merging([
-                    "throttle_delay_ms": String(format: "%.2f", request.delay * 1_000),
-                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount),
                     // Cadence is build + hop + apply. Carrying the split on the
                     // same line makes every sample self-decomposing instead of
                     // needing a join against the preceding build line.
                     "build_ms": String(format: "%.2f", buildMilliseconds),
                     "apply_hop_ms": String(format: "%.2f", applyHopMilliseconds)
                 ], uniquingKeysWith: { _, new in new })
+                .merging(livePacer.consumeTelemetryFields(), uniquingKeysWith: { _, new in new })
                 .merging(mainActorStallSampler.consumeTelemetryFields(), uniquingKeysWith: { _, new in new }),
                 taskID: request.taskID
             )
-            deferredLiveSnapshotCount = 0
         }
         Self.logSnapshotState(
             snapshot: builtSnapshot,

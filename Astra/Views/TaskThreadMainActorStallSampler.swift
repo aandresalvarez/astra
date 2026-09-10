@@ -25,12 +25,42 @@ final class TaskThreadMainActorStallSampler {
     /// sampler. `start()` is called on every live refresh, so a live stream
     /// re-arms this continuously.
     static let idleShutdownSeconds: TimeInterval = 120
+    /// Overshoot below this is timer coalescing, not occupancy. A main-actor
+    /// `Task.sleep` routinely wakes a millisecond or two late on a completely
+    /// idle actor, and unlike the telemetry counters above the control window
+    /// *sums* every sample: at 20 Hz, 2 ms of per-wake jitter would forge 40 ms
+    /// of "busy" every second and make `TaskThreadLiveSnapshotPacer` throttle a
+    /// thread that is doing nothing. The bar is one frame -- the same amount of
+    /// main-actor work `PerformanceTelemetry.uiFrameThresholdMilliseconds`
+    /// already treats as free. The known bias this buys is that occupancy
+    /// delivered in sub-frame slices is invisible to the pacer; the failure the
+    /// pacer exists to bound -- one uninterruptible multi-hundred-millisecond
+    /// layout pass -- is not.
+    static let controlWindowNoiseFloorNanoseconds: UInt64 = 8_000_000
+
+    /// Main-actor occupancy observed over one control window.
+    struct Occupancy: Equatable, Sendable {
+        let busyNanoseconds: UInt64
+        let longestBlockNanoseconds: UInt64
+
+        static let none = Occupancy(busyNanoseconds: 0, longestBlockNanoseconds: 0)
+
+        var busyMilliseconds: Double { Double(busyNanoseconds) / 1_000_000 }
+        var longestBlockMilliseconds: Double { Double(longestBlockNanoseconds) / 1_000_000 }
+    }
 
     private var probeTask: Task<Void, Never>?
     private var lastStartRequestAt = Date(timeIntervalSince1970: 0)
     private(set) var maxOvershootNanoseconds: UInt64 = 0
     private(set) var hitchCount = 0
     private(set) var probeCount = 0
+    // A second accumulator, deliberately not shared with the three above.
+    // `consumeTelemetryFields` is drained at most once per second and only by a
+    // cadence sample that actually got logged, while the pacer must drain on
+    // every scheduling decision. One shared read-and-clear pair would mean
+    // whichever consumer ran first blinded the other.
+    private var controlWindowBusyNanoseconds: UInt64 = 0
+    private var controlWindowLongestBlockNanoseconds: UInt64 = 0
 
     var isRunning: Bool { probeTask != nil }
 
@@ -70,6 +100,34 @@ final class TaskThreadMainActorStallSampler {
         if overshoot >= Self.hitchThresholdNanoseconds {
             hitchCount += 1
         }
+        guard overshoot >= Self.controlWindowNoiseFloorNanoseconds else { return }
+        // Sum, not max: the pacer needs total occupancy over the window,
+        // because a period can contain the layout pass *and* the pre-read save
+        // *and* the storage-backed input sort, and a duty cycle computed from
+        // only the largest of those under-throttles.
+        controlWindowBusyNanoseconds &+= overshoot
+        controlWindowLongestBlockNanoseconds = max(controlWindowLongestBlockNanoseconds, overshoot)
+    }
+
+    /// Returns the occupancy accumulated since the previous call and clears it.
+    /// Independent of `consumeTelemetryFields`: a caller of either must never
+    /// change what the other observes.
+    ///
+    /// A probe cycle that straddles the start of a block absorbs the whole block
+    /// into one overshoot, so a contiguous block is under-reported by at most
+    /// the remaining sleep at the moment it began -- bounded by
+    /// `probeIntervalNanoseconds`, i.e. 50 ms on a 700 ms render. The error is in
+    /// the permissive direction and is quantified here rather than corrected so
+    /// the number stays a measurement rather than an estimate.
+    func consumeControlWindow() -> Occupancy {
+        defer {
+            controlWindowBusyNanoseconds = 0
+            controlWindowLongestBlockNanoseconds = 0
+        }
+        return Occupancy(
+            busyNanoseconds: controlWindowBusyNanoseconds,
+            longestBlockNanoseconds: controlWindowLongestBlockNanoseconds
+        )
     }
 
     /// Returns the counters accumulated since the previous call and clears
