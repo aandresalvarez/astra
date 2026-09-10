@@ -268,6 +268,26 @@ enum WorkspaceSidebarScrollAnchor {
     }
 }
 
+/// The two geometry values `WorkspaceSidebarScrollAnchor.unitPoint` needs,
+/// held in a stable reference rather than in `@State`.
+///
+/// Both are published by `GeometryReader` preferences *inside* the sidebar's own
+/// body and are read only when the workspace order changes — never during
+/// layout. Storing them in `@State` closed a loop: the preference wrote state,
+/// the write invalidated the body, the body re-measured the row, and the new
+/// frame wrote again. A production app was recovered wedged at 100% of one core
+/// with 1,925 of 1,937 main-thread samples inside a single non-returning
+/// `GraphHost.flushTransactions`, `TaskSidebarView.workspaceListRow` and
+/// `WorkspaceSidebarSelectedRowFramePreferenceKey.reduce` on the stack.
+/// `TaskMainView` names the same hazard "AttributeGraph-cycle risk" and defers
+/// its writes off the update; a plain box removes the edge instead of delaying
+/// it, which is available here only because neither value is a layout input.
+@MainActor
+final class WorkspaceSidebarAnchorTracker {
+    var selectedRowFrame: CGRect?
+    var viewportHeight: CGFloat = 0
+}
+
 /// Ephemeral ownership for one workspace reorder gesture. SwiftUI's macOS
 /// `onDrag` API does not report cancellation, so the view ends this state from
 /// a mouse-button watchdog as well as from successful drop completion.
