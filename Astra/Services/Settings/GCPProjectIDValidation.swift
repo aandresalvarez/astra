@@ -4,11 +4,12 @@ import Foundation
 ///
 /// ASTRA used to test this field for non-emptiness alone, which let a
 /// structurally impossible value reach Vertex. A field that had accumulated
-/// eleven concatenated copies of a real project ID (264 characters) passed
+/// eleven space-separated copies of a real project ID (284 characters) passed
 /// every check, the Runtime tab reported the provider **Ready**, and every
-/// call then came back
-/// `403 Permission denied on resource project upo-nero-…` — an error the user
-/// cannot act on, because nothing in ASTRA ever said the value was wrong.
+/// call then came back `403 Permission denied on resource project …` with
+/// `reason: CONSUMER_INVALID` — an error the user cannot act on, because
+/// nothing in ASTRA ever said the value was wrong. Task 5FB5E95B died that way
+/// five times in four minutes, 519 ms and zero tokens per attempt.
 ///
 /// The rules below are Google's documented constraints for a project ID, so
 /// they can be checked locally with no network call. What they cannot tell us
@@ -44,9 +45,23 @@ enum GCPProjectIDValidation {
             case .trailingHyphen:
                 return "Project ID cannot end with a hyphen."
             case .disallowedCharacters(let characters):
-                let listed = characters.sorted().map(String.init).joined(separator: " ")
+                let listed = characters.sorted().map(GCPProjectIDValidation.describe).joined(separator: " ")
                 return "Project ID may only contain lowercase letters, digits, and hyphens. Remove: \(listed)"
             }
+        }
+    }
+
+    /// Names a character the user has to find and delete. A bare `String.init`
+    /// is enough for a visible one, but the value that motivated this type was
+    /// eleven copies joined by *spaces*, and "Remove:  " reads as a bug rather
+    /// than as an instruction.
+    static func describe(_ character: Character) -> String {
+        switch character {
+        case " ": return "space"
+        case "\t": return "tab"
+        case "\n", "\r": return "line break"
+        default:
+            return character.isWhitespace ? "whitespace" : String(character)
         }
     }
 
@@ -55,14 +70,18 @@ enum GCPProjectIDValidation {
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return .empty }
 
+        // Length comes first so a value pasted in repeatedly is diagnosed as
+        // that. The real one — eleven space-separated copies, 284 characters —
+        // is *also* full of disallowed spaces, and "Remove: space" sends the
+        // user hunting for a typo in a field whose real problem is that it
+        // holds eleven project IDs.
+        if value.count > maximumLength {
+            return .tooLong(length: value.count)
+        }
+
         let disallowed = Set(value.filter { !$0.isASCII || !($0.isLowercase && $0.isLetter || $0.isNumber || $0 == "-") })
         if !disallowed.isEmpty {
             return .disallowedCharacters(disallowed)
-        }
-        // Length is reported before the positional rules so a pasted-twice
-        // value is named as such instead of as a stray character.
-        if value.count > maximumLength {
-            return .tooLong(length: value.count)
         }
         if value.count < minimumLength {
             return .tooShort(length: value.count)

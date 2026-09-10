@@ -21,8 +21,8 @@ struct GCPProjectIDValidationTests {
         #expect(GCPProjectIDValidation.failure(for: "   ") == .empty)
     }
 
-    /// The value that motivated this type: a Settings field pasted into eleven
-    /// times, 165 characters long, which the old non-emptiness check accepted.
+    /// A stand-in with clean separators. The value actually observed is
+    /// exercised by `theValueFromTask5FB5E95BIsDiagnosedAsPastedRepeatedly`.
     @Test("A repeatedly pasted project ID is reported as too long")
     func repeatedlyPastedIDIsTooLong() {
         let pasted = String(repeating: "example-project", count: 11)
@@ -40,6 +40,32 @@ struct GCPProjectIDValidationTests {
         #expect(GCPProjectIDValidation.failure(for: "abc") == .tooShort(length: 3))
         #expect(GCPProjectIDValidation.failure(for: "1project") == .invalidFirstCharacter)
         #expect(GCPProjectIDValidation.failure(for: "project-") == .trailingHyphen)
+    }
+
+    /// The exact value from task 5FB5E95B, recovered from the provider's 403 in
+    /// `outputs/turn_001.md`: eleven copies of a real project ID joined by two
+    /// spaces, 284 characters. It is both over-long *and* full of disallowed
+    /// spaces, so it is the case that decides the ordering of the two rules.
+    @Test("The value from task 5FB5E95B is diagnosed as pasted repeatedly")
+    func theValueFromTask5FB5E95BIsDiagnosedAsPastedRepeatedly() {
+        let observed = Array(repeating: "upo-nero-phi-su-deid-jsl", count: 11).joined(separator: "  ")
+        #expect(observed.count == 284)
+        // Not .disallowedCharacters([" "]) — that renders as "Remove: space",
+        // which sends the user hunting for a typo instead of telling them the
+        // field holds eleven project IDs.
+        #expect(GCPProjectIDValidation.failure(for: observed) == .tooLong(length: 284))
+        #expect(GCPProjectIDValidation.Failure.tooLong(length: 284).message.contains("pasted into more than once"))
+    }
+
+    @Test("An invisible disallowed character is named rather than printed")
+    func invisibleCharactersAreNamed() {
+        guard case .disallowedCharacters(let characters)? = GCPProjectIDValidation.failure(for: "my project") else {
+            Issue.record("Expected disallowed characters for a value containing a space")
+            return
+        }
+        #expect(characters == Set([" "]))
+        // "Remove:  " is unreadable; "Remove: space" is an instruction.
+        #expect(GCPProjectIDValidation.Failure.disallowedCharacters(characters).message.hasSuffix("Remove: space"))
     }
 
     @Test("Disallowed characters are listed so the user can find them")
