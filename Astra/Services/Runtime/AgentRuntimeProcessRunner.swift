@@ -183,13 +183,12 @@ final class AgentRuntimeProcessRunner {
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
         // but any direct caller of runRuntimeProcess/sandboxedPlan (tests, or a
-        // future secondary launch path) that omits launchResourcePlan hits it. Pass
-        // context.runtimeRequirements through for the same reason
-        // AgentRuntimeWorker now does at its own TaskLaunchResourceResolver.resolve
-        // call site: without it, this fallback would independently re-derive GitHub
-        // host-control routing from a second capability-scope capture instead of
-        // reusing the resolver's single precomputed answer. See
-        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        // future secondary launch path) that omits it lands here. The precomputed
+        // requirements and capability profile are passed for the same reason
+        // AgentRuntimeWorker passes them at its own call site: without them this
+        // fallback re-derives GitHub host-control routing, and what transport the
+        // runtime has, from second captures instead of the launch's single answers.
+        // See Tests/HostControlRequirementDerivationConsistencyTests.swift.
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
@@ -204,7 +203,8 @@ final class AgentRuntimeProcessRunner {
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             },
-            precomputedRuntimeRequirements: context.runtimeRequirements
+            precomputedRuntimeRequirements: context.runtimeRequirements,
+            runtimeCapabilityProfile: context.executionPolicy.runtimeCapabilityProfile
         )
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)

@@ -182,7 +182,8 @@ enum AgentPromptBuilder {
                 connectorCredentialExposurePolicy: capabilityResolutionSnapshot?.connectorCredentialExposurePolicy ?? connectorCredentialExposurePolicy(
                     for: task,
                     executionPolicy: executionPolicy
-                )
+                ),
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
             )
         )
     }
@@ -560,13 +561,15 @@ enum AgentPromptBuilder {
         task: AgentTask,
         runtime: AgentRuntimeID,
         credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
         to sections: inout [PromptContextSection]
     ) {
         if let section = AgentPromptConnectorContextBuilder.section(
             from: capabilityScope,
             task: task,
             runtime: runtime,
-            credentialExposurePolicy: credentialExposurePolicy
+            credentialExposurePolicy: credentialExposurePolicy,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
         ) {
             sections.append(section)
         }
@@ -600,6 +603,54 @@ enum AgentPromptBuilder {
                 sourcePointers: toolSourcePointers(mcpTools)
             )
         }
+
+        appendOfferedToolRoutes(from: capabilityScope, narrated: allLocalTools, to: &sections)
+    }
+
+    /// The offered tier's half of the tool section.
+    ///
+    /// A local tool the user attached is allowlisted and callable on every turn
+    /// - `AgentPolicyAdapters` builds the permission list from
+    /// `reachableLocalTools`, not from the narrated subset. The prompt used to
+    /// name only the narrated subset, so a turn whose wording missed a tool left
+    /// the agent with a permitted command it had never been told exists, which
+    /// reads exactly like not having it.
+    ///
+    /// Only the name and the command, deliberately: restoring the pruned
+    /// descriptions and usage notes would give back the tokens the prune exists
+    /// to save. Enough to call it, or to say it is there when the user asks.
+    ///
+    /// And only tools the launch actually delivers. A skill-owned tool whose
+    /// skill environment this turn withheld is permitted but unconfigured -
+    /// naming it would point the agent at a command that fails for a reason the
+    /// prompt does not explain, which is the same "describe the run from a table
+    /// rather than from the launch" mistake in the opposite direction.
+    private static func appendOfferedToolRoutes(
+        from capabilityScope: TaskCapabilityPromptScope,
+        narrated: [LocalTool],
+        to sections: inout [PromptContextSection]
+    ) {
+        let narratedIDs = Set(narrated.map(\.id))
+        let narratedSkillIDs = Set(capabilityScope.behaviorSkills.map(\.id))
+        let offered = capabilityScope.reachableLocalTools.filter { tool in
+            guard !tool.command.isEmpty, !narratedIDs.contains(tool.id) else { return false }
+            guard let skill = tool.skill, !skill.environmentKeys.isEmpty else { return true }
+            return narratedSkillIDs.contains(skill.id)
+        }
+        guard !offered.isEmpty else { return }
+
+        let descriptions = offered.map { tool in
+            tool.toolType == "mcp"
+                ? "- \(tool.name): \(tool.command)"
+                : "- \(tool.name): `\(tool.displayCommand)`"
+        }.joined(separator: "\n")
+        appendSection(
+            "Also available and callable in this run (details omitted because this turn did not appear to need them - if the user asks for one of these, use it, do not report it as unavailable):\n"
+                + descriptions,
+            kind: .tools,
+            to: &sections,
+            sourcePointers: toolSourcePointers(offered)
+        )
     }
 
     private static func appendDocumentReaderContext(to sections: inout [PromptContextSection]) {
@@ -711,7 +762,8 @@ enum AgentPromptBuilder {
                 runtime: capabilityContext.runtime,
                 capabilityScope: capabilityContext.snapshot.providerLaunch,
                 ioSnapshot: ioSnapshot,
-                connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy
+                connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy,
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
             )
         )
     }
@@ -1239,6 +1291,7 @@ enum AgentPromptBuilder {
                 task: context.task,
                 runtime: context.runtime,
                 credentialExposurePolicy: context.connectorCredentialExposurePolicy,
+                runtimeCapabilityProfile: context.runtimeCapabilityProfile,
                 to: &sections
             )
             if context.mode == .initialRun {

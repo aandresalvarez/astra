@@ -7,7 +7,8 @@ enum AgentPromptConnectorContextBuilder {
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
         runtime: AgentRuntimeID? = nil,
-        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
+        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) -> PromptContextSection? {
         let exposurePolicy = credentialExposurePolicy ?? .approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
@@ -22,9 +23,14 @@ enum AgentPromptConnectorContextBuilder {
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
         let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
-        let runtimeProfile = AgentRuntimeCapabilityProfile.defaultProfile(
-            for: runtime ?? task.resolvedRuntimeID
-        )
+        // The launch-resolved profile when the caller has one, and a resolved
+        // profile either way. The static table says Copilot cannot carry the
+        // host control plane; a Copilot build with `--additional-mcp-config`
+        // can, and the launch attaches the route. Describing that run from the
+        // table prints "Route UNAVAILABLE" over a live route, which the agent
+        // reports back to the user as a broken connector.
+        let runtimeProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.detectedProfile(for: runtime ?? task.resolvedRuntimeID)
         let usesHostControlCLIRelay = runtimeProfile.usesHostControlCLIRelay
         // The prompt must name the route the run actually gets, which is the
         // *offered* set — what gets attached — not the *required* set, which

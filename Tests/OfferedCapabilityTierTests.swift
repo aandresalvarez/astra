@@ -108,7 +108,282 @@ struct OfferedCapabilityTierTests {
         ).requiresBrowserControl)
     }
 
+    @Test("An offered brokered connector stays in the manifest without its secret")
+    func offeredBrokeredConnectorStaysInTheManifestWithoutItsSecret() throws {
+        let fixture = try Fixture(includingREDCap: true)
+        let redcap = try #require(fixture.redcapConnector)
+        let scope = fixture.scope(for: fixture.jiraTurn)
+        // The turn names Jira and nothing else, so REDCap is reachable-only.
+        #expect(scope.connectors.contains { $0.id == fixture.jiraConnector.id })
+        #expect(!scope.connectors.contains { $0.id == redcap.id })
+        #expect(scope.reachableConnectors.contains { $0.id == redcap.id })
+
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: scope,
+            requiredTools: ["jira", "redcap"],
+            secretStore: fixture.store
+        )
+        let manifest = try #require(environment["ASTRA_CONNECTORS"]).lowercased()
+        // Both routes are advertised. Projecting the two tiers separately and
+        // merging the results drops one connector from the manifest, and the
+        // broker then answers "not projected into ASTRA_CONNECTORS" for a route
+        // the prompt just told the agent to use.
+        #expect(manifest.contains(fixture.jiraConnector.id.uuidString.lowercased()))
+        #expect(manifest.contains(redcap.id.uuidString.lowercased()))
+        // The tier survives as a credential policy, not as a missing manifest
+        // entry: only the narrated connector's secret is unsealed.
+        #expect(environment.values.contains(Fixture.jiraSecret))
+        #expect(!environment.values.contains(Fixture.redcapSecret))
+    }
+
+    @Test("Brokered credential labels report only what the broker will unseal")
+    func brokeredCredentialLabelsReportOnlyWhatTheBrokerWillUnseal() throws {
+        let fixture = try Fixture(includingREDCap: true)
+        let redcap = try #require(fixture.redcapConnector)
+        let scope = fixture.scope(for: fixture.jiraTurn)
+        let jiraLabel = ConnectorRuntimeProjection.credentialLabel(
+            for: fixture.jiraConnector,
+            key: "JIRA_API_TOKEN"
+        )
+        let redcapLabel = ConnectorRuntimeProjection.credentialLabel(for: redcap, key: "REDCAP_API_TOKEN")
+
+        // The strip stays reachability-wide - the agent must not hold either
+        // token - but the *report* says what is usable, and an unapproved
+        // reachable connector is not.
+        #expect(BrokeredConnectorEnvironment.brokeredConnectors(in: scope).contains { $0.id == redcap.id })
+        let reported = BrokeredConnectorEnvironment.credentialLabels(
+            in: scope,
+            task: fixture.task,
+            runtime: .claudeCode
+        )
+        #expect(reported.contains(jiraLabel))
+        #expect(!reported.contains(redcapLabel))
+
+        // A durable grant is what makes it usable, so now it is reported.
+        _ = TaskRuntimePermissionGrants.record(
+            grants: [.credential(label: redcapLabel)],
+            providerID: .claudeCode,
+            task: fixture.task,
+            modelContext: fixture.context,
+            source: "test"
+        )
+        #expect(BrokeredConnectorEnvironment.credentialLabels(
+            in: scope,
+            task: fixture.task,
+            runtime: .claudeCode
+        ).contains(redcapLabel))
+    }
+
+    @Test("A Copilot build that can carry the broker is not told the route is unavailable")
+    func copilotThatCanCarryTheBrokerIsNotToldTheRouteIsUnavailable() throws {
+        let fixture = try Fixture()
+        let scope = fixture.scope(for: fixture.jiraTurn)
+
+        func connectorSectionText(supportsAdditionalMCPConfig: Bool) throws -> String {
+            try #require(AgentPromptConnectorContextBuilder.section(
+                from: scope,
+                task: fixture.task,
+                runtime: .copilotCLI,
+                runtimeCapabilityProfile: .copilotProfile(
+                    supportsAdditionalMCPConfig: supportsAdditionalMCPConfig
+                )
+            )).text
+        }
+
+        // The static table says Copilot cannot carry the host control plane. A
+        // build with --additional-mcp-config can, and the launch attaches the
+        // route - printing "Route UNAVAILABLE" over it makes the agent report a
+        // working connector as broken.
+        #expect(!(try connectorSectionText(supportsAdditionalMCPConfig: true)).contains("Route UNAVAILABLE"))
+        #expect((try connectorSectionText(supportsAdditionalMCPConfig: false)).contains("Route UNAVAILABLE"))
+    }
+
+    @Test("The launch plan records a broker route only when the runtime can carry it")
+    func launchPlanRecordsBrokerRouteOnlyWhenTheRuntimeCanCarryIt() throws {
+        let fixture = try Fixture()
+
+        func recordsJiraConnectorRoute(supportsAdditionalMCPConfig: Bool) -> Bool {
+            TaskLaunchResourceResolver.resolve(
+                task: fixture.task,
+                runID: UUID(),
+                runtime: .copilotCLI,
+                phase: .run,
+                prompt: fixture.jiraTurn,
+                contextText: fixture.jiraTurn,
+                workspacePath: fixture.workspace.primaryPath,
+                executionEnvironment: .host,
+                connectorSecretStore: fixture.store,
+                runtimeCapabilityProfile: .copilotProfile(
+                    supportsAdditionalMCPConfig: supportsAdditionalMCPConfig
+                )
+            )
+            .controlPlaneResources
+            .contains { $0.capability == "jira" && $0.source == .connector }
+        }
+
+        // Offered says what the run *may* attach, not that this runtime can
+        // carry any of it. A control-plane resource on a runtime with no
+        // transport writes a route into the persisted plan that nothing serves,
+        // and the plan is what Run Activity reads back.
+        #expect(recordsJiraConnectorRoute(supportsAdditionalMCPConfig: true))
+        #expect(!recordsJiraConnectorRoute(supportsAdditionalMCPConfig: false))
+    }
+
+    @Test("A host tool declared by an unnarrated skill is offered, never required")
+    func hostToolDeclaredByUnnarratedSkillIsOfferedNeverRequired() throws {
+        let snapshot = HostControlPlaneMCPProjection.CapabilitySnapshot(
+            enabledPackageIDs: [],
+            behaviorSkillOriginPackageIDs: [],
+            // This turn's wording dropped the skill that declares the route...
+            effectiveBehaviorInstructions: [],
+            // ...but the workspace still enables it.
+            reachableBehaviorInstructions: [
+                "Always use the host-control mcp__astra_host__bq tool for warehouse queries."
+            ]
+        )
+        #expect(HostControlPlaneMCPProjection.offeredToolNames(capabilitySnapshot: snapshot).contains("bq"))
+        #expect(!HostControlPlaneMCPProjection.requiredToolNames(capabilitySnapshot: snapshot).contains("bq"))
+
+        // And the scope really does carry behavior text past the turn filter,
+        // which is what makes the offered read above reach anything at all.
+        let fixture = try Fixture()
+        let scope = fixture.scope(for: fixture.unrelatedTurn)
+        let jiraBehavior = "Use Jira to review issues before answering."
+        #expect(!scope.resolver.effectiveSnapshots.contains { $0.behaviorInstructions == jiraBehavior })
+        #expect(scope.reachableBehaviorInstructions.contains(jiraBehavior))
+    }
+
+    /// The launch guard reads `ASTRA_BROWSER_URL`, which is injected from the
+    /// reachable set, while the *requirement* comes from the narrated set. A
+    /// Copilot build with neither shell nor browser MCP therefore aborted turns
+    /// that never asked for a browser, purely because the workspace had a Shelf
+    /// endpoint bound. Offered routes attach where the transport can carry them
+    /// and are dropped where it cannot.
+    @Test("An offered browser bridge is dropped, not blocked, where nothing can carry it")
+    func offeredBrowserBridgeIsDroppedNotBlockedWhereNothingCanCarryIt() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-offered-browser-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Offered Browser", primaryPath: root.path)
+        // Enabled in the workspace and never mentioned by the turn: reachable,
+        // so the endpoint is injected, and unnarrated, so nothing requires it.
+        let browserTool = LocalTool(
+            name: "ASTRA Browser",
+            toolDescription: "Drive a browser session",
+            command: "astra-browser"
+        )
+        browserTool.workspace = workspace
+        let task = AgentTask(
+            title: "Write a recipe",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        for model in [workspace, browserTool, task] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        // "/bin/copilot-not-present" has no --additional-mcp-config, so this
+        // build has no browser MCP tool either; Copilot has no shell.
+        func plan(requiresBrowserControl: Bool) -> AgentRuntimeProcessLaunchPlan {
+            AgentRuntimeAdapterRegistry
+                .adapter(for: .copilotCLI)
+                .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                    prompt: task.goal,
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    executablePath: "/bin/copilot-not-present",
+                    providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 30,
+                    phase: "run",
+                    contextText: task.goal,
+                    runtimeRequirements: TaskRuntimeRequirementSet(
+                        hostControlTools: [],
+                        requiresDockerWorkspaceShell: false,
+                        requiresBrowserControl: requiresBrowserControl
+                    )
+                ))
+        }
+
+        let offered = plan(requiresBrowserControl: false)
+        #expect(offered.environment["ASTRA_BROWSER_URL"] == nil)
+        #expect(offered.commandPlannedFields["browser_bridge_attached"] == "false")
+        #expect(offered.commandPlannedFields["browser_bridge_launch_block_reason"] == "none")
+        #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: offered) == nil)
+
+        // A turn that does need the browser still fails loudly: the run cannot
+        // do what it was asked to do, and saying so is the correct answer.
+        let required = plan(requiresBrowserControl: true)
+        #expect(required.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(required.commandPlannedFields["browser_bridge_launch_block_reason"]
+            == BrowserBridgeRuntimeLaunchGuard.missingBrowserControlToolReason)
+        #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: required) != nil)
+    }
+
+    /// The permission allowlist is built from `reachableLocalTools`, so an
+    /// enabled tool is callable on every turn. The prompt named only the
+    /// narrated subset, which left the agent holding a permitted command it had
+    /// never been told about - indistinguishable, from inside the run, from not
+    /// having the tool at all.
+    @Test("A reachable local tool the turn never names still gets its command named")
+    func reachableLocalToolTheTurnNeverNamesStillGetsItsCommandNamed() throws {
+        let fixture = try Fixture()
+        let tool = LocalTool(
+            name: "Registry Exporter",
+            toolDescription: "Export instrument rows from the study registry",
+            command: "registry-export",
+            arguments: "--format csv"
+        )
+        tool.workspace = fixture.workspace
+        fixture.context.insert(tool)
+        try fixture.context.save()
+
+        let scope = fixture.scope(for: fixture.unrelatedTurn)
+        #expect(!scope.localTools.contains { $0.id == tool.id })
+        #expect(scope.reachableLocalTools.contains { $0.id == tool.id })
+
+        // `AgentPolicyAdapters` and `ProviderLaunchSignatureService` both build
+        // from `reachableLocalTools`, so the run is allowlisted for this command
+        // and its signature records it. Staying silent about it in the prompt is
+        // therefore a lie about the run, not a restriction on it.
+        let prompt = AgentPromptBuilder.buildPrompt(for: fixture.task)
+        #expect(prompt.contains("Also available and callable in this run"))
+        #expect(prompt.contains("registry-export --format csv"))
+        // Named, not re-narrated: the pruned description stays pruned.
+        #expect(!prompt.contains("Export instrument rows from the study registry"))
+    }
+
     /// One enabled Jira connector, one turn that names it and one that does not.
+    /// `includingREDCap` adds a second broker-owned connector no turn here ever
+    /// names, which is what separates "reachable" from "narrated" for the two
+    /// brokered surfaces below.
     @MainActor
     private struct Fixture {
         let container: ModelContainer
@@ -116,10 +391,23 @@ struct OfferedCapabilityTierTests {
         let store: MockSecretStore
         let workspace: Workspace
         let task: AgentTask
+        let jiraConnector: Connector
+        let redcapConnector: Connector?
         let jiraTurn = "check the open Jira issues for this sprint"
         let unrelatedTurn = "Bake a chocolate sponge cake and write the recipe"
+        static let jiraSecret = "secret-token-value"
+        static let redcapSecret = "redcap-secret-value"
 
-        init() throws {
+        /// The provider-launch scope this fixture's task resolves to for `turn`.
+        func scope(for turn: String) -> TaskCapabilityPromptScope {
+            TaskCapabilityResolutionSnapshot.capture(
+                for: task,
+                providerLaunchContextText: turn,
+                secretStore: store
+            ).providerLaunch
+        }
+
+        init(includingREDCap: Bool = false) throws {
             container = try ModelContainer(
                 for: ASTRASchema.current,
                 migrationPlan: ASTRAMigrationPlan.self,
@@ -147,13 +435,43 @@ struct OfferedCapabilityTierTests {
             connector.credentialKeys = ["JIRA_API_TOKEN"]
             store.save(
                 key: "JIRA_API_TOKEN",
-                value: "secret-token-value",
+                value: Self.jiraSecret,
                 entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
                 label: nil
             )
-            workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+            jiraConnector = connector
+            var models: [any PersistentModel] = [workspace, skill, connector]
+            var enabledConnectorIDs = [connector.id.uuidString]
+
+            if includingREDCap {
+                // No skill and no word this suite's turns can land on, so it is
+                // reachable through workspace enablement alone.
+                let redcap = Connector(
+                    name: "Registry Export",
+                    serviceType: "redcap",
+                    connectorDescription: "REDCap instrument export endpoint",
+                    baseURL: "https://redcap.example.edu/api/",
+                    authMethod: "token"
+                )
+                redcap.isGlobal = true
+                redcap.credentialKeys = ["REDCAP_API_TOKEN"]
+                store.save(
+                    key: "REDCAP_API_TOKEN",
+                    value: Self.redcapSecret,
+                    entityID: KeychainSecretStore.connectorEntityID(for: redcap.id),
+                    label: nil
+                )
+                redcapConnector = redcap
+                models.append(redcap)
+                enabledConnectorIDs.append(redcap.id.uuidString)
+            } else {
+                redcapConnector = nil
+            }
+
+            workspace.enabledGlobalConnectorIDs = enabledConnectorIDs
             task = AgentTask(title: "Support tickets", goal: unrelatedTurn, workspace: workspace)
-            for model in [workspace, skill, connector, task] as [any PersistentModel] {
+            models.append(task)
+            for model in models {
                 context.insert(model)
             }
             try context.save()

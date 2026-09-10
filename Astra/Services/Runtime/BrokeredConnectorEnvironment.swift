@@ -60,10 +60,33 @@ enum BrokeredConnectorEnvironment {
     /// not get these keys whether or not the value is currently readable, and a
     /// report that quietly drops an unset credential would say the run holds
     /// less than it withholds.
-    static func credentialLabels(in capabilityScope: TaskCapabilityPromptScope) -> [String] {
+    ///
+    /// Filtered by approval, though, because that is a different question from
+    /// readability. `brokeredConnectors(in:)` is deliberately reachability-wide
+    /// — the strip must cover every credential the broker owns — but the broker
+    /// only unseals a reachable-but-unnarrated connector's secret when a durable
+    /// grant already covers it (see
+    /// `HostControlBrokerSessionRegistry.brokeredConnectorEnvironment`). Listing
+    /// the rest here tells the user a route is usable on a run where the broker
+    /// will refuse it. Passing no task means no grants are known, which reports
+    /// the narrated connectors only: understating beats overstating.
+    static func credentialLabels(
+        in capabilityScope: TaskCapabilityPromptScope,
+        task: AgentTask? = nil,
+        runtime: AgentRuntimeID? = nil
+    ) -> [String] {
         let connectors = brokeredConnectors(in: capabilityScope)
         guard !connectors.isEmpty else { return [] }
-        return ConnectorRuntimeProjection(connectors: connectors).declaredCredentialLabels()
+        let narratedConnectorIDs = Set(capabilityScope.connectors.map(\.id))
+        let approvedLabels = Set(task.map {
+            TaskRuntimePermissionGrants.approvedCredentialLabels(for: $0, runtime: runtime)
+        } ?? [])
+        return connectors.flatMap { connector -> [String] in
+            let labels = ConnectorRuntimeProjection(connectors: [connector]).declaredCredentialLabels()
+            guard !narratedConnectorIDs.contains(connector.id) else { return labels }
+            return labels.filter(approvedLabels.contains)
+        }
+        .sorted()
     }
 
     /// Removes the brokered keys from `environment` and prunes the brokered

@@ -2198,12 +2198,16 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
-        #expect(!prompt.contains("stanford-graph-mail"))
         #expect(!prompt.contains("create rules"))
-        // Permitted but unnarrated: the prompt above teaches the agent nothing
-        // about this tool, which is what keeps an unrelated task focused. Denying
-        // the command as well is what used to make an enabled capability
-        // unusable for anyone who worded a request differently.
+        #expect(!prompt.contains("Read the locally signed-in Microsoft 365 mailbox"))
+        // Named, not narrated. This skill carries no environment, so the command
+        // works if the agent runs it, and it is allowlisted whether or not the
+        // prompt says so. Withholding the name does not focus the run - it only
+        // makes the agent report a capability the user attached as unavailable.
+        // What the prune withholds is everything above: the SAFETY rules, the
+        // usage prose, the tool description.
+        #expect(prompt.contains("Also available and callable in this run"))
+        #expect(prompt.contains("stanford-graph-mail"))
         #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["stanford-graph-mail"])
     }
 
@@ -2292,12 +2296,16 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
-        #expect(!prompt.contains("stanford-graph-mail"))
         #expect(!prompt.contains("create rules"))
-        // Permitted but unnarrated: the prompt above teaches the agent nothing
-        // about this tool, which is what keeps an unrelated task focused. Denying
-        // the command as well is what used to make an enabled capability
-        // unusable for anyone who worded a request differently.
+        #expect(!prompt.contains("Read the locally signed-in Microsoft 365 mailbox"))
+        // Named, not narrated. This skill carries no environment, so the command
+        // works if the agent runs it, and it is allowlisted whether or not the
+        // prompt says so. Withholding the name does not focus the run - it only
+        // makes the agent report a capability the user attached as unavailable.
+        // What the prune withholds is everything above: the SAFETY rules, the
+        // usage prose, the tool description.
+        #expect(prompt.contains("Also available and callable in this run"))
+        #expect(prompt.contains("stanford-graph-mail"))
         #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["stanford-graph-mail"])
     }
 

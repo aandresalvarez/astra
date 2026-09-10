@@ -163,6 +163,24 @@ enum AgentRuntimeCapabilityProfileService {
             supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig
         )
     }
+
+    /// The profile for a runtime whose launch settings the caller does not hold.
+    ///
+    /// `defaultProfile` is a static table: for Copilot it always answers "no
+    /// MCP", which is a guess about the installed binary and not a fact about
+    /// it. Anything that describes the run to the agent has to agree with what
+    /// the launch actually attaches, so it resolves the binary instead of
+    /// assuming. Only Copilot varies, and its probe is memoised per binary, so
+    /// this costs a few `stat`s rather than a process spawn. Callers that
+    /// already hold `launchSettings` should pass that path to
+    /// `profile(for:executablePath:)` - a user-configured path can differ from
+    /// the detected one.
+    static func detectedProfile(for runtime: AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
+        guard runtime == .copilotCLI else {
+            return AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+        }
+        return profile(for: runtime, executablePath: CopilotCLIRuntime.detectPath())
+    }
 }
 
 private extension AgentRuntimeTaskScopedMCPDelivery {

@@ -64,7 +64,8 @@ struct CodexMCPLaunchProjection {
         }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: task,
-            contextText: contextText
+            contextText: contextText,
+            taskEnvironment: taskEnvironment
         ) {
             servers.append(browserServer)
             browserServerProjected = true

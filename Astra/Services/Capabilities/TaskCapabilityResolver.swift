@@ -600,7 +600,8 @@ struct TaskCapabilityResolver {
             contextText: contextText,
             reachableConnectors: connectors,
             reachableLocalTools: tools,
-            reachablePackageIDs: enabledPackageIDs
+            reachablePackageIDs: enabledPackageIDs,
+            reachableBehaviorSkills: skills
         )
     }
 
@@ -691,7 +692,8 @@ struct TaskCapabilityResolver {
         // passes the full inventory.
         reachableConnectors: [Connector]? = nil,
         reachableLocalTools: [LocalTool]? = nil,
-        reachablePackageIDs: [String]? = nil
+        reachablePackageIDs: [String]? = nil,
+        reachableBehaviorSkills: [Skill]? = nil
     ) -> TaskCapabilityPromptScope {
         let effectiveReachableConnectors = reachableConnectors ?? connectors
         let effectiveReachableLocalTools = reachableLocalTools ?? localTools
@@ -762,6 +764,14 @@ struct TaskCapabilityResolver {
             return skillIDs.contains(skill.id)
         }
 
+        // Every reachable skill's behavior text plus the detached snapshots the
+        // task carries, unfiltered by turn relevance.
+        let reachableBehaviorInstructions = Self.uniqueStrings(
+            ((reachableBehaviorSkills ?? skills).map(\.behaviorInstructions)
+                + detachedSkillSnapshots.map(\.behaviorInstructions))
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+
         return TaskCapabilityPromptScope(
             resolver: resolver,
             behaviorSkills: skills,
@@ -773,7 +783,8 @@ struct TaskCapabilityResolver {
             enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs),
             reachableConnectors: effectiveReachableConnectors,
             reachableLocalTools: reachableLocalTools ?? scopedTools,
-            reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs)
+            reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs),
+            reachableBehaviorInstructions: reachableBehaviorInstructions
         )
     }
 
@@ -1297,6 +1308,14 @@ struct TaskCapabilityPromptScope {
     let reachableConnectors: [Connector]
     let reachableLocalTools: [LocalTool]
     let reachablePackageIDs: [String]
+    /// Behavior instructions for every reachable skill, not only the narrated
+    /// ones. `resolver.effectiveSnapshots` is the narrated subset by
+    /// construction, so offered-tier derivation has to read this instead: a
+    /// package whose host-control dependency is declared only in a skill's
+    /// behavior text otherwise loses its route on every turn that prunes the
+    /// skill, which is the same reachability-follows-narration bug one layer
+    /// down.
+    let reachableBehaviorInstructions: [String]
 
     /// The browser bridge is wired for this run. Reachability-wide, because
     /// attaching a route the turn never named costs nothing.

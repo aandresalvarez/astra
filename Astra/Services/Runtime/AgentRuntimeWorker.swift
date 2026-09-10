@@ -550,7 +550,7 @@ final class AgentRuntimeWorker {
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
-        let executionPolicy = executionPolicy.turnIntentSnapshot == nil
+        var executionPolicy = executionPolicy.turnIntentSnapshot == nil
             ? executionPolicy.withTurnIntentSnapshot(TaskTurnIntentResolver.capture(
                 for: launchTask,
                 sourceEventID: existingStartEventID,
@@ -657,6 +657,15 @@ final class AgentRuntimeWorker {
             runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
             launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         }
+        // Resolved from the binary this run will actually exec, then carried on
+        // the policy so the prompt describes the same routes the launch
+        // attaches. After the reroute, so it names the runtime that won rather
+        // than the one that was asked for.
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+            for: selectedRuntime,
+            executablePath: launchSettings.executablePath
+        )
+        executionPolicy = executionPolicy.withRuntimeCapabilityProfile(runtimeCapabilityProfile)
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
@@ -924,7 +933,8 @@ final class AgentRuntimeWorker {
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of
             // reusing the resolver's single precomputed answer.
-            precomputedRuntimeRequirements: appliedRuntime.requirements
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
+            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -958,7 +968,6 @@ final class AgentRuntimeWorker {
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
-        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
         let runPermissionPolicy = launchPermissionPolicy
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,

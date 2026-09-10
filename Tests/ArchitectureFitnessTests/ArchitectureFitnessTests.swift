@@ -1982,7 +1982,13 @@ struct ArchitectureFitnessTests {
             // branch and was again trimmed back under rather than opening a first
             // entry — naming the value for what it is cost fewer lines than
             // explaining it, and the explanation belongs on the field it reads.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_345, .owner("Architecture fitness test suite")),
+            // 2_345 -> 2_350: the two capability-profile raises above, plus this
+            // line. AgentRuntimeProcessRunner crossed 2_000 a third time on this
+            // branch and was again trimmed under — the argument it gained is
+            // explained by the comment already above that call, rewrapped.
+            // 2_350 -> 2_365: the AgentPromptBuilder and resolver-test raises
+            // above, and their reasons.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_365, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2001,7 +2007,14 @@ struct ArchitectureFitnessTests {
             // WorkspaceConfigManager.swift's entry above for why.
             "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
+            // 2_300 -> 2_305: threading that same profile to the connector
+            // section, so the prompt stops reading a static table that guesses
+            // whether the installed Copilot binary can carry the broker.
+            // 2_305 -> 2_355: the offered tier's local-tool route summary. The
+            // permission list already allowlists every reachable tool; the
+            // prompt named only the narrated subset, so a permitted command
+            // the agent was never told about read as an absent capability.
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_355, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
             // policy observation without a user-visible outcome now audits it.
@@ -2061,7 +2074,10 @@ struct ArchitectureFitnessTests {
             // which one fired. Quoting the snapshot in both wordings also closed
             // the allowlisted cosmetic gap where the event named a limit that
             // was not the one enforced.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_190, .owner("Runtime worker execution")),
+            // 2_190 -> 2_200: the run's capability profile is resolved once here,
+            // after the reroute, and carried on the execution policy instead of
+            // being re-derived by every surface that describes the run.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_200, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -2107,7 +2123,10 @@ struct ArchitectureFitnessTests {
             // its route, the credential that still does not travel with it, and
             // the connector the workspace never enabled that stays out. Collapsing
             // them would let "everything is reachable" pass.
-            "Tests/TaskCapabilityResolverTests.swift": .init(3_070, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_070 -> 3_085: two prune tests now assert that a reachable tool's
+            // command is named while its instructions stay pruned, with the
+            // reasoning for the flip inline.
+            "Tests/TaskCapabilityResolverTests.swift": .init(3_085, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models

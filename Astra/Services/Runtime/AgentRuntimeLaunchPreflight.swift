@@ -999,7 +999,8 @@ enum AgentRuntimeLaunchPreflight {
             }
             if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
                 for: task,
-                contextText: contextText
+                contextText: contextText,
+                taskEnvironment: taskEnv
             ) {
                 mcpServers.append(browserServer)
             }

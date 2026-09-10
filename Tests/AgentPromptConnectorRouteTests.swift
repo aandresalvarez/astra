@@ -63,11 +63,21 @@ struct AgentPromptConnectorRouteTests {
         #expect(!scope.connectors.contains { $0.id == connector.id })
         #expect(scope.reachableConnectors.contains { $0.id == connector.id })
 
-        func routeText(runtime: AgentRuntimeID) throws -> String {
+        // The profile is passed rather than detected: the builder falls back to
+        // probing the installed binary, so leaving Copilot's profile implicit
+        // would make this test assert whatever Copilot build is on the machine
+        // running it. What the route sentence has to match is the transport the
+        // run gets, and that is exactly what the profile states.
+        func routeText(
+            runtime: AgentRuntimeID,
+            profile: AgentRuntimeCapabilityProfile? = nil
+        ) throws -> String {
             try #require(AgentPromptConnectorContextBuilder.section(
                 from: scope,
                 task: task,
-                runtime: runtime
+                runtime: runtime,
+                runtimeCapabilityProfile: profile
+                    ?? AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
             )?.text)
         }
 
@@ -80,9 +90,20 @@ struct AgentPromptConnectorRouteTests {
         #expect(relayText.contains("astra-host-control jira"))
         #expect(!relayText.contains("mcp__astra_host__jira"))
 
+        // A Copilot build that can take `--additional-mcp-config` carries the
+        // broker, so it is told the MCP route rather than "unavailable".
+        let copilotWithMCPText = try routeText(
+            runtime: .copilotCLI,
+            profile: .copilotProfile(supportsAdditionalMCPConfig: true)
+        )
+        #expect(copilotWithMCPText.contains("mcp__astra_host__jira"))
+
         // No transport at all. A brokered connector's credentials never enter
         // the process environment, so pointing at env vars would be a lie too.
-        let noRouteText = try routeText(runtime: .copilotCLI)
+        let noRouteText = try routeText(
+            runtime: .copilotCLI,
+            profile: .copilotProfile(supportsAdditionalMCPConfig: false)
+        )
         #expect(noRouteText.contains("[Jira-new]"))
         #expect(noRouteText.contains("no host-tool route on this runtime"))
         #expect(!noRouteText.contains("mcp__astra_host__jira"))

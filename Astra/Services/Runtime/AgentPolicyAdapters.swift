@@ -1089,7 +1089,9 @@ enum AgentPolicyManifestService {
                 + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
         )
         let brokeredCredentialLabels = BrokeredConnectorEnvironment.credentialLabels(
-            in: taskCapabilityScope
+            in: taskCapabilityScope,
+            task: task,
+            runtime: runtime
         )
         let manifestCredentialLabels = uniqueStrings(
             credentialLabels(for: task, capabilityScope: taskCapabilityScope)

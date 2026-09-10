@@ -33,7 +33,11 @@ enum TaskLaunchResourceResolver {
         // derivation instead of independently re-deriving it from a second,
         // potentially different capability-scope capture. The two derivations
         // must agree — see Tests/HostControlRequirementDerivationConsistencyTests.swift.
-        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
+        // The profile the launch resolved from this runtime's own executable.
+        // Defaults to resolving it here rather than reading the static table,
+        // which for Copilot is a guess about the installed binary.
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) -> TaskLaunchResourcePlan {
         let environment = executionEnvironment ?? DockerExecutionPlanner.resolveEnvironment(for: task)
         var hostPathGrants: [RuntimePathGrant] = []
@@ -56,13 +60,24 @@ enum TaskLaunchResourceResolver {
         // required set, making the plan disagree with the run whenever a
         // caller passed a precomputed requirement set — and agree with it
         // when the caller did not, since `enabledToolNames` already offers.
-        let hostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools
+        let offeredHostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools
             ?? HostControlPlaneMCPProjection.enabledToolNames(
                 task: task,
                 environment: environment,
                 contextText: contextText,
                 capabilityScope: capabilityScope
             )
+        let resolvedRuntimeProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.detectedProfile(for: runtime)
+        // Offered says what the run *may* attach; it is not evidence that this
+        // runtime can carry any of it. Recording a control-plane resource on a
+        // runtime with no transport writes a route into the persisted plan that
+        // nothing will ever serve — and the plan is what the policy manifest
+        // and Run Activity read back when they tell the user how a connector
+        // was reached.
+        let deliversHostControlPlane = resolvedRuntimeProfile.canDeliverHostControlPlane
+            || DockerWorkspaceMCPProjection.isEnabled(for: environment)
+        let hostControlTools = deliversHostControlPlane ? offeredHostControlTools : []
 
         appendWorkspacePathGrants(
             task: task,
@@ -149,12 +164,12 @@ enum TaskLaunchResourceResolver {
 
         appendCapabilityGrants(
             task: task,
-            runtime: runtime,
             contextText: contextText,
             capabilityScope: capabilityScope,
             connectorCredentialExposurePolicy: resolutionSnapshot.connectorCredentialExposurePolicy,
             connectorSecretStore: connectorSecretStore,
             hostControlTools: hostControlTools,
+            runtimeCapabilityProfile: resolvedRuntimeProfile,
             routesGitHubMetadataThroughHostControl: routesGitHubMetadataThroughHostControl,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
@@ -1177,12 +1192,12 @@ enum TaskLaunchResourceResolver {
 
     private static func appendCapabilityGrants(
         task: AgentTask,
-        runtime: AgentRuntimeID,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope,
         connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy,
         connectorSecretStore: SecretStore,
         hostControlTools: [String],
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         routesGitHubMetadataThroughHostControl: Bool,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
@@ -1195,8 +1210,7 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        let hostControlPlacement = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-            .usesHostControlCLIRelay
+        let hostControlPlacement = runtimeCapabilityProfile.usesHostControlCLIRelay
             ? "host_control_cli_broker"
             : "host_control_mcp_broker"
         if capabilityScope.exposesBrowserBridge ||

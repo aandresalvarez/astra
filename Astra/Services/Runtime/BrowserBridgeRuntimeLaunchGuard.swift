@@ -48,6 +48,34 @@ enum BrowserBridgeRuntimeLaunchGuard {
         environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
+    /// Drops an offered browser attachment no transport on this runtime can
+    /// carry, instead of aborting the run over it.
+    ///
+    /// `ASTRA_BROWSER_URL` follows reachability, so a workspace with a bound
+    /// Shelf endpoint attaches it to every turn — including ones that never
+    /// mention a browser. On a runtime with neither a shell nor a browser MCP
+    /// tool that used to abort the launch, which is the offered tier acquiring
+    /// teeth it must not have. Dropping the variable also keeps the launch
+    /// environment honest: an endpoint with nothing able to reach it tells the
+    /// policy manifest a dead route is live.
+    ///
+    /// A *required* bridge still blocks. That case is the run being unable to do
+    /// what it was asked to do, and failing loudly is the correct answer.
+    static func removingUndeliverableOfferedBridge(
+        from environment: [String: String],
+        runtime: AgentRuntimeID,
+        mcpToolSupported: Bool,
+        required: Bool
+    ) -> [String: String] {
+        guard !required,
+              isBrowserBridgeAttached(environment: environment),
+              !mcpToolSupported,
+              !supportsShellToolForBrowserBridge(runtime: runtime) else {
+            return environment
+        }
+        return environment.filter { !BrowserBridgeMCPProjection.environmentKeys.contains($0.key) }
+    }
+
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
         guard isBrowserBridgeAttached(environment: plan.environment),
               plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingBrowserControlToolReason else {

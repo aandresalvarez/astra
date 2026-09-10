@@ -1314,7 +1314,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            taskEnvironment: taskEnv
         ) {
             mcpServers.append(browserServer)
         }
@@ -1927,9 +1928,19 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
+        // Offered, not required: an enabled browser tool this turn never named
+        // must not abort the run on a Copilot build with no transport for it.
+        // Dropped before the metadata is computed so the environment, the plan
+        // fields, and the launch guard all describe the same run.
+        let browserBridgeEnv = BrowserBridgeRuntimeLaunchGuard.removingUndeliverableOfferedBridge(
+            from: taskEnv,
+            runtime: id,
+            mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported,
+            required: context.runtimeRequirements?.requiresBrowserControl ?? true
+        )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
             runtime: id,
-            environment: taskEnv,
+            environment: browserBridgeEnv,
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
@@ -1944,7 +1955,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
         let surfacedAskFirstTools = askFirstTools
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
-        var launchTaskEnv = taskEnv
+        var launchTaskEnv = browserBridgeEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {
             launchTaskEnv[key] = value
         }

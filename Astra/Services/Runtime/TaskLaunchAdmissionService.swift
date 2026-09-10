@@ -134,7 +134,8 @@ enum TaskLaunchAdmissionService {
                 permissionPolicy: effectivePermissionPolicy,
                 workspaceAccess: executionPolicy.workspaceAccessOverride ?? .exclusive,
                 connectorSecretStore: secretStore,
-                precomputedRuntimeRequirements: requirements
+                precomputedRuntimeRequirements: requirements,
+                runtimeCapabilityProfile: runtimeProfile
             )
             let transportIncompatibilities = TaskRuntimeCompatibilityService.incompatibilities(
                 runtime: runtime,

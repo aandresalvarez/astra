@@ -19,6 +19,7 @@ enum HostControlPlaneMCPProjection {
         /// answer a different question — see `requiredToolNames`.
         let reachablePackageIDs: Set<String>
         let reachableConnectorServiceTypes: [String]
+        let reachableBehaviorInstructions: [String]
         let resolutionIsComplete: Bool
 
         init(capabilityScope: TaskCapabilityPromptScope) {
@@ -28,6 +29,7 @@ enum HostControlPlaneMCPProjection {
             connectorServiceTypes = capabilityScope.connectors.map(\.serviceType)
             reachablePackageIDs = Set(capabilityScope.reachablePackageIDs)
             reachableConnectorServiceTypes = capabilityScope.reachableConnectors.map(\.serviceType)
+            reachableBehaviorInstructions = capabilityScope.reachableBehaviorInstructions
             resolutionIsComplete = true
         }
 
@@ -38,6 +40,7 @@ enum HostControlPlaneMCPProjection {
             connectorServiceTypes: [String] = [],
             reachablePackageIDs: Set<String>? = nil,
             reachableConnectorServiceTypes: [String]? = nil,
+            reachableBehaviorInstructions: [String]? = nil,
             resolutionIsComplete: Bool = true
         ) {
             self.enabledPackageIDs = enabledPackageIDs
@@ -46,6 +49,7 @@ enum HostControlPlaneMCPProjection {
             self.connectorServiceTypes = connectorServiceTypes
             self.reachablePackageIDs = reachablePackageIDs ?? enabledPackageIDs
             self.reachableConnectorServiceTypes = reachableConnectorServiceTypes ?? connectorServiceTypes
+            self.reachableBehaviorInstructions = reachableBehaviorInstructions ?? effectiveBehaviorInstructions
             self.resolutionIsComplete = resolutionIsComplete
         }
     }
@@ -123,6 +127,7 @@ enum HostControlPlaneMCPProjection {
         toolNames(
             packageIDs: capabilitySnapshot.enabledPackageIDs,
             connectorServiceTypes: capabilitySnapshot.connectorServiceTypes,
+            behaviorInstructions: capabilitySnapshot.effectiveBehaviorInstructions,
             capabilitySnapshot: capabilitySnapshot
         )
     }
@@ -141,6 +146,12 @@ enum HostControlPlaneMCPProjection {
         toolNames(
             packageIDs: capabilitySnapshot.reachablePackageIDs,
             connectorServiceTypes: capabilitySnapshot.reachableConnectorServiceTypes,
+            // Reachability-wide: a generic package can declare its host-control
+            // dependency only in a skill's behavior text, and the narrated
+            // instruction set drops that skill on any turn whose wording misses
+            // it. Reading the narrated set here would make the offered tier
+            // inherit exactly the word-match gate it exists to bypass.
+            behaviorInstructions: capabilitySnapshot.reachableBehaviorInstructions,
             capabilitySnapshot: capabilitySnapshot
         )
     }
@@ -148,6 +159,7 @@ enum HostControlPlaneMCPProjection {
     private static func toolNames(
         packageIDs: Set<String>,
         connectorServiceTypes: [String],
+        behaviorInstructions: [String],
         capabilitySnapshot: CapabilitySnapshot
     ) -> [String] {
         var required = Set<String>()
@@ -160,7 +172,7 @@ enum HostControlPlaneMCPProjection {
                 required.insert(tool)
             }
         }
-        for instructions in capabilitySnapshot.effectiveBehaviorInstructions {
+        for instructions in behaviorInstructions {
             required.formUnion(requiredToolNames(inBehaviorText: instructions))
         }
         return orderedToolNames(required)

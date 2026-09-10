@@ -23,6 +23,11 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// settings toggle cannot leave a shared lease without its read-only
     /// boundary or turn an Off admission into hidden confinement.
     var sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?
+    /// The capability profile the launch resolved from the runtime's own
+    /// executable, carried so everything that *describes* the run to the agent
+    /// agrees with what the launch actually attaches. The static profile table
+    /// is a guess about the installed Copilot binary; this is the answer.
+    var runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -34,7 +39,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         launchSnapshot: AgentTaskLaunchSnapshot? = nil,
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         workspaceAccessOverride: TaskExecutionResourceAccess? = nil,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) {
         self.permissionPolicyOverride = permissionPolicyOverride
         self.allowedToolsOverride = allowedToolsOverride
@@ -44,6 +50,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         self.turnIntentSnapshot = turnIntentSnapshot
         self.workspaceAccessOverride = workspaceAccessOverride
         self.sandboxEnforcementSnapshot = sandboxEnforcementSnapshot
+        self.runtimeCapabilityProfile = runtimeCapabilityProfile
     }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
@@ -63,13 +70,20 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             launchSnapshot: launchSnapshot,
             turnIntentSnapshot: turnIntentSnapshot,
             workspaceAccessOverride: workspaceAccessOverride,
-            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
+            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
         )
     }
 
     func withLaunchSnapshot(_ snapshot: AgentTaskLaunchSnapshot?) -> AgentRuntimeExecutionPolicy {
         var copy = self
         copy.launchSnapshot = snapshot
+        return copy
+    }
+
+    func withRuntimeCapabilityProfile(_ profile: AgentRuntimeCapabilityProfile?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.runtimeCapabilityProfile = profile
         return copy
     }
 

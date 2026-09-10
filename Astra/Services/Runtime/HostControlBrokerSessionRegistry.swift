@@ -168,19 +168,30 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             for: task,
             runtime: runtime
         ))
-        var environment = ConnectorRuntimeProjection(
+        // One projection over the whole set, not one per tier merged after the
+        // fact. Two projections each emit an `ASTRA_CONNECTORS` manifest and
+        // each compute aliases within their own subset, so merging them either
+        // drops a connector from the manifest — the broker then answers "No …
+        // connector is projected into ASTRA_CONNECTORS" for a route the prompt
+        // just advertised — or hands two connectors the same alias and env
+        // prefix. The tier distinction belongs in the credential policy, not in
+        // the manifest.
+        //
+        // Expressing the narrated tier as approved labels is exact rather than
+        // approximate: `exposeAllCredentials` differs from an approved-label
+        // set only by the credentials that have no value (which project
+        // nothing) and by the non-HTTP compatibility carve-out, which no
+        // broker-owned service type is eligible for.
+        let narratedApprovedLabels = Set(ConnectorRuntimeProjection(
             connectors: brokeredConnectors.filter { narratedConnectorIDs.contains($0.id) },
             secretStore: secretStore,
             credentialExposurePolicy: .allowAllCredentials
+        ).configuredCredentialLabels())
+        return ConnectorRuntimeProjection(
+            connectors: brokeredConnectors,
+            secretStore: secretStore,
+            credentialExposurePolicy: .approvedLabels(narratedApprovedLabels.union(approvedLabels))
         ).environmentVariables()
-        environment.merge(
-            ConnectorRuntimeProjection(
-                connectors: brokeredConnectors.filter { !narratedConnectorIDs.contains($0.id) },
-                secretStore: secretStore,
-                credentialExposurePolicy: .approvedLabels(approvedLabels)
-            ).environmentVariables()
-        ) { narratedValue, _ in narratedValue }
-        return environment
     }
 
     func endpoint(taskID: UUID, runID: UUID?) -> String? {
