@@ -575,7 +575,12 @@ enum AgentPromptBuilder {
         }
     }
 
-    private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
+    private static func appendToolContext(
+        from capabilityScope: TaskCapabilityPromptScope,
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
+        to sections: inout [PromptContextSection]
+    ) {
         let allLocalTools = capabilityScope.localTools.filter { !$0.command.isEmpty }
         let cliTools = allLocalTools.filter { $0.toolType != "mcp" }
         let mcpTools = allLocalTools.filter { $0.toolType == "mcp" }
@@ -604,39 +609,34 @@ enum AgentPromptBuilder {
             )
         }
 
-        appendOfferedToolRoutes(from: capabilityScope, narrated: allLocalTools, to: &sections)
+        appendOfferedToolRoutes(
+            from: capabilityScope,
+            narrated: allLocalTools,
+            runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
+            to: &sections
+        )
     }
 
-    /// The offered tier's half of the tool section.
-    ///
-    /// A local tool the user attached is allowlisted and callable on every turn
-    /// - `AgentPolicyAdapters` builds the permission list from
-    /// `reachableLocalTools`, not from the narrated subset. The prompt used to
-    /// name only the narrated subset, so a turn whose wording missed a tool left
-    /// the agent with a permitted command it had never been told exists, which
-    /// reads exactly like not having it.
+    /// The offered tier's half of the tool section. `OfferedToolRoutes` owns
+    /// which tools qualify; this is only how they are rendered.
     ///
     /// Only the name and the command, deliberately: restoring the pruned
     /// descriptions and usage notes would give back the tokens the prune exists
     /// to save. Enough to call it, or to say it is there when the user asks.
-    ///
-    /// And only tools the launch actually delivers. A skill-owned tool whose
-    /// skill environment this turn withheld is permitted but unconfigured -
-    /// naming it would point the agent at a command that fails for a reason the
-    /// prompt does not explain, which is the same "describe the run from a table
-    /// rather than from the launch" mistake in the opposite direction.
     private static func appendOfferedToolRoutes(
         from capabilityScope: TaskCapabilityPromptScope,
         narrated: [LocalTool],
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
         to sections: inout [PromptContextSection]
     ) {
-        let narratedIDs = Set(narrated.map(\.id))
-        let narratedSkillIDs = Set(capabilityScope.behaviorSkills.map(\.id))
-        let offered = capabilityScope.reachableLocalTools.filter { tool in
-            guard !tool.command.isEmpty, !narratedIDs.contains(tool.id) else { return false }
-            guard let skill = tool.skill, !skill.environmentKeys.isEmpty else { return true }
-            return narratedSkillIDs.contains(skill.id)
-        }
+        let offered = OfferedToolRoutes.nameable(
+            in: capabilityScope,
+            narrated: narrated,
+            runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
+        )
         guard !offered.isEmpty else { return }
 
         let descriptions = offered.map { tool in
@@ -1295,7 +1295,12 @@ enum AgentPromptBuilder {
                 to: &sections
             )
             if context.mode == .initialRun {
-                appendToolContext(from: context.capabilityScope, to: &sections)
+                appendToolContext(
+                    from: context.capabilityScope,
+                    runtime: context.runtime,
+                    runtimeCapabilityProfile: context.runtimeCapabilityProfile,
+                    to: &sections
+                )
             }
         }
     }

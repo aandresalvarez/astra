@@ -916,7 +916,9 @@ struct TaskCapabilityResolver {
     /// `connector:<uuid>:<CREDENTIAL_KEY>`. Labels that are not connector
     /// scoped (a bare `GCP_PROJECT`, say) carry no connector identity and are
     /// ignored here.
-    private static func approvedCredentialConnectorIDs(in labels: [String]) -> Set<UUID> {
+    /// Connectors whose credentials the user has already approved for this run,
+    /// read back out of the `connector:<id>:<key>` grant labels.
+    static func approvedCredentialConnectorIDs(in labels: [String]) -> Set<UUID> {
         Set(labels.compactMap { label -> UUID? in
             let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
             guard parts.count == 3, parts[0] == "connector" else { return nil }

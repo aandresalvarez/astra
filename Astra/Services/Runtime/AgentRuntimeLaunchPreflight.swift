@@ -1002,7 +1002,24 @@ enum AgentRuntimeLaunchPreflight {
                 contextText: contextText,
                 taskEnvironment: taskEnv
             ) {
-                mcpServers.append(browserServer)
+                // Same rule as the host-control branch above, for the same
+                // reason. `ASTRA_BROWSER_URL` follows reachability, so a
+                // workspace with a bound Shelf endpoint materializes this
+                // server on turns that never mention a browser; letting a
+                // missing `astra-browser` helper reach `mcpIssues` would then
+                // abort an unrelated Claude or Codex run. Only a *required*
+                // bridge is worth failing a launch over — an offered one this
+                // machine cannot deliver is dropped, exactly as a runtime that
+                // cannot carry the transport at all drops it.
+                let browserBridgeRequired = resolutionSnapshot.providerLaunch.requiresBrowserBridge
+                let browserIssues = MCPRuntimeProjection.preflightIssues(
+                    servers: [browserServer],
+                    detectExecutable: mcpDetectExecutable,
+                    isExecutableFile: mcpIsExecutableFile
+                )
+                if browserBridgeRequired || browserIssues.isEmpty {
+                    mcpServers.append(browserServer)
+                }
             }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
                 servers: mcpServers,

@@ -69,11 +69,22 @@ enum BrowserBridgeRuntimeLaunchGuard {
     ) -> [String: String] {
         guard !required,
               isBrowserBridgeAttached(environment: environment),
-              !mcpToolSupported,
-              !supportsShellToolForBrowserBridge(runtime: runtime) else {
+              !canCarryBridge(runtime: runtime, mcpToolSupported: mcpToolSupported) else {
             return environment
         }
         return environment.filter { !BrowserBridgeMCPProjection.environmentKeys.contains($0.key) }
+    }
+
+    /// Whether this runtime has any transport that could carry the bridge.
+    ///
+    /// The launch drop above, the prompt's offered-tool list, and the persisted
+    /// launch resource plan all have to answer this the same way. When they
+    /// disagree the run advertises and records a route the launch removed —
+    /// the prompt tells the agent `astra-browser` is callable, Run Activity
+    /// shows the bridge attached, and the command fails with neither of them
+    /// able to say why.
+    static func canCarryBridge(runtime: AgentRuntimeID, mcpToolSupported: Bool) -> Bool {
+        mcpToolSupported || supportsShellToolForBrowserBridge(runtime: runtime)
     }
 
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {

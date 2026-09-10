@@ -1797,7 +1797,7 @@ final class AgentRuntimeProcessRunner {
         for task: AgentTask,
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String = "",
-        executionPolicy _: AgentRuntimeExecutionPolicy = .default,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         // Intentionally unread: a brokered connector's credentials are stripped
         // from the scope the broker owns them for, not from the scope the
         // runtime managed to deliver the tool to.
@@ -1805,7 +1805,12 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
-        if hasStanfordOutlookMailAccess(in: capabilityScope) {
+        if StanfordOutlookMailRuntimeAccess.isGranted(
+            for: task,
+            in: capabilityScope,
+            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
+            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+        ) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
@@ -1885,11 +1890,6 @@ final class AgentRuntimeProcessRunner {
         return scope.reachableLocalTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-    }
-
-    private static func hasStanfordOutlookMailAccess(in capabilityScope: TaskCapabilityPromptScope) -> Bool {
-        capabilityScope.reachableConnectors.contains { $0.isStanfordOutlookMail } ||
-            capabilityScope.reachableLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     static func providerAllowedTools(

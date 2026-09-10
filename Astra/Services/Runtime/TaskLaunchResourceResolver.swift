@@ -1213,13 +1213,33 @@ enum TaskLaunchResourceResolver {
         let hostControlPlacement = runtimeCapabilityProfile.usesHostControlCLIRelay
             ? "host_control_cli_broker"
             : "host_control_mcp_broker"
-        if capabilityScope.exposesBrowserBridge ||
-            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        // This plan is a durable record of what the launch attached, so the two
+        // browser tiers cannot collapse into one entry. Attachment is
+        // reachability-wide — an enabled browser tool, or a Shelf that is simply
+        // open, on a turn that never mentioned a browser — while only
+        // `requiresBrowserBridge` is the turn actually asking for a browser.
+        // Recording the offered tier as `required: true` made Run Activity
+        // assert a required, configured resource on runs where the adapter had
+        // dropped the bridge for lack of a transport, which is the run contract
+        // describing a route the process never received.
+        let browserBridgeAttached = capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText)
+        // Narration alone makes it required. `shouldExposeBrowserBridge` is true
+        // whenever the Shelf is open at all, so deriving "required" from it
+        // re-collapses the two tiers one line after separating them.
+        let browserBridgeRequired = capabilityScope.requiresBrowserBridge
+        let browserBridgeDeliverable = BrowserBridgeRuntimeLaunchGuard.canCarryBridge(
+            runtime: runtimeCapabilityProfile.runtime,
+            mcpToolSupported: runtimeCapabilityProfile.canDeliverBrowserBridgeMCPTool
+        )
+        if browserBridgeRequired || (browserBridgeAttached && browserBridgeDeliverable) {
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "browser_bridge",
                 source: .browser,
-                reason: "Task context requires access to ASTRA's browser bridge.",
-                required: true
+                reason: browserBridgeRequired
+                    ? "Task context requires access to ASTRA's browser bridge."
+                    : "The browser bridge is enabled for this task and attached to the run, though this turn did not ask for it.",
+                required: browserBridgeRequired
             ))
             controlPlaneResources.append(RuntimeControlPlaneResource(
                 capability: "browser_bridge",

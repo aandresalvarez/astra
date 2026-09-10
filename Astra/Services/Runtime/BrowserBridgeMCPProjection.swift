@@ -6,6 +6,8 @@ enum BrowserBridgeMCPProjection {
     static let serverID = "astra_browser"
     static let toolName = "browser"
     static let providerToolPermission = "mcp__\(serverID)__\(toolName)"
+    /// The `LocalTool.command` a browser-capable task carries.
+    static let toolCommand = "astra-browser"
 
     static let environmentKeys = [
         "ASTRA_BROWSER_URL",

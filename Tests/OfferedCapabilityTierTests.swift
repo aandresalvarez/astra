@@ -380,6 +380,290 @@ struct OfferedCapabilityTierTests {
         #expect(!prompt.contains("Export instrument rows from the study registry"))
     }
 
+    /// `ASTRA_MAIL_REGISTRY_PATH` is not a route, it is a credential pointer:
+    /// the registry it names hands the helper the Keychain service holding the
+    /// mailbox tokens, which the helper reads with `/usr/bin/security` - outside
+    /// the connector projection, so nothing downstream can withhold it.
+    /// Connector preflight walks only the narrated set, so injecting this from
+    /// the reachable tier would let a turn about something else perform
+    /// authenticated mailbox reads the user was never asked about.
+    @Test("An offered-only mail connector gets no registry pointer until it is approved")
+    func offeredOnlyMailConnectorGetsNoRegistryPointerUntilApproved() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "mail-tier", primaryPath: NSTemporaryDirectory())
+        let mail = Connector(
+            name: "Stanford Outlook Mail",
+            serviceType: StanfordOutlookMail.serviceType,
+            connectorDescription: "Read Stanford mail through Microsoft Graph",
+            baseURL: StanfordOutlookMail.graphBaseURL,
+            authMethod: StanfordOutlookMail.authMethod
+        )
+        mail.isGlobal = true
+        workspace.enabledGlobalConnectorIDs = [mail.id.uuidString]
+        let unrelatedTurn = "Bake a chocolate sponge cake and write the recipe"
+        let task = AgentTask(title: "Recipe", goal: unrelatedTurn, workspace: workspace)
+        for model in [workspace, mail, task] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+
+        func registryPath(contextText: String, grants: [PermissionGrant] = []) -> String? {
+            AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: task,
+                contextText: contextText,
+                executionPolicy: AgentRuntimeExecutionPolicy(permissionGrantsOverride: grants)
+            )["ASTRA_MAIL_REGISTRY_PATH"]
+        }
+
+        // Enabled in the workspace and unnamed by the turn: offered. Offered
+        // widens what a run may reach, and consent is not one of those things.
+        let offeredScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: unrelatedTurn
+        ).providerLaunch
+        #expect(offeredScope.reachableConnectors.contains { $0.id == mail.id })
+        #expect(!offeredScope.connectors.contains { $0.id == mail.id })
+        #expect(registryPath(contextText: unrelatedTurn) == nil)
+
+        // Narrated: preflight walks this set, so the first-use approval was
+        // raised and the pointer is the run doing what it was asked to do.
+        let mailTurn = "read my Stanford Outlook Mail inbox"
+        #expect(TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: mailTurn
+        ).providerLaunch.connectors.contains { $0.id == mail.id })
+        #expect(registryPath(contextText: mailTurn) == StanfordOutlookMail.registryURL.path)
+
+        // An approved credential grant is the same consent by another route, so
+        // the offered tier has to carry it - otherwise approving the card leaves
+        // the helper without the pointer the approval was about.
+        let grant = PermissionGrant.credential(
+            label: "connector:\(mail.id.uuidString):\(StanfordOutlookMail.accessTokenKey)"
+        )
+        #expect(registryPath(contextText: unrelatedTurn, grants: [grant])
+            == StanfordOutlookMail.registryURL.path)
+        // Including where the scope was captured before the approval existed,
+        // which is the seam this guard actually sits on.
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: task,
+            capabilityScope: offeredScope,
+            contextText: unrelatedTurn,
+            executionPolicy: AgentRuntimeExecutionPolicy(permissionGrantsOverride: [grant])
+        )["ASTRA_MAIL_REGISTRY_PATH"] == StanfordOutlookMail.registryURL.path)
+    }
+
+    /// Preflight is the launch-blocking surface, and it reads the browser MCP
+    /// server out of the launch environment - where `ASTRA_BROWSER_URL` arrives
+    /// from the reachable set. A workspace with a bound Shelf endpoint therefore
+    /// materializes this server on turns that never mention a browser, and
+    /// letting a missing `astra-browser` helper reach `mcpIssues` from there
+    /// aborts an unrelated Claude run over a route it never asked for.
+    @Test("A missing browser helper blocks only the turn that asked for a browser")
+    func missingBrowserHelperBlocksOnlyTheTurnThatAskedForABrowser() throws {
+        let fixture = try BrowserFixture(runtime: .claudeCode)
+        defer { fixture.tearDown() }
+
+        func preflight(contextText: String) throws -> AgentRuntimeLaunchPreflightResult {
+            let task = try fixture.makeTask(goal: contextText)
+            let run = TaskRun(task: task)
+            fixture.context.insert(run)
+            try fixture.context.save()
+            return AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+                task: task,
+                run: run,
+                modelContext: fixture.context,
+                phase: "run",
+                contextText: contextText,
+                mcpIsExecutableFile: { $0 != BrowserFixture.helperPath },
+                runtimeProfile: { .defaultProfile(for: $0) }
+            )
+        }
+
+        let offered = try preflight(contextText: BrowserFixture.unrelatedTurn)
+        #expect(offered.didPass)
+        #expect(offered.status == .capabilityRuntimeResourcesPassed)
+
+        // A turn that does need the browser still fails loudly, because now the
+        // run cannot do what it was asked to do.
+        let required = try preflight(contextText: BrowserFixture.browserTurn)
+        #expect(!required.didPass)
+        #expect(required.reason == "mcp_server_executable_missing")
+        #expect(required.detail?.contains(BrowserBridgeMCPProjection.serverID) == true)
+    }
+
+    /// The launch plan is a durable record of what the launch attached, so the
+    /// two browser tiers cannot collapse into one entry. Recording the offered
+    /// tier as required made Run Activity assert a required, configured resource
+    /// on runs where the adapter had dropped the bridge for lack of a transport.
+    @Test("The launch plan records an offered browser bridge as offered, and only where it lands")
+    func launchPlanRecordsOfferedBrowserBridgeAsOfferedAndOnlyWhereItLands() throws {
+        let fixture = try BrowserFixture(runtime: .claudeCode)
+        defer { fixture.tearDown() }
+
+        func browserRequirement(
+            contextText: String,
+            runtime: AgentRuntimeID,
+            profile: AgentRuntimeCapabilityProfile
+        ) -> RuntimeProviderRequirement? {
+            TaskLaunchResourceResolver.resolve(
+                task: fixture.task,
+                runID: UUID(),
+                runtime: runtime,
+                phase: .run,
+                prompt: contextText,
+                contextText: contextText,
+                workspacePath: fixture.workspace.primaryPath,
+                executionEnvironment: .host,
+                connectorSecretStore: MockSecretStore(),
+                runtimeCapabilityProfile: profile
+            )
+            .providerRequirements
+            .first { $0.capability == "browser_bridge" }
+        }
+
+        // Claude has a shell, so the offered bridge is attached - and recorded
+        // as what it is: available, not asked for.
+        let offered = browserRequirement(
+            contextText: BrowserFixture.unrelatedTurn,
+            runtime: .claudeCode,
+            profile: .defaultProfile(for: .claudeCode)
+        )
+        #expect(offered != nil)
+        #expect(offered?.required == false)
+
+        // Copilot without --additional-mcp-config has neither shell nor browser
+        // MCP, so the launch drops the offered bridge. A plan entry here would
+        // describe a route the process never received.
+        #expect(browserRequirement(
+            contextText: BrowserFixture.unrelatedTurn,
+            runtime: .copilotCLI,
+            profile: .copilotProfile(supportsAdditionalMCPConfig: false)
+        ) == nil)
+
+        // Required is unchanged on every runtime: a turn that asks for the
+        // browser is recorded as requiring it, and the launch guard - not this
+        // plan - is what refuses the run.
+        let required = browserRequirement(
+            contextText: BrowserFixture.browserTurn,
+            runtime: .copilotCLI,
+            profile: .copilotProfile(supportsAdditionalMCPConfig: false)
+        )
+        #expect(required?.required == true)
+    }
+
+    /// Naming an offered route the launch removed is the inversion the offered
+    /// tier exists to prevent: the prompt tells the agent `astra-browser` is
+    /// callable, the adapter strips the bridge for lack of a transport, and the
+    /// command fails with neither surface able to say why.
+    @Test("The prompt names an offered browser bridge only where the launch can attach it")
+    func promptNamesOfferedBrowserBridgeOnlyWhereTheLaunchCanAttachIt() throws {
+        let fixture = try BrowserFixture(runtime: .copilotCLI)
+        defer { fixture.tearDown() }
+
+        func prompt(supportsAdditionalMCPConfig: Bool) -> String {
+            AgentPromptBuilder.buildPrompt(
+                for: fixture.task,
+                executionPolicy: AgentRuntimeExecutionPolicy(
+                    runtimeCapabilityProfile: .copilotProfile(
+                        supportsAdditionalMCPConfig: supportsAdditionalMCPConfig
+                    )
+                )
+            )
+        }
+
+        // The offered list names a tool by command, which is the claim under
+        // test - the Shelf session block elsewhere in the prompt describes the
+        // bridge in runtime-conditional terms and is not this tier.
+        let offeredEntry = "- Shelf Browser Control: `\(BrowserBridgeMCPProjection.toolCommand)`"
+        // With --additional-mcp-config the launch carries the bridge over the
+        // browser MCP tool, so the offered list is telling the truth.
+        #expect(prompt(supportsAdditionalMCPConfig: true).contains(offeredEntry))
+        // Without it this Copilot build has no shell and no browser MCP, so the
+        // launch drops the bridge and the prompt must not advertise it.
+        #expect(!prompt(supportsAdditionalMCPConfig: false).contains(offeredEntry))
+    }
+
+    /// A workspace whose Shelf browser is open and bound to an endpoint. That
+    /// alone makes the bridge reachable on *every* turn, so `unrelatedTurn`
+    /// leaves it offered - attached, and named by nothing - while `browserTurn`
+    /// shares wording with the Shelf browser tool and narrates it.
+    @MainActor
+    private struct BrowserFixture {
+        let container: ModelContainer
+        let context: ModelContext
+        let workspace: Workspace
+        let task: AgentTask
+        let root: URL
+
+        static let unrelatedTurn = "Bake a chocolate sponge cake and write the recipe"
+        static let browserTurn = "control the Shelf browser session and verify the outcome"
+        static let helperPath = (RuntimePathResolver.astraToolsPath as NSString)
+            .appendingPathComponent(BrowserBridgeMCPProjection.toolCommand)
+
+        init(runtime: AgentRuntimeID) throws {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("astra-offered-browser-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            context = container.mainContext
+            workspace = Workspace(name: "Offered Browser", primaryPath: root.path)
+            context.insert(workspace)
+            task = AgentTask(
+                title: "Write a recipe",
+                goal: Self.unrelatedTurn,
+                workspace: workspace,
+                model: "gpt-5",
+                runtime: runtime
+            )
+            context.insert(task)
+            try context.save()
+            bindShelf(to: task)
+        }
+
+        /// A second task on the same workspace, for the surfaces that read the
+        /// turn off the task rather than off a `contextText` argument.
+        func makeTask(goal: String) throws -> AgentTask {
+            let turnTask = AgentTask(
+                title: "Turn",
+                goal: goal,
+                workspace: workspace,
+                model: task.model,
+                runtime: task.resolvedRuntimeID
+            )
+            turnTask.status = .running
+            context.insert(turnTask)
+            try context.save()
+            bindShelf(to: turnTask)
+            return turnTask
+        }
+
+        func tearDown() {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        private func bindShelf(to task: AgentTask) {
+            ShelfBrowserBridgeRegistry.shared.update(
+                endpoint: "http://127.0.0.1:49152",
+                currentURL: nil,
+                currentTitle: nil,
+                taskID: task.id,
+                isPresented: true,
+                isEnabled: true
+            )
+        }
+    }
+
     /// One enabled Jira connector, one turn that names it and one that does not.
     /// `includingREDCap` adds a second broker-owned connector no turn here ever
     /// names, which is what separates "reachable" from "narrated" for the two
