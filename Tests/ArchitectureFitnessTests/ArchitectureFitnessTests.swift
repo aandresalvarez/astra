@@ -2091,12 +2091,12 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
-            // 2_160 -> 2_040 on 2026-08-19: `propose_issue` pushed this file past
-            // its ceiling, so the whole Jira request policy moved to
-            // JiraHostControlPolicy.swift. Ratcheted down to what is left rather
-            // than banking the headroom — the next Jira operation belongs in that
-            // file too.
-            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_040, .owner("Host-control MCP tool")),
+            // Tools/HostControlToolSupport/HostControlToolSupport.swift held
+            // 2_040 (down from 2_160 on 2026-08-19, when the Jira request policy
+            // moved to JiraHostControlPolicy.swift). Entry removed on 2026-09-10:
+            // the connector status struct, its formatter, and three copies of the
+            // env-key lookup left for BrokeredConnectorCredentialStatus.swift, and
+            // the file is under the 2_000 threshold again.
             // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
             // for approval now, and each affected case says why that still holds.
             // 3_510 -> 3_570 (watchdog escalation): a breached silence window now
@@ -2140,7 +2140,7 @@ struct ArchitectureFitnessTests {
             // source.
             // 2_565 -> 2_570 (PR #383 review fixes): the process-runner fake gained
             // the `maxRunSeconds` parameter the protocol now carries.
-            "Tests/AgentRuntimeWorkerTests.swift": .init(2_570, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_530, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
             // ship local tool grants on the real Copilot command line, asserted against a
             // `.build` control so the test cannot pass vacuously.
@@ -2165,7 +2165,10 @@ struct ArchitectureFitnessTests {
             // runtime (mirrors the existing Claude Code auth-readable-roots test).
             "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_100 -> 2_175 on 2026-08-10: URL-capture tests proving get_issue carries the body, a list does not, and get_comments reaches the thread.
-            "Tests/HostControlToolSupportTests.swift": .init(2_175, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
+            // Companion -> owner on 2026-09-10: the file it accompanied dropped
+            // under the threshold and lost its entry, and a companion of nothing
+            // fails the registry's own consistency rule.
+            "Tests/HostControlToolSupportTests.swift": .init(2_175, .owner("Host-control MCP tool tests")),
             // New in PR #364: ExecutionEnvironmentSharedMountTests coverage for the
             // shared-workspace mount-downgrade fix pushed this over the 2,000-line
             // threshold. Owns itself since ExecutionEnvironment.swift is still

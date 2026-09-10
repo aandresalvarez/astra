@@ -123,7 +123,8 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
         let session = HostControlBrokerSession(
             configuration: configuration,
-            expectedHelperPath: expectedHelperPath
+            expectedHelperPath: expectedHelperPath,
+            withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID)
         )
         guard let socketPath = session.start() else { return false }
 
@@ -144,9 +145,19 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     /// does not reach here otherwise — so it keeps the full exposure the user
     /// approved. A connector that is reachable but not narrated never met that
     /// gate, so it may only unseal a credential an existing durable grant
-    /// already covers. Offered is permissive, and permissive stops at the point
-    /// where it would need something new from the user: no grant, no secret,
-    /// and the route drops silently.
+    /// already covers.
+    ///
+    /// What the unapproved offered route does *not* do is disappear. It stays in
+    /// the manifest and the tool stays callable, because withdrawing a route
+    /// mid-launch is exactly what the offered tier is forbidden to do — so the
+    /// agent finds a working tool with no credentials behind it. That gap used
+    /// to be silent, and silence reads as "the user never set this up": in
+    /// production an agent told a user their verified Jira credentials were
+    /// missing, and the user re-saved correct credentials twice. So the withheld
+    /// set is projected too, by name, under
+    /// `ASTRA_CONNECTOR_CREDENTIALS_WITHHELD` — never a value, and only into the
+    /// broker's own configuration, never the agent's environment. The broker can
+    /// then say "held back", which is true, instead of "absent", which is not.
     @MainActor
     static func brokeredConnectorEnvironment(
         task: AgentTask,
@@ -187,11 +198,21 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             secretStore: secretStore,
             credentialExposurePolicy: .allowAllCredentials
         ).configuredCredentialLabels())
-        return ConnectorRuntimeProjection(
+        let exposedLabels = narratedApprovedLabels.union(approvedLabels)
+        var environment = ConnectorRuntimeProjection(
             connectors: brokeredConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: .approvedLabels(narratedApprovedLabels.union(approvedLabels))
+            credentialExposurePolicy: .approvedLabels(exposedLabels)
         ).environmentVariables()
+        let withheld = BrokeredCredentialWithholdingProjection.manifest(
+            connectors: brokeredConnectors,
+            secretStore: secretStore,
+            exposedCredentialLabels: exposedLabels
+        )
+        if !withheld.isEmpty, let encoded = withheld.encoded() {
+            environment[BrokeredConnectorCredentialWithholdingManifest.environmentKey] = encoded
+        }
+        return environment
     }
 
     func endpoint(taskID: UUID, runID: UUID?) -> String? {
@@ -242,8 +263,15 @@ private final class HostControlBrokerSession: @unchecked Sendable {
     private var invalidated = false
     fileprivate var socketPath: String?
 
-    init(configuration: HostControlToolConfiguration, expectedHelperPath: String) {
-        server = HostControlMCPServer(configuration: configuration)
+    init(
+        configuration: HostControlToolConfiguration,
+        expectedHelperPath: String,
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil
+    ) {
+        server = HostControlMCPServer(
+            configuration: configuration,
+            withholdingObserver: withholdingObserver
+        )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }
 

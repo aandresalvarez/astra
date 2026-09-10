@@ -235,8 +235,15 @@ struct ConnectorRuntimeProjection {
     }
 
     static func credentialLabel(for connector: Connector, key: String) -> String {
+        credentialLabel(connectorID: connector.id, key: key)
+    }
+
+    /// For callers that have the identifier but not the model — the broker
+    /// reports a withheld credential by ID, and a grant it cannot spell the same
+    /// way as the projection is a grant that never matches.
+    static func credentialLabel(connectorID: UUID, key: String) -> String {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "connector:\(connector.id.uuidString):\(trimmedKey)"
+        return "connector:\(connectorID.uuidString):\(trimmedKey)"
     }
 
     static func alias(for connector: Connector) -> String {
