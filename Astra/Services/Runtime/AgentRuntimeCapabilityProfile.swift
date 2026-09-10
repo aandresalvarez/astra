@@ -15,13 +15,25 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
     var supportsNativeContinuation: Bool
     var supportsShellToolForBrowserBridge: Bool
     var supportsHostControlCLIRelay: Bool
+    /// What the provider itself last said about running MCP servers ASTRA
+    /// hands it. Defaults to `.unknown`, which behaves exactly as it did
+    /// before this existed.
+    var providerMCPPolicy: RuntimeProviderMCPPolicy = .unknown
     var observedEvidence: [String]
 
     /// True when ASTRA knows how to deliver task-scoped MCP configuration to
-    /// this runtime before launch. This does not prove any feature-specific
-    /// MCP server was selected, rendered, or accepted for a run.
-    var supportsTaskScopedMCPDelivery: Bool {
+    /// this runtime before launch, ignoring whether the provider will accept
+    /// it. Use this to describe ASTRA's side of the contract only.
+    var hasTaskScopedMCPDeliveryMechanism: Bool {
         taskScopedMCPDelivery != .unsupported
+    }
+
+    /// True when ASTRA can deliver task-scoped MCP configuration *and* the
+    /// provider has not told us it will refuse it. This does not prove any
+    /// feature-specific MCP server was selected, rendered, or accepted for a
+    /// run — only that the route is not already known to be closed.
+    var supportsTaskScopedMCPDelivery: Bool {
+        hasTaskScopedMCPDeliveryMechanism && !providerMCPPolicy.refusesServers
     }
 
     /// Pre-render eligibility for delivering the host-control MCP server to
@@ -59,19 +71,27 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         supportsShellToolForBrowserBridge || canDeliverBrowserBridgeMCPTool
     }
 
-    static func defaultProfile(for runtime: AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
+    static func defaultProfile(
+        for runtime: AgentRuntimeID,
+        providerMCPPolicy: RuntimeProviderMCPPolicy = .unknown
+    ) -> AgentRuntimeCapabilityProfile {
         let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
         let mcpProfile = MCPRuntimeSupportMatrix.profile(for: descriptor)
+        var evidence = defaultEvidence(
+            for: runtime,
+            delivery: mcpProfile.configDeliveryOwnership,
+            supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime)
+        )
+        if providerMCPPolicy != .unknown {
+            evidence.append(providerMCPPolicy.evidence)
+        }
         return AgentRuntimeCapabilityProfile(
             descriptor: descriptor,
             mcpProfile: mcpProfile,
             supportsShellToolForBrowserBridge: defaultShellToolSupport(for: runtime),
             supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime),
-            observedEvidence: defaultEvidence(
-                for: runtime,
-                delivery: mcpProfile.configDeliveryOwnership,
-                supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime)
-            )
+            providerMCPPolicy: providerMCPPolicy,
+            observedEvidence: evidence
         )
     }
 
@@ -86,6 +106,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
             mcpProfile: mcpProfile,
             supportsShellToolForBrowserBridge: false,
             supportsHostControlCLIRelay: false,
+            providerMCPPolicy: .unknown,
             observedEvidence: [
                 supportsAdditionalMCPConfig
                     ? "copilot-help:additional-mcp-config"
@@ -99,6 +120,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         mcpProfile: MCPRuntimeSupportProfile,
         supportsShellToolForBrowserBridge: Bool,
         supportsHostControlCLIRelay: Bool,
+        providerMCPPolicy: RuntimeProviderMCPPolicy,
         observedEvidence: [String]
     ) {
         self.runtime = descriptor.id
@@ -109,6 +131,7 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         self.supportsNativeContinuation = descriptor.supportsNativeContinuation
         self.supportsShellToolForBrowserBridge = supportsShellToolForBrowserBridge
         self.supportsHostControlCLIRelay = supportsHostControlCLIRelay
+        self.providerMCPPolicy = providerMCPPolicy
         self.observedEvidence = observedEvidence
     }
 
@@ -152,15 +175,25 @@ enum AgentRuntimeCapabilityProfileService {
 
     static func profile(
         for runtime: AgentRuntimeID,
-        executablePath: String
+        executablePath: String,
+        defaults: UserDefaults = .standard
     ) -> AgentRuntimeCapabilityProfile {
-        guard runtime == .copilotCLI else {
+        if runtime == .copilotCLI {
+            let capabilities = CopilotCLIRuntime.capabilities(executablePath: executablePath)
+            return AgentRuntimeCapabilityProfile.copilotProfile(
+                supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig
+            )
+        }
+        // Cache-only, like Copilot's capability lookup above: this is called
+        // once per candidate runtime on the main-actor admission path, and the
+        // Codex probe is a subprocess. `CodexMCPPolicyService.warmBeforeLaunch`
+        // is what makes sure there is something fresh to read.
+        guard runtime == .codexCLI else {
             return AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
         }
-
-        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executablePath)
-        return AgentRuntimeCapabilityProfile.copilotProfile(
-            supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig
+        return AgentRuntimeCapabilityProfile.defaultProfile(
+            for: runtime,
+            providerMCPPolicy: CodexMCPPolicyService.cachedPolicy(defaults: defaults)
         )
     }
 }
