@@ -1191,6 +1191,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
                 executablePath: configuration.executablePath(for: id),
+                vertexProjectID: configuration.vertexProjectID,
+                vertexRegion: configuration.vertexRegion,
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1700,14 +1702,43 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let sonnet = trimmed(configuration.vertexSonnetModel)
         let haiku = trimmed(configuration.vertexHaikuModel)
 
+        // Non-emptiness is not readiness. A malformed project ID reaches Vertex
+        // and comes back 403, so reporting it Ready sends the user looking for
+        // a permissions problem that does not exist. Anything this check can
+        // prove wrong locally is blocked here, where the value can be fixed.
+        let projectFailure = GCPProjectIDValidation.failure(for: project)
+        let projectRegionDetail: String
+        // The remediation tracks the failure rather than repeating "fill both
+        // fields": a project ID that is present but malformed needs correcting,
+        // and telling the user to fill a field they already filled reads as a
+        // bug in ASTRA rather than a problem with the value.
+        let projectRegionRemediation: String?
+        switch (projectFailure, region.isEmpty) {
+        case (nil, false):
+            projectRegionDetail = "Using project \(project) in \(region)."
+            projectRegionRemediation = nil
+        case (.empty?, true):
+            projectRegionDetail = "GCP Project ID and Region are required for Vertex routing."
+            projectRegionRemediation = "Fill GCP Project ID and Region."
+        case (.empty?, false):
+            projectRegionDetail = GCPProjectIDValidation.Failure.empty.message
+            projectRegionRemediation = "Fill GCP Project ID."
+        case (let failure?, true):
+            projectRegionDetail = "\(failure.message) Region is required for Vertex routing."
+            projectRegionRemediation = "Correct GCP Project ID and fill Region."
+        case (let failure?, false):
+            projectRegionDetail = failure.message
+            projectRegionRemediation = "Correct GCP Project ID in Settings › Runtime."
+        case (nil, true):
+            projectRegionDetail = "Region is required for Vertex routing."
+            projectRegionRemediation = "Fill Region."
+        }
         checks.append(RuntimeReadinessCheck(
             id: "vertex-project-region",
             title: "Vertex project and region",
-            detail: project.isEmpty || region.isEmpty
-                ? "Project ID and region are required for Vertex routing."
-                : "Using project \(project) in \(region).",
-            state: project.isEmpty || region.isEmpty ? .blocked : .ready,
-            remediation: project.isEmpty || region.isEmpty ? "Fill GCP Project ID and Region." : nil
+            detail: projectRegionDetail,
+            state: projectRegionRemediation == nil ? .ready : .blocked,
+            remediation: projectRegionRemediation
         ))
 
         let missingAliases = [

@@ -870,4 +870,89 @@ struct RuntimeReadinessServiceTests {
         #expect(states[.copilotCLI] == .ready)
         #expect(RuntimeProviderAvailabilityService.readyRuntimes(from: states) == [.copilotCLI])
     }
+
+    /// The CLI, the auth status and ADC are all healthy here — the only thing
+    /// wrong is the project ID, which is what made the old non-emptiness test
+    /// report Ready and send the user hunting for a permissions problem.
+    @Test("A malformed Vertex project ID blocks readiness even when ADC is healthy")
+    func malformedVertexProjectIDBlocksReadiness() async {
+        let report = await vertexReadinessReport(projectID: String(repeating: "example-project", count: 11))
+
+        #expect(report.state == .blocked)
+        #expect(report.checks.contains { $0.id == "vertex-adc" && $0.state == .ready })
+        let projectCheck = report.checks.first { $0.id == "vertex-project-region" }
+        #expect(projectCheck?.state == .blocked)
+        #expect(projectCheck?.detail.contains("at most 30 characters") == true)
+        // The remediation must not tell the user to fill a field they filled.
+        #expect(projectCheck?.remediation == "Correct GCP Project ID in Settings › Runtime.")
+    }
+
+    @Test("An empty Vertex project ID still asks the user to fill it")
+    func emptyVertexProjectIDAsksToFillIt() async {
+        let report = await vertexReadinessReport(projectID: "")
+
+        let projectCheck = report.checks.first { $0.id == "vertex-project-region" }
+        #expect(projectCheck?.state == .blocked)
+        #expect(projectCheck?.remediation == "Fill GCP Project ID.")
+    }
+
+    @Test("A well-formed Vertex project ID stays ready")
+    func wellFormedVertexProjectIDStaysReady() async {
+        let report = await vertexReadinessReport(projectID: "example-project")
+
+        let projectCheck = report.checks.first { $0.id == "vertex-project-region" }
+        #expect(projectCheck?.state == .ready)
+        #expect(projectCheck?.detail == "Using project example-project in global.")
+        #expect(projectCheck?.remediation == nil)
+    }
+
+    /// Everything except the project ID is configured and healthy, so a check
+    /// that changes state here can only have changed because of that field.
+    private func vertexReadinessReport(projectID: String) async -> RuntimeReadinessReport {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/claude --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.2.3\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/claude auth status",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}"#,
+                stderr: ""
+            )
+        )
+        await runner.setResponse(
+            forKey: "/opt/gcloud --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "Google Cloud SDK 500.0.0\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/gcloud auth application-default print-access-token --quiet",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ya29.secret-token-value\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in
+                switch binary {
+                case "claude": "/opt/claude"
+                case "gcloud": "/opt/gcloud"
+                default: ""
+                }
+            },
+            isExecutable: { !$0.isEmpty }
+        )
+
+        return await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .claudeCode,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .vertex,
+            vertexProjectID: projectID,
+            vertexRegion: "global",
+            vertexOpusModel: "claude-opus-4-6@default",
+            vertexSonnetModel: "claude-sonnet-4-6@default",
+            vertexHaikuModel: "claude-haiku-4-5@20251001"
+        ))
+    }
 }
