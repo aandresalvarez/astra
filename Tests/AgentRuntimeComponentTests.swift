@@ -721,6 +721,71 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
 
+    @Test("Only a required host tool blocks the launch when its helper is missing")
+    func onlyRequiredHostControlToolBlocksLaunchWhenHelperMissing() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let hostControlHelper = (RuntimePathResolver.astraToolsPath as NSString)
+            .appendingPathComponent("astra-host-control")
+
+        func makeJiraTask(goal: String) throws -> (AgentTask, TaskRun) {
+            let workspace = Workspace(name: "Jira", primaryPath: NSTemporaryDirectory())
+            let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+            skill.workspace = workspace
+            let connector = Connector(
+                name: "Jira",
+                serviceType: "jira",
+                connectorDescription: "Jira REST API",
+                baseURL: "https://example.atlassian.net",
+                authMethod: "none"
+            )
+            connector.workspace = workspace
+            connector.skill = skill
+            let task = AgentTask(title: "Jira", goal: goal, workspace: workspace, runtime: .claudeCode)
+            task.skills = [skill]
+            task.status = .running
+            let run = TaskRun(task: task)
+            for model in [workspace, skill, connector, task, run] as [any PersistentModel] {
+                context.insert(model)
+            }
+            try context.save()
+            return (task, run)
+        }
+
+        // Offered: the turn never says "Jira", so the host-control server is
+        // materialized for a route this turn did not ask for. A capability the
+        // turn never asked for must not be able to abort the run.
+        let (offeredTask, offeredRun) = try makeJiraTask(goal: "Summarize my emails from today")
+        let offered = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: offeredTask,
+            run: offeredRun,
+            modelContext: context,
+            phase: "run",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(offered.didPass)
+        #expect(offered.status == .capabilityRuntimeResourcesPassed)
+        #expect(offeredTask.status == .running)
+        #expect(offeredRun.stopReason.isEmpty)
+
+        // Required: the turn names Jira, so the run cannot honestly proceed
+        // without the route it was told it has.
+        let (requiredTask, requiredRun) = try makeJiraTask(goal: "Read ASTRA-123 in Jira")
+        let required = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: requiredTask,
+            run: requiredRun,
+            modelContext: context,
+            phase: "run",
+            contextText: "Read ASTRA-123 in Jira",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(!required.didPass)
+        #expect(required.reason == "mcp_server_executable_missing")
+        #expect(required.detail?.contains("astra_host") == true)
+        #expect(requiredTask.status == .failed)
+        #expect(requiredRun.stopReason == "mcp_server_executable_missing")
+    }
+
     @Test("Docker workspace preflight blocks when bundled workspace helper is missing")
     func dockerWorkspacePreflightBlocksMissingWorkspaceHelper() throws {
         let container = try makeRuntimeComponentContainer()

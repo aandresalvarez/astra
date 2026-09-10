@@ -972,7 +972,20 @@ enum AgentRuntimeLaunchPreflight {
             ) {
                 mcpServers.append(workspaceServer)
             }
-            if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            // The host-control server is materialized for every tool the run
+            // *offers*, but only a *required* tool may block a launch. An
+            // offered-only route that cannot be delivered — the helper is not
+            // installed on this machine — is dropped silently, exactly like a
+            // runtime that cannot carry the transport at all. Blocking here
+            // would let a capability the turn never asked for abort the run.
+            let hostControlRequirements = precomputedRuntimeRequirements ?? TaskRuntimeRequirementSet.derive(
+                task: task,
+                capabilityResolutionSnapshot: resolutionSnapshot,
+                executionEnvironment: executionEnvironment,
+                browserBridgeAttached: resolutionSnapshot.providerLaunch.exposesBrowserBridge
+            )
+            if !hostControlRequirements.hostControlTools.isEmpty,
+               let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
                 environment: executionEnvironment,
                 currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,

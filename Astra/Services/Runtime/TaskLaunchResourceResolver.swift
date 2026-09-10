@@ -50,7 +50,13 @@ enum TaskLaunchResourceResolver {
             secretStore: connectorSecretStore
         )
         let capabilityScope = resolutionSnapshot.providerLaunch
-        let hostControlTools = precomputedRuntimeRequirements?.hostControlTools
+        // The persisted plan records what this run is wired with, so both
+        // branches must mean the same thing: the *offered* set, which is what
+        // actually gets attached. `hostControlTools` here would be the
+        // required set, making the plan disagree with the run whenever a
+        // caller passed a precomputed requirement set — and agree with it
+        // when the caller did not, since `enabledToolNames` already offers.
+        let hostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools
             ?? HostControlPlaneMCPProjection.enabledToolNames(
                 task: task,
                 environment: environment,

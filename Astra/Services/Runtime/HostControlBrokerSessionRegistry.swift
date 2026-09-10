@@ -12,6 +12,7 @@ protocol HostControlBrokerSessionManaging: AnyObject {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String
@@ -36,6 +37,7 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String
@@ -43,6 +45,7 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
         HostControlBrokerSessionRegistry.shared.prepare(
             task: task,
             runID: runID,
+            runtime: runtime,
             capabilityScope: capabilityScope,
             requiredTools: requiredTools,
             currentDirectory: currentDirectory,
@@ -81,6 +84,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String,
@@ -93,19 +97,12 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             return false
         }
 
-        let brokeredTools = Set(requiredTools.map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        })
-        let brokeredConnectors = capabilityScope.reachableConnectors.filter {
-            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                    .map(brokeredTools.contains) == true
-        }
-        let connectorEnvironment = ConnectorRuntimeProjection(
-            connectors: brokeredConnectors,
-            secretStore: KeychainSecretStore(),
-            credentialExposurePolicy: .allowAllCredentials
-        ).environmentVariables()
+        let connectorEnvironment = Self.brokeredConnectorEnvironment(
+            task: task,
+            runtime: runtime,
+            capabilityScope: capabilityScope,
+            requiredTools: requiredTools
+        )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         let hostEnvironment = HostControlPlaneMCPProjection.environmentVariables(
             task: task,
@@ -137,6 +134,53 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         previous?.invalidate()
         session.socketPath = socketPath
         return true
+    }
+
+    /// The connector credentials the broker may unseal for this run.
+    ///
+    /// Reachability decides which routes a run *may* use; it must never decide
+    /// which secrets a run may unseal. A narrated connector already cleared the
+    /// first-use approval gate in `AgentRuntimeLaunchPreflight` — the launch
+    /// does not reach here otherwise — so it keeps the full exposure the user
+    /// approved. A connector that is reachable but not narrated never met that
+    /// gate, so it may only unseal a credential an existing durable grant
+    /// already covers. Offered is permissive, and permissive stops at the point
+    /// where it would need something new from the user: no grant, no secret,
+    /// and the route drops silently.
+    @MainActor
+    static func brokeredConnectorEnvironment(
+        task: AgentTask,
+        runtime: AgentRuntimeID?,
+        capabilityScope: TaskCapabilityPromptScope,
+        requiredTools: [String],
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> [String: String] {
+        let brokeredTools = Set(requiredTools.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        let brokeredConnectors = capabilityScope.reachableConnectors.filter {
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                    .map(brokeredTools.contains) == true
+        }
+        let narratedConnectorIDs = Set(capabilityScope.connectors.map(\.id))
+        let approvedLabels = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            runtime: runtime
+        ))
+        var environment = ConnectorRuntimeProjection(
+            connectors: brokeredConnectors.filter { narratedConnectorIDs.contains($0.id) },
+            secretStore: secretStore,
+            credentialExposurePolicy: .allowAllCredentials
+        ).environmentVariables()
+        environment.merge(
+            ConnectorRuntimeProjection(
+                connectors: brokeredConnectors.filter { !narratedConnectorIDs.contains($0.id) },
+                secretStore: secretStore,
+                credentialExposurePolicy: .approvedLabels(approvedLabels)
+            ).environmentVariables()
+        ) { narratedValue, _ in narratedValue }
+        return environment
     }
 
     func endpoint(taskID: UUID, runID: UUID?) -> String? {

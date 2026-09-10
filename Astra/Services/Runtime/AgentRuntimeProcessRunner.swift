@@ -723,11 +723,10 @@ final class AgentRuntimeProcessRunner {
             browserBridgeAttached: launchContext.capabilityResolutionSnapshot.providerLaunch.exposesBrowserBridge
         )
         let requiresHostControlBroker = !effectiveRequirements.hostControlTools.isEmpty
-        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+        let supportsHostControlBroker = AgentRuntimeCapabilityProfileService.profile(
             for: adapter.id,
             executablePath: executablePath
-        )
-        let supportsHostControlBroker = runtimeCapabilityProfile.canDeliverHostControlPlane
+        ).canDeliverHostControlPlane
         if requiresHostControlBroker, !supportsHostControlBroker {
             let message = "\(adapter.id.displayName) cannot attach ASTRA host tools required by this turn."
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
@@ -746,6 +745,7 @@ final class AgentRuntimeProcessRunner {
             && hostControlBrokerSessionManager.prepare(
             task: task,
             runID: runID,
+            runtime: adapter.id,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
             requiredTools: effectiveRequirements.offeredHostControlTools,
             currentDirectory: workspacePath

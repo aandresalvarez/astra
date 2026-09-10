@@ -93,6 +93,87 @@ struct HostControlRequirementDerivationConsistencyTests {
         #expect(overridden == nil)
     }
 
+    /// The launch resource plan is the persisted record of what a run is wired
+    /// with, and it reads its host-control tool list from one of two branches:
+    /// a precomputed `TaskRuntimeRequirementSet` when the caller has one, and
+    /// `HostControlPlaneMCPProjection.enabledToolNames` otherwise. Those two
+    /// branches must mean the same thing. `enabledToolNames` is the *offered*
+    /// set, so the precomputed branch must read `offeredHostControlTools` —
+    /// reading `hostControlTools` (the *required* set) makes the plan claim a
+    /// connector is delivered by env vars on exactly the turns where the run
+    /// actually delivers it through the broker.
+    @Test("the launch resource plan routes an offered connector the same way with or without precomputed requirements")
+    @MainActor
+    func launchResourcePlanAgreesAcrossPrecomputedRequirementBranches() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Offered Jira", primaryPath: "/tmp")
+        let skill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read"]
+        )
+        skill.workspace = workspace
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira issues",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        connector.workspace = workspace
+        connector.skill = skill
+        // A turn that never names Jira: the connector is reachable, so the run
+        // offers the route, but nothing this turn says requires it.
+        let turn = "give me the data"
+        let task = AgentTask(title: "Support", goal: turn, workspace: workspace, runtime: .claudeCode)
+        task.skills = [skill]
+        for model in [workspace, skill, connector, task] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: turn,
+            runtime: .claudeCode
+        )
+        let requirements = TaskRuntimeRequirementSet.derive(
+            task: task,
+            capabilityResolutionSnapshot: snapshot,
+            executionEnvironment: .host,
+            browserBridgeAttached: snapshot.providerLaunch.exposesBrowserBridge
+        )
+        #expect(requirements.offeredHostControlTools == ["jira"])
+        #expect(requirements.hostControlTools.isEmpty)
+
+        func routesJiraThroughControlPlane(precomputed: TaskRuntimeRequirementSet?) -> Bool {
+            let plan = TaskLaunchResourceResolver.resolve(
+                task: task,
+                runID: UUID(),
+                runtime: .claudeCode,
+                phase: "run",
+                prompt: turn,
+                contextText: turn,
+                workspacePath: workspace.primaryPath,
+                executionEnvironment: .host,
+                capabilityResolutionSnapshot: snapshot,
+                precomputedRuntimeRequirements: precomputed
+            )
+            return plan.providerRequirements.contains {
+                $0.capability == "connector:jira" && $0.source == .controlPlane
+            }
+        }
+
+        #expect(routesJiraThroughControlPlane(precomputed: nil))
+        #expect(routesJiraThroughControlPlane(precomputed: requirements))
+    }
+
     /// Directly compares the two independently-captured snapshots used by
     /// (1) the compatibility resolver and (2) the policy render, for a task
     /// shaped like 9FA6AF3D: multiple prior turns/runtime switches already in

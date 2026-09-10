@@ -668,6 +668,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -710,6 +711,128 @@ struct TaskTurnIntentAdmissionTests {
         #expect(!FileManager.default.fileExists(atPath: socketPath))
     }
 
+    @Test("Reachable-but-unnarrated brokered connectors keep their secrets sealed")
+    func unnarratedBrokeredConnectorSecretsStaySealed() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Summarize the README in this workspace"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        // The turn never says "Jira", so the connector is reachable but not
+        // narrated — the exact shape that must not widen secret egress.
+        #expect(!snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+        #expect(snapshot.providerLaunch.reachableConnectors.contains { $0.id == fixture.connector.id })
+
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: StaticAdmissionSecretStore(values: [
+                "JIRA_EMAIL": "person@example.edu",
+                "JIRA_API_TOKEN": "must-stay-sealed"
+            ])
+        )
+        #expect(!environment.values.contains("person@example.edu"))
+        #expect(!environment.values.contains("must-stay-sealed"))
+        // The route itself still materializes: config is reachability, secrets are not.
+        #expect(environment["JIRA_JIRA_PROJECTS"] == "ASTRA")
+    }
+
+    @Test("A durable credential grant unseals a reachable-but-unnarrated connector")
+    func durableGrantUnsealsUnnarratedBrokeredConnector() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Summarize the README in this workspace"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        #expect(!snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+        // Recorded after the capture: a grant that predates this turn's scope is
+        // exactly the case the `.approvedLabels` branch exists to serve.
+        let labels = fixture.connector.credentialKeys.map {
+            ConnectorRuntimeProjection.credentialLabel(for: fixture.connector, key: $0)
+        }
+        _ = TaskRuntimePermissionGrants.record(
+            grants: labels.map { .credential(label: $0) },
+            providerID: .claudeCode,
+            task: fixture.task,
+            modelContext: fixture.container.mainContext,
+            source: "test"
+        )
+
+        let secretStore = StaticAdmissionSecretStore(values: [
+            "JIRA_EMAIL": "person@example.edu",
+            "JIRA_API_TOKEN": "already-approved"
+        ])
+        #expect(HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+        // A grant is provider-native: it must not be replayed for a runtime
+        // the caller never identified, or for a different one.
+        #expect(!HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: nil,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+        #expect(!HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .codexCLI,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+    }
+
+    @Test("A narrated brokered connector keeps the exposure the user approved")
+    func narratedBrokeredConnectorKeepsApprovedExposure() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Read ASTRA-123 in Jira"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        #expect(snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: StaticAdmissionSecretStore(values: [
+                "JIRA_EMAIL": "person@example.edu",
+                "JIRA_API_TOKEN": "narrated-and-approved"
+            ])
+        )
+        #expect(environment.values.contains("person@example.edu"))
+        #expect(environment.values.contains("narrated-and-approved"))
+    }
+
     @Test("Broker preparation fails before readiness when the relay helper is unavailable")
     func brokerPreparationRequiresExecutableHelper() throws {
         let fixture = try makeJiraAdmissionFixture()
@@ -729,6 +852,7 @@ struct TaskTurnIntentAdmissionTests {
         #expect(!HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -760,6 +884,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -821,6 +946,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",

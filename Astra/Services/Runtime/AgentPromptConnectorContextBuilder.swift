@@ -22,14 +22,22 @@ enum AgentPromptConnectorContextBuilder {
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
         let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
-        let hostControlTools = Set(
-            dockerRouted
-                ? HostControlPlaneMCPProjection.toolNames
-                : HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: capabilityScope)
-        )
-        let usesHostControlCLIRelay = AgentRuntimeCapabilityProfile.defaultProfile(
+        let runtimeProfile = AgentRuntimeCapabilityProfile.defaultProfile(
             for: runtime ?? task.resolvedRuntimeID
-        ).usesHostControlCLIRelay
+        )
+        let usesHostControlCLIRelay = runtimeProfile.usesHostControlCLIRelay
+        // The prompt must name the route the run actually gets, which is the
+        // *offered* set — what gets attached — not the *required* set, which
+        // only says what would abort the launch if it were missing. Naming a
+        // route this runtime cannot carry is worse than naming none: the
+        // agent tries it, fails, and reports the connector as broken.
+        let hostControlTools: Set<String> = runtimeProfile.canDeliverHostControlPlane || dockerRouted
+            ? Set(
+                dockerRouted
+                    ? HostControlPlaneMCPProjection.toolNames
+                    : HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: capabilityScope)
+            )
+            : []
 
         var routedMutableService = false
         let connectorDescriptions = capabilityScope.connectors.map { conn in
@@ -71,6 +79,13 @@ enum AgentPromptConnectorContextBuilder {
                 route = usesHostControlCLIRelay
                     ? #"astra-host-control \#(tool) --operation status --alias "\#(alias)""#
                     : #"mcp__astra_host__\#(tool) with {"operation":"status","alias":"\#(alias)"}"#
+            } else if HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(serviceType) {
+                // A brokered connector's credentials never enter the process
+                // environment, so pointing at env vars here would name
+                // variables the run does not have. Say what is true instead:
+                // enabled, but no transport on this runtime can carry it.
+                route = "enabled, but no host-tool route on this runtime"
+                    + " - tell the user it needs a runtime with ASTRA host tools"
             } else {
                 route = "connector env vars, alias \(alias)"
             }

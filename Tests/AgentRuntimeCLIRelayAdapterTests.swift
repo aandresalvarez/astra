@@ -86,6 +86,7 @@ struct AgentRuntimeCLIRelayAdapterTests {
             #expect(HostControlBrokerSessionRegistry.shared.prepare(
                 task: task,
                 runID: runID,
+                runtime: runtime,
                 capabilityScope: snapshot.providerLaunch,
                 requiredTools: requirements.hostControlTools,
                 currentDirectory: workspace.primaryPath,
@@ -192,6 +193,7 @@ struct AgentRuntimeCLIRelayAdapterTests {
         #expect(HostControlBrokerSessionRegistry.shared.prepare(
             task: task,
             runID: runID,
+            runtime: .cursorCLI,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: requirements.hostControlTools,
             currentDirectory: workspace.primaryPath,
