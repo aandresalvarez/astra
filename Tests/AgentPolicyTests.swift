@@ -1337,13 +1337,11 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest declares the OS sandbox tier for wrapped runtimes")
     func preflightManifestDeclaresOSSandboxTier() throws {
-        // Pin the relevant sandbox defaults in an isolated suite (not
+        // Pin the relevant sandbox defaults in an isolated store (not
         // `.standard`) so this is deterministic regardless of any developer's
         // stored preference AND immune to the other `@Test`s in this suite
         // concurrently mutating `.standard` for their own scenarios.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         defaults.set(false, forKey: AppStorageKeys.sandboxLayerNativeProviders)
 
@@ -1395,11 +1393,9 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest layers the OS sandbox tier over a self-sandboxing provider when opted in")
     func preflightManifestLayersOSSandboxTierWhenOptedIn() throws {
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // Isolated store — see `preflightManifestDeclaresOSSandboxTier` above
         // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         defaults.set(true, forKey: AppStorageKeys.sandboxLayerNativeProviders) // opt in to layering
 
@@ -1431,11 +1427,9 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest omits the OS sandbox tier when the sandbox would not actually apply")
     func preflightManifestOmitsTierWhenSandboxWontApply() throws {
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // Isolated store — see `preflightManifestDeclaresOSSandboxTier` above
         // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
@@ -1471,9 +1465,7 @@ struct RunPermissionManifestTests {
         // has a persisted Auto selection. The provider render is what launch
         // uses, so the OS-sandbox tier must follow that rendered autonomous mode
         // instead of the stale fallback argument.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
