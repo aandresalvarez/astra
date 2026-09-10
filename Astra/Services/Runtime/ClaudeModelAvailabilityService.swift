@@ -15,6 +15,8 @@ enum ClaudeModelAvailabilityResult: Equatable, Sendable {
 struct ClaudeModelAvailabilityConfiguration: Equatable, Sendable {
     var provider: ClaudeProvider
     var executablePath: String
+    var vertexProjectID: String
+    var vertexRegion: String
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
@@ -22,12 +24,16 @@ struct ClaudeModelAvailabilityConfiguration: Equatable, Sendable {
     init(
         provider: ClaudeProvider,
         executablePath: String = "",
+        vertexProjectID: String = "",
+        vertexRegion: String = "",
         vertexOpusModel: String = "",
         vertexSonnetModel: String = "",
         vertexHaikuModel: String = ""
     ) {
         self.provider = provider
         self.executablePath = executablePath
+        self.vertexProjectID = vertexProjectID
+        self.vertexRegion = vertexRegion
         self.vertexOpusModel = vertexOpusModel
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
@@ -108,6 +114,19 @@ struct ClaudeModelAvailabilityService {
                 return .unavailable(reason: "\(probe.failureDescription) \(reason)")
             }
         case .vertex:
+            // Unlike the Anthropic branch, nothing here is asked of a provider —
+            // the "available" list is just the three aliases the user typed. So
+            // this branch has to refuse the parts it *can* falsify locally,
+            // otherwise it reports three models available over a route that
+            // cannot answer. It did: a project ID holding eleven concatenated
+            // copies of a real one logged `result=available model_count=3` on
+            // every refresh while every call came back 403.
+            if let projectFailure = GCPProjectIDValidation.failure(for: configuration.vertexProjectID) {
+                return .unavailable(reason: projectFailure.message)
+            }
+            guard !configuration.vertexRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .unavailable(reason: "No Vertex region is configured.")
+            }
             let models = RuntimeModelAvailability.cleanProviderModels([
                 configuration.vertexOpusModel,
                 configuration.vertexSonnetModel,

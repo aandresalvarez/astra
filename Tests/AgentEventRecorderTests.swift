@@ -175,6 +175,39 @@ struct AgentEventRecorderTests {
         #expect(!task.events.contains { $0.type == TaskEventTypes.Tool.result.rawValue })
     }
 
+    /// Task FA7E7423 logged three `task.failed reason=agent_reported_error`
+    /// lines at the same millisecond on a run that ended
+    /// `run_status=completed exit_code=0 has_error=false`, and the diagnostics
+    /// report read them back as three failed tasks. A mid-stream error is
+    /// evidence; the verdict belongs to whoever writes the run's exit status.
+    @Test("A mid-stream agent error is recorded as evidence, not as a task-level failure")
+    func midStreamAgentErrorIsNotAuditedAsTaskFailed() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Advisory", goal: "Finish despite an item error")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        AgentEventRecorder.recordCodexEvent(
+            .failed(message: "item error: tool call could not be parsed"),
+            to: task,
+            run: run,
+            modelContext: context
+        )
+
+        // The user still sees it in the transcript.
+        let errorEvent = try #require(task.events.first { $0.type == TaskEventTypes.System.error.rawValue })
+        #expect(errorEvent.payload == "item error: tool call could not be parsed")
+
+        AppLogger.flushForTesting()
+        let messages = AppLogger.entries
+            .filter { $0.taskID == task.id }
+            .map(\.message)
+        #expect(messages.contains { $0.contains(AuditEvent.runtimeAgentReportedError.rawValue) })
+        #expect(!messages.contains { $0.contains(AuditEvent.taskFailed.rawValue) })
+    }
+
     @Test("Claude cumulative text replay appends only unseen suffix")
     func claudeCumulativeTextReplayAppendsOnlyUnseenSuffix() throws {
         let container = try makeAgentEventRecorderContainer()

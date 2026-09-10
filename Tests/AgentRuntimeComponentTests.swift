@@ -1584,3 +1584,89 @@ struct AgentRuntimeFailurePayloadTests {
         #expect(payload == "Agent exited with code 1. plain stderr")
     }
 }
+
+@Suite("Runtime Permission Approval Gate")
+@MainActor
+struct RuntimePermissionApprovalGateTests {
+    /// Task 5FB5E95B: five runs, five approval cards, five identical 403s.
+    /// The gate has to refuse the card for a denial no approval can lift.
+    @Test("A provider-side denial does not raise an approval card")
+    func providerDenialDoesNotPause() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"Failed to authenticate. API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .permissionDenied)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ) == false)
+    }
+
+    @Test("A local approval prompt still raises an approval card")
+    func localApprovalPromptStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Copilot", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 15,
+            rawError: "Copilot is waiting for a permission approval ASTRA cannot answer directly: Allow access to these paths? (y/n):",
+            providerVersion: "GitHub Copilot CLI 0.0.342",
+            stream: nil
+        )
+
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
+    }
+
+    /// The structured signal is unambiguous — the runtime asked for something —
+    /// so narrowing the keyword branch must not narrow this one with it.
+    @Test("A structured permission.denied event still pauses even for a provider-side denial")
+    func structuredPermissionEventStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent(task: task, type: "permission.denied", payload: "Bash", run: run))
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.isApprovableRuntimePermission == false)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
+    }
+}
