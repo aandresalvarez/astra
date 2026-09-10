@@ -1539,7 +1539,10 @@ struct ArchitectureFitnessTests {
         // (sandboxEnforcement / sandboxReadScope / sandboxAllowNetwork /
         // sandboxLayerNativeProviders), which are user-facing toggles following
         // the existing SettingsView pattern.
-        #expect(count <= 130, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // 130 -> 132 for claudeVertexProjectID / claudeVertexRegion: not new
+        // settings. The snapshot already declares both, ContentView passed "",
+        // and the check read that back as "no project" over a working route.
+        #expect(count <= 132, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("AgentTask/Workspace deletions stay routed through turn-request cleanup")

@@ -85,6 +85,8 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
@@ -243,8 +245,14 @@ struct ContentView: View {
             copilotPath: copilotPath,
             providerSettingsRevision: runtimeProviderSettingsRevision,
             claudeProviderRaw: claudeProviderRaw,
-            vertexProjectID: "",
-            vertexRegion: "",
+            // These were hard-coded empty, which was survivable only while
+            // nothing read them: the availability check's Vertex branch used to
+            // return the three model aliases without looking at the route. Now
+            // that it validates the project, a blank here reports "Project ID is
+            // required" over a correctly configured Vertex setup — the same kind
+            // of lie about configuration state, just inverted.
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
