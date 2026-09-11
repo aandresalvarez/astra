@@ -1991,7 +1991,10 @@ struct ArchitectureFitnessTests {
             // explained by the comment already above that call, rewrapped.
             // 2_350 -> 2_365: the AgentPromptBuilder and resolver-test raises
             // above, and their reasons.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_365, .owner("Architecture fitness test suite")),
+            // 2_365 -> 2_375: two branches each spent the remaining headroom on
+            // ledger entries and only collided at the merge. The Shelf-browser
+            // entry was cut to one line first; raising covers what is left.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_375, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2017,7 +2020,8 @@ struct ArchitectureFitnessTests {
             // permission list already allowlists every reachable tool; the
             // prompt named only the narrated subset, so a permitted command
             // the agent was never told about read as an absent capability.
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_355, .owner("Provider prompt assembly")),
+            // 2_355 -> 2_325: the Shelf browser block moved to ShelfBrowserPromptSection.swift, which carries the reason; ratcheted to what is left.
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_325, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
             // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
             // policy observation without a user-visible outcome now audits it.

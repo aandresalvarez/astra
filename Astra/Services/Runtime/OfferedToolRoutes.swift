@@ -30,11 +30,9 @@ enum OfferedToolRoutes {
     ) -> [LocalTool] {
         let narratedIDs = Set(narrated.map(\.id))
         let narratedSkillIDs = Set(capabilityScope.behaviorSkills.map(\.id))
-        let profile = runtimeCapabilityProfile
-            ?? AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime)
         let carriesBrowserBridge = BrowserBridgeRuntimeLaunchGuard.canCarryBridge(
             runtime: runtime,
-            mcpToolSupported: profile.canDeliverBrowserBridgeMCPTool
+            runtimeCapabilityProfile: runtimeCapabilityProfile
         )
         return capabilityScope.reachableLocalTools.filter { tool in
             guard !tool.command.isEmpty, !narratedIDs.contains(tool.id) else { return false }

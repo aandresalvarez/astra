@@ -664,39 +664,6 @@ enum AgentPromptBuilder {
         """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "document reader executable", target: readfilePath)])
     }
 
-    private static func appendShelfBrowserContext(
-        for task: AgentTask,
-        contextText: String,
-        enabledBrowserAdapters: [String],
-        to sections: inout [PromptContextSection]
-    ) {
-        guard TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) else { return }
-        let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
-        guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
-            for: task.id,
-            enabledBrowserAdapters: override
-        ) else { return }
-        appendSection(
-            browserContext,
-            kind: .browser,
-            to: &sections,
-            sourcePointers: [sourcePointer(label: "live browser bridge", target: "astra-browser snapshot/read-page for task \(task.id.uuidString)")]
-        )
-        if MailTaskIntent.isReadOnlyMailRequest([
-            task.title,
-            task.goal,
-            task.inputs.joined(separator: " "),
-            task.acceptanceCriteria.joined(separator: " ")
-        ]) {
-            appendSection("""
-            Mail Read Safety:
-            The current task is a read-only mail request. If a read-only mail helper is available in the listed tools, use it before browser scraping: `stanford-mail`, `stanford-graph-mail`, or `stanford-apple-mail`.
-            If only the browser is available, treat Outlook/mail pages as read-only evidence. Use `astra-browser read-page` and `analyze` for inspection, ignore reminders/toasts/calendar panes unless the user asked about them, and verify that any opened message subject/sender matches the requested inbox item before summarizing.
-            Do not click Reply, Reply all, Forward, Send, Delete, Archive, Move, Mark read/unread, Junk, Report phishing, or Discard for this task. If the latest email cannot be identified from read-only evidence, ask for clarification instead of mutating the mailbox.
-            """, kind: .browser, to: &sections, sourcePointers: [sourcePointer(label: "mail read safety", target: "current task intent")])
-        }
-    }
-
     static func buildFreshFollowUpPrompt(
         message: String,
         task: AgentTask,
@@ -1314,12 +1281,13 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             let contextText = context.mode == .initialRun ? "" : context.followUpMessage
-            appendShelfBrowserContext(
+            sections.append(contentsOf: ShelfBrowserPromptSection.sections(
                 for: context.task,
                 contextText: contextText,
                 enabledBrowserAdapters: context.capabilityScope.enabledBrowserAdapters,
-                to: &sections
-            )
+                runtime: context.runtime,
+                runtimeCapabilityProfile: context.runtimeCapabilityProfile
+            ))
         }
     }
 
