@@ -484,7 +484,13 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
-        let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
+        // Clamp here rather than at launch: this render is what both the launch
+        // and the UI summary read, so a run that cannot get `danger-full-access`
+        // is described with the sandbox it will actually run under.
+        let args = CodexCLIRuntime.codexPermissionArguments(
+            policy: permissionPolicy,
+            requirements: CodexRequirementsService.current()
+        )
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
 
