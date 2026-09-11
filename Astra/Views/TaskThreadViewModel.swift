@@ -206,6 +206,12 @@ final class TaskThreadViewModel {
     private var deferredLiveSnapshotCount = 0
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
     private(set) var snapshotBuildCountForTesting = 0
+    /// Throttle the most recently scheduled request was deferred by. Queue-wait
+    /// telemetry cannot answer this on its own: a request delayed by the live
+    /// cadence and one that merely waited for a busy main actor produce the same
+    /// number, so a test asserting on that number alone cannot tell the throttle
+    /// working from the machine being slow.
+    private(set) var lastScheduledSnapshotThrottleForTesting: TimeInterval = 0
     private(set) var historyReadCountForTesting = 0
     private(set) var historyTailReadCountForTesting = 0
     private(set) var historyFullReadCountForTesting = 0
@@ -232,10 +238,29 @@ final class TaskThreadViewModel {
     /// `WorkspacePersistenceCoordinator`.
     @ObservationIgnored
     var historyFlushResultOverrideForTesting: (@MainActor () -> Bool)?
+    /// Test seam for the live cadence window. Reaching the shipped 120 ms window
+    /// from a test means issuing a refresh within 120 ms of an apply, and a
+    /// loaded machine does not hand the main actor back on a steady schedule:
+    /// instrumented across two full parallel runs, that gap measured 1.1 ms once
+    /// and 896 ms the other time. A test whose subject is what the throttle does
+    /// to telemetry widens the window rather than retrying until it draws a
+    /// kind one, since that subject is the same at any cadence. The shipped
+    /// value stays covered by the coalescing test, which drives its refreshes
+    /// from one synchronous loop and so never races a clock for it.
+    @ObservationIgnored
+    var liveSnapshotMinimumIntervalOverrideForTesting: TimeInterval?
     #endif
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
     private static var terminalSnapshotCache = TaskThreadSnapshotCache()
+
+    private var liveSnapshotMinimumInterval: TimeInterval {
+        #if DEBUG
+        liveSnapshotMinimumIntervalOverrideForTesting ?? Self.liveSnapshotMinimumInterval
+        #else
+        Self.liveSnapshotMinimumInterval
+        #endif
+    }
 
     init(snapshotBuilder: SnapshotBuilder? = nil) {
         self.snapshotBuilder = snapshotBuilder
@@ -439,8 +464,9 @@ final class TaskThreadViewModel {
             mainActorStallSampler.stop()
         }
         let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
-        let minimumInterval = Self.liveSnapshotMinimumInterval
+        let minimumInterval = liveSnapshotMinimumInterval
         let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
+        lastScheduledSnapshotThrottleForTesting = delay
         if isLive, delay > 0 {
             deferredLiveSnapshotCount += 1
         }
