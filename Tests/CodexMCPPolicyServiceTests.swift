@@ -244,18 +244,22 @@ struct ProviderMCPRefusalCapabilityTests {
         AgentRuntimeCapabilityProfile.defaultProfile(for: .codexCLI, providerMCPPolicy: policy)
     }
 
-    @Test("A refused runtime keeps its delivery mechanism but stops advertising the route")
-    func refusalClosesTheRoute() {
+    @Test("A refused runtime keeps its delivery mechanism but stops advertising the MCP route")
+    func refusalClosesTheMCPRoute() {
         let refused = codexProfile(.serversDisabled(policyName: "Baseline"))
         // ASTRA's side of the contract is unchanged — the provider's is not.
         #expect(refused.hasTaskScopedMCPDeliveryMechanism)
         #expect(!refused.supportsTaskScopedMCPDelivery)
         #expect(!refused.canDeliverHostControlPlaneMCP)
-        #expect(!refused.canDeliverHostControlPlane)
         #expect(!refused.canDeliverDockerWorkspaceShellMCP)
         #expect(refused.observedEvidence.contains("codex-mcp-list:servers-disabled(Baseline)"))
         // Browser control survives: it has a shell transport that is not MCP.
         #expect(refused.canUseBrowserBridgeTransport)
+        // So does the host control plane, over the typed relay rather than MCP.
+        // Reads only — `HostControlCLIRelayPolicy` allowlists the operations,
+        // and a connector write still has nowhere to go on this machine.
+        #expect(refused.canDeliverHostControlPlane)
+        #expect(refused.usesHostControlCLIRelay)
     }
 
     @Test("An unknown or permitted policy leaves the profile exactly as it was")
@@ -267,10 +271,31 @@ struct ProviderMCPRefusalCapabilityTests {
         #expect(AgentRuntimeCapabilityProfile.defaultProfile(for: .claudeCode).supportsTaskScopedMCPDelivery)
     }
 
-    @Test("A connector turn is blocked with the provider named, and Claude Code offered")
-    func connectorTurnIsBlocked() {
+    /// The refusal used to end the turn here. It no longer does: a connector
+    /// turn needs the host control plane, and the relay is a route to it that
+    /// does not pass through the provider's MCP client. Rerouting a run to
+    /// another provider is the heaviest thing this service can do, and it
+    /// should only happen when there is genuinely no way through.
+    @Test("A connector turn runs on the relay instead of being rerouted")
+    func connectorTurnTakesTheRelay() {
+        let found = TaskRuntimeCompatibilityService.incompatibilities(
+            runtime: .codexCLI,
+            requirements: TaskRuntimeRequirementSet(
+                hostControlTools: ["jira"], requiresDockerWorkspaceShell: false, requiresBrowserControl: false
+            ),
+            profile: codexProfile(.serversDisabled(policyName: "Baseline")),
+            isRuntimeUsable: true
+        )
+        #expect(found.isEmpty)
+    }
+
+    /// The relay carries host control and nothing else, so a turn that needs a
+    /// workspace shell over MCP is still blocked — and this is the case that
+    /// keeps the wording honest, because it is the one a user still sees.
+    @Test("A workspace-shell turn is blocked with the provider named, and Claude Code offered")
+    func workspaceShellTurnIsBlocked() {
         let requirements = TaskRuntimeRequirementSet(
-            hostControlTools: ["jira"], requiresDockerWorkspaceShell: false, requiresBrowserControl: false
+            hostControlTools: [], requiresDockerWorkspaceShell: true, requiresBrowserControl: false
         )
         let found = TaskRuntimeCompatibilityService.incompatibilities(
             runtime: .codexCLI,

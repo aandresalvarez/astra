@@ -1845,7 +1845,7 @@ final class AgentRuntimeProcessRunner {
         // Offered, not required: the broker session is started for every tool
         // the run offers, so requiring here would leave `astra-host-control
         // jira` with no socket on exactly the turns that never narrate it.
-        guard AgentRuntimeCapabilityProfile.defaultProfile(for: runtime).usesHostControlCLIRelay,
+        guard AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime).usesHostControlCLIRelay,
               context.runtimeRequirements?.offersHostControlPlane == true else { return [:] }
         let environment = HostControlPlaneMCPProjection.environmentVariables(
             task: context.task,

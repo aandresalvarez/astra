@@ -126,7 +126,9 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID)
         )
-        guard let socketPath = session.start() else { return false }
+        guard let socketPath = session.start(
+            allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
+        ) else { return false }
 
         let key = sessionKey(taskID: task.id, runID: runID)
         lock.lock()
@@ -215,11 +217,29 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         return environment
     }
 
+    /// Runtimes that wrap the provider process in a sandbox of their own making,
+    /// which ASTRA does not author and cannot widen.
+    ///
+    /// Codex is here because its `workspace-write` seatbelt denies `connect(2)`
+    /// on the broker socket outright, so the relay has no transport at all
+    /// without the file drop. Membership buys a run nothing except that
+    /// fallback: the socket is still tried first and still wins whenever it
+    /// works, including on a Codex run that resolved to `danger-full-access`
+    /// and therefore has no sandbox to trip over.
+    static let providerSandboxedRuntimes: Set<AgentRuntimeID> = [.codexCLI]
+
     func endpoint(taskID: UUID, runID: UUID?) -> String? {
         let key = sessionKey(taskID: taskID, runID: runID)
         lock.lock()
         defer { lock.unlock() }
         return sessions[key]?.socketPath
+    }
+
+    func fileDrop(taskID: UUID, runID: UUID?) -> (directory: String, token: String)? {
+        let key = sessionKey(taskID: taskID, runID: runID)
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions[key]?.fileDrop
     }
 
     func registerProviderProcess(taskID: UUID, runID: UUID?, processID: Int32) {
@@ -261,7 +281,9 @@ private final class HostControlBrokerSession: @unchecked Sendable {
     private var listenerSource: DispatchSourceRead?
     private var connectionDescriptors: Set<Int32> = []
     private var invalidated = false
+    private var dropListener: HostControlBrokerDropListener?
     fileprivate var socketPath: String?
+    fileprivate var fileDrop: (directory: String, token: String)?
 
     init(
         configuration: HostControlToolConfiguration,
@@ -275,7 +297,7 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }
 
-    func start() -> String? {
+    func start(allowsFileDropFallback: Bool = false) -> String? {
         let candidatePath = "/tmp/astra-host-control-\(UUID().uuidString.lowercased()).sock"
         guard let path = try? HostControlBrokerIPC.validatedSocketPath(candidatePath) else {
             return nil
@@ -313,7 +335,39 @@ private final class HostControlBrokerSession: @unchecked Sendable {
             self?.acceptConnections()
         }
         source.resume()
+        if allowsFileDropFallback {
+            startFileDropFallback()
+        }
         return path
+    }
+
+    /// A failure here is not a launch failure. The socket is up either way, and
+    /// a run with no fallback is exactly what every provider outside
+    /// `providerSandboxedRuntimes` already runs with.
+    private func startFileDropFallback() {
+        let token = HostControlBrokerFileDrop.newToken()
+        let listener = HostControlBrokerDropListener(
+            token: token,
+            // The same two questions the socket asks of `LOCAL_PEERPID`, asked
+            // of a PID the caller supplied. Weaker input, identical checks.
+            authorize: { [weak self] processID in
+                guard let self else { return false }
+                return Self.canonicalExecutablePath(processID: processID) == self.expectedHelperPath
+                    && self.helperBelongsToProvider(processID)
+            },
+            handle: { [weak self] line in
+                guard let self else { return "" }
+                self.serverLock.lock()
+                defer { self.serverLock.unlock() }
+                return self.server.handleLine(line) ?? ""
+            }
+        )
+        let candidate = "/tmp/astra-host-control-\(UUID().uuidString.lowercased())"
+        guard let directory = listener.start(candidateDirectory: candidate) else { return }
+        connectionLock.lock()
+        dropListener = listener
+        fileDrop = (directory: directory, token: token)
+        connectionLock.unlock()
     }
 
     func registerProviderProcess(_ processID: Int32) {
@@ -338,6 +392,9 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         let source = listenerSource
         let descriptor = listenerDescriptor
         let path = socketPath
+        let drop = dropListener
+        dropListener = nil
+        fileDrop = nil
         listenerSource = nil
         listenerDescriptor = -1
         for connection in connectionDescriptors {
@@ -345,6 +402,7 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         }
         connectionLock.unlock()
 
+        drop?.invalidate()
         source?.cancel()
         if source != nil {
             listenerQueue.sync {}

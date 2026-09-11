@@ -77,10 +77,15 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
     ) -> AgentRuntimeCapabilityProfile {
         let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
         let mcpProfile = MCPRuntimeSupportMatrix.profile(for: descriptor)
+        let supportsRelay = defaultHostControlCLIRelaySupport(for: runtime)
+        // Mirrors `usesHostControlCLIRelay` on the built value, which cannot be
+        // read yet. MCP wins whenever it is both deliverable and not refused.
+        let usesRelay = supportsRelay
+            && (mcpProfile.configDeliveryOwnership == .unsupported || providerMCPPolicy.refusesServers)
         var evidence = defaultEvidence(
             for: runtime,
             delivery: mcpProfile.configDeliveryOwnership,
-            supportsHostControlCLIRelay: defaultHostControlCLIRelaySupport(for: runtime)
+            usesHostControlCLIRelay: usesRelay
         )
         if providerMCPPolicy != .unknown {
             evidence.append(providerMCPPolicy.evidence)
@@ -139,16 +144,30 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
         runtime != .copilotCLI && AgentRuntimeAdapterRegistry.hasAdapter(for: runtime)
     }
 
+    /// Runtimes whose shell can carry the typed `astra-host-control` relay.
+    ///
+    /// For Cursor, OpenCode, and Antigravity this is the only host-control
+    /// route they have — they cannot be handed an MCP server at all. Codex is
+    /// here for the opposite reason: it *can* be handed one, and an enterprise
+    /// requirements bundle can still refuse to run it (`[mcp_servers]` with
+    /// nothing allowed). Listing Codex does not move it off MCP —
+    /// `usesHostControlCLIRelay` prefers MCP wherever MCP actually works, and
+    /// only reaches for the relay once the provider has said it will not run
+    /// the server. Without this the refusal has no second route to fall to,
+    /// and a connector turn on Codex fails having never left ASTRA.
     private static func defaultHostControlCLIRelaySupport(for runtime: AgentRuntimeID) -> Bool {
-        [.cursorCLI, .openCodeCLI, .antigravityCLI].contains(runtime)
+        [.cursorCLI, .openCodeCLI, .antigravityCLI, .codexCLI].contains(runtime)
     }
 
     private static func defaultEvidence(
         for runtime: AgentRuntimeID,
         delivery: MCPRuntimeConfigDeliveryOwnership,
-        supportsHostControlCLIRelay: Bool
+        usesHostControlCLIRelay: Bool
     ) -> [String] {
-        if supportsHostControlCLIRelay {
+        // The route taken, not the routes available. Codex supports the relay
+        // and inline MCP both, so claiming the relay whenever it is *supported*
+        // would report the fallback on every ordinary run.
+        if usesHostControlCLIRelay {
             return ["adapter:process-bound-host-control-cli-relay"]
         }
         switch delivery {
@@ -169,8 +188,25 @@ struct AgentRuntimeCapabilityProfile: Equatable, Sendable {
 }
 
 enum AgentRuntimeCapabilityProfileService {
-    static func defaultProfile(for runtime: AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
-        AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+    /// The static table, plus the one dynamic fact that costs nothing to read.
+    ///
+    /// Codex's MCP policy decides which host-control route a run gets, so a
+    /// profile that omits it answers `canDeliverHostControlPlaneMCP == true`
+    /// on a machine where the provider refuses every server — and the relay
+    /// fallback then never engages. Unlike Copilot's capability lookup this is
+    /// a `UserDefaults` read, so it is cheap enough for the plain
+    /// `defaultProfile` path.
+    static func defaultProfile(
+        for runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> AgentRuntimeCapabilityProfile {
+        guard runtime == .codexCLI else {
+            return AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+        }
+        return AgentRuntimeCapabilityProfile.defaultProfile(
+            for: runtime,
+            providerMCPPolicy: CodexMCPPolicyService.cachedPolicy(defaults: defaults)
+        )
     }
 
     static func profile(
@@ -188,13 +224,7 @@ enum AgentRuntimeCapabilityProfileService {
         // once per candidate runtime on the main-actor admission path, and the
         // Codex probe is a subprocess. `CodexMCPPolicyService.warmBeforeLaunch`
         // is what makes sure there is something fresh to read.
-        guard runtime == .codexCLI else {
-            return AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-        }
-        return AgentRuntimeCapabilityProfile.defaultProfile(
-            for: runtime,
-            providerMCPPolicy: CodexMCPPolicyService.cachedPolicy(defaults: defaults)
-        )
+        return defaultProfile(for: runtime, defaults: defaults)
     }
 
     /// The profile for a runtime whose launch settings the caller does not hold.
@@ -210,7 +240,7 @@ enum AgentRuntimeCapabilityProfileService {
     /// the detected one.
     static func detectedProfile(for runtime: AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
         guard runtime == .copilotCLI else {
-            return AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
+            return defaultProfile(for: runtime)
         }
         return profile(for: runtime, executablePath: CopilotCLIRuntime.detectPath())
     }

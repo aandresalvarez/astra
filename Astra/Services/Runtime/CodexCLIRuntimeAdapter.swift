@@ -144,12 +144,16 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             let named = policyName.map { " (\"\($0)\")" } ?? ""
             return RuntimeReadinessCheck(
                 id: "codex-connectors", title: "ASTRA connectors",
-                // A warning, not a block: a `.blocked` readiness check stops
-                // every launch on this runtime, and most Codex turns never ask
-                // for a connector. Admission blocks the ones that do.
-                detail: "Your organization's Codex policy\(named) disables all MCP servers, so ASTRA's connectors cannot reach this runtime.",
+                // Still a warning rather than a block — a `.blocked` readiness
+                // check stops every launch on this runtime — but no longer a
+                // dead end. The refusal reroutes host-control onto the typed
+                // relay, which is a shell command and so is not something an
+                // MCP policy can switch off. Reads work; writes do not, because
+                // the relay's allowlist is deliberately narrower than the
+                // broker's, so the warning has to say which half is missing.
+                detail: "Your organization's Codex policy\(named) disables all MCP servers, so ASTRA is routing connectors through its typed command relay instead. Read operations work; staging a change for review still needs a runtime that accepts MCP.",
                 state: .warning,
-                remediation: "Run connector tasks on Claude Code, or ask your Codex administrator to allow ASTRA's MCP server."
+                remediation: "Run tasks that propose connector writes on Claude Code, or ask your Codex administrator to allow ASTRA's MCP server."
             )
         case .unknown:
             return RuntimeReadinessCheck(
@@ -237,13 +241,20 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        var taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy,
             runtimeRequirements: context.runtimeRequirements
         )
+        // Empty unless the provider has refused ASTRA's MCP server, in which
+        // case this carries the broker socket the typed relay dials. Codex is
+        // the only runtime where both routes exist, so this merge is a no-op on
+        // every run whose MCP server actually loaded.
+        taskEnv.merge(
+            AgentRuntimeProcessRunner.hostControlCLIRelayEnvironment(context: context, runtime: id)
+        ) { _, brokerValue in brokerValue }
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
@@ -299,7 +310,11 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                // The relay is only invocable if the directory holding
+                // `astra-host-control` is on PATH — the prompt tells the agent
+                // to type a bare command name.
+                || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             mcpConfigArguments: mcpProjection.configArguments,
             resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).codexLaunchPermissionArguments(
