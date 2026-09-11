@@ -92,11 +92,16 @@ enum BrowserBridgeRuntimeLaunchGuard {
     /// `OfferedToolRoutes` and `ShelfBrowserPromptSection` - receive that
     /// profile as an optional, and a fallback that drifted between them would
     /// put back the disagreement the shared predicate exists to prevent.
+    ///
+    /// The fallback is the *service*, not the bare static table:
+    /// `canDeliverBrowserBridgeMCPTool` follows task-scoped MCP delivery, and
+    /// for Codex that turns on a provider policy the raw table cannot see.
     static func canCarryBridge(
         runtime: AgentRuntimeID,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
     ) -> Bool {
-        let profile = runtimeCapabilityProfile ?? .defaultProfile(for: runtime)
+        let profile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime)
         return canCarryBridge(runtime: runtime, mcpToolSupported: profile.canDeliverBrowserBridgeMCPTool)
     }
 

@@ -17,6 +17,10 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
         TaskRunStopReason(rawValue: rawValue)
     }
 
+    /// The provider's own stream said the turn failed. Distinct from `.failed`,
+    /// which is inferred from a non-zero exit: Codex reports the failure and
+    /// then exits 0, so without this the run's only honest signal is discarded.
+    public static let agentReportedError: TaskRunStopReason = "agent_reported_error"
     public static let appRestarted: TaskRunStopReason = "app_restarted"
     public static let browserActionBudgetExceeded: TaskRunStopReason = "browser_action_budget_exceeded"
     public static let cancelled: TaskRunStopReason = "cancelled"

@@ -397,6 +397,17 @@ enum HostControlPlaneMCPProjection {
         ) {
             output[HostControlBrokerIPC.endpointEnvironmentKey] = brokerSocketPath
         }
+        // Only prepared for a run whose provider sandboxes the socket away, so
+        // projecting both is not a choice between transports. The helper tries
+        // the socket first either way; this is the way through for the runs
+        // that cannot open it.
+        if let fileDrop = HostControlBrokerSessionRegistry.shared.fileDrop(
+            taskID: task.id,
+            runID: runID
+        ) {
+            output[HostControlBrokerFileDrop.directoryEnvironmentKey] = fileDrop.directory
+            output[HostControlBrokerFileDrop.tokenEnvironmentKey] = fileDrop.token
+        }
         return output
     }
 
@@ -446,7 +457,9 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",
-        HostControlBrokerIPC.endpointEnvironmentKey
+        HostControlBrokerIPC.endpointEnvironmentKey,
+        HostControlBrokerFileDrop.directoryEnvironmentKey,
+        HostControlBrokerFileDrop.tokenEnvironmentKey
     ]
 
     private static func environmentKeys() -> [String] {

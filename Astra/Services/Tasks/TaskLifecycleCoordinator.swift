@@ -395,10 +395,21 @@ final class TaskLifecycleCoordinator {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
+    /// Records the durable grants an open runtime-permission request carries.
+    ///
+    /// The `.pendingUser` check moved off the entry condition and onto the
+    /// resume, because those are two different questions. Not every open
+    /// request comes from a paused run: a run that discovered mid-flight that
+    /// it had been handed a connector without its credentials records a request
+    /// and then finishes normally, on purpose — the offered tier is not allowed
+    /// to stop a run to ask about a connector the turn never named. Gating the
+    /// whole method on `.pendingUser` meant that request rendered a button that
+    /// completed the task and granted nothing, so the connector stayed sealed
+    /// on the next run and the only thing the user could do about it was change
+    /// their wording.
     @discardableResult
     func approveSimilarRuntimePermissionForTask(_ task: AgentTask) -> Task<Void, Never>? {
-        guard task.status == .pendingUser,
-              hasOpenRuntimePermissionApprovalRequest(task) else {
+        guard hasOpenRuntimePermissionApprovalRequest(task) else {
             return approveTask(task)
         }
 
@@ -408,7 +419,11 @@ final class TaskLifecycleCoordinator {
         let latestRequestedTool = Self.latestRequestedPermissionTool(for: task)
         let taskScopedGrants = PermissionBroker.taskScopedApprovalGrants(for: latestGrants)
         guard !taskScopedGrants.isEmpty else {
-            return approveRuntimePermissionAndContinue(task)
+            // Nothing durable to record either way. A paused task still needs
+            // its provider answered; an unpaused one has no one waiting.
+            return task.status == .pendingUser
+                ? approveRuntimePermissionAndContinue(task)
+                : approveTask(task)
         }
 
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
@@ -433,6 +448,19 @@ final class TaskLifecycleCoordinator {
                 eventType: TaskEventTypes.Task.approved,
                 payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
             ))
+        }
+
+        // Nothing paused, so nothing to resume: record the grant and stop.
+        // Submitting a resume here would relaunch a task the user did not ask
+        // to rerun, which is the opposite of what approving an offer should do.
+        // The grant is what matters — the next run unseals the connector.
+        guard task.status == .pendingUser else {
+            applyApprovalMutation()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext
+            )
+            return Task {}
         }
 
         // A live in-flight ask means the provider process is still alive and

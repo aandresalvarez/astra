@@ -825,6 +825,7 @@ public final class HostControlMCPServer {
     private let processRunner: HostControlProcessRunning
     private let cancellationRegistry: HostControlOperationCancellationRegistry
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
+    private let withholdingObserver: BrokeredCredentialWithholdingObserving?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -840,6 +841,7 @@ public final class HostControlMCPServer {
         configuration: HostControlToolConfiguration,
         processRunner: HostControlProcessRunning? = nil,
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         processLimits: HostControlProcessLimits = .standard
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
@@ -850,6 +852,7 @@ public final class HostControlMCPServer {
             cancellationRegistry: cancellationRegistry
         )
         self.diagnosticsRecorder = diagnosticsRecorder
+        self.withholdingObserver = withholdingObserver
         self.processLimits = processLimits
     }
 
@@ -912,7 +915,8 @@ public final class HostControlMCPServer {
                 configuration: configuration,
                 processLimits: processLimits,
                 cancellationRegistry: cancellationRegistry,
-                diagnostics: diagnosticsRecorder
+                diagnostics: diagnosticsRecorder,
+                withholdingObserver: withholdingObserver
             )
         default:
             return .error(code: -32602, message: "Unsupported tool")
@@ -1014,6 +1018,10 @@ public final class HostControlMCPServer {
                 message: resolution.failureMessage(serviceLabel: "Jira") ?? "No Jira connector is available"
             )
         }
+        // Reaching for the tool is this run asking for the connector, whatever
+        // the operation turns out to be. Recorded once here, before the
+        // operation switch, so a `status` probe counts the same as a read.
+        withholdingObserver?.noteWithheldCredentials(for: connector, configuration: configuration)
         switch operation {
         case "status":
             let status = jiraStatus(connector: connector)
@@ -1021,7 +1029,7 @@ public final class HostControlMCPServer {
             return .result([
                 "content": [[
                     "type": "text",
-                    "text": formattedJiraStatus(status)
+                    "text": status.formatted()
                 ]],
                 "isError": !status.ready
             ])
@@ -1050,11 +1058,11 @@ public final class HostControlMCPServer {
         guard status.ready else {
             diagnosticsRecorder?.record(
                 toolName: "jira",
-                summary: "jira propose_issue \(connector.alias) blocked: not configured",
+                summary: "jira propose_issue \(connector.alias) blocked: \(status.blockedDiagnosticReason)",
                 result: nil
             )
             return .result([
-                "content": [["type": "text", "text": formattedJiraStatus(status)]],
+                "content": [["type": "text", "text": status.formatted()]],
                 "isError": true
             ])
         }
@@ -1073,11 +1081,11 @@ public final class HostControlMCPServer {
     ) -> MCPServerReply {
         let status = jiraStatus(connector: connector)
         guard status.ready else {
-            diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: not configured", result: nil)
+            diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: \(status.blockedDiagnosticReason)", result: nil)
             return .result([
                 "content": [[
                     "type": "text",
-                    "text": formattedJiraStatus(status)
+                    "text": status.formatted()
                 ]],
                 "isError": true
             ])
@@ -1116,44 +1124,16 @@ public final class HostControlMCPServer {
         HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: alias, in: configuration)
     }
 
-    private func jiraStatus(connector: HostControlConnector) -> JiraConnectorStatus {
-        let scheme = URL(string: connector.baseURL)?.scheme?.lowercased()
-        let baseURLReady = scheme == "http" || scheme == "https"
-        let emailKey = envKey(named: "JIRA_EMAIL", in: connector) ?? envKey(named: "EMAIL", in: connector)
-        let tokenKey = envKey(named: "JIRA_API_TOKEN", in: connector) ?? envKey(named: "API_TOKEN", in: connector)
-        let emailReady = emailKey.flatMap { configuration.environment[$0] }.map { !$0.isEmpty } ?? false
-        let tokenReady = tokenKey.flatMap { configuration.environment[$0] }.map { !$0.isEmpty } ?? false
-        return JiraConnectorStatus(
-            alias: connector.alias,
-            baseURL: connector.baseURL,
-            baseURLReady: baseURLReady,
-            emailEnvKey: emailKey,
-            emailReady: emailReady,
-            tokenEnvKey: tokenKey,
-            tokenReady: tokenReady
+    private func jiraStatus(connector: HostControlConnector) -> BrokeredConnectorStatusReport {
+        BrokeredConnectorStatusReport(
+            serviceLabel: "Jira",
+            connector: connector,
+            configuration: configuration,
+            credentials: [
+                .init(label: "email", candidateLogicalNames: ["JIRA_EMAIL", "EMAIL"]),
+                .init(label: "api_token", candidateLogicalNames: ["JIRA_API_TOKEN", "API_TOKEN"])
+            ]
         )
-    }
-
-    private func envKey(named logicalName: String, in connector: HostControlConnector) -> String? {
-        if let key = connector.credentials[logicalName] ?? connector.env[logicalName] {
-            return key
-        }
-        let normalized = logicalName.uppercased()
-        return (Array(connector.credentials.values) + Array(connector.env.values)).first {
-            $0.uppercased().hasSuffix(normalized) || $0.uppercased() == normalized
-        }
-    }
-
-    private func formattedJiraStatus(_ status: JiraConnectorStatus) -> String {
-        [
-            "alias: \(status.alias)",
-            "base_url: \(status.baseURLReady ? status.baseURL : "<missing or invalid>")",
-            "email_env_key: \(status.emailEnvKey ?? "<missing>")",
-            "email_present: \(status.emailReady)",
-            "api_token_env_key: \(status.tokenEnvKey ?? "<missing>")",
-            "api_token_present: \(status.tokenReady)",
-            "ready: \(status.ready)"
-        ].joined(separator: "\n")
     }
 
     private func redactedResult(_ result: HostControlCommandResult) -> HostControlCommandResult {
@@ -1641,20 +1621,6 @@ private enum BigQueryHostControlPolicy {
     }
 }
 
-private struct JiraConnectorStatus {
-    var alias: String
-    var baseURL: String
-    var baseURLReady: Bool
-    var emailEnvKey: String?
-    var emailReady: Bool
-    var tokenEnvKey: String?
-    var tokenReady: Bool
-
-    var ready: Bool {
-        baseURLReady && emailReady && tokenReady
-    }
-}
-
 struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
@@ -1863,13 +1829,7 @@ private final class JiraHTTPClient {
     }
 
     private func credential(named logicalName: String, connector: HostControlConnector) -> String? {
-        let upper = logicalName.uppercased()
-        let envKey = connector.credentials[logicalName]
-            ?? connector.env[logicalName]
-            ?? (Array(connector.credentials.values) + Array(connector.env.values)).first {
-                $0.uppercased().hasSuffix(upper) || $0.uppercased() == upper
-            }
-        guard let envKey,
+        guard let envKey = connector.environmentKey(forLogicalName: logicalName),
               let value = configuration.environment[envKey],
               !value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
             return nil

@@ -149,6 +149,14 @@ public final class TaskRun {
         typedStopReason = .permissionApprovalRequired
     }
 
+    /// The provider's own stream said the turn failed. Separate from
+    /// `recordCompletionBlocked`, which is ASTRA declining to accept work the
+    /// agent believes it finished; here the agent never claimed to finish.
+    public func recordAgentReportedFailure() {
+        status = .failed
+        typedStopReason = .agentReportedError
+    }
+
     public func recordCompletionBlocked(stopReason: TaskRunStopReason?) {
         status = .failed
         typedStopReason = stopReason
