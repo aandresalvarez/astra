@@ -39,18 +39,31 @@ enum CodexSandboxMode: String, CaseIterable, Comparable, Sendable {
 /// file, parse failure, and unrecognised value falls open to the unclamped
 /// behaviour rather than narrowing a run on a guess.
 ///
-/// Approval policy is deliberately not clamped. `codex exec` pins its own
-/// approval policy — a run that names an allowed one is corrected to exactly the
-/// same value as a run that names none — and an allowed set can list a spelling
-/// the installed CLI has since dropped (`untrusted` is currently allowed by this
-/// schema and fatal on the CLI), so sending one can only turn a working run into
-/// a failed launch.
+/// The approval *policy* is still never sent from an allowed set. `codex exec`
+/// overrides whatever policy arrives with `never` before the bundle sees it, so
+/// naming an allowed one changes nothing, and an allowed set can list a
+/// spelling the installed CLI has since dropped (`untrusted` is allowed by this
+/// schema and fatal on 0.153.4: "no longer supported; remove this setting").
+/// What is negotiated instead is the approval *reviewer* — see
+/// `approvalArguments`.
 struct CodexRequirementsPolicy: Equatable, Sendable {
     var allowedSandboxModes: Set<CodexSandboxMode>?
     /// The Windows sandbox implementation the requirements pin, when they pin
     /// exactly one. Codex validates this key on every host, so leaving it unset
     /// costs a spurious error item per turn even on macOS.
     var requiredWindowsSandbox: String?
+    /// Approval spellings named verbatim, deliberately not mapped onto an enum.
+    ///
+    /// ASTRA only ever sends one approval policy of its own, so the single
+    /// question to ask a bundle is whether `never` survives it — and an
+    /// unrecognised spelling in the allowed set is still a spelling that is not
+    /// `never`. Mapping first would read
+    /// `allowed_approval_policies = ["quantum-approve"]` as "no constraint
+    /// recorded" and put the run back into the failure this exists to avoid,
+    /// which is the opposite of how an unknown sandbox mode has to be treated.
+    var allowedApprovalPolicies: Set<String>?
+    /// Reviewers the bundle permits, verbatim, for the same reason.
+    var allowedApprovalsReviewers: Set<String>?
     /// Short, stable labels naming the requirement entries that constrained
     /// this policy, for logs and capability evidence.
     var evidence: [String]
@@ -58,11 +71,16 @@ struct CodexRequirementsPolicy: Equatable, Sendable {
     static let unconstrained = CodexRequirementsPolicy(
         allowedSandboxModes: nil,
         requiredWindowsSandbox: nil,
+        allowedApprovalPolicies: nil,
+        allowedApprovalsReviewers: nil,
         evidence: []
     )
 
     var isUnconstrained: Bool {
-        allowedSandboxModes == nil && requiredWindowsSandbox == nil
+        allowedSandboxModes == nil
+            && requiredWindowsSandbox == nil
+            && allowedApprovalPolicies == nil
+            && allowedApprovalsReviewers == nil
     }
 
     /// The strongest permitted mode at or below `preferred`. When nothing
@@ -83,6 +101,64 @@ struct CodexRequirementsPolicy: Equatable, Sendable {
     var windowsSandboxArguments: [String] {
         guard let requiredWindowsSandbox, !requiredWindowsSandbox.isEmpty else { return [] }
         return ["-c", "windows.sandbox=\"\(requiredWindowsSandbox)\""]
+    }
+
+    /// The only approval policy an ASTRA run wants: nothing in `codex exec`
+    /// speaks an approval protocol, so a run that is asked to approve something
+    /// has already lost.
+    static let neverApprovalPolicy = "never"
+
+    /// The reviewer that answers an approval request without a human. Codex also
+    /// accepts `user`, which wants the interactive terminal ASTRA does not have,
+    /// and `guardian_subagent`, which no bundle seen so far permits.
+    static let automaticApprovalReviewer = "auto_review"
+
+    /// How this run asks Codex not to stop for approval.
+    ///
+    /// Normally that is `approval_policy="never"` and Codex needs no persuading,
+    /// because `exec` pins `never` for itself anyway. A bundle that disallows
+    /// `never` corrects it to `on-request`, and from there every command Codex
+    /// does not consider trivially safe raises an approval request that exec mode
+    /// cannot service. `ls` still runs; anything else dies:
+    ///
+    ///     ERROR codex_app_server: command execution approval is not supported
+    ///       in exec mode for thread `…`
+    ///     ERROR codex_core::tools::router: error=exec_command failed:
+    ///       CreateProcess { message: "Rejected(\"approval request failed\")" }
+    ///
+    /// Naming an allowed policy is not the way out: `exec` replaces it with
+    /// `never` before the bundle is consulted, so such a run is corrected to
+    /// `on-request` and fails exactly like one that named nothing. The lever that
+    /// works is the reviewer. `approvals_reviewer="auto_review"` gives exec mode
+    /// something that can answer, and the requests resolve rather than fail.
+    /// Dropping ASTRA's own `never` alongside it is what keeps a disallowed-value
+    /// error item out of every turn — and, unlike a sandbox widening, it concedes
+    /// nothing the org withheld, since a reviewer cannot approve past the
+    /// bundle's own network denials ("domain is explicitly denied by policy and
+    /// cannot be approved from this prompt").
+    ///
+    /// The reviewer goes in as a `-c` override rather than as `exec`'s
+    /// `--approve-for-me`, which is unusable twice over: it is rejected
+    /// alongside `--sandbox` ("cannot be used with"), and `exec resume` does not
+    /// take it at all, which would strand every turn after the first.
+    ///
+    /// A bundle that bars `never` while also barring `auto_review` leaves nothing
+    /// to negotiate with, so that run keeps the arguments it has always had.
+    var approvalArguments: [String] {
+        if !permitsNeverApprovalPolicy, permitsAutomaticApprovalReviewer {
+            return ["-c", "approvals_reviewer=\"\(Self.automaticApprovalReviewer)\""]
+        }
+        return ["-c", "approval_policy=\"\(Self.neverApprovalPolicy)\""]
+    }
+
+    var permitsNeverApprovalPolicy: Bool {
+        guard let allowedApprovalPolicies, !allowedApprovalPolicies.isEmpty else { return true }
+        return allowedApprovalPolicies.contains(Self.neverApprovalPolicy)
+    }
+
+    var permitsAutomaticApprovalReviewer: Bool {
+        guard let allowedApprovalsReviewers, !allowedApprovalsReviewers.isEmpty else { return true }
+        return allowedApprovalsReviewers.contains(Self.automaticApprovalReviewer)
     }
 }
 
@@ -202,9 +278,16 @@ enum CodexRequirementsService {
             guard let contents = entry["contents"] as? String else { continue }
             let sandboxModes = allowedSandboxModes(in: contents)
             let windowsSandbox = pinnedWindowsSandbox(in: contents)
-            guard sandboxModes != nil || windowsSandbox != nil else { continue }
+            let approvalPolicies = spellings(named: "allowed_approval_policies", in: contents)
+            let approvalsReviewers = spellings(named: "allowed_approvals_reviewers", in: contents)
+            guard sandboxModes != nil
+                || windowsSandbox != nil
+                || approvalPolicies != nil
+                || approvalsReviewers != nil else { continue }
             policy.allowedSandboxModes = intersecting(policy.allowedSandboxModes, sandboxModes)
             policy.requiredWindowsSandbox = windowsSandbox ?? policy.requiredWindowsSandbox
+            policy.allowedApprovalPolicies = intersecting(policy.allowedApprovalPolicies, approvalPolicies)
+            policy.allowedApprovalsReviewers = intersecting(policy.allowedApprovalsReviewers, approvalsReviewers)
             policy.evidence.append("codex-requirements:\(label(for: entry))")
         }
         return policy
@@ -240,6 +323,18 @@ enum CodexRequirementsService {
         }
         let modes = Set(raw.compactMap(CodexSandboxMode.init(rawValue:)))
         return modes.isEmpty ? nil : modes
+    }
+
+    /// An allowed set kept as the bundle spells it, lowercased only so a
+    /// differently-cased `Never` still reads as the value ASTRA sends. Nothing
+    /// is dropped for being unrecognised: for approvals an unknown spelling is
+    /// evidence of a constraint, not evidence of its absence.
+    private static func spellings(named key: String, in toml: String) -> Set<String>? {
+        guard let raw = CodexRequirementsTOML.stringArray(named: key, table: nil, in: toml) else {
+            return nil
+        }
+        let values = Set(raw.map { $0.lowercased() })
+        return values.isEmpty ? nil : values
     }
 
     /// Only a requirement leaving exactly one choice is worth pre-answering.

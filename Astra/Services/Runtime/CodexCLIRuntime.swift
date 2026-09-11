@@ -131,7 +131,7 @@ enum CodexCLIRuntime {
             return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
         return requirements.windowsSandboxArguments
-            + nonInteractiveApprovalArguments
+            + requirements.approvalArguments
             + ["--sandbox", mode.rawValue]
     }
 
@@ -150,17 +150,11 @@ enum CodexCLIRuntime {
             return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
         return requirements.windowsSandboxArguments
-            + nonInteractiveApprovalArguments
+            + requirements.approvalArguments
             + ["-c", "sandbox_mode=\"\(mode.rawValue)\""]
     }
 
     private static let bypassApprovalsAndSandboxArgument = "--dangerously-bypass-approvals-and-sandbox"
-
-    // `codex exec` pins its own approval policy regardless of what arrives here,
-    // and a requirements bundle that disallows `never` corrects it to the same
-    // value whether or not ASTRA names one, so this stays a fixed statement of
-    // intent rather than something the requirements clamp.
-    private static let nonInteractiveApprovalArguments = ["-c", "approval_policy=\"never\""]
 
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

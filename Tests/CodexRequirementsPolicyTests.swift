@@ -57,6 +57,8 @@ struct CodexRequirementsPolicyTests {
 
         #expect(policy.allowedSandboxModes == [.readOnly, .workspaceWrite])
         #expect(policy.requiredWindowsSandbox == "elevated")
+        #expect(policy.allowedApprovalPolicies == ["on-request", "untrusted"])
+        #expect(policy.allowedApprovalsReviewers == ["user", "auto_review"])
         #expect(policy.evidence == ["codex-requirements:regulated-workspace-default-fallback"])
         #expect(!policy.isUnconstrained)
     }
@@ -70,12 +72,12 @@ struct CodexRequirementsPolicyTests {
         // mode and the run spends its life unable to write a file.
         #expect(CodexCLIRuntime.codexPermissionArguments(policy: .autonomous, requirements: policy) == [
             "-c", "windows.sandbox=\"elevated\"",
-            "-c", "approval_policy=\"never\"",
+            "-c", "approvals_reviewer=\"auto_review\"",
             "--sandbox", "workspace-write"
         ])
         #expect(CodexCLIRuntime.codexResumePermissionArguments(policy: .autonomous, requirements: policy) == [
             "-c", "windows.sandbox=\"elevated\"",
-            "-c", "approval_policy=\"never\"",
+            "-c", "approvals_reviewer=\"auto_review\"",
             "-c", "sandbox_mode=\"workspace-write\""
         ])
     }
@@ -86,9 +88,72 @@ struct CodexRequirementsPolicyTests {
 
         #expect(CodexCLIRuntime.codexPermissionArguments(policy: .interactive, requirements: policy) == [
             "-c", "windows.sandbox=\"elevated\"",
-            "-c", "approval_policy=\"never\"",
+            "-c", "approvals_reviewer=\"auto_review\"",
             "--sandbox", "read-only"
         ])
+    }
+
+    @Test("A bundle that bars `never` gets a reviewer that exec mode can answer with")
+    func bundleBarringNeverAsksForTheAutomaticReviewer() {
+        // Reproduced on codex-cli 0.153.4 against this exact bundle: under the
+        // corrected `on-request` policy `ls` still runs, but anything Codex does
+        // not consider trivially safe dies with
+        //   exec_command failed: CreateProcess { message: "Rejected(\"approval request failed\")" }
+        // because `codex exec` answers its own approval requests with
+        //   -32000 command execution approval is not supported in exec mode
+        // Naming `on-request` does not help — exec overrides it back to `never`
+        // and the bundle corrects that — and `untrusted`, the only other value
+        // this bundle allows, is fatal at launch on that CLI.
+        let policy = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"on-request\", \"untrusted\"]\nallowed_approvals_reviewers = [\"user\", \"auto_review\"]"
+        ]))
+
+        #expect(!policy.permitsNeverApprovalPolicy)
+        #expect(policy.permitsAutomaticApprovalReviewer)
+        #expect(policy.approvalArguments == ["-c", "approvals_reviewer=\"auto_review\""])
+    }
+
+    @Test("Approval clamping turns only on the values the bundle actually names")
+    func approvalClampingTurnsOnlyOnTheNamedValues() {
+        let neverArguments = ["-c", "approval_policy=\"never\""]
+
+        // A bundle that still permits `never` needs no reviewer: `codex exec`
+        // pins `never` for itself and no approval is ever requested.
+        let permitsNever = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"never\", \"on-request\"]"
+        ]))
+        #expect(permitsNever.permitsNeverApprovalPolicy)
+        #expect(permitsNever.approvalArguments == neverArguments)
+
+        // Barring `auto_review` too leaves nothing to negotiate with, so the run
+        // keeps the arguments it has always had rather than sending a reviewer
+        // the org withheld.
+        let barsReviewer = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"on-request\"]\nallowed_approvals_reviewers = [\"user\"]"
+        ]))
+        #expect(!barsReviewer.permitsAutomaticApprovalReviewer)
+        #expect(barsReviewer.approvalArguments == neverArguments)
+
+        // No recorded reviewer constraint is not a withheld reviewer.
+        let reviewerUnconstrained = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"on-request\"]"
+        ]))
+        #expect(reviewerUnconstrained.approvalArguments == ["-c", "approvals_reviewer=\"auto_review\""])
+
+        // Unlike a sandbox mode, an unrecognised approval spelling must still
+        // read as a constraint: it is evidence that `never` was excluded, and
+        // falling open here puts the run straight back into the failure.
+        let unknownOnly = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"quantum-approve\"]"
+        ]))
+        #expect(unknownOnly.allowedApprovalPolicies == ["quantum-approve"])
+        #expect(unknownOnly.approvalArguments == ["-c", "approvals_reviewer=\"auto_review\""])
+
+        // `Never` and `never` are the same permission.
+        let mixedCase = CodexRequirementsService.policy(bundleCacheData: bundleCache(requirements: [
+            "allowed_approval_policies = [\"Never\"]"
+        ]))
+        #expect(mixedCase.approvalArguments == neverArguments)
     }
 
     @Test("An unconstrained policy reproduces the unclamped arguments exactly")
