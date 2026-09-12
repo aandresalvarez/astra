@@ -103,9 +103,15 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case runtimeCommandPlanned = "runtime.command_planned"
     case runtimeModelSelection = "runtime.model_selection"
     case runtimeModelAvailability = "runtime.model_availability"
+    case runtimeMCPPolicy = "runtime.mcp_policy"
     case runtimeProviderDetected = "runtime.provider_detected"
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"
+    /// An error the agent reported mid-stream. Deliberately not `task.failed`:
+    /// a provider can emit several of these and still finish `exit_code=0`, so
+    /// logging them as the task-level verdict made a successful run read as
+    /// three separate failures in the diagnostics report.
+    case runtimeAgentReportedError = "runtime.agent_reported_error"
     case runtimeEmptyOutput = "runtime.empty_output"
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"

@@ -277,6 +277,14 @@ struct SettingsRuntimeTab: View {
         Divider().opacity(0.45)
     }
 
+    /// Silent while the field is empty: an untouched Vertex form should read as
+    /// unconfigured, not as wrong. Readiness still blocks on the empty case.
+    private var vertexProjectIDIssue: String? {
+        let trimmed = claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return GCPProjectIDValidation.failure(for: trimmed)?.message
+    }
+
     @ViewBuilder
     private var claudeRouteSettings: some View {
         Picker("Route through", selection: $claudeProviderRaw) {
@@ -295,6 +303,16 @@ struct SettingsRuntimeTab: View {
                 text: $claudeVertexProjectID,
                 prompt: Text("my-gcp-project")
             )
+            // Shown while typing rather than only at readiness: the value that
+            // caused this check to exist was eleven pasted copies of a real
+            // project ID, and the field looked fine because the overflow was
+            // scrolled out of sight.
+            if let projectIssue = vertexProjectIDIssue {
+                Text(projectIssue)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.errorRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             TextField(
                 "Region",
                 text: $claudeVertexRegion,

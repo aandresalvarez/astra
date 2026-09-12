@@ -550,7 +550,7 @@ final class AgentRuntimeWorker {
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
-        let executionPolicy = executionPolicy.turnIntentSnapshot == nil
+        var executionPolicy = executionPolicy.turnIntentSnapshot == nil
             ? executionPolicy.withTurnIntentSnapshot(TaskTurnIntentResolver.capture(
                 for: launchTask,
                 sourceEventID: existingStartEventID,
@@ -625,6 +625,7 @@ final class AgentRuntimeWorker {
             )
         }
 
+        await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,
@@ -657,6 +658,15 @@ final class AgentRuntimeWorker {
             runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
             launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         }
+        // Resolved from the binary this run will actually exec, then carried on
+        // the policy so the prompt describes the same routes the launch
+        // attaches. After the reroute, so it names the runtime that won rather
+        // than the one that was asked for.
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+            for: selectedRuntime,
+            executablePath: launchSettings.executablePath
+        )
+        executionPolicy = executionPolicy.withRuntimeCapabilityProfile(runtimeCapabilityProfile)
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
@@ -924,7 +934,8 @@ final class AgentRuntimeWorker {
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of
             // reusing the resolver's single precomputed answer.
-            precomputedRuntimeRequirements: appliedRuntime.requirements
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
+            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -958,7 +969,6 @@ final class AgentRuntimeWorker {
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
-        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
         let runPermissionPolicy = launchPermissionPolicy
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -1222,41 +1232,14 @@ final class AgentRuntimeWorker {
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
-        // Before the outcome branches, not inside one. A connector mutation the
-        // agent staged is waiting for the user whether the run succeeded, was
-        // cancelled, or failed after staging it — and a proposal ASTRA never
-        // records is a proposal the user is never offered.
-        let discovered = ConnectorMutationDiscovery.recordStagedMutations(
+        // Before the outcome branches, not inside one. What the run left behind
+        // for the user is waiting whether the run succeeded, was cancelled, or
+        // failed right after leaving it.
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: task,
             run: run,
             modelContext: modelContext
         )
-        // Saved here rather than left to `finalizeAndPersist`. A successful run
-        // goes on to tests, an AI check, baseline verification, and a handoff
-        // scan, all of them `await`s that can run for minutes — and until the
-        // save these events exist only in the `ModelContext`. If ASTRA exits
-        // during one of them the agent has already been told the proposal was
-        // staged, but the durable pending event is gone, and nothing rescans the
-        // directory at startup: the proposal stays invisible until some later
-        // run happens to finish. The write is on disk; this is what makes the
-        // record of it match.
-        if !discovered.isEmpty {
-            let persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: [
-                    "operation": "connector_mutation_discovery",
-                    "count": String(discovered.count)
-                ]
-            )
-            if !persisted {
-                AppLogger.audit(.dataStoreRecovered, category: "Worker", taskID: task.id, fields: [
-                    "operation": "connector_mutation_discovery_unpersisted",
-                    "count": String(discovered.count)
-                ], level: .error)
-            }
-        }
 
         // Built before the outcome chain so the budget branch can decide and
         // explain itself from the same snapshot. Limit frozen on
@@ -1356,13 +1339,12 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            let blockedByDeliverableVerification = await AgentRuntimeCompletionValidation.applyDeliverableVerificationFailureIfNeeded(
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                workspacePath: executionPath
+            let blockedFromCompleting = await AgentRuntimeCompletionValidation.applyCompletionBlocksIfNeeded(
+                task: task, run: run, modelContext: modelContext,
+                workspacePath: executionPath,
+                agentReportedError: recordingState.agentReportedError(for: run)
             )
-            if !blockedByDeliverableVerification {
+            if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
                     switch executionTask.validationStrategy {
@@ -1469,7 +1451,7 @@ final class AgentRuntimeWorker {
                     }
                 }
             }
-        } else if Self.shouldPauseForRuntimePermissionApproval(
+        } else if RuntimePermissionApprovalGate.shouldPause(
             failureDiagnostic: failureDiagnostic,
             task: task,
             run: run
@@ -1805,20 +1787,6 @@ final class AgentRuntimeWorker {
         ], level: .warning)
         isRunning = false
         return false
-    }
-
-    @MainActor
-    private static func shouldPauseForRuntimePermissionApproval(
-        failureDiagnostic: AgentRuntimeFailureDiagnostic?,
-        task: AgentTask,
-        run: TaskRun
-    ) -> Bool {
-        if failureDiagnostic?.category == .permissionDenied {
-            return true
-        }
-        return task.events.contains { event in
-            event.type == "permission.denied" && event.run?.id == run.id
-        }
     }
 
     typealias ProcessResult = AgentProcessResult

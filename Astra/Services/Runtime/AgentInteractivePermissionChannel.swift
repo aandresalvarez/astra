@@ -384,8 +384,8 @@ extension AgentRuntimeWorker {
                     // Recorded as system.info, NOT permission.denied: this is a
                     // gracefully-handled policy denial (the provider is told no
                     // and continues), not an unmet runtime permission prompt.
-                    // shouldPauseForRuntimePermissionApproval pauses any failed
-                    // run carrying a permission.denied event, so using that type
+                    // RuntimePermissionApprovalGate pauses any failed run
+                    // carrying a permission.denied event, so using that type
                     // here would wrongly surface an approval card if the run
                     // later exited non-zero for an unrelated reason. The denial
                     // is already recorded by the permission.request.resolved

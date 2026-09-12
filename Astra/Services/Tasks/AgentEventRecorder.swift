@@ -16,6 +16,8 @@ final class AgentEventRecordingState {
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
     private var runsWithProviderStart: Set<UUID> = []
+    /// Runs whose provider stream said the turn itself failed.
+    private var runsWithAgentReportedError: Set<UUID> = []
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -34,6 +36,17 @@ final class AgentEventRecordingState {
 
     func outputCameFromCompletedSummary(for run: TaskRun) -> Bool {
         runsWithCompletedOutput.contains(run.id)
+    }
+
+    /// The provider reported that the turn failed. Several CLIs still exit 0
+    /// afterwards — Codex does — so the exit code is not evidence the work
+    /// happened, and this is the only in-memory record that it did not.
+    func recordAgentReportedError(for run: TaskRun) {
+        runsWithAgentReportedError.insert(run.id)
+    }
+
+    func agentReportedError(for run: TaskRun) -> Bool {
+        runsWithAgentReportedError.contains(run.id)
     }
 
     /// A provider run has one durable start boundary. Stream retries and
@@ -647,7 +660,12 @@ enum AgentEventRecorder {
                     "tokens_output": String(output),
                     "turns": turns.map(String.init) ?? "unknown",
                     "duration_ms": duration.map(String.init) ?? "unknown",
-                    "has_error": "false"
+                    // Was hard-coded "false". A usage envelope does not carry
+                    // an error flag, so ASTRA was not reporting the provider's
+                    // answer — it was asserting one, and asserting it after
+                    // four `task.failed reason=agent_reported_error` lines in
+                    // the same run (prod task 484A69A5).
+                    "has_error": String(recordingState?.agentReportedError(for: run) == true)
                 ])
             }
 
@@ -667,8 +685,21 @@ enum AgentEventRecorder {
 
         case .failed(let message):
             recordingState?.breakConversationCoalescing(for: run)
+            // Record it, but do not rule on it here. The two things this line
+            // and the audit below do are complements, not alternatives: the run
+            // has to *know* at exit that the agent reported a failure — the
+            // `has_error` field above reads exactly this — while the log has to
+            // stop calling one stream event a failed task.
+            recordingState?.recordAgentReportedError(for: run)
+            // The user-visible error event still goes in — the agent said
+            // something went wrong and that belongs in the transcript.
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message, run: run))
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            // But this is one stream event, not the run's verdict. Whether the
+            // task failed is decided when the process exits and the run status
+            // is written; a Codex turn emitted three of these at the same
+            // millisecond and still ended `run_status=completed exit_code=0`,
+            // which the log then reported as three failed tasks.
+            AppLogger.audit(.runtimeAgentReportedError, category: "Worker", taskID: task.id, fields: [
                 "reason": "agent_reported_error"
             ], level: .warning)
 

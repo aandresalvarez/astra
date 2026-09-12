@@ -48,7 +48,8 @@ public enum REDCapHostControlPolicy {
         configuration: HostControlToolConfiguration,
         processLimits: HostControlProcessLimits,
         cancellationRegistry: HostControlOperationCancellationRegistry,
-        diagnostics: HostControlToolDiagnosticsRecorder?
+        diagnostics: HostControlToolDiagnosticsRecorder?,
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil
     ) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
         let resolution = resolveConnector(
@@ -64,6 +65,10 @@ public enum REDCapHostControlPolicy {
         guard readOperations.contains(operation) else {
             return .error(code: -32602, message: "Unsupported REDCap operation '\(operation)'")
         }
+        // Reaching for the tool is this run asking for the connector. Recorded
+        // before the operation branches so a `status` probe counts the same as
+        // an export.
+        withholdingObserver?.noteWithheldCredentials(for: connector, configuration: configuration)
 
         let status = status(connector: connector, configuration: configuration)
         if operation == "status" {
@@ -73,7 +78,7 @@ public enum REDCapHostControlPolicy {
         guard status.ready else {
             diagnostics?.record(
                 toolName: toolName,
-                summary: "redcap \(operation) \(connector.alias) blocked: not configured",
+                summary: "redcap \(operation) \(connector.alias) blocked: \(status.report.blockedDiagnosticReason)",
                 result: nil
             )
             return textReply(formatted(status), isError: true)
@@ -371,59 +376,41 @@ public enum REDCapHostControlPolicy {
         )
     }
 
+    /// The shared report plus the one thing only this policy needs: the token
+    /// itself, to hand to the HTTP client. Readiness, formatting and the
+    /// withheld-versus-absent question all live in `report`, so REDCap cannot
+    /// drift from Jira on any of them.
     struct Status {
-        var alias: String
-        var baseURL: String
-        var baseURLReady: Bool
-        var tokenEnvKey: String?
+        var report: BrokeredConnectorStatusReport
         var tokenValue: String
 
-        var tokenReady: Bool { !tokenValue.isEmpty }
-        var ready: Bool { baseURLReady && tokenReady }
+        var ready: Bool { report.ready }
     }
 
     static func status(
         connector: HostControlConnector,
         configuration: HostControlToolConfiguration
     ) -> Status {
-        let scheme = URL(string: connector.baseURL)?.scheme?.lowercased()
-        let tokenEnvKey = envKey(named: "REDCAP_API_TOKEN", in: connector)
-            ?? envKey(named: "API_TOKEN", in: connector)
-            ?? envKey(named: "TOKEN", in: connector)
+        let report = BrokeredConnectorStatusReport(
+            serviceLabel: "REDCap",
+            connector: connector,
+            configuration: configuration,
+            credentials: [
+                .init(
+                    label: "api_token",
+                    candidateLogicalNames: ["REDCAP_API_TOKEN", "API_TOKEN", "TOKEN"]
+                )
+            ]
+        )
+        let tokenEnvKey = report.value(labeled: "api_token")?.envKey
         let token = tokenEnvKey
             .flatMap { configuration.environment[$0] }?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return Status(
-            alias: connector.alias,
-            baseURL: connector.baseURL,
-            baseURLReady: scheme == "http" || scheme == "https",
-            tokenEnvKey: tokenEnvKey,
-            tokenValue: token
-        )
+        return Status(report: report, tokenValue: token)
     }
 
-    /// Reports the *name* of the variable holding the token and whether it is
-    /// populated. Never the value — this is the call an agent makes when it is
-    /// trying to work out why REDCap is unavailable, so it is the one most
-    /// likely to end up quoted in a transcript.
     static func formatted(_ status: Status) -> String {
-        [
-            "alias: \(status.alias)",
-            "base_url: \(status.baseURLReady ? status.baseURL : "<missing or invalid>")",
-            "api_token_env_key: \(status.tokenEnvKey ?? "<missing>")",
-            "api_token_present: \(status.tokenReady)",
-            "ready: \(status.ready)"
-        ].joined(separator: "\n")
-    }
-
-    private static func envKey(named logicalName: String, in connector: HostControlConnector) -> String? {
-        if let key = connector.credentials[logicalName] ?? connector.env[logicalName] {
-            return key
-        }
-        let normalized = logicalName.uppercased()
-        return (Array(connector.credentials.values) + Array(connector.env.values)).first {
-            $0.uppercased().hasSuffix(normalized) || $0.uppercased() == normalized
-        }
+        status.report.formatted()
     }
 
     // MARK: - Schema

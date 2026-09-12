@@ -48,6 +48,63 @@ enum BrowserBridgeRuntimeLaunchGuard {
         environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
+    /// Drops an offered browser attachment no transport on this runtime can
+    /// carry, instead of aborting the run over it.
+    ///
+    /// `ASTRA_BROWSER_URL` follows reachability, so a workspace with a bound
+    /// Shelf endpoint attaches it to every turn — including ones that never
+    /// mention a browser. On a runtime with neither a shell nor a browser MCP
+    /// tool that used to abort the launch, which is the offered tier acquiring
+    /// teeth it must not have. Dropping the variable also keeps the launch
+    /// environment honest: an endpoint with nothing able to reach it tells the
+    /// policy manifest a dead route is live.
+    ///
+    /// A *required* bridge still blocks. That case is the run being unable to do
+    /// what it was asked to do, and failing loudly is the correct answer.
+    static func removingUndeliverableOfferedBridge(
+        from environment: [String: String],
+        runtime: AgentRuntimeID,
+        mcpToolSupported: Bool,
+        required: Bool
+    ) -> [String: String] {
+        guard !required,
+              isBrowserBridgeAttached(environment: environment),
+              !canCarryBridge(runtime: runtime, mcpToolSupported: mcpToolSupported) else {
+            return environment
+        }
+        return environment.filter { !BrowserBridgeMCPProjection.environmentKeys.contains($0.key) }
+    }
+
+    /// Whether this runtime has any transport that could carry the bridge.
+    ///
+    /// The launch drop above, the prompt's offered-tool list, and the persisted
+    /// launch resource plan all have to answer this the same way. When they
+    /// disagree the run advertises and records a route the launch removed —
+    /// the prompt tells the agent `astra-browser` is callable, Run Activity
+    /// shows the bridge attached, and the command fails with neither of them
+    /// able to say why.
+    static func canCarryBridge(runtime: AgentRuntimeID, mcpToolSupported: Bool) -> Bool {
+        mcpToolSupported || supportsShellToolForBrowserBridge(runtime: runtime)
+    }
+
+    /// The same question asked with the profile the launch resolved, or `nil`
+    /// for "resolve it yourself". Both surfaces that *narrate* the bridge -
+    /// `OfferedToolRoutes` and `ShelfBrowserPromptSection` - receive that
+    /// profile as an optional, and a fallback that drifted between them would
+    /// put back the disagreement the shared predicate exists to prevent.
+    ///
+    /// The fallback is the *service*, not the bare static table:
+    /// `canDeliverBrowserBridgeMCPTool` follows task-scoped MCP delivery, and
+    /// for Codex that turns on a provider policy the raw table cannot see.
+    static func canCarryBridge(
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
+    ) -> Bool {
+        let profile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime)
+        return canCarryBridge(runtime: runtime, mcpToolSupported: profile.canDeliverBrowserBridgeMCPTool)
+    }
+
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
         guard isBrowserBridgeAttached(environment: plan.environment),
               plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingBrowserControlToolReason else {

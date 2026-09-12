@@ -116,35 +116,45 @@ enum CodexCLIRuntime {
         )
     }
 
-    static func codexPermissionArguments(policy: PermissionPolicy) -> [String] {
-        switch policy {
-        case .autonomous:
-            return ["--dangerously-bypass-approvals-and-sandbox"]
-        case .restricted:
-            return nonInteractiveApprovalArguments + ["--sandbox", "workspace-write"]
-        case .interactive:
-            return nonInteractiveApprovalArguments + ["--sandbox", "read-only"]
+    /// `requirements` is what the local Codex install will actually accept. A
+    /// sandbox mode the org forbids is narrowed here rather than by Codex, which
+    /// narrows it to the *most restrictive* allowed mode — so an autonomous task
+    /// asking to bypass the sandbox entirely ends up read-only. See
+    /// `CodexRequirementsPolicy`. Unconstrained is the default and reproduces
+    /// the pre-clamp arguments exactly.
+    static func codexPermissionArguments(
+        policy: PermissionPolicy,
+        requirements: CodexRequirementsPolicy = .unconstrained
+    ) -> [String] {
+        let mode = requirements.permittedSandboxMode(preferring: policy.preferredCodexSandboxMode)
+        if mode == .dangerFullAccess {
+            return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
+        return requirements.windowsSandboxArguments
+            + requirements.approvalArguments
+            + ["--sandbox", mode.rawValue]
     }
 
-    static func codexResumePermissionArguments(policy: PermissionPolicy) -> [String] {
+    static func codexResumePermissionArguments(
+        policy: PermissionPolicy,
+        requirements: CodexRequirementsPolicy = .unconstrained
+    ) -> [String] {
         // `codex exec resume` rejects `-s/--sandbox` (it's an `exec`-only flag),
         // so preserve the run-phase sandbox mode via the supported `-c` config
         // override instead. Without this a restricted (workspace-write) task would
         // silently fall back to codex's default sandbox on a resumed turn,
         // diverging from `codexPermissionArguments` above. The value spellings
         // match the `--sandbox` enum (`sandbox_mode` config key).
-        switch policy {
-        case .autonomous:
-            return ["--dangerously-bypass-approvals-and-sandbox"]
-        case .restricted:
-            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"workspace-write\""]
-        case .interactive:
-            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"read-only\""]
+        let mode = requirements.permittedSandboxMode(preferring: policy.preferredCodexSandboxMode)
+        if mode == .dangerFullAccess {
+            return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
+        return requirements.windowsSandboxArguments
+            + requirements.approvalArguments
+            + ["-c", "sandbox_mode=\"\(mode.rawValue)\""]
     }
 
-    private static let nonInteractiveApprovalArguments = ["-c", "approval_policy=\"never\""]
+    private static let bypassApprovalsAndSandboxArgument = "--dangerously-bypass-approvals-and-sandbox"
 
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

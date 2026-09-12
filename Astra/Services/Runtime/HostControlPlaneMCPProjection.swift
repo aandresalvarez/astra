@@ -14,6 +14,12 @@ enum HostControlPlaneMCPProjection {
         let behaviorSkills: [BehaviorSkill]
         let effectiveBehaviorInstructions: [String]
         let connectorServiceTypes: [String]
+        /// The explicitly-enabled superset, used for `offeredToolNames`. The
+        /// narrated fields above stay the turn-relevant subset because they
+        /// answer a different question — see `requiredToolNames`.
+        let reachablePackageIDs: Set<String>
+        let reachableConnectorServiceTypes: [String]
+        let reachableBehaviorInstructions: [String]
         let resolutionIsComplete: Bool
 
         init(capabilityScope: TaskCapabilityPromptScope) {
@@ -21,6 +27,9 @@ enum HostControlPlaneMCPProjection {
             behaviorSkills = capabilityScope.behaviorSkills.map { BehaviorSkill(originPackageID: $0.originPackageID) }
             effectiveBehaviorInstructions = capabilityScope.resolver.effectiveSnapshots.map(\.behaviorInstructions)
             connectorServiceTypes = capabilityScope.connectors.map(\.serviceType)
+            reachablePackageIDs = Set(capabilityScope.reachablePackageIDs)
+            reachableConnectorServiceTypes = capabilityScope.reachableConnectors.map(\.serviceType)
+            reachableBehaviorInstructions = capabilityScope.reachableBehaviorInstructions
             resolutionIsComplete = true
         }
 
@@ -29,12 +38,18 @@ enum HostControlPlaneMCPProjection {
             behaviorSkillOriginPackageIDs: [String?],
             effectiveBehaviorInstructions: [String],
             connectorServiceTypes: [String] = [],
+            reachablePackageIDs: Set<String>? = nil,
+            reachableConnectorServiceTypes: [String]? = nil,
+            reachableBehaviorInstructions: [String]? = nil,
             resolutionIsComplete: Bool = true
         ) {
             self.enabledPackageIDs = enabledPackageIDs
             behaviorSkills = behaviorSkillOriginPackageIDs.map { BehaviorSkill(originPackageID: $0) }
             self.effectiveBehaviorInstructions = effectiveBehaviorInstructions
             self.connectorServiceTypes = connectorServiceTypes
+            self.reachablePackageIDs = reachablePackageIDs ?? enabledPackageIDs
+            self.reachableConnectorServiceTypes = reachableConnectorServiceTypes ?? connectorServiceTypes
+            self.reachableBehaviorInstructions = reachableBehaviorInstructions ?? effectiveBehaviorInstructions
             self.resolutionIsComplete = resolutionIsComplete
         }
     }
@@ -63,6 +78,30 @@ enum HostControlPlaneMCPProjection {
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String] {
         if let precomputedRuntimeRequirements {
+            return precomputedRuntimeRequirements.offeredHostControlTools
+        }
+        if isEnabled(for: environment) {
+            return toolNames
+        }
+        let scope = capabilityScope ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return offeredToolNames(capabilityScope: scope)
+    }
+
+    /// The `enabledToolNames` counterpart for the gating questions. Callers that
+    /// decide whether to attach a route use `enabledToolNames`; callers that
+    /// decide whether the run may proceed, which runtime it runs on, or whether
+    /// native shell is withdrawn use this.
+    static func requiredToolNames(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
+    ) -> [String] {
+        if let precomputedRuntimeRequirements {
             return precomputedRuntimeRequirements.hostControlTools
         }
         if isEnabled(for: environment) {
@@ -75,22 +114,65 @@ enum HostControlPlaneMCPProjection {
         return requiredToolNames(capabilityScope: scope)
     }
 
+    /// Tools this turn cannot proceed without. A non-empty answer is a hard
+    /// gate: it can reroute the run to another runtime, abort the launch when
+    /// the transport cannot carry the plane, and withdraw native shell under
+    /// non-autonomous policy. Because those consequences are severe, this stays
+    /// keyed on what the turn is actually about.
     static func requiredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
         requiredToolNames(capabilitySnapshot: CapabilitySnapshot(capabilityScope: capabilityScope))
     }
 
     static func requiredToolNames(capabilitySnapshot: CapabilitySnapshot) -> [String] {
+        toolNames(
+            packageIDs: capabilitySnapshot.enabledPackageIDs,
+            connectorServiceTypes: capabilitySnapshot.connectorServiceTypes,
+            behaviorInstructions: capabilitySnapshot.effectiveBehaviorInstructions,
+            capabilitySnapshot: capabilitySnapshot
+        )
+    }
+
+    /// Tools to attach when the transport can carry them. Everything the user
+    /// explicitly enabled is offered, so a connector stays callable through a
+    /// turn whose wording never lands on its name. Offering is best-effort by
+    /// construction: an offered tool the runtime cannot deliver is dropped, not
+    /// a launch failure, which is what keeps this wider set from turning a
+    /// quiet degradation into an outage on every turn of the task.
+    static func offeredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
+        offeredToolNames(capabilitySnapshot: CapabilitySnapshot(capabilityScope: capabilityScope))
+    }
+
+    static func offeredToolNames(capabilitySnapshot: CapabilitySnapshot) -> [String] {
+        toolNames(
+            packageIDs: capabilitySnapshot.reachablePackageIDs,
+            connectorServiceTypes: capabilitySnapshot.reachableConnectorServiceTypes,
+            // Reachability-wide: a generic package can declare its host-control
+            // dependency only in a skill's behavior text, and the narrated
+            // instruction set drops that skill on any turn whose wording misses
+            // it. Reading the narrated set here would make the offered tier
+            // inherit exactly the word-match gate it exists to bypass.
+            behaviorInstructions: capabilitySnapshot.reachableBehaviorInstructions,
+            capabilitySnapshot: capabilitySnapshot
+        )
+    }
+
+    private static func toolNames(
+        packageIDs: Set<String>,
+        connectorServiceTypes: [String],
+        behaviorInstructions: [String],
+        capabilitySnapshot: CapabilitySnapshot
+    ) -> [String] {
         var required = Set<String>()
-        if githubCapabilityIsInScope(capabilitySnapshot) {
+        if githubCapabilityIsInScope(capabilitySnapshot, packageIDs: packageIDs) {
             required.insert("github")
         }
-        for serviceType in capabilitySnapshot.connectorServiceTypes {
+        for serviceType in connectorServiceTypes {
             if brokerOwnsConnectorConfiguration(serviceType),
                let tool = connectorToolName(serviceType) {
                 required.insert(tool)
             }
         }
-        for instructions in capabilitySnapshot.effectiveBehaviorInstructions {
+        for instructions in behaviorInstructions {
             required.formUnion(requiredToolNames(inBehaviorText: instructions))
         }
         return orderedToolNames(required)
@@ -136,7 +218,10 @@ enum HostControlPlaneMCPProjection {
         capabilityScope: TaskCapabilityPromptScope? = nil,
         precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> Bool {
-        let requiredTools = enabledToolNames(
+        // Required, not offered. Withdrawing the provider's own shell is a real
+        // cost to the run, and merely having a connector switched on is not a
+        // reason to pay it - only a turn that actually routes host work is.
+        let requiredTools = requiredToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
@@ -312,6 +397,17 @@ enum HostControlPlaneMCPProjection {
         ) {
             output[HostControlBrokerIPC.endpointEnvironmentKey] = brokerSocketPath
         }
+        // Only prepared for a run whose provider sandboxes the socket away, so
+        // projecting both is not a choice between transports. The helper tries
+        // the socket first either way; this is the way through for the runs
+        // that cannot open it.
+        if let fileDrop = HostControlBrokerSessionRegistry.shared.fileDrop(
+            taskID: task.id,
+            runID: runID
+        ) {
+            output[HostControlBrokerFileDrop.directoryEnvironmentKey] = fileDrop.directory
+            output[HostControlBrokerFileDrop.tokenEnvironmentKey] = fileDrop.token
+        }
         return output
     }
 
@@ -361,7 +457,9 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",
-        HostControlBrokerIPC.endpointEnvironmentKey
+        HostControlBrokerIPC.endpointEnvironmentKey,
+        HostControlBrokerFileDrop.directoryEnvironmentKey,
+        HostControlBrokerFileDrop.tokenEnvironmentKey
     ]
 
     private static func environmentKeys() -> [String] {
@@ -463,8 +561,11 @@ enum HostControlPlaneMCPProjection {
         toolNames.filter { required.contains($0) }
     }
 
-    private static func githubCapabilityIsInScope(_ snapshot: CapabilitySnapshot) -> Bool {
-        if snapshot.enabledPackageIDs.contains(githubPackageID) {
+    private static func githubCapabilityIsInScope(
+        _ snapshot: CapabilitySnapshot,
+        packageIDs: Set<String>
+    ) -> Bool {
+        if packageIDs.contains(githubPackageID) {
             return true
         }
         return snapshot.behaviorSkills.contains { skill in

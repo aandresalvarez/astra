@@ -1165,14 +1165,24 @@ struct TaskCapabilityResolverTests {
         // Both connectors of the kept skill ship (intentional over-share)...
         #expect(connectorIDs.contains(jiraConnector.id))
         #expect(connectorIDs.contains(confluenceConnector.id))
-        // ...the excluded skill's connector never does (the security boundary).
+        // ...and the excluded skill's connector stays out of what the prompt
+        // narrates, which is what turn relevance is for.
         #expect(!connectorIDs.contains(gcloudConnector.id))
         #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+
+        // It stays reachable, though: the workspace enabled this global
+        // connector, and a task's phrasing is not an authorization decision. The
+        // boundary that matters is the credential one, asserted below.
+        #expect(Set(scope.reachableConnectors.map(\.id)).contains(gcloudConnector.id))
 
         let connectorsEnv = scope.resolver.resolvedEnvironmentVariables["ASTRA_CONNECTORS"] ?? ""
         #expect(connectorsEnv.contains(#""name":"Jira-new""#))
         #expect(connectorsEnv.contains(#""name":"Confluence Wiki""#))
-        #expect(!connectorsEnv.contains(#""name":"Google Cloud""#))
+        #expect(connectorsEnv.contains(#""name":"Google Cloud""#))
+        // Reachability carries configuration, never unapproved secrets: no
+        // connector here has an approved credential grant, so every `credentials`
+        // map in the manifest is empty.
+        #expect(!connectorsEnv.contains(#""credentials":{""#))
     }
 
     @Test("Enabled package uses matched local tool owner when package skill name changed")
@@ -1701,8 +1711,16 @@ struct TaskCapabilityResolverTests {
         context.insert(task)
         try context.save()
 
-        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
-        #expect(!AgentRuntimeProcessRunner.hasActiveCLITools(task))
+        // The workspace enabled GitHub, so `gh` stays permitted even while the
+        // cake goal keeps it out of the narrated scope. Permission and narration
+        // are answering different questions.
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["gh"])
+        #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task))
+
+        let cakeScope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+        #expect(!cakeScope.localTools.contains { $0.command == "gh" })
+        #expect(cakeScope.excludedSkillNames.contains("GitHub Agent"))
 
         let followUpContext = "Use GitHub to list the open pull requests for this repository."
         #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task, contextText: followUpContext) == ["gh"])
@@ -1765,12 +1783,17 @@ struct TaskCapabilityResolverTests {
         for task in unrelatedTasks {
             let scope = TaskCapabilityResolver(task: task)
                 .resolvedScope(.providerLaunch(contextText: task.goal))
+            // The intent matcher stays precise about what to *narrate*: neither
+            // "special-case" nor a UI "issue" pulls GitHub's instructions in.
             #expect(!scope.enabledPackageIDs.contains(githubPackage.id), "Unexpected GitHub activation for: \(task.goal)")
+            // The route is a different question, and the workspace already
+            // answered it by enabling the package.
+            #expect(scope.reachablePackageIDs.contains(githubPackage.id))
             #expect(HostControlPlaneMCPProjection.enabledToolNames(
                 task: task,
                 environment: .host,
                 contextText: task.goal
-            ).isEmpty)
+            ) == ["github"])
         }
 
         #expect(HostControlPlaneMCPProjection.enabledToolNames(
@@ -2112,7 +2135,12 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("Do NOT use Write or Edit"))
         #expect(!prompt.contains("stanford-graph-mail"))
 
-        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        // The command stays permitted - the user attached this skill to this task,
+        // and a puzzle-solver goal is not a revocation. What the pruning actually
+        // withholds is everything that teaches the agent to use it: the
+        // instructions above, and the skill environment below. A tool the prompt
+        // never mentions and cannot configure is inert without being denied.
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["stanford-graph-mail"])
         let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
         #expect(env["MAIL_PROFILE"] == nil)
         #expect(env["ASTRA_MAIL_REGISTRY_PATH"] == nil)
@@ -2170,9 +2198,17 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
-        #expect(!prompt.contains("stanford-graph-mail"))
         #expect(!prompt.contains("create rules"))
-        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        #expect(!prompt.contains("Read the locally signed-in Microsoft 365 mailbox"))
+        // Named, not narrated. This skill carries no environment, so the command
+        // works if the agent runs it, and it is allowlisted whether or not the
+        // prompt says so. Withholding the name does not focus the run - it only
+        // makes the agent report a capability the user attached as unavailable.
+        // What the prune withholds is everything above: the SAFETY rules, the
+        // usage prose, the tool description.
+        #expect(prompt.contains("Also available and callable in this run"))
+        #expect(prompt.contains("stanford-graph-mail"))
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["stanford-graph-mail"])
     }
 
     @Test("Activation scope prunes irrelevant selected mail skill")
@@ -2260,9 +2296,17 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
-        #expect(!prompt.contains("stanford-graph-mail"))
         #expect(!prompt.contains("create rules"))
-        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        #expect(!prompt.contains("Read the locally signed-in Microsoft 365 mailbox"))
+        // Named, not narrated. This skill carries no environment, so the command
+        // works if the agent runs it, and it is allowlisted whether or not the
+        // prompt says so. Withholding the name does not focus the run - it only
+        // makes the agent report a capability the user attached as unavailable.
+        // What the prune withholds is everything above: the SAFETY rules, the
+        // usage prose, the tool description.
+        #expect(prompt.contains("Also available and callable in this run"))
+        #expect(prompt.contains("stanford-graph-mail"))
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task) == ["stanford-graph-mail"])
     }
 
     @Test("Mail task keeps matching Graph Mail skill")
@@ -2848,5 +2892,186 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("stanford-apple-mail"))
         #expect(!prompt.contains("[Jira Agent]:"))
         #expect(prompt.contains("Mail Read Safety:"))
+    }
+
+    /// Builds the shape that produced the original report: a workspace with an
+    /// enabled global Jira connector, and a task whose wording never lands on a
+    /// Jira token.
+    private func makeEnabledJiraWorkspace(
+        in context: ModelContext,
+        name: String,
+        store: MockSecretStore
+    ) throws -> (Workspace, Connector) {
+        let workspace = Workspace(name: name, primaryPath: "/tmp/\(name)")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira to review issues before answering."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.configKeys = ["JIRA_BASE_URL"]
+        jiraConnector.configValues = ["https://stanfordmed.atlassian.net"]
+        jiraConnector.credentialKeys = ["JIRA_API_TOKEN"]
+        context.insert(jiraConnector)
+
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "secret-token-value",
+            entityID: KeychainSecretStore.connectorEntityID(for: jiraConnector.id),
+            label: nil
+        )
+
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString]
+        return (workspace, jiraConnector)
+    }
+
+    @Test("A misspelled request keeps the enabled connector's route")
+    func misspelledRequestKeepsEnabledConnectorRoute() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let store = MockSecretStore()
+        let (workspace, jiraConnector) = try makeEnabledJiraWorkspace(
+            in: context,
+            name: "jira-misspelled",
+            store: store
+        )
+
+        // The reported turn, transposed letter and all. It shares no token with
+        // "Jira", the connector, or the skill.
+        let turn = "you have accessto jita ,, give methe data"
+        let task = AgentTask(title: "Support tickets", goal: turn, workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task, secretStore: store)
+            .activationScope(contextText: turn)
+
+        // Turn relevance still says no - that part was never the bug.
+        #expect(!scope.connectors.contains { $0.id == jiraConnector.id })
+        // Reachability says yes, because the user enabled this connector.
+        #expect(scope.reachableConnectors.contains { $0.id == jiraConnector.id })
+        #expect(HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: scope) == ["jira"])
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: .host,
+            contextText: turn
+        ) == ["jira"])
+        // Offered, not required: the route is attached, but this turn does not
+        // depend on it, so it cannot reroute the run, abort the launch, or
+        // withdraw the provider's own shell.
+        #expect(HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: scope).isEmpty)
+        #expect(!HostControlPlaneMCPProjection.requiresNativeShellDenial(
+            environment: .host,
+            permissionPolicy: .restricted,
+            requiredTools: HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: scope)
+        ))
+
+        // And the run is told the route exists, so it cannot conclude from a
+        // quiet prompt that it has no Jira access.
+        let section = AgentPromptConnectorContextBuilder.section(from: scope, task: task)
+        let text = try #require(section?.text)
+        #expect(text.contains("Also connected and callable in this run"))
+        #expect(text.contains("[Jira-new]"))
+    }
+
+    @Test("Reachability widens configuration, never unapproved credentials")
+    func reachabilityWidensConfigurationNeverUnapprovedCredentials() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let store = MockSecretStore()
+        let (workspace, _) = try makeEnabledJiraWorkspace(
+            in: context,
+            name: "jira-exposure",
+            store: store
+        )
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task, secretStore: store)
+            .activationScope(contextText: task.goal)
+        // Non-secret configuration travels, which is what makes the route usable.
+        let resolved = scope.resolver.resolvedEnvironmentVariables
+        #expect(resolved["ASTRA_CONNECTORS"]?.contains("Jira-new") == true)
+        // No approved grant, so the token stays sealed both here and in what the
+        // launch hands the subprocess - the second is the one that counts.
+        let launched = AgentRuntimeProcessRunner
+            .scopedEnvironmentVariables(for: task, capabilityScope: scope, contextText: task.goal)
+        for env in [resolved, launched] {
+            #expect(!env.values.contains("secret-token-value"))
+            #expect(env["JIRA_JIRA_NEW_API_TOKEN"] == nil)
+        }
+    }
+
+    @Test("A connector the workspace never enabled stays unreachable")
+    func connectorTheWorkspaceNeverEnabledStaysUnreachable() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let store = MockSecretStore()
+        let (workspace, _) = try makeEnabledJiraWorkspace(
+            in: context,
+            name: "jira-unenabled-peer",
+            store: store
+        )
+
+        // Present in the global catalog, deliberately absent from
+        // `enabledGlobalConnectorIDs`. Explicit enablement is the whole boundary,
+        // so this one must not appear anywhere in the scope.
+        let redcapSkill = Skill(
+            name: "REDCap Agent",
+            skillDescription: "Read REDCap study metadata",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Use REDCap for study structure."
+        )
+        redcapSkill.isGlobal = true
+        context.insert(redcapSkill)
+
+        let redcapConnector = Connector(
+            name: "REDCap Study",
+            serviceType: "redcap",
+            connectorDescription: "REDCap API",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        redcapConnector.isGlobal = true
+        redcapConnector.skill = redcapSkill
+        context.insert(redcapConnector)
+
+        let task = AgentTask(
+            title: "REDCap study metadata",
+            goal: "pull the redcap study metadata for this project",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task, secretStore: store)
+            .activationScope(contextText: task.goal)
+
+        // Even though the goal names REDCap outright, wording cannot enable what
+        // the workspace did not.
+        #expect(!scope.reachableConnectors.contains { $0.id == redcapConnector.id })
+        #expect(!scope.connectors.contains { $0.id == redcapConnector.id })
+        #expect(!HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: scope).contains("redcap"))
+        #expect(!HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: scope).contains("redcap"))
     }
 }

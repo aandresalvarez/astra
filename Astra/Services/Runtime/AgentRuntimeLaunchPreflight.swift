@@ -972,7 +972,20 @@ enum AgentRuntimeLaunchPreflight {
             ) {
                 mcpServers.append(workspaceServer)
             }
-            if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            // The host-control server is materialized for every tool the run
+            // *offers*, but only a *required* tool may block a launch. An
+            // offered-only route that cannot be delivered — the helper is not
+            // installed on this machine — is dropped silently, exactly like a
+            // runtime that cannot carry the transport at all. Blocking here
+            // would let a capability the turn never asked for abort the run.
+            let hostControlRequirements = precomputedRuntimeRequirements ?? TaskRuntimeRequirementSet.derive(
+                task: task,
+                capabilityResolutionSnapshot: resolutionSnapshot,
+                executionEnvironment: executionEnvironment,
+                browserBridgeRequired: resolutionSnapshot.providerLaunch.requiresBrowserBridge
+            )
+            if !hostControlRequirements.hostControlTools.isEmpty,
+               let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
                 environment: executionEnvironment,
                 currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
@@ -986,9 +999,27 @@ enum AgentRuntimeLaunchPreflight {
             }
             if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
                 for: task,
-                contextText: contextText
+                contextText: contextText,
+                taskEnvironment: taskEnv
             ) {
-                mcpServers.append(browserServer)
+                // Same rule as the host-control branch above, for the same
+                // reason. `ASTRA_BROWSER_URL` follows reachability, so a
+                // workspace with a bound Shelf endpoint materializes this
+                // server on turns that never mention a browser; letting a
+                // missing `astra-browser` helper reach `mcpIssues` would then
+                // abort an unrelated Claude or Codex run. Only a *required*
+                // bridge is worth failing a launch over — an offered one this
+                // machine cannot deliver is dropped, exactly as a runtime that
+                // cannot carry the transport at all drops it.
+                let browserBridgeRequired = resolutionSnapshot.providerLaunch.requiresBrowserBridge
+                let browserIssues = MCPRuntimeProjection.preflightIssues(
+                    servers: [browserServer],
+                    detectExecutable: mcpDetectExecutable,
+                    isExecutableFile: mcpIsExecutableFile
+                )
+                if browserBridgeRequired || browserIssues.isEmpty {
+                    mcpServers.append(browserServer)
+                }
             }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
                 servers: mcpServers,
