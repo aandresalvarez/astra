@@ -132,10 +132,8 @@ struct CodexMCPPolicyProbeTests {
 @Suite("Codex MCP policy cache")
 struct CodexMCPPolicyServiceTests {
     @Test("A refusal is cached with the policy's name and read back by the launch path")
-    func cachesRefusal() async throws {
-        let name = "CodexMCPPolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+    func cachesRefusal() async {
+        let defaults = InMemoryDefaults()
         let now = Date()
         let service = CodexMCPPolicyService(probe: StubCodexMCPPolicyProbe(
             result: CodexMCPPolicyProbeResult(
@@ -158,10 +156,8 @@ struct CodexMCPPolicyServiceTests {
     }
 
     @Test("The probe is asked about ASTRA's real server, using the configured CLI")
-    func asksAboutTheRealServer() async throws {
-        let name = "CodexMCPPolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+    func asksAboutTheRealServer() async {
+        let defaults = InMemoryDefaults()
         let probe = StubCodexMCPPolicyProbe(result: CodexMCPPolicyProbeResult(serverEnabled: true, disabledReason: nil))
         let service = CodexMCPPolicyService(probe: probe, detectExecutable: { "/detected/codex" })
         #expect(await service.refreshAndPersist(executablePath: "  ", homeDirectory: "/home", defaults: defaults) == .permitted)
@@ -172,10 +168,8 @@ struct CodexMCPPolicyServiceTests {
     }
 
     @Test("A probe that fails learns nothing: the answer is unknown and a known refusal survives")
-    func failsOpenWithoutClobberingTheCache() async throws {
-        let name = "CodexMCPPolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+    func failsOpenWithoutClobberingTheCache() async {
+        let defaults = InMemoryDefaults()
         let now = Date()
         _ = await CodexMCPPolicyService(probe: StubCodexMCPPolicyProbe(
             result: CodexMCPPolicyProbeResult(serverEnabled: false, disabledReason: "requirements Baseline (x)")
@@ -191,19 +185,15 @@ struct CodexMCPPolicyServiceTests {
     }
 
     @Test("With nothing cached, the launch path sees no opinion at all")
-    func emptyCacheIsUnknown() throws {
-        let name = "CodexMCPPolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+    func emptyCacheIsUnknown() {
+        let defaults = InMemoryDefaults()
         #expect(CodexMCPPolicyService.cachedPolicy(defaults: defaults) == .unknown)
         #expect(!CodexMCPPolicyService.cachedPolicy(defaults: defaults).refusesServers)
     }
 
     @Test("A fresh cache is answered without touching the CLI")
-    func freshCacheSkipsTheProbe() async throws {
-        let name = "CodexMCPPolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+    func freshCacheSkipsTheProbe() async {
+        let defaults = InMemoryDefaults()
         let now = Date()
         let probe = StubCodexMCPPolicyProbe(result: CodexMCPPolicyProbeResult(serverEnabled: false, disabledReason: "requirements Baseline (x)"))
         let service = CodexMCPPolicyService(probe: probe)
