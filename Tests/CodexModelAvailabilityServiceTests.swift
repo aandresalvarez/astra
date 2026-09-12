@@ -4,6 +4,27 @@ import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
+/// Budget for the tests whose subject is *what* the app-server conversation
+/// does, not how fast a shell script and four pipe round trips complete on a
+/// loaded machine. It is a hang breaker, not a latency assertion: a probe that
+/// never writes a request, never reads a reply, or never reaps the child leaves
+/// the fixture blocked in `read` forever, and something has to end that.
+///
+/// At 2 seconds it was a latency assertion, and it failed as one. Two
+/// consecutive full `swift test` runs on 2026-09-10 reported `.timedOut` from
+/// the pagination test after 14 s of wall clock, while the same test passed
+/// five runs in a row in ~0.9 s under `--filter`. Nothing in the probe was
+/// slow; spawning `/bin/sh` and getting its `read` scheduled against 6,600
+/// other tests was, and a budget that small measures the machine rather than
+/// the protocol. A genuine hang still fails these tests — just slowly.
+///
+/// Timeout *classification* is asserted separately, by `boundedLifetime`, which
+/// points a deliberately short budget at a child that never answers. That stays
+/// honest under the same load by construction: contention can only push the
+/// child further past its deadline, never under it. Don't fold the two kinds of
+/// budget back together.
+private let hangBreakerTimeout: TimeInterval = 120
+
 @Suite("Codex model discovery")
 struct CodexModelAvailabilityServiceTests {
     @Test("New provider models and capabilities replace offline choices without rewriting explicit selections")
@@ -74,23 +95,45 @@ struct CodexModelAvailabilityServiceTests {
 
     @Test("App-server handshake waits for initialize and follows pagination")
     func realTransportPagination() async throws {
+        // Each step is journalled only once the request that earns it has
+        // matched, so the file is a record of protocol state and not of timing.
         let fixture = try makeExecutable(#"""
+        journal="$0.requests"
         IFS= read -r request
         case "$request" in *'"method":"initialize"'*) ;; *) exit 11;; esac
+        printf 'initialize\n' >> "$journal"
         printf '%s\n' '{"id":1,"result":{}}'
         IFS= read -r request
         case "$request" in *'"method":"initialized"'*) ;; *) exit 12;; esac
+        printf 'initialized\n' >> "$journal"
         IFS= read -r request
         case "$request" in *'"method":"model/list"'*) ;; *) exit 13;; esac
+        printf 'model-list\n' >> "$journal"
         printf '%s\n' '{"method":"notification"}' '{"id":2,"result":{"data":[{"model":"first"}],"nextCursor":"page-two"}}'
         IFS= read -r request
         case "$request" in *'"cursor":"page-two"'*) ;; *) exit 14;; esac
+        printf 'page-two\n' >> "$journal"
         printf '%s' '{"id":3,"result":{"data":['
         printf '%s\n' '{"model":"second","isDefault":true}],"nextCursor":null}}'
         IFS= read -r request
         """#)
         defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
-        let models = try await CodexAppServerModelProbe(timeout: 2).models(executablePath: fixture.path, environment: [:])
+        let journal = URL(fileURLWithPath: fixture.path + ".requests")
+        let path = fixture.path
+        let probe = Task {
+            try await CodexAppServerModelProbe(timeout: hangBreakerTimeout)
+                .models(executablePath: path, environment: [:])
+        }
+        defer { probe.cancel() }
+        // The handshake is ordered, so a journalled step is also the evidence
+        // that the step before it was answered. Waiting on the steps rather
+        // than on the conversation as a whole is what keeps a slow spawn from
+        // reading as a protocol failure, and it names the step that stalled
+        // when one really does.
+        for step in ["initialize", "initialized", "model-list", "page-two"] {
+            try #require(await requestArrived(step, in: journal), "The fixture never received \(step)")
+        }
+        let models = try await probe.value
         #expect(models.map(\.model) == ["first", "second"])
         #expect(models.last?.isDefault == true)
     }
@@ -109,8 +152,14 @@ struct CodexModelAvailabilityServiceTests {
         printf '%s\\n' '\(response)'
         """)
         defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
-        await #expect(throws: (any Error).self) {
-            try await CodexAppServerModelProbe(timeout: 2).models(executablePath: fixture.path, environment: [:])
+        do {
+            let models = try await CodexAppServerModelProbe(timeout: hangBreakerTimeout)
+                .models(executablePath: fixture.path, environment: [:])
+            Issue.record("Expected a protocol failure, got \(models.map(\.model))")
+        } catch {
+            // `.timedOut` satisfies "it threw" while proving nothing about the
+            // response, so the budget above is not allowed to answer for it.
+            #expect(error as? CodexModelProbeError != .timedOut)
         }
     }
 
@@ -126,8 +175,11 @@ struct CodexModelAvailabilityServiceTests {
         printf '%s\n' '{"id":3,"result":{"data":[{"model":"second"}],"nextCursor":"same"}}'
         """#)
         defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
-        await #expect(throws: CodexModelProbeError.self) {
-            try await CodexAppServerModelProbe(timeout: 2).models(executablePath: fixture.path, environment: [:])
+        // Naming the case matters for the same reason: a bare `CodexModelProbeError`
+        // would also be satisfied by the deadline that is only here to break a hang.
+        await #expect(throws: CodexModelProbeError.repeatedCursor) {
+            try await CodexAppServerModelProbe(timeout: hangBreakerTimeout)
+                .models(executablePath: fixture.path, environment: [:])
         }
     }
 
@@ -146,7 +198,12 @@ struct CodexModelAvailabilityServiceTests {
     func boundedLifetime(cancel: Bool) async throws {
         let fixture = try makeExecutable("IFS= read -r request\nIFS= read -r request\n")
         defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
-        let task = Task { try await CodexAppServerModelProbe(timeout: cancel ? 10 : 0.1).models(executablePath: fixture.path, environment: [:]) }
+        // The deadline case is the one place a short budget belongs: the child
+        // never answers, so load can only push it further past 0.1 s. The
+        // cancellation case asserts who wins, not how long winning took.
+        let budget = cancel ? hangBreakerTimeout : 0.1
+        let path = fixture.path
+        let task = Task { try await CodexAppServerModelProbe(timeout: budget).models(executablePath: path, environment: [:]) }
         if cancel { task.cancel() }
         do {
             _ = try await task.value
@@ -157,6 +214,28 @@ struct CodexModelAvailabilityServiceTests {
             } else {
                 #expect(error as? CodexModelProbeError == .timedOut)
             }
+        }
+    }
+
+    /// Waits for a step the fixture journals only after the request for it has
+    /// arrived and matched, so the wait ends on protocol state rather than on a
+    /// guess about what a subprocess round trip costs today.
+    ///
+    /// Both bounds have to be exhausted before this gives up: the deadline
+    /// stops a genuinely stuck handshake from hanging the suite, and the poll
+    /// floor stops a starved one from being mistaken for it. A step that has
+    /// already arrived returns on the first turn, so neither bound slows the
+    /// happy path. Polling with `Task.sleep` rather than a blocking wait keeps
+    /// the cooperative pool free for the probe's own queue.
+    private func requestArrived(_ step: String, in journal: URL, timeout: TimeInterval = 60) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var polls = 0
+        while true {
+            let journalled = (try? String(contentsOf: journal, encoding: .utf8)) ?? ""
+            if journalled.contains(step + "\n") { return true }
+            guard polls < 40 || Date() < deadline else { return false }
+            polls += 1
+            try? await Task.sleep(nanoseconds: 25_000_000)
         }
     }
 

@@ -743,14 +743,29 @@ extension HeadlessChatScenarioTests {
         )
         let scopedConnectors = signature.scopedConnectorDescriptors.joined(separator: " ").lowercased()
         #expect(scopedConnectors.contains("jira"))
-        #expect(!scopedConnectors.contains("gcloud"))
+        // Both connectors are attached to this task, so both are reachable and
+        // the signature records both - it exists to say what the run could do.
+        #expect(scopedConnectors.contains("gcloud"))
+        // Where the decoy losing is visible: narration. The approval sentence
+        // did not pull the gcloud skill into the prompt, so the run is not told
+        // to route cloud work, and the resumed turn still answers about Jira.
         #expect(signature.scopedSkillNames == ["SS Ticket Reader"])
         #expect(signature.allowedTools.contains(
             HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
         ))
-        #expect(!signature.allowedTools.contains(
+        // Not where it is visible: the permission allowlist. The gcloud skill
+        // the user attached declares its host-control dependency in behavior
+        // text, so the tool is *offered* on every turn - dropping it would make
+        // the allowlist shrink because a sentence changed wording, which is the
+        // bug this PR exists to remove. Offered is not required: gcloud never
+        // reroutes the run or withdraws native shell, which
+        // `hostToolDeclaredByUnnarratedSkillIsOfferedNeverRequired` pins.
+        // `gcloud` also authenticates out of band, so an unused offered route
+        // moves no secret - `credentialLabels` below is the check that matters.
+        #expect(signature.allowedTools.contains(
             HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")
         ))
+        #expect(!signature.credentialLabels.contains { $0.lowercased().contains("gcloud") })
         #expect(resumedRun.status == .completed)
         #expect(resumedRun.output == "Listed the open SS tickets")
     }

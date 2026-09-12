@@ -240,6 +240,8 @@ struct ClaudeModelAvailabilityServiceTests {
         let result = await service.availableModels(
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: .vertex,
+                vertexProjectID: "example-project",
+                vertexRegion: "us-east5",
                 vertexOpusModel: " claude-opus-4-6@default ",
                 vertexSonnetModel: "claude-sonnet-4-6@default",
                 vertexHaikuModel: "claude-sonnet-4-6@default"
@@ -250,6 +252,59 @@ struct ClaudeModelAvailabilityServiceTests {
             RuntimeModelDetail(value: "claude-opus-4-6@default"),
             RuntimeModelDetail(value: "claude-sonnet-4-6@default")
         ]))
+    }
+
+    /// The observed value: a GCP project ID field pasted into eleven times.
+    /// Aliases were configured, so the old code reported three models available
+    /// while every call over that route returned 403.
+    @Test("A malformed Vertex project ID makes the aliases unavailable, not available")
+    func vertexModelAvailabilityRejectsMalformedProjectID() async {
+        let service = ClaudeModelAvailabilityService(
+            runner: ClaudeProbeStubBinaryRunner(result: .exited(code: 0, stdout: "", stderr: "")),
+            environment: { [:] },
+            detectExecutable: { "" },
+            isExecutable: { _ in false }
+        )
+
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(
+                provider: .vertex,
+                vertexProjectID: String(repeating: "example-project", count: 11),
+                vertexRegion: "us-east5",
+                vertexOpusModel: "claude-opus-4-6@default",
+                vertexSonnetModel: "claude-sonnet-4-6@default",
+                vertexHaikuModel: "claude-haiku-4-5@default"
+            )
+        )
+
+        guard case .unavailable(let reason) = result else {
+            Issue.record("Expected a malformed project ID to be unavailable, got \(result).")
+            return
+        }
+        #expect(reason.contains("at most 30 characters"))
+    }
+
+    @Test("A missing Vertex region makes the aliases unavailable")
+    func vertexModelAvailabilityRequiresRegion() async {
+        let service = ClaudeModelAvailabilityService(
+            runner: ClaudeProbeStubBinaryRunner(result: .exited(code: 0, stdout: "", stderr: "")),
+            environment: { [:] },
+            detectExecutable: { "" },
+            isExecutable: { _ in false }
+        )
+
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(
+                provider: .vertex,
+                vertexProjectID: "example-project",
+                vertexRegion: "  ",
+                vertexOpusModel: "claude-opus-4-6@default",
+                vertexSonnetModel: "claude-sonnet-4-6@default",
+                vertexHaikuModel: "claude-haiku-4-5@default"
+            )
+        )
+
+        #expect(result == .unavailable(reason: "No Vertex region is configured."))
     }
 
     @Test("Initialize parser skips junk lines and error responses")

@@ -1191,6 +1191,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
                 executablePath: configuration.executablePath(for: id),
+                vertexProjectID: configuration.vertexProjectID,
+                vertexRegion: configuration.vertexRegion,
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1314,7 +1316,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            taskEnvironment: taskEnv
         ) {
             mcpServers.append(browserServer)
         }
@@ -1700,14 +1703,43 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let sonnet = trimmed(configuration.vertexSonnetModel)
         let haiku = trimmed(configuration.vertexHaikuModel)
 
+        // Non-emptiness is not readiness. A malformed project ID reaches Vertex
+        // and comes back 403, so reporting it Ready sends the user looking for
+        // a permissions problem that does not exist. Anything this check can
+        // prove wrong locally is blocked here, where the value can be fixed.
+        let projectFailure = GCPProjectIDValidation.failure(for: project)
+        let projectRegionDetail: String
+        // The remediation tracks the failure rather than repeating "fill both
+        // fields": a project ID that is present but malformed needs correcting,
+        // and telling the user to fill a field they already filled reads as a
+        // bug in ASTRA rather than a problem with the value.
+        let projectRegionRemediation: String?
+        switch (projectFailure, region.isEmpty) {
+        case (nil, false):
+            projectRegionDetail = "Using project \(project) in \(region)."
+            projectRegionRemediation = nil
+        case (.empty?, true):
+            projectRegionDetail = "GCP Project ID and Region are required for Vertex routing."
+            projectRegionRemediation = "Fill GCP Project ID and Region."
+        case (.empty?, false):
+            projectRegionDetail = GCPProjectIDValidation.Failure.empty.message
+            projectRegionRemediation = "Fill GCP Project ID."
+        case (let failure?, true):
+            projectRegionDetail = "\(failure.message) Region is required for Vertex routing."
+            projectRegionRemediation = "Correct GCP Project ID and fill Region."
+        case (let failure?, false):
+            projectRegionDetail = failure.message
+            projectRegionRemediation = "Correct GCP Project ID in Settings › Runtime."
+        case (nil, true):
+            projectRegionDetail = "Region is required for Vertex routing."
+            projectRegionRemediation = "Fill Region."
+        }
         checks.append(RuntimeReadinessCheck(
             id: "vertex-project-region",
             title: "Vertex project and region",
-            detail: project.isEmpty || region.isEmpty
-                ? "Project ID and region are required for Vertex routing."
-                : "Using project \(project) in \(region).",
-            state: project.isEmpty || region.isEmpty ? .blocked : .ready,
-            remediation: project.isEmpty || region.isEmpty ? "Fill GCP Project ID and Region." : nil
+            detail: projectRegionDetail,
+            state: projectRegionRemediation == nil ? .ready : .blocked,
+            remediation: projectRegionRemediation
         ))
 
         let missingAliases = [
@@ -1906,10 +1938,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
+        // The attached list above includes offered routes. Shell denial follows
+        // the required subset, so an enabled-but-unmentioned connector does not
+        // cost this turn its native shell.
+        let requiredHostControlTools = context.runtimeRequirements?.hostControlTools ?? hostControlTools
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: providerLaunchPermissionPolicy,
-            requiredTools: hostControlTools
+            requiredTools: requiredHostControlTools
         )
         let providerAllowed = deniesNativeShellForHostControl
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
@@ -1923,16 +1959,26 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
+        // Offered, not required: an enabled browser tool this turn never named
+        // must not abort the run on a Copilot build with no transport for it.
+        // Dropped before the metadata is computed so the environment, the plan
+        // fields, and the launch guard all describe the same run.
+        let browserBridgeEnv = BrowserBridgeRuntimeLaunchGuard.removingUndeliverableOfferedBridge(
+            from: taskEnv,
+            runtime: id,
+            mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported,
+            required: context.runtimeRequirements?.requiresBrowserControl ?? true
+        )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
             runtime: id,
-            environment: taskEnv,
+            environment: browserBridgeEnv,
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
         if deniesNativeShellForHostControl {
             localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
                 localToolCommands,
-                requiredTools: hostControlTools
+                requiredTools: requiredHostControlTools
             )
         }
         if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
@@ -1940,7 +1986,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
         let surfacedAskFirstTools = askFirstTools
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
-        var launchTaskEnv = taskEnv
+        var launchTaskEnv = browserBridgeEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {
             launchTaskEnv[key] = value
         }

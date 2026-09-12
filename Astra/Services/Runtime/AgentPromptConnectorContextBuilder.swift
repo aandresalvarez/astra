@@ -7,26 +7,43 @@ enum AgentPromptConnectorContextBuilder {
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
         runtime: AgentRuntimeID? = nil,
-        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
+        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) -> PromptContextSection? {
         let exposurePolicy = credentialExposurePolicy ?? .approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
         )
+        // Aliases resolve over the reachable set so they match the ones the
+        // launch environment and the broker routes use; only the descriptions
+        // below are limited to what this turn narrates.
         let projection = ConnectorRuntimeProjection(
-            connectors: capabilityScope.connectors,
+            connectors: capabilityScope.reachableConnectors,
             credentialExposurePolicy: exposurePolicy
         )
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
         let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
-        let hostControlTools = Set(
-            dockerRouted
-                ? HostControlPlaneMCPProjection.toolNames
-                : HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: capabilityScope)
-        )
-        let usesHostControlCLIRelay = AgentRuntimeCapabilityProfile.defaultProfile(
-            for: runtime ?? task.resolvedRuntimeID
-        ).usesHostControlCLIRelay
+        // The launch-resolved profile when the caller has one, and a resolved
+        // profile either way. The static table says Copilot cannot carry the
+        // host control plane; a Copilot build with `--additional-mcp-config`
+        // can, and the launch attaches the route. Describing that run from the
+        // table prints "Route UNAVAILABLE" over a live route, which the agent
+        // reports back to the user as a broken connector.
+        let runtimeProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.detectedProfile(for: runtime ?? task.resolvedRuntimeID)
+        let usesHostControlCLIRelay = runtimeProfile.usesHostControlCLIRelay
+        // The prompt must name the route the run actually gets, which is the
+        // *offered* set — what gets attached — not the *required* set, which
+        // only says what would abort the launch if it were missing. Naming a
+        // route this runtime cannot carry is worse than naming none: the
+        // agent tries it, fails, and reports the connector as broken.
+        let hostControlTools: Set<String> = runtimeProfile.canDeliverHostControlPlane || dockerRouted
+            ? Set(
+                dockerRouted
+                    ? HostControlPlaneMCPProjection.toolNames
+                    : HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: capabilityScope)
+            )
+            : []
 
         var routedMutableService = false
         let connectorDescriptions = capabilityScope.connectors.map { conn in
@@ -52,14 +69,58 @@ enum AgentPromptConnectorContextBuilder {
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             )
         }
-        guard !connectorDescriptions.isEmpty else { return nil }
+        // Turn-relevance decides what gets described in full, never what the run
+        // can reach. Anything reachable but not described still gets named with
+        // its route, because the failure this prevents is the agent reading a
+        // silent prompt and telling the user it has no access to a connector
+        // they enabled and can see marked Ready.
+        let alsoReachable = capabilityScope.reachableButNotNarratedConnectors.map { conn in
+            let serviceType = conn.serviceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
+            let route: String
+            if let tool = HostControlPlaneMCPProjection.connectorToolName(serviceType),
+               hostControlTools.contains(tool) {
+                route = usesHostControlCLIRelay
+                    ? #"astra-host-control \#(tool) --operation status --alias "\#(alias)""#
+                    : #"mcp__astra_host__\#(tool) with {"operation":"status","alias":"\#(alias)"}"#
+            } else if HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(serviceType) {
+                // A brokered connector's credentials never enter the process
+                // environment, so pointing at env vars here would name
+                // variables the run does not have. Say what is true instead:
+                // enabled, but no transport on this runtime can carry it.
+                route = "enabled, but no host-tool route on this runtime"
+                    + " - tell the user it needs a runtime with ASTRA host tools"
+            } else {
+                route = "connector env vars, alias \(alias)"
+            }
+            return "[\(conn.name)] \(conn.serviceType) - \(route)"
+        }
 
-        return PromptContextSection(
-            kind: .tools,
-            text: """
+        guard !connectorDescriptions.isEmpty || !alsoReachable.isEmpty else { return nil }
+
+        var body = ""
+        if !connectorDescriptions.isEmpty {
+            body += """
             Available Connectors (ASTRA lists only provider-visible env vars; brokered connector credentials remain inside ASTRA):
             \(connectorDescriptions.joined(separator: "\n\n"))
 
+
+            """
+        }
+        if !alsoReachable.isEmpty {
+            body += """
+            Also connected and callable in this run (details omitted because this turn did not appear to need them - if the user asks for one of these, use it, do not report it as unavailable):
+            \(alsoReachable.joined(separator: "\n"))
+
+
+            """
+        }
+
+        return PromptContextSection(
+            kind: .tools,
+            text: body + """
             The connector details and runtime routes above are authoritative for this run. Use env vars only when they are explicitly listed. When more than one connector of the same service is available, use its name or alias. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
             \(connectorAPIGuidance(
@@ -67,7 +128,7 @@ enum AgentPromptConnectorContextBuilder {
                 usesHostControlCLIRelay: usesHostControlCLIRelay
             ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract : "")
             """,
-            sourcePointers: connectorSourcePointers(capabilityScope.connectors)
+            sourcePointers: connectorSourcePointers(capabilityScope.reachableConnectors)
         )
     }
 

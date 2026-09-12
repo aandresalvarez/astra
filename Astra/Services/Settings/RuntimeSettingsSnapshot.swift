@@ -52,6 +52,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             executablePath: executablePath,
             providerSettings: providerSettings,
             claudeProviderRaw: claudeProvider.rawValue,
+            claudeVertexProjectID: vertexProjectID,
+            claudeVertexRegion: vertexRegion,
             claudeVertexOpusModel: vertexOpusModel,
             claudeVertexSonnetModel: vertexSonnetModel,
             claudeVertexHaikuModel: vertexHaikuModel

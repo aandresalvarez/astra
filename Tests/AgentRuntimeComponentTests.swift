@@ -721,6 +721,71 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
 
+    @Test("Only a required host tool blocks the launch when its helper is missing")
+    func onlyRequiredHostControlToolBlocksLaunchWhenHelperMissing() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let hostControlHelper = (RuntimePathResolver.astraToolsPath as NSString)
+            .appendingPathComponent("astra-host-control")
+
+        func makeJiraTask(goal: String) throws -> (AgentTask, TaskRun) {
+            let workspace = Workspace(name: "Jira", primaryPath: NSTemporaryDirectory())
+            let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+            skill.workspace = workspace
+            let connector = Connector(
+                name: "Jira",
+                serviceType: "jira",
+                connectorDescription: "Jira REST API",
+                baseURL: "https://example.atlassian.net",
+                authMethod: "none"
+            )
+            connector.workspace = workspace
+            connector.skill = skill
+            let task = AgentTask(title: "Jira", goal: goal, workspace: workspace, runtime: .claudeCode)
+            task.skills = [skill]
+            task.status = .running
+            let run = TaskRun(task: task)
+            for model in [workspace, skill, connector, task, run] as [any PersistentModel] {
+                context.insert(model)
+            }
+            try context.save()
+            return (task, run)
+        }
+
+        // Offered: the turn never says "Jira", so the host-control server is
+        // materialized for a route this turn did not ask for. A capability the
+        // turn never asked for must not be able to abort the run.
+        let (offeredTask, offeredRun) = try makeJiraTask(goal: "Summarize my emails from today")
+        let offered = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: offeredTask,
+            run: offeredRun,
+            modelContext: context,
+            phase: "run",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(offered.didPass)
+        #expect(offered.status == .capabilityRuntimeResourcesPassed)
+        #expect(offeredTask.status == .running)
+        #expect(offeredRun.stopReason.isEmpty)
+
+        // Required: the turn names Jira, so the run cannot honestly proceed
+        // without the route it was told it has.
+        let (requiredTask, requiredRun) = try makeJiraTask(goal: "Read ASTRA-123 in Jira")
+        let required = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: requiredTask,
+            run: requiredRun,
+            modelContext: context,
+            phase: "run",
+            contextText: "Read ASTRA-123 in Jira",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(!required.didPass)
+        #expect(required.reason == "mcp_server_executable_missing")
+        #expect(required.detail?.contains("astra_host") == true)
+        #expect(requiredTask.status == .failed)
+        #expect(requiredRun.stopReason == "mcp_server_executable_missing")
+    }
+
     @Test("Docker workspace preflight blocks when bundled workspace helper is missing")
     func dockerWorkspacePreflightBlocksMissingWorkspaceHelper() throws {
         let container = try makeRuntimeComponentContainer()
@@ -1517,5 +1582,91 @@ struct AgentRuntimeFailurePayloadTests {
         )
 
         #expect(payload == "Agent exited with code 1. plain stderr")
+    }
+}
+
+@Suite("Runtime Permission Approval Gate")
+@MainActor
+struct RuntimePermissionApprovalGateTests {
+    /// Task 5FB5E95B: five runs, five approval cards, five identical 403s.
+    /// The gate has to refuse the card for a denial no approval can lift.
+    @Test("A provider-side denial does not raise an approval card")
+    func providerDenialDoesNotPause() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"Failed to authenticate. API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .permissionDenied)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ) == false)
+    }
+
+    @Test("A local approval prompt still raises an approval card")
+    func localApprovalPromptStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Copilot", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 15,
+            rawError: "Copilot is waiting for a permission approval ASTRA cannot answer directly: Allow access to these paths? (y/n):",
+            providerVersion: "GitHub Copilot CLI 0.0.342",
+            stream: nil
+        )
+
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
+    }
+
+    /// The structured signal is unambiguous — the runtime asked for something —
+    /// so narrowing the keyword branch must not narrow this one with it.
+    @Test("A structured permission.denied event still pauses even for a provider-side denial")
+    func structuredPermissionEventStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent(task: task, type: "permission.denied", payload: "Bash", run: run))
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.isApprovableRuntimePermission == false)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
     }
 }

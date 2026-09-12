@@ -33,7 +33,11 @@ enum TaskLaunchResourceResolver {
         // derivation instead of independently re-deriving it from a second,
         // potentially different capability-scope capture. The two derivations
         // must agree — see Tests/HostControlRequirementDerivationConsistencyTests.swift.
-        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
+        // The profile the launch resolved from this runtime's own executable.
+        // Defaults to resolving it here rather than reading the static table,
+        // which for Copilot is a guess about the installed binary.
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) -> TaskLaunchResourcePlan {
         let environment = executionEnvironment ?? DockerExecutionPlanner.resolveEnvironment(for: task)
         var hostPathGrants: [RuntimePathGrant] = []
@@ -50,13 +54,30 @@ enum TaskLaunchResourceResolver {
             secretStore: connectorSecretStore
         )
         let capabilityScope = resolutionSnapshot.providerLaunch
-        let hostControlTools = precomputedRuntimeRequirements?.hostControlTools
+        // The persisted plan records what this run is wired with, so both
+        // branches must mean the same thing: the *offered* set, which is what
+        // actually gets attached. `hostControlTools` here would be the
+        // required set, making the plan disagree with the run whenever a
+        // caller passed a precomputed requirement set — and agree with it
+        // when the caller did not, since `enabledToolNames` already offers.
+        let offeredHostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools
             ?? HostControlPlaneMCPProjection.enabledToolNames(
                 task: task,
                 environment: environment,
                 contextText: contextText,
                 capabilityScope: capabilityScope
             )
+        let resolvedRuntimeProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.detectedProfile(for: runtime)
+        // Offered says what the run *may* attach; it is not evidence that this
+        // runtime can carry any of it. Recording a control-plane resource on a
+        // runtime with no transport writes a route into the persisted plan that
+        // nothing will ever serve — and the plan is what the policy manifest
+        // and Run Activity read back when they tell the user how a connector
+        // was reached.
+        let deliversHostControlPlane = resolvedRuntimeProfile.canDeliverHostControlPlane
+            || DockerWorkspaceMCPProjection.isEnabled(for: environment)
+        let hostControlTools = deliversHostControlPlane ? offeredHostControlTools : []
 
         appendWorkspacePathGrants(
             task: task,
@@ -143,12 +164,12 @@ enum TaskLaunchResourceResolver {
 
         appendCapabilityGrants(
             task: task,
-            runtime: runtime,
             contextText: contextText,
             capabilityScope: capabilityScope,
             connectorCredentialExposurePolicy: resolutionSnapshot.connectorCredentialExposurePolicy,
             connectorSecretStore: connectorSecretStore,
             hostControlTools: hostControlTools,
+            runtimeCapabilityProfile: resolvedRuntimeProfile,
             routesGitHubMetadataThroughHostControl: routesGitHubMetadataThroughHostControl,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
@@ -1171,12 +1192,12 @@ enum TaskLaunchResourceResolver {
 
     private static func appendCapabilityGrants(
         task: AgentTask,
-        runtime: AgentRuntimeID,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope,
         connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy,
         connectorSecretStore: SecretStore,
         hostControlTools: [String],
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         routesGitHubMetadataThroughHostControl: Bool,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
@@ -1189,17 +1210,36 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        let hostControlPlacement = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-            .usesHostControlCLIRelay
+        let hostControlPlacement = runtimeCapabilityProfile.usesHostControlCLIRelay
             ? "host_control_cli_broker"
             : "host_control_mcp_broker"
-        if capabilityScope.exposesBrowserBridge ||
-            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        // This plan is a durable record of what the launch attached, so the two
+        // browser tiers cannot collapse into one entry. Attachment is
+        // reachability-wide — an enabled browser tool, or a Shelf that is simply
+        // open, on a turn that never mentioned a browser — while only
+        // `requiresBrowserBridge` is the turn actually asking for a browser.
+        // Recording the offered tier as `required: true` made Run Activity
+        // assert a required, configured resource on runs where the adapter had
+        // dropped the bridge for lack of a transport, which is the run contract
+        // describing a route the process never received.
+        let browserBridgeAttached = capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText)
+        // Narration alone makes it required. `shouldExposeBrowserBridge` is true
+        // whenever the Shelf is open at all, so deriving "required" from it
+        // re-collapses the two tiers one line after separating them.
+        let browserBridgeRequired = capabilityScope.requiresBrowserBridge
+        let browserBridgeDeliverable = BrowserBridgeRuntimeLaunchGuard.canCarryBridge(
+            runtime: runtimeCapabilityProfile.runtime,
+            mcpToolSupported: runtimeCapabilityProfile.canDeliverBrowserBridgeMCPTool
+        )
+        if browserBridgeRequired || (browserBridgeAttached && browserBridgeDeliverable) {
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "browser_bridge",
                 source: .browser,
-                reason: "Task context requires access to ASTRA's browser bridge.",
-                required: true
+                reason: browserBridgeRequired
+                    ? "Task context requires access to ASTRA's browser bridge."
+                    : "The browser bridge is enabled for this task and attached to the run, though this turn did not ask for it.",
+                required: browserBridgeRequired
             ))
             controlPlaneResources.append(RuntimeControlPlaneResource(
                 capability: "browser_bridge",
@@ -1230,7 +1270,7 @@ enum TaskLaunchResourceResolver {
             ))
         }
 
-        let hasGCloudConnector = capabilityScope.connectors.contains { connector in
+        let hasGCloudConnector = capabilityScope.reachableConnectors.contains { connector in
             let normalized = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -1258,7 +1298,14 @@ enum TaskLaunchResourceResolver {
             )
         }
 
-        for connector in capabilityScope.connectors {
+        // Reachable, not narrated: this loop wires environment, control-plane
+        // resources and credential grants. Omitting a connector here does not
+        // make the run tidier, it makes the connector unusable — and the
+        // credential side stays gated by `connectorCredentialExposurePolicy`,
+        // which is built from approved grants, so a connector without an
+        // approval still projects config and still prompts for its secret.
+        let narratedConnectorIDs = Set(capabilityScope.connectors.map(\.id))
+        for connector in capabilityScope.reachableConnectors {
             let normalizedServiceType = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -1279,13 +1326,19 @@ enum TaskLaunchResourceResolver {
                     controlPlaneResources: &controlPlaneResources
                 )
             }
+            // The loop is reachability-wide, but `required` is a narration
+            // question. A connector this turn never mentioned is wired so it
+            // *can* be used; consumers that read `required` to pick a runtime
+            // or fail a launch must not treat it as something the turn cannot
+            // proceed without.
+            let connectorIsNarrated = narratedConnectorIDs.contains(connector.id)
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "connector:\(connector.serviceType)",
                 source: routesConnectorThroughHostControl ? .controlPlane : .connector,
                 reason: routesConnectorThroughHostControl
                     ? "\(connector.name) is delivered through ASTRA's host control plane."
                     : "Task capability scope includes connector \(connector.name).",
-                required: true
+                required: connectorIsNarrated
             ))
             guard !brokerOwnsConnectorConfiguration else { continue }
 
@@ -1328,7 +1381,7 @@ enum TaskLaunchResourceResolver {
         }
         appendSkillControlPlaneResources(
             skills: capabilityScope.behaviorSkills,
-            localTools: capabilityScope.localTools,
+            localTools: capabilityScope.reachableLocalTools,
             controlPlaneResources: &controlPlaneResources
         )
     }

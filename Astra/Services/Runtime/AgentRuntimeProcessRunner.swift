@@ -183,13 +183,12 @@ final class AgentRuntimeProcessRunner {
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
         // but any direct caller of runRuntimeProcess/sandboxedPlan (tests, or a
-        // future secondary launch path) that omits launchResourcePlan hits it. Pass
-        // context.runtimeRequirements through for the same reason
-        // AgentRuntimeWorker now does at its own TaskLaunchResourceResolver.resolve
-        // call site: without it, this fallback would independently re-derive GitHub
-        // host-control routing from a second capability-scope capture instead of
-        // reusing the resolver's single precomputed answer. See
-        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        // future secondary launch path) that omits it lands here. The precomputed
+        // requirements and capability profile are passed for the same reason
+        // AgentRuntimeWorker passes them at its own call site: without them this
+        // fallback re-derives GitHub host-control routing, and what transport the
+        // runtime has, from second captures instead of the launch's single answers.
+        // See Tests/HostControlRequirementDerivationConsistencyTests.swift.
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
@@ -204,7 +203,8 @@ final class AgentRuntimeProcessRunner {
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             },
-            precomputedRuntimeRequirements: context.runtimeRequirements
+            precomputedRuntimeRequirements: context.runtimeRequirements,
+            runtimeCapabilityProfile: context.executionPolicy.runtimeCapabilityProfile
         )
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
@@ -720,14 +720,13 @@ final class AgentRuntimeProcessRunner {
             task: task,
             capabilityResolutionSnapshot: launchContext.capabilityResolutionSnapshot,
             executionEnvironment: DockerExecutionPlanner.resolveEnvironment(for: task),
-            browserBridgeAttached: launchContext.capabilityResolutionSnapshot.providerLaunch.exposesBrowserBridge
+            browserBridgeRequired: launchContext.capabilityResolutionSnapshot.providerLaunch.requiresBrowserBridge
         )
         let requiresHostControlBroker = !effectiveRequirements.hostControlTools.isEmpty
-        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+        let supportsHostControlBroker = AgentRuntimeCapabilityProfileService.profile(
             for: adapter.id,
             executablePath: executablePath
-        )
-        let supportsHostControlBroker = runtimeCapabilityProfile.canDeliverHostControlPlane
+        ).canDeliverHostControlPlane
         if requiresHostControlBroker, !supportsHostControlBroker {
             let message = "\(adapter.id.displayName) cannot attach ASTRA host tools required by this turn."
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
@@ -742,12 +741,13 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             )
         }
-        let brokerPrepared = requiresHostControlBroker
+        let brokerPrepared = supportsHostControlBroker && effectiveRequirements.offersHostControlPlane
             && hostControlBrokerSessionManager.prepare(
             task: task,
             runID: runID,
+            runtime: adapter.id,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
-            requiredTools: effectiveRequirements.hostControlTools,
+            requiredTools: effectiveRequirements.offeredHostControlTools,
             currentDirectory: workspacePath
         )
         if requiresHostControlBroker, !brokerPrepared {
@@ -1399,7 +1399,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func runtimeLocalToolCommands(in capabilityScope: TaskCapabilityPromptScope) -> [String] {
-        return Array(Set(capabilityScope.localTools.compactMap { tool in
+        return Array(Set(capabilityScope.reachableLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -1797,7 +1797,7 @@ final class AgentRuntimeProcessRunner {
         for task: AgentTask,
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String = "",
-        executionPolicy _: AgentRuntimeExecutionPolicy = .default,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         // Intentionally unread: a brokered connector's credentials are stripped
         // from the scope the broker owns them for, not from the scope the
         // runtime managed to deliver the tool to.
@@ -1805,7 +1805,12 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
-        if hasStanfordOutlookMailAccess(in: capabilityScope) {
+        if StanfordOutlookMailRuntimeAccess.isGranted(
+            for: task,
+            in: capabilityScope,
+            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
+            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+        ) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
@@ -1837,11 +1842,11 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext,
         runtime: AgentRuntimeID
     ) -> [String: String] {
-        let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-        guard profile.usesHostControlCLIRelay,
-              context.runtimeRequirements?.requiresHostControlPlane == true else {
-            return [:]
-        }
+        // Offered, not required: the broker session is started for every tool
+        // the run offers, so requiring here would leave `astra-host-control
+        // jira` with no socket on exactly the turns that never narrate it.
+        guard AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime).usesHostControlCLIRelay,
+              context.runtimeRequirements?.offersHostControlPlane == true else { return [:] }
         let environment = HostControlPlaneMCPProjection.environmentVariables(
             task: context.task,
             environment: DockerExecutionPlanner.resolveEnvironment(for: context.task),
@@ -1882,14 +1887,9 @@ final class AgentRuntimeProcessRunner {
             for: task,
             providerLaunchContextText: contextText
         ).providerLaunch
-        return scope.localTools.contains { tool in
+        return scope.reachableLocalTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-    }
-
-    private static func hasStanfordOutlookMailAccess(in capabilityScope: TaskCapabilityPromptScope) -> Bool {
-        capabilityScope.connectors.contains { $0.isStanfordOutlookMail } ||
-            capabilityScope.localTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     static func providerAllowedTools(
