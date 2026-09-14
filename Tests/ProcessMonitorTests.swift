@@ -1124,6 +1124,47 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopReason == "provider_workspace_job_stalled")
     }
 
+    @Test("A Codex progress note does not start the terminal-progress kill countdown")
+    func codexProgressNoteDoesNotStartTerminalExitGrace() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 60,
+            terminalProgressExitGraceSeconds: 0,
+            taskID: UUID()
+        )
+        let process = MonitorMockProcess()
+
+        let preamble = #"""
+        {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll trace the fact-relationship logic first."}}
+        """#
+        for event in CodexCLIRuntime.parseEvents(line: preamble, parsesJSONLines: true) {
+            _ = monitor.processEvent(event, process: process)
+        }
+
+        // The grace is zero here, so if a progress note still counted as the
+        // end of the turn the next watchdog tick would kill a provider that
+        // has only just said what it is about to do. That is the regression:
+        // run F41FEC9F was terminated 30s after a note like this one, three
+        // tool batches into work it never got to report.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.terminatedAfterTerminalProgress == false)
+
+        let turnCompleted = #"""
+        {"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+        """#
+        for event in CodexCLIRuntime.parseEvents(line: turnCompleted, parsesJSONLines: true) {
+            _ = monitor.processEvent(event, process: process)
+        }
+
+        // Codex lingers on stdin after a turn, so reaping it once the turn
+        // really has ended is the behaviour worth keeping.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.terminatedAfterTerminalProgress == true)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     @Test("Terminal progress exit grace terminates without runtime stop")
     func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
         let taskID = UUID()

@@ -1963,7 +1963,10 @@ struct ArchitectureFitnessTests {
             // RuntimeModelDetail (id + display name) instead of the raw,
             // tab-corrupted `agy models` lines it used to hand straight to
             // the flat-string cache.
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_929, .owner("Runtime adapter registry")),
+            // 2_929 -> 2_942: Antigravity's stream-json wiring — honouring
+            // parsesJSONLines, and probing `--output-format` where the CLI is
+            // already being run rather than during launch preflight.
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_950, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
@@ -2028,7 +2031,8 @@ struct ArchitectureFitnessTests {
             // (Codex, Copilot, then Claude Code).
             // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
             // Antigravity model-list fix.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_407, .owner("Architecture fitness test suite")),
+            // 2_399 -> 2_404: the two companion raises above.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_421, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2087,7 +2091,9 @@ struct ArchitectureFitnessTests {
             // managed workspace job is heartbeating rather than killing a run
             // the job was told to wait on, and the graceful-stop wait is paid
             // only when there was a stdin channel to close.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_295, .owner("Runtime process stream support")),
+            // 2_295 -> 2_300: the terminal-progress reap now also requires
+            // the provider to have gone quiet, and says why.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2155,7 +2161,10 @@ struct ArchitectureFitnessTests {
             // would let "every silent run is immortal for an extra window" pass.
             // 3_775 -> 3_780 (PR #383 review fixes): the implicit ceiling now
             // scales with team size, the way a chosen budget already did.
-            "Tests/ProcessMonitorTests.swift": .init(3_780, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 3_780 -> 3_818: a regression test tying the Codex parser to the
+            // monitor, after a progress note was mistaken for the end of a turn
+            // and killed a run that was still working.
+            "Tests/ProcessMonitorTests.swift": .init(3_818, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
@@ -2175,7 +2184,9 @@ struct ArchitectureFitnessTests {
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
             // 3_350 -> 3_401: regression tests for Copilot and Claude Code
             // reasoning-effort selection honoring the task's chosen value.
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_401, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_401 -> 3_404: the Antigravity launch plan now states why an
+            // unprobed binary stays on plain text.
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_404, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_550 -> 2_565 on 2026-09-02 (PR #381 review follow-up): the
             // ordering guard for the discovery save — the proposal is on disk
             // whether or not the event survived, so "persisted before the next
@@ -2202,7 +2213,10 @@ struct ArchitectureFitnessTests {
             // stand-in (spawn counter, oversized help, hung process) to be provable.
             // 2_425 -> 2_456: regression-locks the corrected reasoning-effort choice list
             // ("minimal" was missing) against the actual `copilot --help` output.
-            "Tests/CopilotRuntimeTests.swift": .init(2_456, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_456 -> 2_500: coverage for the same fix on Copilot, whose
+            // narration messages carried the same false terminal.
+            // 2_500 -> 2_548: live-captured commentary/final_answer frames.
+            "Tests/CopilotRuntimeTests.swift": .init(2_548, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode

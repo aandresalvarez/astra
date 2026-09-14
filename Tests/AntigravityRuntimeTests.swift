@@ -27,6 +27,8 @@ struct AntigravityCLIRuntimeTests {
         #expect(plan.arguments.contains("--dangerously-skip-permissions") == false)
         #expect(plan.arguments.filter { $0 == "--add-dir" }.count == 1)
         #expect(plan.arguments.contains("/tmp/context"))
+        // Unprobed binary: plain text until the readiness check confirms the
+        // flag exists.
         #expect(plan.parsesJSONLines == false)
         #expect(plan.environment["ASTRA_TEST_ENV"] == "1")
         #expect(plan.environment["NO_COLOR"] == "1")
@@ -74,6 +76,170 @@ struct AntigravityCLIRuntimeTests {
             defaults: defaults
         )
         #expect(plan.environment["AGY_ADC_AUTH"] == "true")
+    }
+
+    @Test("Structured output is used only once the binary is known to support it")
+    func structuredOutputRequiresAProbedBinary() {
+        let defaults = InMemoryDefaults()
+
+        func plan() -> AntigravityCLICommandPlan {
+            AntigravityCLIRuntime.buildCommand(
+                executablePath: "/bin/agy",
+                prompt: "hello",
+                workspacePath: "/workspace",
+                additionalPaths: [],
+                permissionPolicy: .restricted,
+                timeoutSeconds: 30,
+                taskEnvironment: [:],
+                permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+                defaults: defaults
+            )
+        }
+
+        // Unknown means plain text: an older agy rejects `--output-format`
+        // outright, and losing a run is worse than losing its token counts.
+        #expect(!AntigravityCLIRuntime.structuredOutputSupported(executablePath: "/bin/agy", defaults: defaults))
+        #expect(plan().arguments.contains("--output-format") == false)
+        #expect(plan().parsesJSONLines == false)
+
+        AntigravityCLIRuntime.cacheStructuredOutputSupport(true, executablePath: "/bin/agy", defaults: defaults)
+        #expect(AntigravityCLIRuntime.structuredOutputSupported(executablePath: "/bin/agy", defaults: defaults))
+        #expect(plan().arguments.starts(with: [
+            "--print", "hello", "--output-format", "stream-json", "--print-timeout", "30s"
+        ]))
+        #expect(plan().parsesJSONLines)
+
+        // A probe that said no keeps the run on plain text.
+        AntigravityCLIRuntime.cacheStructuredOutputSupport(false, executablePath: "/bin/agy", defaults: defaults)
+        #expect(plan().arguments.contains("--output-format") == false)
+
+        // The verdict belongs to one binary: a different executable has not
+        // been probed, whatever the cache holds for the old one.
+        AntigravityCLIRuntime.cacheStructuredOutputSupport(true, executablePath: "/bin/agy", defaults: defaults)
+        #expect(!AntigravityCLIRuntime.structuredOutputSupported(executablePath: "/opt/other-agy", defaults: defaults))
+
+        #expect(AntigravityCLIRuntime.parseStructuredOutputSupport(
+            "  --output-format  Output format for print mode (text, json, stream-json)"
+        ))
+        #expect(!AntigravityCLIRuntime.parseStructuredOutputSupport("  --print  Run a single prompt"))
+    }
+
+    // All four frames below were captured from agy 1.2.2 run with
+    // `--output-format stream-json`.
+
+    @Test("The structured stream carries the session id, deltas, and tool calls")
+    func structuredStreamMapsProgressFrames() {
+        let initFrame = #"""
+        {"event":"init","conversation_id":"65eba0b4-5486-4ffb-9fa7-b50133da39da","init":{"cwd":"/tmp","tools":["run_command"],"permission_mode":"always-proceed"}}
+        """#
+        if case .started(let sessionID, _) = AntigravityCLIRuntime.parseAgentEvents(line: initFrame, parsesJSONLines: true).first {
+            #expect(sessionID == "65eba0b4-5486-4ffb-9fa7-b50133da39da")
+        } else {
+            Issue.record("Expected the init frame to carry the conversation id")
+        }
+
+        // An assistant delta is visible progress and must never be terminal:
+        // mistaking a mid-turn message for the end of the run is what had the
+        // monitor killing Codex and Copilot runs that were still working.
+        let delta = #"""
+        {"event":"step_update","step_update":{"step_index":5,"state":"ACTIVE","step_type":"agent_response","text_delta":"DONE"}}
+        """#
+        let deltaEvents = AntigravityCLIRuntime.parseEvents(line: delta, parsesJSONLines: true)
+        if case .text(let text) = deltaEvents.first {
+            #expect(text == "DONE")
+        } else {
+            Issue.record("Expected an assistant delta to parse as visible text")
+        }
+        #expect(!deltaEvents.contains { if case .result = $0 { true } else { false } })
+
+        let toolStart = #"""
+        {"event":"step_update","step_update":{"step_index":4,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hello-from-agy"}}}}
+        """#
+        if case .toolUse(let name, let id, let summary) = AntigravityCLIRuntime.parseAgentEvents(line: toolStart, parsesJSONLines: true).first {
+            #expect(name == "run_command")
+            #expect(id == "step-4")
+            #expect(summary == #"{"CommandLine":"echo hello-from-agy"}"#)
+        } else {
+            Issue.record("Expected a tool start to parse as a tool use")
+        }
+
+        let toolDone = #"""
+        {"event":"step_update","step_update":{"step_index":4,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"output":"hello-from-agy\n"}}}
+        """#
+        if case .toolResult(let id, let content, let isError) = AntigravityCLIRuntime.parseAgentEvents(line: toolDone, parsesJSONLines: true).first {
+            #expect(id == "step-4", "the step index pairs a result back to its use")
+            #expect(content == "hello-from-agy\n")
+            #expect(!isError)
+        } else {
+            Issue.record("Expected a finished tool to parse as a tool result")
+        }
+
+        // A denied tool now arrives typed, instead of being recognised by
+        // matching prose.
+        let toolError = #"""
+        {"event":"step_update","step_update":{"step_index":2,"state":"ERROR","step_type":"tool","tool_name":"list_dir","tool_info":{"error":{"type":"TOOL_ERROR","message":"permission check failed for read_file"}}}}
+        """#
+        if case .toolResult(_, let content, let isError) = AntigravityCLIRuntime.parseAgentEvents(line: toolError, parsesJSONLines: true).first {
+            #expect(content == "permission check failed for read_file")
+            #expect(isError)
+        } else {
+            Issue.record("Expected a failed tool to parse as an errored tool result")
+        }
+    }
+
+    @Test("Only the result frame ends an Antigravity run, and it reports usage")
+    func structuredStreamResultFrameIsTerminal() {
+        let result = #"""
+        {"event":"result","result":{"conversation_id":"65eba0b4","status":"SUCCESS","response":"DONE\n","duration_seconds":9.827644,"num_turns":1,"usage":{"input_tokens":20532,"output_tokens":1339,"thinking_tokens":1185,"cache_read_tokens":7296,"total_tokens":21871}}}
+        """#
+
+        let parsed = AntigravityCLIRuntime.parseEvents(line: result, parsesJSONLines: true)
+        #expect(parsed.count == 1, "one terminal event per run, not one per payload field")
+        if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = parsed.first {
+            #expect(text == "DONE\n")
+            // `input_tokens` already counts the 7,296 cached reads, and
+            // `thinking_tokens` is already part of the output total — this
+            // frame's own arithmetic says so: 20,532 + 1,339 == 21,871.
+            #expect(input == 20_532)
+            #expect(input + output == 21_871, "must match the frame's reported total_tokens")
+            #expect(output == 1339)
+            #expect(duration == 9827)
+            #expect(turns == 1)
+            #expect(!isError)
+            #expect(cost == nil, "Antigravity bills by subscription, so there is no per-run cost")
+        } else {
+            Issue.record("Expected the result frame to be the terminal event")
+        }
+
+        // The recorder still gets a completion for run output plus the stats
+        // that give the run its token totals.
+        let agentEvents = AntigravityCLIRuntime.parseAgentEvents(line: result, parsesJSONLines: true)
+        #expect(agentEvents.contains { if case .completed(let summary) = $0 { summary == "DONE\n" } else { false } })
+        #expect(agentEvents.contains { if case .stats = $0 { true } else { false } })
+
+        // Captured from `agy --model definitely-not-a-real-model`: the reason
+        // rides in `error` while `response` is empty, and agy still exits 0 —
+        // so this frame is the only thing that knows the run failed.
+        let failure = #"""
+        {"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection: model foo is not recognized"}}
+        """#
+        if case .result(let text, _, _, _, _, _, let isError) = AntigravityCLIRuntime.parseEvents(line: failure, parsesJSONLines: true).first {
+            #expect(isError)
+            #expect(text == "invalid model selection: model foo is not recognized")
+        } else {
+            Issue.record("Expected a non-SUCCESS status to parse as a failed run")
+        }
+    }
+
+    @Test("Prose still falls back to the plain-text parser in stream-json mode")
+    func structuredStreamFallsBackToPlainTextForProse() {
+        // agy prints banners and auth notices outside the JSON stream, and the
+        // plain-text path still owns recognising them.
+        let prompt = "Allow access to these paths? (y/n)"
+        #expect(AntigravityCLIRuntime.blockingPlainTextMessage(line: prompt) != nil)
+
+        let events = AntigravityCLIRuntime.parseAgentEvents(line: "checking workspace trust...", parsesJSONLines: true)
+        #expect(events.contains { if case .text = $0 { true } else { false } })
     }
 
     @Test("Consumer mode strips an inherited AGY_ADC_AUTH instead of overriding it")

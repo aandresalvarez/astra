@@ -440,14 +440,27 @@ enum AntigravityCLIRuntime {
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
         permissionArguments: [String],
+        structuredOutputAllowed: Bool = true,
         defaults: UserDefaults = .standard
     ) -> AntigravityCLICommandPlan {
-        var args = [
-            "--print",
-            prompt,
-            "--print-timeout",
-            printTimeoutArgument(timeoutSeconds)
-        ]
+        // Plain text gives ASTRA prose and nothing else: no turn boundary, no
+        // usage, no session id, and tool calls only as scraped text. The
+        // structured stream carries all four, which is what lets an Antigravity
+        // run report tokens and end on a real terminal event rather than on
+        // process exit alone. Older builds reject the flag and would fail the
+        // launch, so this asks first.
+        //
+        // Utility runs opt out: they hand raw stdout straight to their own
+        // parser (commit and PR authoring read `ASTRA_*_SUGGESTION` text), so
+        // wrapping the answer in `init`/`step_update`/`result` envelopes would
+        // leave that parser with nothing it can decode.
+        let structuredOutput = structuredOutputAllowed
+            && structuredOutputSupported(executablePath: executablePath, defaults: defaults)
+        var args = ["--print", prompt]
+        if structuredOutput {
+            args += ["--output-format", "stream-json"]
+        }
+        args += ["--print-timeout", printTimeoutArgument(timeoutSeconds)]
         if let diagnosticLogPath,
            !diagnosticLogPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--log-file", diagnosticLogPath]
@@ -488,7 +501,7 @@ enum AntigravityCLIRuntime {
             executablePath: executablePath,
             arguments: args,
             environment: env,
-            parsesJSONLines: false,
+            parsesJSONLines: structuredOutput,
             diagnosticLogPath: diagnosticLogPath
         )
     }
@@ -590,6 +603,116 @@ enum AntigravityCLIRuntime {
         case .restricted, .interactive:
             ["--sandbox"]
         }
+    }
+
+    /// Whether this `agy` understands `--output-format`. Older builds reject
+    /// the flag outright and the run dies on launch, so the answer is probed
+    /// from `--help` (50 ms, no auth, no quota) during the readiness check and
+    /// cached — `buildCommand` only ever reads the cached verdict, since it
+    /// runs on the main actor and must not shell out.
+    ///
+    /// Unknown means plain text. That costs a run its token accounting until
+    /// the first readiness check lands, which is the harmless direction to be
+    /// wrong in; assuming support and being wrong fails the run outright.
+    static func structuredOutputSupported(
+        executablePath: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let cached = defaults.string(forKey: AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)),
+              let separator = cached.lastIndex(of: ":") else {
+            return false
+        }
+        let stamp = String(cached[cached.startIndex..<separator])
+        let verdict = String(cached[cached.index(after: separator)...])
+        guard stamp == executableStamp(executablePath) else { return false }
+        return verdict == "true"
+    }
+
+    @discardableResult
+    static func refreshStructuredOutputSupport(
+        executablePath: String,
+        authMode: AntigravityAuthMode = .consumer,
+        providerHomeDirectory: String = "",
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let stamp = executableStamp(executablePath)
+        let key = AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
+        if let cached = defaults.string(forKey: key),
+           let separator = cached.lastIndex(of: ":"),
+           String(cached[cached.startIndex..<separator]) == stamp {
+            return String(cached[cached.index(after: separator)...]) == "true"
+        }
+        guard FileManager.default.isExecutableFile(atPath: executablePath),
+              // `--help` lists flags whoever is signed in, so the route does
+              // not change the answer — but running it under the same
+              // environment as the other probes keeps one CLI invocation from
+              // behaving unlike its neighbours.
+              let help = runProbe(
+                  executablePath: executablePath,
+                  args: ["--help"],
+                  timeoutSeconds: 8,
+                  environment: probeEnvironment(
+                      mode: authMode,
+                      providerHomeDirectory: providerHomeDirectory,
+                      extraVariables: ["NO_COLOR": "1"]
+                  )
+              ) else {
+            return false
+        }
+        let supported = parseStructuredOutputSupport(help)
+        cacheStructuredOutputSupport(supported, executablePath: executablePath, defaults: defaults)
+        return supported
+    }
+
+    static func cacheStructuredOutputSupport(
+        _ supported: Bool,
+        executablePath: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            "\(executableStamp(executablePath)):\(supported)",
+            forKey: AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
+        )
+    }
+
+    /// `agy --help` prints its flags one per line; the flag's presence is the
+    /// whole signal.
+    static func parseStructuredOutputSupport(_ helpText: String) -> Bool {
+        helpText.contains("--output-format")
+    }
+
+    private static func executableStamp(_ executablePath: String) -> String {
+        let trimmed = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "none" }
+        // npm-style installs put a symlink on PATH, and a link's own mtime
+        // survives the upgrade that replaces what it points at. Stamping the
+        // link would keep serving the old verdict: an upgraded CLI stuck in
+        // plain text, or worse, a downgraded one still being handed a flag it
+        // no longer understands. Size joins mtime because an in-place rewrite
+        // can land inside the same second.
+        let resolved = URL(fileURLWithPath: trimmed).resolvingSymlinksInPath().path
+        let size = (try? FileManager.default.attributesOfItem(atPath: resolved)[.size] as? Int) ?? nil
+        return "\(resolved)@\(AgentRuntimeProcessRunner.fileModificationTimestamp(resolved))+\(size ?? -1)"
+    }
+
+    /// Structured frames when the run asked for `--output-format stream-json`,
+    /// falling back to the plain-text parser for anything agy prints outside
+    /// that stream — banners, and the auth/permission notices the plain-text
+    /// path still owns.
+    static func parseEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        guard parsesJSONLines,
+              let events = AntigravityStreamEventParser.parseStructured(line: line) else {
+            return parsePlainText(line: line)
+        }
+        return events
+    }
+
+    static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
+        guard parsesJSONLines,
+              let events = AntigravityStreamEventParser.parseStructuredAgentEvents(line: line) else {
+            return parsePlainTextAgentEvents(line: line, appendingNewline: true)
+        }
+        return events
     }
 
     static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {

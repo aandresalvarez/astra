@@ -134,6 +134,13 @@ public enum AppStorageKeys {
         "astra.runtime.\(storageComponent(for: runtime)).mcpPolicy.v1"
     }
 
+    /// Caches whether the installed CLI understands structured output, stamped
+    /// with the executable's modification time so an upgrade re-probes instead
+    /// of inheriting the previous binary's answer.
+    public static func runtimeStructuredOutputKey(for runtime: AgentRuntimeID) -> String {
+        "astra.runtime.\(storageComponent(for: runtime)).structuredOutput.v1"
+    }
+
     public static func runtimeModelsCheckedAtKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {
         case .claudeCode:

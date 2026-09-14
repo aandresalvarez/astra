@@ -2531,6 +2531,18 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
+        // Asking the CLI what it offers is what this check is for, and it
+        // already runs the binary, so the `--output-format` probe rides along
+        // here rather than in the readiness preflight — a preflight that
+        // starts the provider is exactly what "Provider was not started"
+        // promises it will not do. Skipped entirely once cached for this
+        // binary; the launch path only ever reads the cached verdict, since it
+        // runs on the main actor and must not shell out.
+        AntigravityCLIRuntime.refreshStructuredOutputSupport(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
         let options = AntigravityCLIRuntime.modelOptions(
             executablePath: executable,
             authMode: configuration.antigravityAuthMode,
@@ -2676,18 +2688,23 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
-        AntigravityCLIRuntime.parsePlainText(line: line)
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        AntigravityCLIRuntime.parseEvents(line: line, parsesJSONLines: parsesJSONLines)
     }
 
-    func blockingProcessPermissionMessage(line: String, parsesJSONLines _: Bool) -> String? {
-        AntigravityCLIRuntime.blockingPlainTextMessage(line: line)
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String? {
+        // Structured frames carry their own typed tool errors; this heuristic
+        // reads prose, so it stays pointed at the lines that are still prose.
+        guard !parsesJSONLines || AntigravityStreamEventParser.parseStructured(line: line) == nil else {
+            return nil
+        }
+        return AntigravityCLIRuntime.blockingPlainTextMessage(line: line)
     }
 
-    func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(agentEvents: AntigravityCLIRuntime.parsePlainTextAgentEvents(
+    func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: AntigravityCLIRuntime.parseAgentEvents(
             line: line,
-            appendingNewline: true
+            parsesJSONLines: parsesJSONLines
         ))
     }
 
@@ -2769,7 +2786,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: providerHomeDirectory,
-            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+            // This path returns the child's raw stdout to the caller's own
+            // parser, which reads `ASTRA_*_SUGGESTION` text — structured
+            // envelopes would leave it nothing to decode.
+            structuredOutputAllowed: false
         )
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
