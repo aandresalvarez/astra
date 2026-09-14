@@ -510,6 +510,36 @@ struct ChatPanelView: View {
             for: defaultRuntime,
             cache: runtimeModelCache
         )
+        alignReasoningEffortWith(model: defaultModel, runtime: defaultRuntime)
+    }
+
+    /// The composer's effort pick resolved against a runtime/model pair.
+    /// Empty stays nil: "let the provider decide" is a pick of its own, not a
+    /// stale value to re-resolve into the model's recommended effort.
+    private func composerReasoningEffort(model: String, runtime: AgentRuntimeID) -> String? {
+        guard !defaultReasoningEffortRaw.isEmpty else { return nil }
+        return runtimeSettingsSnapshot.normalizedReasoningEffort(
+            defaultReasoningEffortRaw,
+            for: model,
+            runtime: runtime
+        )
+    }
+
+    private var composerReasoningEffort: String? {
+        composerReasoningEffort(model: defaultModel, runtime: defaultRuntime)
+    }
+
+    /// `defaultReasoningEffortRaw` is one global value shared across runtimes,
+    /// so a pick made for one model outlives the selection it was made for.
+    /// Re-resolving it on every switch is what keeps it clearable: for a model
+    /// that reports no effort options the composer hides the menu entirely,
+    /// leaving the user no way to drop a value the provider would reject. An
+    /// open draft moves with it for the same reason `runtimeExplicitlySelected`
+    /// does — `runApprovedPlan()` submits it without a fresh `saveDraft()`.
+    private func alignReasoningEffortWith(model: String, runtime: AgentRuntimeID) {
+        let resolved = composerReasoningEffort(model: model, runtime: runtime)
+        defaultReasoningEffortRaw = resolved ?? ""
+        draftTask?.reasoningEffort = resolved
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
@@ -1247,7 +1277,7 @@ struct ChatPanelView: View {
 
                 ComposerToolbar(
                     model: defaultModel,
-                    reasoningEffort: defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw,
+                    reasoningEffort: composerReasoningEffort,
                     runtimeID: defaultRuntimeID,
                     budget: defaultBudget,
                     skills: selectedSkills,
@@ -1260,8 +1290,16 @@ struct ChatPanelView: View {
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
                     onSend: { submitComposer() },
-                    onModelChange: { defaultModel = $0 },
-                    onReasoningEffortChange: { defaultReasoningEffortRaw = $0 ?? "" },
+                    onModelChange: { model in
+                        defaultModel = model
+                        alignReasoningEffortWith(model: model, runtime: defaultRuntime)
+                    },
+                    onReasoningEffortChange: { effort in
+                        defaultReasoningEffortRaw = effort ?? ""
+                        // Same reason as runtimeExplicitlySelected below: the
+                        // draft is submitted without a fresh saveDraft().
+                        draftTask?.reasoningEffort = effort
+                    },
                     onRuntimeChange: { runtime in
                         let previousRuntime = defaultRuntimeID
                         let previousModel = defaultModel
@@ -1277,6 +1315,7 @@ struct ChatPanelView: View {
                             cache: runtimeModelCache
                         )
                         defaultModel = resolvedModel
+                        alignReasoningEffortWith(model: resolvedModel, runtime: resolved)
                         AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
                             "source": "new_task_composer",
                             "previous_runtime": previousRuntime,
@@ -1651,7 +1690,7 @@ struct ChatPanelView: View {
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
-        task.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
+        task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -1850,7 +1889,7 @@ struct ChatPanelView: View {
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
-        task.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
+        task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -2501,6 +2540,7 @@ struct ChatPanelView: View {
             }
 
             schedule.model = model
+            schedule.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             schedule.tokenBudget = defaultBudget
 
             modelContext.insert(schedule)
@@ -2541,6 +2581,7 @@ struct ChatPanelView: View {
             draft.tokenBudget = workerSelection.profile.tokenBudget
             draft.model = model
             draft.runtimeID = runtime.rawValue
+            draft.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             draft.runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(
                 existing: draft.runtimeExplicitlySelected,
                 composerFlagged: composerRuntimeExplicitlySelected
@@ -2586,7 +2627,7 @@ struct ChatPanelView: View {
                 runtime: runtime
             )
             draft.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
-            draft.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
+            draft.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)

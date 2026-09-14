@@ -238,13 +238,26 @@ enum AntigravityCLIRuntime {
         uniqueModels([configuredModel(settingsURL: settingsURL)].compactMap { $0 } + bundledModelNames)
     }
 
-    static func modelNames(executablePath: String) -> [String]? {
-        modelOptions(executablePath: executablePath)?.map(\.id)
-    }
-
-    static func modelOptions(executablePath: String) -> [AntigravityModelOption]? {
+    /// `agy models` answers for whichever account the environment points at,
+    /// so discovery has to be handed the same auth route and provider home a
+    /// launch would use. Probing the default home instead would cache another
+    /// account's catalog — or nothing at all, for an ADC-only user.
+    static func modelOptions(
+        executablePath: String,
+        authMode: AntigravityAuthMode,
+        providerHomeDirectory: String
+    ) -> [AntigravityModelOption]? {
         guard FileManager.default.isExecutableFile(atPath: executablePath),
-              let output = runProbe(executablePath: executablePath, args: ["models"], timeoutSeconds: 8) else {
+              let output = runProbe(
+                  executablePath: executablePath,
+                  args: ["models"],
+                  timeoutSeconds: 8,
+                  environment: probeEnvironment(
+                      mode: authMode,
+                      providerHomeDirectory: providerHomeDirectory,
+                      extraVariables: ["NO_COLOR": "1"]
+                  )
+              ) else {
             return nil
         }
         let options = parseModelOptions(output)
@@ -390,6 +403,28 @@ enum AntigravityCLIRuntime {
             environment.removeValue(forKey: key)
         }
         return environment
+    }
+
+    /// The environment every out-of-band `agy` invocation needs: the selected
+    /// auth route on top of the configured provider home. Readiness and model
+    /// discovery both go through it, so neither can end up interrogating a
+    /// different account than the launch it is reporting on — `agy` reads its
+    /// credentials out of `HOME`, and the consumer route has to strip an
+    /// inherited `AGY_ADC_AUTH` rather than merely not set it.
+    static func probeEnvironment(
+        mode: AntigravityAuthMode,
+        providerHomeDirectory: String,
+        extraVariables: [String: String] = [:]
+    ) -> [String: String] {
+        var extraVars = extraVariables
+        for (key, value) in authEnvironment(mode: mode) {
+            extraVars[key] = value
+        }
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty {
+            extraVars["HOME"] = trimmedHome
+        }
+        return enrichedEnvironment(extraVariables: extraVars, mode: mode)
     }
 
     static func buildCommand(
@@ -596,6 +631,8 @@ enum AntigravityCLIRuntime {
     @discardableResult
     static func refreshStructuredOutputSupport(
         executablePath: String,
+        authMode: AntigravityAuthMode = .consumer,
+        providerHomeDirectory: String = "",
         defaults: UserDefaults = .standard
     ) -> Bool {
         let stamp = executableStamp(executablePath)
@@ -606,7 +643,20 @@ enum AntigravityCLIRuntime {
             return String(cached[cached.index(after: separator)...]) == "true"
         }
         guard FileManager.default.isExecutableFile(atPath: executablePath),
-              let help = runProbe(executablePath: executablePath, args: ["--help"], timeoutSeconds: 8) else {
+              // `--help` lists flags whoever is signed in, so the route does
+              // not change the answer — but running it under the same
+              // environment as the other probes keeps one CLI invocation from
+              // behaving unlike its neighbours.
+              let help = runProbe(
+                  executablePath: executablePath,
+                  args: ["--help"],
+                  timeoutSeconds: 8,
+                  environment: probeEnvironment(
+                      mode: authMode,
+                      providerHomeDirectory: providerHomeDirectory,
+                      extraVariables: ["NO_COLOR": "1"]
+                  )
+              ) else {
             return false
         }
         let supported = parseStructuredOutputSupport(help)
@@ -700,11 +750,16 @@ enum AntigravityCLIRuntime {
         "\(max(1, Int(timeoutSeconds)))s"
     }
 
-    private static func runProbe(executablePath: String, args: [String], timeoutSeconds: TimeInterval) -> String? {
+    private static func runProbe(
+        executablePath: String,
+        args: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String]
+    ) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = args
-        process.environment = RuntimeProcessEnvironment.enriched(extraVariables: ["NO_COLOR": "1"])
+        process.environment = environment
 
         let stdout = Pipe()
         let stderr = Pipe()

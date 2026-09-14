@@ -2538,8 +2538,16 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         // promises it will not do. Skipped entirely once cached for this
         // binary; the launch path only ever reads the cached verdict, since it
         // runs on the main actor and must not shell out.
-        AntigravityCLIRuntime.refreshStructuredOutputSupport(executablePath: executable)
-        let options = AntigravityCLIRuntime.modelOptions(executablePath: executable)
+        AntigravityCLIRuntime.refreshStructuredOutputSupport(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
+        let options = AntigravityCLIRuntime.modelOptions(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
             ?? AntigravityCLIRuntime.availableModelNames().map {
                 AntigravityCLIRuntime.AntigravityModelOption(id: $0, displayName: $0)
             }
@@ -2830,15 +2838,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
-        let authEnvironment = AntigravityCLIRuntime.authEnvironment(mode: authMode)
-        for (key, value) in authEnvironment {
-            extraVars[key] = value
-        }
-        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedHome.isEmpty {
-            extraVars["HOME"] = trimmedHome
-        }
-        let environment = AntigravityCLIRuntime.enrichedEnvironment(extraVariables: extraVars, mode: authMode)
+        let environment = AntigravityCLIRuntime.probeEnvironment(
+            mode: authMode,
+            providerHomeDirectory: providerHomeDirectory,
+            extraVariables: extraVars
+        )
 
         let result = await probes.run(
             path: executable,
@@ -2852,7 +2856,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 title: "Antigravity account",
                 detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
                 state: .blocked,
-                remediation: authEnvironment.isEmpty
+                remediation: authMode != .adc
                     ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
                     : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
             )

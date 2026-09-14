@@ -135,6 +135,8 @@ final class TaskScheduler {
             )
         }
 
+        task.reasoningEffort = schedule.reasoningEffort
+
         for path in schedule.routinePaths where !task.inputs.contains(path) {
             task.inputs.append(path)
         }

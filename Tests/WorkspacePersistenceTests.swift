@@ -949,6 +949,7 @@ struct WorkspacePersistenceTests {
         schedule.routinePaths = ["/tmp/routine-docs"]
         schedule.runtimeID = AgentRuntimeID.copilotCLI.rawValue
         schedule.model = AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
+        schedule.reasoningEffort = "high"
         schedule.conversationContext = "User asked for a concise summary."
         schedule.resultMode = .scheduleLog
         schedule.sourceTaskID = sourceTask.id
@@ -965,6 +966,7 @@ struct WorkspacePersistenceTests {
         #expect(config.schedules?.first?.sourceTaskID == sourceTask.id.uuidString)
         #expect(config.schedules?.first?.runResultsJSON == schedule.runResultsJSON)
         #expect(config.schedules?.first?.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(config.schedules?.first?.reasoningEffort == "high")
         #expect(config.schedules?.first?.lastFiredAt == schedule.lastFiredAt)
         #expect(config.schedules?.first?.routineDescription == schedule.routineDescription)
         #expect(config.schedules?.first?.routineInstructions == schedule.routineInstructions)
@@ -975,6 +977,7 @@ struct WorkspacePersistenceTests {
         let importedSchedule = try #require(imported.schedules.first)
         #expect(importedSchedule.conversationContext == schedule.conversationContext)
         #expect(importedSchedule.resultMode == .scheduleLog)
+        #expect(importedSchedule.reasoningEffort == "high")
         #expect(importedSchedule.sourceTaskID == sourceTask.id)
         #expect(importedSchedule.runResultsJSON == schedule.runResultsJSON)
         #expect(importedSchedule.resolvedRuntimeID == .copilotCLI)
