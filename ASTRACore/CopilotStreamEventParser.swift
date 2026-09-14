@@ -1,6 +1,12 @@
 import Foundation
 
 public enum CopilotStreamEventParser {
+    /// Marks the frame that actually ends a Copilot run — the result/usage
+    /// envelope. An `assistant.message` does not: Copilot emits one per
+    /// assistant message, and a model that narrates what it is about to do
+    /// produces one long before the answer exists.
+    static let resultFrameControlType = "astra.copilot.result"
+
     public static func parse(line: String) -> ParsedEvent? {
         parseAll(line: line).first
     }
@@ -22,11 +28,28 @@ public enum CopilotStreamEventParser {
                 break
             }
         }
+        let isResultFrame = events.contains { event in
+            if case .control(let type) = event { type == resultFrameControlType } else { false }
+        }
 
         var parsed: [ParsedEvent] = []
         var emittedMergedResult = false
         for event in events {
             switch event {
+            case .control(let type) where type == resultFrameControlType:
+                // The result frame carried no usage to merge with, so this is
+                // what tells the monitor the run is over.
+                guard !emittedMergedResult else { continue }
+                parsed.append(.result(
+                    text: completionSummary,
+                    costUSD: nil,
+                    totalInputTokens: 0,
+                    totalOutputTokens: 0,
+                    durationMs: nil,
+                    numTurns: nil,
+                    isError: false
+                ))
+                emittedMergedResult = true
             case .control(let type):
                 parsed.append(.control(type: type))
             case .stats where hasCompletion:
@@ -42,8 +65,17 @@ public enum CopilotStreamEventParser {
                     ))
                     emittedMergedResult = true
                 }
-            case .completed where stats != nil:
-                continue
+            case .completed(let summary):
+                // Never terminal on its own. On a result frame the branches
+                // above already carry this text; anywhere else it is an
+                // assistant message mid-run, which is visible progress. Calling
+                // those terminal started the monitor's terminal-progress kill
+                // countdown on a narration, so a run whose remaining work
+                // outlasted the grace window was terminated mid-flight and
+                // still reported as a clean completion.
+                guard !isResultFrame, stats == nil else { continue }
+                guard let summary, !summary.isEmpty else { continue }
+                parsed.append(.text(text: summary))
             default:
                 if let parsedEvent = parsedEvent(from: event) {
                     parsed.append(parsedEvent)
@@ -235,6 +267,13 @@ public enum CopilotStreamEventParser {
             } else if normalized == "result" || normalized.contains("completed") {
                 events.append(.completed(summary: nil))
             }
+            // Tag the frame so `parseAll` can tell this completion — the one
+            // that ends the run — from the `assistant.message` kind, which
+            // carries the same case but can land mid-run. A pure usage frame
+            // (no completion at all) stays non-terminal.
+            if events.contains(where: { if case .completed = $0 { true } else { false } }) {
+                events.append(.control(type: resultFrameControlType))
+            }
             return events.isEmpty ? [.unknown(provider: "copilot", type: type, raw: raw)] : events
         }
 
@@ -267,7 +306,11 @@ public enum CopilotStreamEventParser {
         case .astraProtocol(let event):
             return .astraProtocol(event)
         case .completed(let summary):
-            return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
+            // `parseAll` decides whether a completion ends the run, because
+            // only it can see whether the frame was the result envelope. On
+            // its own a completion is an assistant message: visible progress.
+            guard let summary, !summary.isEmpty else { return nil }
+            return .text(text: summary)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
         case .fileChange(let path, let kind, let summary, let oldString, let newString):

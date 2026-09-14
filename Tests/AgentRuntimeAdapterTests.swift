@@ -872,6 +872,9 @@ struct AgentRuntimeAdapterTests {
 
         #expect(antigravityPlan.runtime == .antigravityCLI)
         #expect(antigravityPlan.executablePath == "/bin/agy-not-present")
+        // This binary was never probed for `--output-format`, and an
+        // unprobed agy stays on plain text rather than risking a flag an
+        // older build would reject.
         #expect(antigravityPlan.arguments.starts(with: ["--print", "hello", "--print-timeout", "30s"]))
         #expect(antigravityPlan.arguments.contains("--sandbox"))
         #expect(antigravityPlan.parsesJSONLines == false)

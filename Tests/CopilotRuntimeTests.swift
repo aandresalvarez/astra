@@ -73,6 +73,50 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("A Copilot narration message is visible progress, not the end of the run")
+    func copilotNarrationMessageIsNotTerminal() {
+        // Shape captured from run 5108, which was terminated 30s after a note
+        // like this one and still reported as completed — its whole recorded
+        // answer being two progress notes and no conclusion.
+        let line = #"{"type":"assistant.message","data":{"content":"I'll compare the new file with the current translated SQL and report."}}"#
+
+        let parsed = CopilotStreamEventParser.parseAll(line: line)
+        if case .text(let text) = parsed.first {
+            #expect(text == "I'll compare the new file with the current translated SQL and report.")
+        } else {
+            Issue.record("Expected visible progress, got \(String(describing: parsed.first))")
+        }
+        #expect(!parsed.contains { if case .result = $0 { true } else { false } })
+
+        // The recorder still receives `.completed`, so run output is unchanged.
+        if case .completed = CopilotStreamEventParser.parseAgentEvents(line: line).first {} else {
+            Issue.record("Expected the narration to stay a completed AgentEvent for run output")
+        }
+    }
+
+    @Test("A Copilot result frame ends the run, with or without usage")
+    func copilotResultFrameIsTerminal() {
+        let withUsage = #"""
+        {"type":"result","data":{"content":"done"},"usage":{"input_tokens":125992,"output_tokens":1609}}
+        """#
+        let merged = CopilotStreamEventParser.parseAll(line: withUsage).compactMap { event -> (String?, Int, Int)? in
+            if case .result(let text, _, let input, let output, _, _, let isError) = event, !isError {
+                return (text, input, output)
+            }
+            return nil
+        }
+        #expect(merged.count == 1, "one terminal result per frame, not one per completion case")
+        #expect(merged.first?.0 == "done")
+        #expect(merged.first?.1 == 125_992)
+        #expect(merged.first?.2 == 1609)
+
+        // A result frame carrying no usage still has to end the run.
+        let withoutUsage = #"{"type":"result","data":{"content":"done"}}"#
+        #expect(CopilotStreamEventParser.parseAll(line: withoutUsage).contains { event in
+            if case .result(_, _, _, _, _, _, let isError) = event { !isError } else { false }
+        })
+    }
+
     @Test("Assistant reasoning delta maps Copilot data payload to thinking")
     func assistantReasoningDeltaDataPayload() {
         let line = #"{"type":"assistant.reasoning_delta","data":{"deltaContent":"checking repository state"}}"#

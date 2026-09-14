@@ -1,6 +1,12 @@
 import Foundation
 
 public enum CodexStreamEventParser {
+    /// Codex's own end-of-turn frame, and the only thing in this stream that
+    /// means the turn is over. `agent_message` items do not: Codex emits one
+    /// per assistant message, and a turn usually opens with progress notes
+    /// long before the answer exists.
+    static let turnCompletedControlType = "turn.completed"
+
     public static func parse(line: String) -> ParsedEvent? {
         parseAll(line: line).first
     }
@@ -52,7 +58,16 @@ public enum CodexStreamEventParser {
         case "turn.started":
             return .recognized([.control(type: "turn.started")])
         case "turn.completed":
-            return .recognized(usageEvent(from: object).map { [$0] } ?? [.control(type: "turn.completed")])
+            // The terminal marker rides alongside usage rather than being
+            // replaced by it: the monitor needs exactly one unambiguous
+            // end-of-turn signal per turn, and usage alone parses to
+            // `.usage`, which is accounting, not a terminal result.
+            var events: [AgentEvent] = []
+            if let usage = usageEvent(from: object) {
+                events.append(usage)
+            }
+            events.append(.control(type: turnCompletedControlType))
+            return .recognized(events)
         case "turn.failed", "error", "failed":
             return .recognized([.failed(message: textValue(in: object) ?? raw)])
         case "item.started":
@@ -169,7 +184,18 @@ public enum CodexStreamEventParser {
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
         case .control(let type):
-            return .control(type: type)
+            // `.result` is the only ParsedEvent the process monitor treats as
+            // terminal, so the end of the turn has to enter that stream here.
+            guard type == turnCompletedControlType else { return .control(type: type) }
+            return .result(
+                text: nil,
+                costUSD: nil,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                durationMs: nil,
+                numTurns: nil,
+                isError: false
+            )
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):
@@ -199,15 +225,20 @@ public enum CodexStreamEventParser {
         case .astraProtocol(let event):
             return .astraProtocol(event)
         case .completed(let summary):
-            return .result(
-                text: summary,
-                costUSD: nil,
-                totalInputTokens: 0,
-                totalOutputTokens: 0,
-                durationMs: nil,
-                numTurns: nil,
-                isError: false
-            )
+            // One of these lands per assistant message, progress notes
+            // included, so it cannot stand for "the turn ended". Treating it
+            // as terminal started the monitor's terminal-progress kill
+            // countdown on a preamble: a run whose remaining tool work
+            // outlasted that grace window was terminated mid-investigation
+            // and still reported as a clean completion, with the preamble
+            // kept as the answer. Here it is visible progress; the turn ends
+            // at `turn.completed` above.
+            //
+            // The AgentEvent stream still carries `.completed`, so
+            // `AgentEventRecorder` keeps assembling run output from these
+            // summaries on last-completed-wins terms.
+            guard let summary, !summary.isEmpty else { return nil }
+            return .text(text: summary)
         case .failed(let message):
             return .result(
                 text: message,
