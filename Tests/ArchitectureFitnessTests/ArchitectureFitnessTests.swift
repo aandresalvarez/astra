@@ -2024,7 +2024,7 @@ struct ArchitectureFitnessTests {
             // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
             // Antigravity model-list fix.
             // 2_399 -> 2_404: the two companion raises above.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_410, .owner("Architecture fitness test suite")),
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_413, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2083,7 +2083,9 @@ struct ArchitectureFitnessTests {
             // managed workspace job is heartbeating rather than killing a run
             // the job was told to wait on, and the graceful-stop wait is paid
             // only when there was a stdin channel to close.
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_295, .owner("Runtime process stream support")),
+            // 2_295 -> 2_300: the terminal-progress reap now also requires
+            // the provider to have gone quiet, and says why.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
@@ -2205,7 +2207,8 @@ struct ArchitectureFitnessTests {
             // ("minimal" was missing) against the actual `copilot --help` output.
             // 2_456 -> 2_500: coverage for the same fix on Copilot, whose
             // narration messages carried the same false terminal.
-            "Tests/CopilotRuntimeTests.swift": .init(2_500, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_500 -> 2_548: live-captured commentary/final_answer frames.
+            "Tests/CopilotRuntimeTests.swift": .init(2_548, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode

@@ -215,11 +215,15 @@ struct AntigravityCLIRuntimeTests {
         #expect(agentEvents.contains { if case .completed(let summary) = $0 { summary == "DONE\n" } else { false } })
         #expect(agentEvents.contains { if case .stats = $0 { true } else { false } })
 
+        // Captured from `agy --model definitely-not-a-real-model`: the reason
+        // rides in `error` while `response` is empty, and agy still exits 0 —
+        // so this frame is the only thing that knows the run failed.
         let failure = #"""
-        {"event":"result","result":{"status":"ERROR","response":"model refused the request","num_turns":1}}
+        {"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection: model foo is not recognized"}}
         """#
-        if case .result(_, _, _, _, _, _, let isError) = AntigravityCLIRuntime.parseEvents(line: failure, parsesJSONLines: true).first {
+        if case .result(let text, _, _, _, _, _, let isError) = AntigravityCLIRuntime.parseEvents(line: failure, parsesJSONLines: true).first {
             #expect(isError)
+            #expect(text == "invalid model selection: model foo is not recognized")
         } else {
             Issue.record("Expected a non-SUCCESS status to parse as a failed run")
         }

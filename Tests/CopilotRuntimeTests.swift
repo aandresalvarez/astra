@@ -94,6 +94,54 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Copilot commentary never becomes the answer; only final_answer does")
+    func copilotCommentaryPhaseIsNotTheAnswer() {
+        // Both frames captured from a live `copilot --output-format=json` run.
+        let commentary = #"""
+        {"type":"assistant.message","data":{"messageId":"673c1058","model":"gpt-5.6-sol","phase":"commentary","toolRequests":[],"content":"I'm about to run the requested shell command and capture its output."}}
+        """#
+        let commentaryEvents = CopilotStreamEventParser.parseAgentEvents(line: commentary)
+        #expect(!commentaryEvents.contains { if case .completed = $0 { true } else { false } },
+                "commentary must not reach run output, or a truncated run reports its preamble as the answer")
+        if case .text(let text) = commentaryEvents.first {
+            #expect(text.hasPrefix("I'm about to run"))
+        } else {
+            Issue.record("Expected commentary to parse as visible progress, got \(String(describing: commentaryEvents.first))")
+        }
+        #expect(!CopilotStreamEventParser.parseAll(line: commentary).contains {
+            if case .result = $0 { true } else { false }
+        })
+
+        let finalAnswer = #"""
+        {"type":"assistant.message","data":{"messageId":"f11d8f18","model":"gpt-5.6-sol","phase":"final_answer","toolRequests":[],"content":"Output: `hello-from-copilot`"}}
+        """#
+        if case .completed(let summary) = CopilotStreamEventParser.parseAgentEvents(line: finalAnswer).first {
+            #expect(summary == "Output: `hello-from-copilot`")
+        } else {
+            Issue.record("Expected final_answer to stay a completed AgentEvent for run output")
+        }
+
+        // Builds that send no `phase` still fall back to the tool-requests
+        // heuristic, so this keeps working against an older CLI.
+        let unlabelled = #"{"type":"assistant.message","data":{"content":"final answer"}}"#
+        #expect(CopilotStreamEventParser.parseAgentEvents(line: unlabelled).contains {
+            if case .completed = $0 { true } else { false }
+        })
+    }
+
+    @Test("Copilot's real result frame ends the run though it carries no token counts")
+    func copilotLiveResultFrameIsTerminal() {
+        // Captured live: the terminal frame reports premium requests and
+        // durations, not tokens, so the stats merge has nothing to merge and
+        // the frame's own marker has to carry the ending.
+        let frame = #"""
+        {"type":"result","timestamp":"2026-09-14T20:41:48.383Z","sessionId":"b52995c9","exitCode":0,"usage":{"premiumRequests":1,"totalApiDurationMs":6186,"sessionDurationMs":8356,"codeChanges":{"linesAdded":0,"linesRemoved":0,"filesModified":[]}}}
+        """#
+        #expect(CopilotStreamEventParser.parseAll(line: frame).contains { event in
+            if case .result(_, _, _, _, _, _, let isError) = event { !isError } else { false }
+        })
+    }
+
     @Test("A Copilot result frame ends the run, with or without usage")
     func copilotResultFrameIsTerminal() {
         let withUsage = #"""

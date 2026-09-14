@@ -114,14 +114,20 @@ public enum AntigravityStreamEventParser {
         if let usage = usageEvent(in: result) {
             events.append(usage)
         }
-        // A non-SUCCESS status is the provider saying the turn itself failed.
-        // Note that a print timeout does *not* land here: agy reports SUCCESS
-        // with an empty response and explains itself on stderr, which the
-        // empty-result path already treats as no usable result.
+        // A non-SUCCESS status is the provider saying the turn itself failed,
+        // and the reason arrives in `error` while `response` is empty — agy
+        // still exits 0 there, so this frame is the only thing that knows the
+        // run failed. Observed: `{"status":"ERROR","response":"","error":
+        // "invalid model selection (…): model … is not recognized"}`.
+        //
+        // A print timeout does *not* land here: agy reports SUCCESS with an
+        // empty response and explains itself on stderr, which the empty-result
+        // path already treats as no usable result.
         if status == "SUCCESS" {
             events.append(.completed(summary: response))
         } else {
-            events.append(.failed(message: response ?? "Antigravity reported \(status)."))
+            let reason = string(in: result, keys: ["error"]) ?? response
+            events.append(.failed(message: reason ?? "Antigravity reported \(status)."))
         }
         return events
     }

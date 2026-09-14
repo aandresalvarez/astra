@@ -1855,8 +1855,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
+        // Both halves are required: the turn said it ended, *and* the provider
+        // has actually stopped talking. Time since the terminal event alone
+        // was enough to kill a provider that was still streaming — which is
+        // what happened when a parser mistook a mid-turn message for the end
+        // of a turn, and the run was reported as a clean completion with a
+        // progress note as its answer. Classifying frames correctly is the
+        // real fix; this makes a future misclassification cost a late reap
+        // instead of a truncated run.
         if let terminalIdleDuration,
-           terminalIdleDuration >= terminalProgressExitGraceSeconds {
+           terminalIdleDuration >= terminalProgressExitGraceSeconds,
+           anyIdleDuration >= terminalProgressExitGraceSeconds {
             lock.lock()
             _terminatedAfterTerminalProgress = true
             lock.unlock()

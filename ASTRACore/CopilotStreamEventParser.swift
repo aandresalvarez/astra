@@ -185,9 +185,25 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized == "assistant.message" {
-            // A message carrying tool requests is an intermediate model
-            // envelope. The matching tool.execution_start owns the actionable
-            // event; this envelope is not a completed assistant response.
+            // Copilot labels every message it sends: `commentary` while it
+            // says what it is about to do, `final_answer` for the answer
+            // itself. Only the latter may become run output — a run cut short
+            // mid-work otherwise keeps "I'm about to run the command" as its
+            // result, which is exactly what a real killed run recorded.
+            // Without an answer the run has none, and the empty-result path
+            // says so honestly instead.
+            let phase = firstStringIncludingPayload(in: object, keys: ["phase"])?.lowercased()
+            if let phase, phase != "final_answer" {
+                if let text = textValue(in: object), !text.isEmpty {
+                    return [.text(text: text)]
+                }
+                return [.control(type: "assistant.message.\(phase)")]
+            }
+            // Older builds send no `phase`, so the original heuristic still
+            // stands in for them: a message carrying tool requests is an
+            // intermediate model envelope. The matching tool.execution_start
+            // owns the actionable event; this envelope is not a completed
+            // assistant response.
             if hasToolRequests(in: object) {
                 if let text = textValue(in: object), !text.isEmpty {
                     return [.text(text: text)]
