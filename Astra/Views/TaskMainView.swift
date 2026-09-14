@@ -4991,6 +4991,7 @@ struct TaskMainView: View {
 
                 ComposerToolbar(
                     model: task.model,
+                    reasoningEffort: task.reasoningEffort,
                     runtimeID: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
                     budget: task.tokenBudget,
                     skills: task.skills,
@@ -5009,6 +5010,7 @@ struct TaskMainView: View {
                     onSend: { sendMessage() },
                     onStop: (decisionDockPresentation != nil || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
+                    onReasoningEffortChange: { task.reasoningEffort = $0 },
                     onRuntimeChange: { runtime in
                         TaskComposerCoordinator.applyRuntimeSwitch(
                             to: runtime,

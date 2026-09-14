@@ -19,7 +19,8 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV14.self,
             ASTRASchemaV15.self,
             ASTRASchemaV16.self,
-            ASTRASchemaV17.self
+            ASTRASchemaV17.self,
+            ASTRASchemaV18.self
         ]
     }
 
@@ -40,7 +41,8 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV13.self, toVersion: ASTRASchemaV14.self),
             .lightweight(fromVersion: ASTRASchemaV14.self, toVersion: ASTRASchemaV15.self),
             .lightweight(fromVersion: ASTRASchemaV15.self, toVersion: ASTRASchemaV16.self),
-            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self)
+            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self),
+            .lightweight(fromVersion: ASTRASchemaV17.self, toVersion: ASTRASchemaV18.self)
         ]
     }
 }
@@ -49,7 +51,7 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
 /// separate avoids placing two different 12.0.0 shapes in the normal plan.
 public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
     public static var schemas: [any VersionedSchema.Type] {
-        [ASTRASchemaV12RuntimeOnly.self, ASTRASchemaV13.self, ASTRASchemaV14.self, ASTRASchemaV15.self, ASTRASchemaV16.self, ASTRASchemaV17.self]
+        [ASTRASchemaV12RuntimeOnly.self, ASTRASchemaV13.self, ASTRASchemaV14.self, ASTRASchemaV15.self, ASTRASchemaV16.self, ASTRASchemaV17.self, ASTRASchemaV18.self]
     }
 
     public static var stages: [MigrationStage] {
@@ -58,7 +60,8 @@ public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV13.self, toVersion: ASTRASchemaV14.self),
             .lightweight(fromVersion: ASTRASchemaV14.self, toVersion: ASTRASchemaV15.self),
             .lightweight(fromVersion: ASTRASchemaV15.self, toVersion: ASTRASchemaV16.self),
-            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self)
+            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self),
+            .lightweight(fromVersion: ASTRASchemaV17.self, toVersion: ASTRASchemaV18.self)
         ]
     }
 }
@@ -67,7 +70,7 @@ public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
 /// normal plan with another schema carrying the same 12.0.0 identifier.
 public enum ASTRAFeedbackOnlyV12MigrationPlan: SchemaMigrationPlan {
     public static var schemas: [any VersionedSchema.Type] {
-        [ASTRASchemaV12FeedbackOnly.self, ASTRASchemaV13.self, ASTRASchemaV14.self, ASTRASchemaV15.self, ASTRASchemaV16.self, ASTRASchemaV17.self]
+        [ASTRASchemaV12FeedbackOnly.self, ASTRASchemaV13.self, ASTRASchemaV14.self, ASTRASchemaV15.self, ASTRASchemaV16.self, ASTRASchemaV17.self, ASTRASchemaV18.self]
     }
 
     public static var stages: [MigrationStage] {
@@ -76,7 +79,8 @@ public enum ASTRAFeedbackOnlyV12MigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV13.self, toVersion: ASTRASchemaV14.self),
             .lightweight(fromVersion: ASTRASchemaV14.self, toVersion: ASTRASchemaV15.self),
             .lightweight(fromVersion: ASTRASchemaV15.self, toVersion: ASTRASchemaV16.self),
-            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self)
+            .lightweight(fromVersion: ASTRASchemaV16.self, toVersion: ASTRASchemaV17.self),
+            .lightweight(fromVersion: ASTRASchemaV17.self, toVersion: ASTRASchemaV18.self)
         ]
     }
 }

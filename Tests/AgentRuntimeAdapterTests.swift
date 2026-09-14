@@ -1886,6 +1886,50 @@ struct AgentRuntimeAdapterTests {
         #expect(!availableEntries.contains("shell"))
     }
 
+    @Test("Copilot main launch honors the task's chosen reasoning effort outside artifact bootstrap")
+    @MainActor
+    func copilotLaunchHonorsTaskReasoningEffort() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-reasoning-effort-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Effort", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        task.reasoningEffort = "high"
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash"]
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "high")
+        #expect(plan.commandPlannedFields["reasoning_effort"] == "high")
+    }
+
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")
     @MainActor
     func claudeLaunchSurfacesAskFirstToolsWithoutCountingThemAsAllowedTaskTools() throws {
@@ -2084,6 +2128,83 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["launch_effort"] == "default")
         #expect(!plan.arguments.contains("--effort"))
+    }
+
+    @Test("Claude main launch honors the task's chosen reasoning effort outside artifact bootstrap")
+    @MainActor
+    func claudeLaunchHonorsTaskReasoningEffort() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-reasoning-effort-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Effort", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        task.reasoningEffort = "xhigh"
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
+        #expect(plan.commandPlannedFields["launch_effort"] == "xhigh")
+        let effortFlagIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        #expect(plan.arguments[effortFlagIndex + 1] == "xhigh")
     }
 
     @Test("Live approvals withhold ask-first tools from the Claude allow-list but keep them visible")

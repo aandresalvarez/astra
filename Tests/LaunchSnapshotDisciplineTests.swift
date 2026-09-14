@@ -47,6 +47,7 @@ struct LaunchSnapshotDisciplineTests {
         "isolationStrategy",
         "maxTurns",
         "model",
+        "reasoningEffort",
         "runtimeExplicitlySelected",
         "runtimeID",
         "runtimePermissionGrantsJSON",

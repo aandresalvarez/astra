@@ -395,6 +395,7 @@ struct ChatPanelView: View {
     @State private var isDragOver = false
     @State private var sshConnections: [SSHConnection] = []
     @AppStorage(AppStorageKeys.defaultModel) var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultReasoningEffort) var defaultReasoningEffortRaw = ""
     @AppStorage(AppStorageKeys.defaultRuntimeID) var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -1246,6 +1247,7 @@ struct ChatPanelView: View {
 
                 ComposerToolbar(
                     model: defaultModel,
+                    reasoningEffort: defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw,
                     runtimeID: defaultRuntimeID,
                     budget: defaultBudget,
                     skills: selectedSkills,
@@ -1259,6 +1261,7 @@ struct ChatPanelView: View {
                     onPasteClipboard: { smartPaste() },
                     onSend: { submitComposer() },
                     onModelChange: { defaultModel = $0 },
+                    onReasoningEffortChange: { defaultReasoningEffortRaw = $0 ?? "" },
                     onRuntimeChange: { runtime in
                         let previousRuntime = defaultRuntimeID
                         let previousModel = defaultModel
@@ -1648,6 +1651,7 @@ struct ChatPanelView: View {
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
+        task.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -1846,6 +1850,7 @@ struct ChatPanelView: View {
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
+        task.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -2581,6 +2586,7 @@ struct ChatPanelView: View {
                 runtime: runtime
             )
             draft.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
+            draft.reasoningEffort = defaultReasoningEffortRaw.isEmpty ? nil : defaultReasoningEffortRaw
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)

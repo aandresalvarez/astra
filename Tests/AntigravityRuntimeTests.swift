@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAModels
 
 @Suite("Antigravity CLI Runtime")
 struct AntigravityCLIRuntimeTests {
@@ -50,6 +51,29 @@ struct AntigravityCLIRuntimeTests {
 
         #expect(plan.environment["HOME"] == "/tmp/provider-home")
         #expect(AntigravityCLIRuntime.settingsURL(providerHomeDirectory: "/tmp/provider-home").path == "/tmp/provider-home/.gemini/antigravity-cli/settings.json")
+    }
+
+    @Test("ADC auth mode exports AGY_ADC_AUTH; consumer mode does not")
+    func adcAuthModeExportsEnvVar() {
+        let defaults = InMemoryDefaults()
+
+        #expect(AntigravityCLIRuntime.authEnvironment(defaults: defaults).isEmpty)
+
+        defaults.set(AntigravityAuthMode.adc.rawValue, forKey: AppStorageKeys.antigravityAuthMode)
+        #expect(AntigravityCLIRuntime.authEnvironment(defaults: defaults) == ["AGY_ADC_AUTH": "true"])
+
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: "/bin/agy",
+            prompt: "hello",
+            workspacePath: "/workspace",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 30,
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+            defaults: defaults
+        )
+        #expect(plan.environment["AGY_ADC_AUTH"] == "true")
     }
 
     @Test("Version summary is deferred to readiness checks")

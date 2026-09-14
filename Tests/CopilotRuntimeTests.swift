@@ -844,6 +844,41 @@ struct CopilotCLICommandPlanningTests {
         #expect(!unsupportedPlan.arguments.contains("--effort"))
     }
 
+    @Test("Reasoning effort choices include minimal (GitHub Copilot CLI 1.0.83)")
+    func reasoningEffortChoicesIncludesMinimal() throws {
+        // `copilot --help` documents `--effort, --reasoning-effort <level>` with
+        // choices none/minimal/low/medium/high/xhigh/max. "minimal" postdates
+        // this runtime's original hardcoded list; regression-lock it so a future
+        // CLI bump can't silently drop it again.
+        #expect(CopilotCLIRuntime.reasoningEffortChoices.contains("minimal"))
+
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --effort LEVEL"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: "minimal",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: capabilities
+            )
+        )
+
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "minimal")
+    }
+
     @Test("Provider home overrides task and provider HOME for Copilot startup caches")
     func providerHomeOverridesAmbientHomeForStartupCaches() {
         let capabilities = CopilotCLICapabilities(helpText: "--output-format=FORMAT")

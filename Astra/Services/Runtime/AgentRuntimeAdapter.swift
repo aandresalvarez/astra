@@ -1096,7 +1096,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         ],
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
@@ -1419,8 +1420,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             "--include-partial-messages",
             "--verbose"
         ]
-        if usesArtifactBootstrapProfile {
-            args += ["--effort", "low"]
+        // Artifact bootstrap keeps its own "low" override regardless of the
+        // task's setting — a narrow, internal scaffolding window, not the
+        // interactive session the user is choosing reasoning effort for.
+        let reasoningEffort = usesArtifactBootstrapProfile
+            ? "low"
+            : context.taskSnapshot.reasoningEffort.flatMap { effort in
+                RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
+            }
+        if let reasoningEffort {
+            args += ["--effort", reasoningEffort]
         }
         args += context.requiredProviderPolicyRender(for: id).claudeLaunchPermissionArguments()
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
@@ -1471,7 +1480,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
-                "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
+                "launch_effort": reasoningEffort ?? "default",
                 "allowed_tools_count": String(providerAllowed.count),
                 "base_allowed_tools_count": String(baseProviderAllowed.count),
                 "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
@@ -1822,7 +1831,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
         supportsAstraRunProtocol: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
     let readinessCheckID = "copilot-cli"
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
@@ -1994,6 +2004,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             launchTaskEnv[key] = value
         }
         let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
+        // Artifact bootstrap keeps its own "none" override regardless of the
+        // task's setting — it is a narrow, internal scaffolding window, not the
+        // interactive session the user is choosing reasoning effort for.
+        let reasoningEffort = artifactBootstrapTools.isEmpty
+            ? context.taskSnapshot.reasoningEffort.flatMap { effort in
+                RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
+            }
+            : "none"
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -2015,7 +2033,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
-            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
+            reasoningEffort: reasoningEffort,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
@@ -2502,6 +2520,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 checks.append(await antigravityLiveAccountCheck(
                     executable: executable ?? "",
                     providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id),
+                    authMode: configuration.antigravityAuthMode,
                     probes: probes
                 ))
             }
@@ -2765,6 +2784,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     private func antigravityLiveAccountCheck(
         executable: String,
         providerHomeDirectory: String,
+        authMode: AntigravityAuthMode,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let timeoutSeconds: TimeInterval = 30
@@ -2781,6 +2801,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
+        let authEnvironment = AntigravityCLIRuntime.authEnvironment(mode: authMode)
+        for (key, value) in authEnvironment {
+            extraVars[key] = value
+        }
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
             extraVars["HOME"] = trimmedHome
@@ -2799,7 +2823,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 title: "Antigravity account",
                 detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
                 state: .blocked,
-                remediation: "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
+                remediation: authEnvironment.isEmpty
+                    ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
+                    : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
             )
         }
         guard antigravityReadinessOutputContainsReadyLine(result.stdout) else {

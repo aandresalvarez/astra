@@ -16,6 +16,10 @@ actor StubBinaryRunner: BinaryRunner {
 
     private var responses: [String: RunResult] = [:]
     private var calls: [Call] = []
+    /// Parallel to `calls` (same index), captured separately so `Call` and
+    /// its widely-shared `Equatable` conformance stay unchanged for every
+    /// existing `Call(path:args:)` construction across other test files.
+    private var environments: [[String: String]?] = []
 
     func setResponse(forKey key: String, result: RunResult) {
         responses[key] = result
@@ -23,18 +27,22 @@ actor StubBinaryRunner: BinaryRunner {
 
     func recordedCalls() -> [Call] { calls }
 
+    /// Environments passed to each call, in the same order as `recordedCalls()`.
+    func recordedEnvironments() -> [[String: String]?] { environments }
+
     nonisolated func run(
         path: String,
         args: [String],
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
-        await record(path: path, args: args)
+        await record(path: path, args: args, environment: environment)
         return await response(for: key(path: path, args: args))
     }
 
-    private func record(path: String, args: [String]) {
+    private func record(path: String, args: [String], environment: [String: String]?) {
         calls.append(Call(path: path, args: args))
+        environments.append(environment)
     }
 
     private func response(for key: String) -> RunResult {

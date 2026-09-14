@@ -24,7 +24,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModels: CodexCLIRuntime.availableModelNames(),
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
     let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
     let readinessCheckID = "codex-cli"
@@ -265,6 +266,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
+        // Falls back to the model's own reported default when the stored
+        // choice doesn't apply to this model (e.g. carried over from a
+        // different model, or the model reports no options at all).
+        let reasoningEffort = context.taskSnapshot.reasoningEffort.flatMap { effort in
+            RuntimeModelAvailability.normalizedReasoningEffort(effort, for: providerModel, runtime: id)
+        }
         // `--add-dir` grants a directory WRITE access (Codex reads the host
         // filesystem ambiently regardless — its sandbox cannot restrict reads).
         // Project only explicitly granted directories; widening an exact-file
@@ -319,7 +326,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).codexLaunchPermissionArguments(
                 resumingNativeSession: resumingNativeSession
-            )
+            ),
+            reasoningEffort: reasoningEffort
         )
         let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
             providerHomeDirectory: context.providerHomeDirectory,
@@ -355,6 +363,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": providerModel,
+                "reasoning_effort": reasoningEffort ?? "none",
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "parses_json_lines": String(plan.parsesJSONLines),
                 "additional_paths_count": String(additionalPaths.count),
@@ -502,6 +511,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? CodexCLIRuntime.detectPath() : configuredPath
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         let permissionPolicy: PermissionPolicy = toolMode == .readOnly ? .interactive : .restricted
+        // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
+        // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
+        // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
+        // Output validity is still enforced by the caller's validation + repair loop. Always
+        // "low" regardless of the task's own reasoning-effort setting — that setting is for the
+        // interactive agent session, not this internal one-shot call.
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: prompt,
@@ -515,21 +530,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
                 policy: permissionPolicy,
                 resumingNativeSession: false
-            )
+            ),
+            reasoningEffort: "low"
         )
-
-        // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
-        // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
-        // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
-        // Output validity is still enforced by the caller's validation + repair loop.
-        var arguments = plan.arguments
-        if let execIndex = arguments.firstIndex(of: "exec") {
-            arguments.insert(contentsOf: ["-c", "model_reasoning_effort=\"low\""], at: execIndex + 1)
-        }
         let processPlan = AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: plan.executablePath,
-            arguments: arguments,
+            arguments: plan.arguments,
             currentDirectory: workspacePath,
             environment: plan.environment,
             browserShimDirectory: nil,

@@ -54,6 +54,7 @@ struct ComposerToolbar: View {
     // MARK: - Required
 
     let model: String
+    var reasoningEffort: String? = nil
     var runtimeID: String = AgentRuntimeID.claudeCode.rawValue
     let budget: Int
     var skills: [Skill] = []
@@ -77,6 +78,7 @@ struct ComposerToolbar: View {
 
     var onStop: (() -> Void)?
     var onModelChange: ((String) -> Void)?
+    var onReasoningEffortChange: ((String?) -> Void)?
     var onRuntimeChange: ((String) -> Void)?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
@@ -373,6 +375,26 @@ struct ComposerToolbar: View {
                 }
             } label: {
                 Label("Model", systemImage: "cpu")
+            }
+
+            if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
+                Menu {
+                    ForEach(reasoningEffortOptions, id: \.self) { option in
+                        Button { onReasoningEffortChange?(option) } label: {
+                            HStack {
+                                Text(option.capitalized)
+                                if reasoningEffort == option {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(
+                        "Reasoning: \((reasoningEffort ?? defaultReasoningEffort)?.capitalized ?? "Default")",
+                        systemImage: "gauge.with.needle"
+                    )
+                }
             }
 
             if RuntimeBudgetPresentation.isEnabled(budget) {
@@ -969,6 +991,27 @@ struct ComposerToolbar: View {
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
         runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    /// Nil when this runtime has no reasoning-effort knob at all, or the
+    /// selected model reports no per-model options.
+    private var reasoningEffortOptions: [String]? {
+        guard AgentRuntimeAdapterRegistry.descriptor(for: resolvedRuntime).supportsReasoningEffort else {
+            return nil
+        }
+        return RuntimeModelAvailability.supportedReasoningEfforts(
+            for: model,
+            runtime: resolvedRuntime,
+            cache: runtimeModelCache
+        )
+    }
+
+    private var defaultReasoningEffort: String? {
+        RuntimeModelAvailability.defaultReasoningEffort(
+            for: model,
+            runtime: resolvedRuntime,
+            cache: runtimeModelCache
+        )
     }
 
     private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {

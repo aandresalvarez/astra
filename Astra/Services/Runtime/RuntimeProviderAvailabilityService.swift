@@ -9,6 +9,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+    var antigravityAuthMode: AntigravityAuthMode
 
     init(
         claudePath: String,
@@ -18,7 +19,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.init(
             providerSettings: AgentRuntimeProviderSettings(
@@ -35,7 +37,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 
@@ -46,7 +49,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.providerSettings = providerSettings
         self.claudeProvider = claudeProvider
@@ -55,6 +59,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         self.vertexOpusModel = vertexOpusModel
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
+        self.antigravityAuthMode = antigravityAuthMode
     }
 
     func readinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
@@ -67,7 +72,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 }

@@ -14,6 +14,7 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+    var antigravityAuthMode: AntigravityAuthMode
 
     var availabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
@@ -23,7 +24,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 
@@ -38,7 +40,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexRegion,
             vertexOpusModel,
             vertexSonnetModel,
-            vertexHaikuModel
+            vertexHaikuModel,
+            antigravityAuthMode.rawValue
         ].joined(separator: "|")
     }
 
@@ -122,6 +125,7 @@ enum RuntimeSettingsSnapshotStore {
             vertexOpusModel: defaults.string(forKey: AppStorageKeys.claudeVertexOpusModel) ?? "",
             vertexSonnetModel: defaults.string(forKey: AppStorageKeys.claudeVertexSonnetModel) ?? "",
             vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? "",
+            antigravityAuthModeRaw: defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue,
             defaults: defaults,
             runtimes: runtimes
         )
@@ -137,6 +141,7 @@ enum RuntimeSettingsSnapshotStore {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
+        antigravityAuthModeRaw: String = AntigravityAuthMode.consumer.rawValue,
         defaults: UserDefaults = .standard,
         runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
     ) -> ProviderSettingsSnapshot {
@@ -153,7 +158,8 @@ enum RuntimeSettingsSnapshotStore {
             vertexRegion: vertexRegion.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexOpusModel: vertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexSonnetModel: vertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            vertexHaikuModel: vertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            vertexHaikuModel: vertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
         )
     }
 

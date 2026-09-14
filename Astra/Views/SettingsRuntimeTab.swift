@@ -29,7 +29,9 @@ struct SettingsRuntimeTab: View {
         ExecutionSandboxSettings.defaultAllowNetwork
     @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders =
         ExecutionSandboxSettings.defaultLayerNativeProviders
+    @AppStorage(AppStorageKeys.defaultReasoningEffort) private var defaultReasoningEffortRaw = ""
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.antigravityAuthMode) private var antigravityAuthModeRaw = AntigravityAuthMode.consumer.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
@@ -158,6 +160,14 @@ struct SettingsRuntimeTab: View {
                             .foregroundStyle(Stanford.coolGrey)
                             .textSelection(.enabled)
                     }
+                    if runtime == .antigravityCLI {
+                        settingsDivider
+                        antigravityRouteSettings
+                    }
+                    if descriptor.supportsReasoningEffort {
+                        settingsDivider
+                        reasoningEffortSettings(for: runtime)
+                    }
                 }
             }
         }
@@ -283,6 +293,62 @@ struct SettingsRuntimeTab: View {
         let trimmed = claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return GCPProjectIDValidation.failure(for: trimmed)?.message
+    }
+
+    /// The options come from the default model's own reported capability, not
+    /// a fixed enum — different models on the same provider can support
+    /// different reasoning-effort scales.
+    @ViewBuilder
+    private func reasoningEffortSettings(for runtime: AgentRuntimeID) -> some View {
+        let options = RuntimeModelAvailability.supportedReasoningEfforts(
+            for: defaultModel,
+            runtime: runtime,
+            cache: runtimeModelCache
+        ) ?? []
+        if options.isEmpty {
+            Text("\(RuntimeModelAvailability.displayName(for: defaultModel, runtime: runtime, cache: runtimeModelCache)) does not report reasoning-effort options.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            let defaultOption = RuntimeModelAvailability.defaultReasoningEffort(
+                for: defaultModel,
+                runtime: runtime,
+                cache: runtimeModelCache
+            )
+            Picker("Default Reasoning Effort", selection: Binding(
+                get: { defaultReasoningEffortRaw.isEmpty ? (defaultOption ?? "") : defaultReasoningEffortRaw },
+                set: { defaultReasoningEffortRaw = $0 }
+            )) {
+                ForEach(options, id: \.self) { option in
+                    Text(option.capitalized).tag(option)
+                }
+            }
+            Text("Applies to new tasks using \(runtime.displayName). Each task can still override it.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var antigravityRouteSettings: some View {
+        Picker("Sign-in method", selection: $antigravityAuthModeRaw) {
+            ForEach(AntigravityAuthMode.allCases) { mode in
+                Label(mode.label, systemImage: mode.symbolName)
+                    .tag(mode.rawValue)
+            }
+        }
+        .onChange(of: antigravityAuthModeRaw) {
+            Task { await refreshSharedRuntimeSetup(force: true) }
+        }
+
+        if antigravityAuthModeRaw == AntigravityAuthMode.adc.rawValue {
+            Text("Routes through Google Cloud Application Default Credentials instead of agy's own Google Sign-In. Use this for a Workspace/enterprise Google account that the consumer eligibility check rejects. Requires `gcloud auth application-default login` (and `set-quota-project` for the target project) to already be set up outside ASTRA.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder
@@ -446,7 +512,8 @@ struct SettingsRuntimeTab: View {
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
-            vertexHaikuModel: claudeVertexHaikuModel
+            vertexHaikuModel: claudeVertexHaikuModel,
+            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
         )
     }
 

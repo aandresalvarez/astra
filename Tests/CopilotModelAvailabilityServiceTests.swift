@@ -216,6 +216,92 @@ struct CopilotModelAvailabilityServiceTests {
         #expect(requests.last?.authorization == "Bearer gh-token")
     }
 
+    @Test("Reasoning-effort support is read per model, not assumed uniform")
+    func reasoningEffortSupportIsPerModel() async throws {
+        // Regression test: a live run picked "max" for "mai-code-1.1-flash" and
+        // Copilot CLI rejected the whole launch with "Error: Reasoning effort
+        // 'max' is not supported for model 'mai-code-1.1-flash'." The live
+        // `/models` response is the source of truth for this — confirmed against
+        // the real API — and it genuinely varies per model, including models
+        // that support none at all (omit the key rather than an empty array).
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/gh auth token --hostname github.com",
+            result: RunResult(outcome: .exited(code: 0), stdout: "gh-token\n", stderr: "")
+        )
+
+        let http = StubModelAvailabilityHTTPClient()
+        await http.setResponse(
+            method: "POST",
+            url: "https://api.github.com/graphql",
+            statusCode: 200,
+            body: #"{"data":{"viewer":{"copilotEndpoints":{"api":"https://api.githubcopilot.test"}}}}"#
+        )
+        await http.setResponse(
+            method: "GET",
+            url: "https://api.githubcopilot.test/models",
+            statusCode: 200,
+            body: """
+            {
+              "data": [
+                {
+                  "id": "mai-code-1.1-flash",
+                  "policy": {"state": "enabled"},
+                  "capabilities": {"supports": {"reasoning_effort": ["low", "medium", "high"]}}
+                },
+                {
+                  "id": "claude-opus-4.7",
+                  "policy": {"state": "enabled"},
+                  "capabilities": {"supports": {"reasoning_effort": ["low", "medium", "high", "xhigh", "max"]}}
+                },
+                {
+                  "id": "gpt-4.1",
+                  "policy": {"state": "enabled"},
+                  "capabilities": {"supports": {"parallel_tool_calls": true}}
+                }
+              ]
+            }
+            """
+        )
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let home = makeTempHome()
+
+        let service = CopilotModelAvailabilityService(
+            runner: runner,
+            httpClient: http,
+            environment: { ["HOME": home.path] },
+            detectExecutable: { $0 == "gh" ? "/opt/homebrew/bin/gh" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/gh" }
+        )
+
+        _ = await service.refreshAndPersist(defaults: defaults)
+
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "mai-code-1.1-flash", runtime: .copilotCLI, defaults: defaults
+        ) == ["low", "medium", "high"])
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "claude-opus-4.7", runtime: .copilotCLI, defaults: defaults
+        ) == ["low", "medium", "high", "xhigh", "max"])
+        // No `reasoning_effort` key at all: nil, not an empty/inherited list.
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "gpt-4.1", runtime: .copilotCLI, defaults: defaults
+        ) == nil)
+
+        // The exact failure this regression-locks: "max" is a real Copilot
+        // value (valid for claude-opus-4.7) but must not pass through for a
+        // model that doesn't support it.
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "max", for: "mai-code-1.1-flash", runtime: .copilotCLI, defaults: defaults
+        ) == nil)
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "mai-code-1.1-flash", runtime: .copilotCLI, defaults: defaults
+        ) == "high")
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "max", for: "claude-opus-4.7", runtime: .copilotCLI, defaults: defaults
+        ) == "max")
+    }
+
     @Test("Copilot keychain token is used before gh auth")
     func copilotKeychainTokenIsUsedBeforeGhAuth() async {
         let runner = StubBinaryRunner()

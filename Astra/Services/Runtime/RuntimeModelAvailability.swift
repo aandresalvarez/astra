@@ -16,12 +16,28 @@ struct RuntimeModelDetail: Codable, Equatable, Sendable {
     var displayName: String?
     var description: String?
     var codex: CodexModelInfo?
+    /// Reasoning-effort labels this model accepts, when the provider reports
+    /// per-model capability metadata (currently only Codex's `model/list`).
+    /// Runtime-agnostic so other providers can populate the same fields
+    /// without a new shape.
+    var supportedReasoningEfforts: [String]?
+    /// The provider-recommended reasoning effort for this model, when reported.
+    var defaultReasoningEffort: String?
 
-    init(value: String, displayName: String? = nil, description: String? = nil, codex: CodexModelInfo? = nil) {
+    init(
+        value: String,
+        displayName: String? = nil,
+        description: String? = nil,
+        codex: CodexModelInfo? = nil,
+        supportedReasoningEfforts: [String]? = nil,
+        defaultReasoningEffort: String? = nil
+    ) {
         self.value = value
         self.displayName = displayName
         self.description = description
         self.codex = codex
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.defaultReasoningEffort = defaultReasoningEffort
     }
 }
 
@@ -227,6 +243,91 @@ enum RuntimeModelAvailability {
         cachedDetail(for: model, runtime: runtime, cache: cache)?.description
     }
 
+    /// Reasoning-effort labels this model accepts, when the provider reports
+    /// per-model capability metadata. Nil means the provider either does not
+    /// support reasoning effort or has not reported per-model options.
+    static func supportedReasoningEfforts(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> [String]? {
+        let efforts = cachedDetail(for: model, runtime: runtime, cache: cache)?.supportedReasoningEfforts
+        return (efforts?.isEmpty ?? true) ? nil : efforts
+    }
+
+    /// `defaults:`-based twin of `supportedReasoningEfforts(for:runtime:cache:)`,
+    /// for call sites that read a single runtime's cache directly.
+    static func supportedReasoningEfforts(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> [String]? {
+        let efforts = cachedDetail(for: model, runtime: runtime, defaults: defaults)?.supportedReasoningEfforts
+        return (efforts?.isEmpty ?? true) ? nil : efforts
+    }
+
+    /// Provider-recommended reasoning effort for a model, when reported.
+    static func defaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String? {
+        cachedDetail(for: model, runtime: runtime, cache: cache)?.defaultReasoningEffort
+    }
+
+    /// `defaults:`-based twin of `defaultReasoningEffort(for:runtime:cache:)`.
+    static func defaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        cachedDetail(for: model, runtime: runtime, defaults: defaults)?.defaultReasoningEffort
+    }
+
+    /// Resolves a requested reasoning-effort value against the selected
+    /// model's supported set. An empty request or a model with no reported
+    /// options falls back to the model's provider-recommended default (if
+    /// any); a value outside the model's reported set — e.g. carried over
+    /// from a different model — also falls back, since (unlike model IDs)
+    /// Codex rejects an unsupported `-c model_reasoning_effort` value outright
+    /// rather than silently ignoring it.
+    static func normalizedReasoningEffort(
+        _ effort: String,
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String? {
+        let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let supported = supportedReasoningEfforts(for: model, runtime: runtime, cache: cache) else {
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if !trimmed.isEmpty, supported.contains(trimmed) {
+            return trimmed
+        }
+        return defaultReasoningEffort(for: model, runtime: runtime, cache: cache)
+    }
+
+    /// `defaults:`-based twin of `normalizedReasoningEffort(_:for:runtime:cache:)`,
+    /// for call sites that read a single runtime's cache directly rather than
+    /// building a cross-runtime `RuntimeModelAvailabilityCache`.
+    static func normalizedReasoningEffort(
+        _ effort: String,
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = cachedDetail(for: model, runtime: runtime, defaults: defaults)
+        let supported = detail?.supportedReasoningEfforts
+        guard let supported, !supported.isEmpty else {
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if !trimmed.isEmpty, supported.contains(trimmed) {
+            return trimmed
+        }
+        return detail?.defaultReasoningEffort
+    }
+
     private static func cachedDetail(
         for model: String,
         runtime: AgentRuntimeID,
@@ -235,6 +336,18 @@ enum RuntimeModelAvailability {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return cachedSnapshot(for: runtime, cache: cache)?
+            .details?
+            .first { $0.value == trimmed }
+    }
+
+    private static func cachedDetail(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults
+    ) -> RuntimeModelDetail? {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return cachedSnapshot(for: runtime, defaults: defaults)?
             .details?
             .first { $0.value == trimmed }
     }
@@ -398,7 +511,10 @@ enum RuntimeModelAvailability {
     ) {
         let cleaned = cleanProviderModelDetails(details)
         guard !cleaned.isEmpty else { return }
-        let hasMetadata = cleaned.contains { $0.displayName != nil || $0.description != nil || $0.codex != nil }
+        let hasMetadata = cleaned.contains {
+            $0.displayName != nil || $0.description != nil || $0.codex != nil
+                || $0.supportedReasoningEfforts != nil || $0.defaultReasoningEffort != nil
+        }
         let snapshot = RuntimeModelAvailabilitySnapshot(
             runtimeID: runtime.rawValue,
             models: cleaned.map(\.value),
@@ -486,7 +602,9 @@ enum RuntimeModelAvailability {
                 value: value,
                 displayName: normalizedDisplayString(detail.displayName),
                 description: normalizedDisplayString(detail.description),
-                codex: detail.codex
+                codex: detail.codex,
+                supportedReasoningEfforts: detail.supportedReasoningEfforts,
+                defaultReasoningEffort: normalizedDisplayString(detail.defaultReasoningEffort)
             ))
         }
         return cleaned

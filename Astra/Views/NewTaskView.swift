@@ -25,6 +25,7 @@ struct NewTaskView: View {
     /// through a dedicated Binding sidesteps that ordering entirely.
     @State private var runtimeExplicitlySelected = false
     @State private var model = TaskExecutionDefaults.model
+    @State private var reasoningEffort: String?
     @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var policyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var isolationStrategy: IsolationStrategy = .sameDirectory
@@ -107,6 +108,10 @@ struct NewTaskView: View {
                     }
 
                     modelSelectionRow
+
+                    if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
+                        reasoningEffortSelectionRow(options: reasoningEffortOptions)
+                    }
 
                     Picker("Token Budget", selection: $tokenBudget) {
                         ForEach(budgetPresets, id: \.self) { b in
@@ -244,6 +249,39 @@ struct NewTaskView: View {
     private func alignModelWithRuntimeCache() {
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
         model = RuntimeModelAvailability.normalizedModel(model, for: runtime, cache: runtimeModelCache)
+        if let reasoningEffort {
+            self.reasoningEffort = RuntimeModelAvailability.normalizedReasoningEffort(
+                reasoningEffort, for: model, runtime: runtime, cache: runtimeModelCache
+            )
+        }
+    }
+
+    /// Nil when this runtime has no reasoning-effort knob at all, or the
+    /// selected model reports no per-model options.
+    private var reasoningEffortOptions: [String]? {
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
+        guard AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort else {
+            return nil
+        }
+        return RuntimeModelAvailability.supportedReasoningEfforts(for: model, runtime: runtime, cache: runtimeModelCache)
+    }
+
+    private func reasoningEffortSelectionRow(options: [String]) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("Reasoning Effort")
+            Spacer()
+            Picker("", selection: Binding(
+                get: { reasoningEffort ?? "" },
+                set: { reasoningEffort = $0.isEmpty ? nil : $0 }
+            )) {
+                Text("Default").tag("")
+                ForEach(options, id: \.self) { option in
+                    Text(option.capitalized).tag(option)
+                }
+            }
+            .labelsHidden()
+            .frame(minWidth: 160)
+        }
     }
 
     private var modelSelectionRow: some View {
@@ -312,6 +350,7 @@ struct NewTaskView: View {
             validationStrategy: validationStrategy
         )
         task.runtimeExplicitlySelected = runtimeExplicitlySelected
+        task.reasoningEffort = reasoningEffort
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText

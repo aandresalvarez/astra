@@ -40,6 +40,13 @@ public final class AgentTask {
     public var tokenBudget: Int
     public var tokensUsed: Int
     public var model: String
+    /// The user's chosen reasoning-effort label for `model`, when the
+    /// runtime/model combination supports one (currently Codex only). Nil
+    /// means no override — the provider's own default applies. Values are
+    /// whatever the provider's own catalog reports (e.g. Codex's per-model
+    /// `supportedReasoningEfforts`), not a fixed enum, since supported labels
+    /// vary by model and provider version.
+    public var reasoningEffort: String?
     public var runtimeID: String?
     /// True when the current `runtimeID` was set by the user explicitly
     /// picking a runtime in the composer (`task_runtime_changed`), as opposed

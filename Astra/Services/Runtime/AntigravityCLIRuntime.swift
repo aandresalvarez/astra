@@ -145,6 +145,26 @@ enum AntigravityCLIRuntime {
         }
     }
 
+    /// Resolves the Antigravity auth-routing env var from the persisted
+    /// setting, so the spawned `agy` process inherits the user's chosen
+    /// sign-in method. GUI apps don't pick up shell env from
+    /// `.zshrc`/`.zprofile`, so this is the only place the ADC route reaches
+    /// the runtime — exporting it in a terminal has no effect on ASTRA's own
+    /// launches.
+    static func authEnvironment(defaults: UserDefaults = .standard) -> [String: String] {
+        let raw = defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue
+        return authEnvironment(mode: AntigravityAuthMode(rawValue: raw) ?? .consumer)
+    }
+
+    /// Pure variant for call sites that already have the resolved mode
+    /// threaded through (e.g. `RuntimeReadinessConfiguration`), so the
+    /// live-account readiness check honors the same setting as a real
+    /// launch without re-reading `UserDefaults` itself.
+    static func authEnvironment(mode: AntigravityAuthMode) -> [String: String] {
+        guard mode == .adc else { return [:] }
+        return ["AGY_ADC_AUTH": "true"]
+    }
+
     static func buildCommand(
         executablePath: String,
         prompt: String,
@@ -157,7 +177,8 @@ enum AntigravityCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
-        permissionArguments: [String]
+        permissionArguments: [String],
+        defaults: UserDefaults = .standard
     ) -> AntigravityCLICommandPlan {
         var args = [
             "--print",
@@ -182,6 +203,9 @@ enum AntigravityCLIRuntime {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
+        for (key, value) in authEnvironment(defaults: defaults) {
+            extraVars[key] = value
+        }
         for (key, value) in taskEnvironment {
             extraVars[key] = value
         }
