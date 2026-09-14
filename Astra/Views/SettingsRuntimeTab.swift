@@ -320,10 +320,11 @@ struct SettingsRuntimeTab: View {
                 runtime: runtime,
                 cache: runtimeModelCache
             )
-            Picker("Default Reasoning Effort", selection: Binding(
-                get: { defaultReasoningEffortRaw.isEmpty ? (defaultOption ?? "") : defaultReasoningEffortRaw },
-                set: { defaultReasoningEffortRaw = $0 }
-            )) {
+            // `""` is the stored form of "let the provider decide", so it needs
+            // a row of its own: without one the picker cannot round-trip back
+            // to the provider default once an explicit level has been saved.
+            Picker("Default Reasoning Effort", selection: $defaultReasoningEffortRaw) {
+                Text(defaultOption.map { "Default (\($0.capitalized))" } ?? "Default").tag("")
                 ForEach(options, id: \.self) { option in
                     Text(option.capitalized).tag(option)
                 }

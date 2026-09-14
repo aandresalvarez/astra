@@ -129,11 +129,11 @@ public enum ASTRASchemaV17: VersionedSchema {
     }
 }
 
-/// V18 adds `AgentTask.reasoningEffort`: the user's chosen reasoning-effort
-/// label for this task's model, when the runtime/model combination supports
-/// one (currently Codex only). `nil` means "no override" — the provider's own
-/// default applies. Optional and additive, so the V17 -> V18 migration is
-/// lightweight.
+/// V18 adds `AgentTask.reasoningEffort` and its `TaskSchedule` twin: the
+/// user's chosen reasoning-effort label for that model, when the
+/// runtime/model combination supports one (currently Codex only). `nil` means
+/// "no override" — the provider's own default applies. Both are optional and
+/// additive, so the V17 -> V18 migration is lightweight.
 public enum ASTRASchemaV18: VersionedSchema {
     public static var versionIdentifier = Schema.Version(18, 0, 0)
 

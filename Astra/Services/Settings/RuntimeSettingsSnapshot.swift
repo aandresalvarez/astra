@@ -84,11 +84,22 @@ struct RuntimeSettingsSnapshot: Equatable, Sendable {
         for model: String,
         runtime: AgentRuntimeID
     ) -> String? {
+        normalizedReasoningEffort(defaultReasoningEffort, for: model, runtime: runtime)
+    }
+
+    /// The same resolution for an effort the user picked in a composer rather
+    /// than in settings. Surfaces that track their own pick need this: the
+    /// runtime gate belongs with the model lookup, not at each call site.
+    func normalizedReasoningEffort(
+        _ raw: String,
+        for model: String,
+        runtime: AgentRuntimeID
+    ) -> String? {
         guard AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort else {
             return nil
         }
         return RuntimeModelAvailability.normalizedReasoningEffort(
-            defaultReasoningEffort,
+            raw,
             for: model,
             runtime: runtime,
             cache: runtimeModelCache

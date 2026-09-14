@@ -1910,7 +1910,10 @@ struct ArchitectureFitnessTests {
             // 6_146 -> 6_148: reasoning-effort selection wires two lines onto the
             // existing ComposerToolbar call (a `reasoningEffort:` argument and an
             // `onReasoningEffortChange` callback binding straight to `task`).
-            "Astra/Views/TaskMainView.swift": .init(6_148, .owner("Task detail and run surface")),
+            // 6_148 -> 6_152: a routine built from a task now snapshots that task's
+            // reasoning effort alongside its runtime, model and budget, so a scheduled
+            // run stops silently dropping back to the provider default.
+            "Astra/Views/TaskMainView.swift": .init(6_152, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
@@ -1944,7 +1947,12 @@ struct ArchitectureFitnessTests {
             // AppStorage default, a ComposerToolbar argument/callback pair, and setting
             // the value on each of the three draft/task-creation call sites (saveDraft,
             // quickRun, createTaskFromSpec) so a new task starts with the chosen default.
-            "Astra/Views/ChatPanelView.swift": .init(3_085, .owner("Composer chat surface")),
+            // 3_085 -> 3_126 (PR #388 review follow-up): the composer's effort is one
+            // global preference shared across runtimes, so every write now resolves it
+            // against the runtime/model it is stored beside and re-resolves on a
+            // runtime/model switch. An open draft moves with it because
+            // runApprovedPlan() submits draftTask without a fresh saveDraft().
+            "Astra/Views/ChatPanelView.swift": .init(3_126, .owner("Composer chat surface")),
             // 2_900 -> 2_909: Claude Code reasoning-effort selection replaces the
             // hardcoded artifact-bootstrap-only "--effort low" with a resolved
             // value that also honors the task's own setting outside bootstrap.
@@ -2020,7 +2028,7 @@ struct ArchitectureFitnessTests {
             // (Codex, Copilot, then Claude Code).
             // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
             // Antigravity model-list fix.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_399, .owner("Architecture fitness test suite")),
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_407, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.

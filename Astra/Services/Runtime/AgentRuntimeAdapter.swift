@@ -2531,7 +2531,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
-        let options = AntigravityCLIRuntime.modelOptions(executablePath: executable)
+        let options = AntigravityCLIRuntime.modelOptions(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
             ?? AntigravityCLIRuntime.availableModelNames().map {
                 AntigravityCLIRuntime.AntigravityModelOption(id: $0, displayName: $0)
             }
@@ -2813,15 +2817,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
-        let authEnvironment = AntigravityCLIRuntime.authEnvironment(mode: authMode)
-        for (key, value) in authEnvironment {
-            extraVars[key] = value
-        }
-        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedHome.isEmpty {
-            extraVars["HOME"] = trimmedHome
-        }
-        let environment = AntigravityCLIRuntime.enrichedEnvironment(extraVariables: extraVars, mode: authMode)
+        let environment = AntigravityCLIRuntime.probeEnvironment(
+            mode: authMode,
+            providerHomeDirectory: providerHomeDirectory,
+            extraVariables: extraVars
+        )
 
         let result = await probes.run(
             path: executable,
@@ -2835,7 +2835,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 title: "Antigravity account",
                 detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
                 state: .blocked,
-                remediation: authEnvironment.isEmpty
+                remediation: authMode != .adc
                     ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
                     : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
             )

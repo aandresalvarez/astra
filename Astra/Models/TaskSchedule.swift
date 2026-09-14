@@ -52,6 +52,10 @@ public final class TaskSchedule {
     // Execution defaults
     public var runtimeID: String?
     public var model: String
+    /// Same meaning as `AgentTask.reasoningEffort` — nil is "provider default".
+    /// Snapshotted with the routine's other execution defaults so a routine
+    /// built from a task pinned to `high` doesn't quietly drop back down.
+    public var reasoningEffort: String?
     public var tokenBudget: Int
     public var skillIDs: [String]  // UUIDs of skills to attach to created tasks
 
@@ -87,6 +91,7 @@ public final class TaskSchedule {
         workspace: Workspace? = nil,
         runtimeID: String? = TaskExecutionDefaults.runtime.rawValue,
         model: String = TaskExecutionDefaults.model,
+        reasoningEffort: String? = nil,
         tokenBudget: Int = TaskExecutionDefaults.tokenBudget,
         scheduleType: ScheduleType = .once,
         nextFireDate: Date = Date()
@@ -98,6 +103,7 @@ public final class TaskSchedule {
         self.templateVariablesJSON = "{}"
         self.runtimeID = runtimeID
         self.model = model
+        self.reasoningEffort = reasoningEffort
         self.tokenBudget = tokenBudget
         self.skillIDs = []
         self.scheduleType = scheduleType

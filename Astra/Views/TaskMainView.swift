@@ -14,6 +14,7 @@ private struct ScheduleSourceContext {
     let goal: String
     let runtimeID: String
     let model: String
+    let reasoningEffort: String?
     let tokenBudget: Int
     let conversationContext: String
 }
@@ -5295,6 +5296,7 @@ struct TaskMainView: View {
             goal: task.goal,
             runtimeID: task.resolvedRuntimeID.rawValue,
             model: task.model,
+            reasoningEffort: task.reasoningEffort,
             tokenBudget: task.tokenBudget,
             conversationContext: conversationSnapshot
         )
@@ -5419,7 +5421,9 @@ struct TaskMainView: View {
         if let paths = json["routinePaths"] as? [String] { schedule.routinePaths = paths }
         schedule.runtimeID = source.runtimeID
         if let m = json["model"] as? String { schedule.model = m } else { schedule.model = source.model }
-
+        // Only carried when the routine kept the task's model: an effort label
+        // is per-model, so a JSON override drops it rather than mismatching.
+        schedule.reasoningEffort = schedule.model == source.model ? source.reasoningEffort : nil
         schedule.tokenBudget = source.tokenBudget
         schedule.conversationContext = source.conversationContext
         schedule.sourceTaskID = source.taskID

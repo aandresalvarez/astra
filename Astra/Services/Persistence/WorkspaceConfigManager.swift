@@ -470,7 +470,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct ScheduleConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, reasoningEffort: String? = nil, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
             self.id = id
             self.name = name
             self.isEnabled = isEnabled
@@ -481,6 +481,7 @@ public enum WorkspaceConfigManager {
             self.templateID = templateID
             self.templateVariablesJSON = templateVariablesJSON
             self.model = model
+            self.reasoningEffort = reasoningEffort
             self.tokenBudget = tokenBudget
             self.scheduleType = scheduleType
             self.nextFireDate = nextFireDate
@@ -510,6 +511,7 @@ public enum WorkspaceConfigManager {
         public var templateID: String?
         public var templateVariablesJSON: String
         public var model: String
+        public var reasoningEffort: String?
         public var tokenBudget: Int
         public var scheduleType: String
         public var nextFireDate: Date
@@ -1721,6 +1723,7 @@ public enum WorkspaceConfigManager {
             templateID: schedule.templateID?.uuidString,
             templateVariablesJSON: schedule.templateVariablesJSON,
             model: schedule.model,
+            reasoningEffort: schedule.reasoningEffort,
             tokenBudget: schedule.tokenBudget,
             scheduleType: schedule.scheduleType.rawValue,
             nextFireDate: schedule.nextFireDate,
@@ -2254,6 +2257,7 @@ public enum WorkspaceConfigManager {
             workspace: workspace,
             runtimeID: config.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
             model: config.model,
+            reasoningEffort: config.reasoningEffort,
             tokenBudget: config.tokenBudget,
             scheduleType: ScheduleType(rawValue: config.scheduleType) ?? .once,
             nextFireDate: config.nextFireDate

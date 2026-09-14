@@ -138,6 +138,17 @@ struct RuntimeSettingsSnapshotTests {
         #expect(snapshot.normalizedDefaultReasoningEffort(for: "haiku", runtime: .claudeCode) == nil)
         // A runtime with no effort knob at all never gets seeded.
         #expect(snapshot.normalizedDefaultReasoningEffort(for: "sonnet", runtime: .antigravityCLI) == nil)
+
+        // A composer tracks its own pick rather than the saved default, and
+        // that pick outlives the model it was made for: one global value is
+        // shared across every runtime the composer can switch to.
+        #expect(snapshot.normalizedReasoningEffort("low", for: "sonnet", runtime: .claudeCode) == "low")
+        // Not in sonnet's set, so it falls back to sonnet's own default
+        // rather than handing the provider a value it would reject.
+        #expect(snapshot.normalizedReasoningEffort("max", for: "sonnet", runtime: .claudeCode) == "medium")
+        // Reported, but with no effort knob — the pick has to be dropped.
+        #expect(snapshot.normalizedReasoningEffort("high", for: "haiku", runtime: .claudeCode) == nil)
+        #expect(snapshot.normalizedReasoningEffort("high", for: "sonnet", runtime: .antigravityCLI) == nil)
     }
 
     @Test("Runtime snapshot reads legacy default runtime and model keys")

@@ -127,6 +127,34 @@ struct AntigravityCLIRuntimeTests {
             == AntigravityCLIRuntime.authReadablePaths(userHome: "/tmp/home") + paths)
     }
 
+    /// Model discovery used to run `agy models` against the raw host
+    /// environment, so an ADC user (or one with a custom provider home) had
+    /// their catalog probed as a different account than every launch.
+    @Test("Out-of-band agy probes carry the selected auth route and provider home")
+    func probeEnvironmentCarriesAuthRouteAndProviderHome() {
+        let adc = AntigravityCLIRuntime.probeEnvironment(
+            mode: .adc,
+            providerHomeDirectory: " /tmp/agy-home ",
+            extraVariables: ["NO_COLOR": "1"]
+        )
+        #expect(adc["AGY_ADC_AUTH"] == "true")
+        #expect(adc["HOME"] == "/tmp/agy-home")
+        #expect(adc["NO_COLOR"] == "1")
+
+        // Consumer mode has to *remove* the inherited variable: `agy` keys ADC
+        // routing on its presence, so leaving it set would probe the wrong
+        // account no matter what value it held.
+        let consumer = AntigravityCLIRuntime.probeEnvironment(
+            mode: .consumer,
+            providerHomeDirectory: "",
+            extraVariables: ["AGY_ADC_AUTH": "true"]
+        )
+        #expect(consumer["AGY_ADC_AUTH"] == nil)
+        // A blank provider home leaves the inherited one alone rather than
+        // pointing `agy` at "".
+        #expect(consumer["HOME"] == ProcessInfo.processInfo.environment["HOME"])
+    }
+
     @Test("Version summary is deferred to readiness checks")
     func versionSummaryIsDeferredToReadinessChecks() {
         #expect(AntigravityCLIRuntime.versionSummary(executablePath: "/bin/agy") == nil)
