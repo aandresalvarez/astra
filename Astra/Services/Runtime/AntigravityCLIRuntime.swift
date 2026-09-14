@@ -24,6 +24,130 @@ enum AntigravityCLIRuntime {
         "GPT-OSS-120B"
     ]
 
+    /// One line of `agy models`: a launch-ready id (what actually gets
+    /// written to settings.json) paired with its human-facing name.
+    struct AntigravityModelOption: Equatable, Sendable {
+        let id: String
+        let displayName: String
+    }
+
+    /// A family of `agy` SKUs that differ only by a trailing reasoning-effort
+    /// marker (`gemini-3.8-flash-high` / `-medium` / `-low`), discovered by
+    /// stripping a marker shared by both the id and its display name.
+    /// Antigravity has no separate `--model`/`--effort` pairing at the
+    /// settings.json layer `agy` reads from — every SKU `agy models` prints
+    /// is already a complete, independently launchable id — so this grouping
+    /// exists purely to give the composer's Model/Effort menus the same
+    /// two-step shape the other providers have. `fullModelID` always
+    /// resolves a (base, effort) choice back to one of the original ids
+    /// before it reaches `AgentTask.model`, so that field's meaning never
+    /// changes: it is always the exact string `agy` understands.
+    struct AntigravityModelGroup: Equatable, Sendable {
+        let baseID: String
+        let baseDisplayName: String
+        /// effort -> full id, e.g. "high" -> "gemini-3.8-flash-high".
+        let efforts: [String: String]
+
+        static let displayOrder = ["low", "medium", "high"]
+
+        var sortedEfforts: [String] {
+            Self.displayOrder.filter { efforts[$0] != nil }
+        }
+
+        /// Effort to preselect when the user switches to this base model
+        /// without picking one explicitly — "medium" when offered, else the
+        /// next best thing, never silently defaulting to the priciest tier.
+        var preferredDefaultEffort: String? {
+            for candidate in ["medium", "high", "low"] where efforts[candidate] != nil {
+                return candidate
+            }
+            return sortedEfforts.first
+        }
+    }
+
+    private static let effortMarkers: [(idSuffix: String, displaySuffix: String, effort: String)] = [
+        ("-high", " (High)", "high"),
+        ("-medium", " (Medium)", "medium"),
+        ("-low", " (Low)", "low"),
+    ]
+
+    /// Groups `agy models` options by stripping a trailing effort marker
+    /// that both the id and display name agree on. A model with no matching
+    /// marker (Claude's ids, which take no `--effort`) becomes its own
+    /// single-entry group with no efforts, so its Effort menu stays hidden.
+    static func groupModelOptions(_ options: [AntigravityModelOption]) -> [AntigravityModelGroup] {
+        var order: [String] = []
+        var baseDisplayNames: [String: String] = [:]
+        var effortsByBase: [String: [String: String]] = [:]
+
+        for option in options {
+            let split = splitEffort(option)
+            let baseID = split?.baseID ?? option.id
+            let baseDisplayName = split?.baseDisplayName ?? option.displayName
+            if baseDisplayNames[baseID] == nil {
+                order.append(baseID)
+            }
+            baseDisplayNames[baseID] = baseDisplayName
+            if let effort = split?.effort {
+                effortsByBase[baseID, default: [:]][effort] = option.id
+            }
+        }
+
+        return order.map { baseID in
+            AntigravityModelGroup(
+                baseID: baseID,
+                baseDisplayName: baseDisplayNames[baseID] ?? baseID,
+                efforts: effortsByBase[baseID] ?? [:]
+            )
+        }
+    }
+
+    private static func splitEffort(
+        _ option: AntigravityModelOption
+    ) -> (baseID: String, baseDisplayName: String, effort: String)? {
+        for marker in effortMarkers {
+            guard option.id.hasSuffix(marker.idSuffix),
+                  option.displayName.hasSuffix(marker.displaySuffix) else { continue }
+            let baseID = String(option.id.dropLast(marker.idSuffix.count))
+            let baseDisplayName = String(option.displayName.dropLast(marker.displaySuffix.count))
+            guard !baseID.isEmpty, !baseDisplayName.isEmpty else { continue }
+            return (baseID, baseDisplayName, marker.effort)
+        }
+        return nil
+    }
+
+    /// Resolves a (base, effort) choice from the composer back to one of
+    /// `agy`'s real model ids. Falls back to `base` unchanged when there is
+    /// no matching SKU — including when `base` is already a complete id
+    /// (nothing to append to) — which keeps this safe to call on values
+    /// persisted before this grouping existed.
+    static func fullModelID(base: String, effort: String?, groups: [AntigravityModelGroup]) -> String {
+        guard let effort,
+              let group = groups.first(where: { $0.baseID == base }),
+              let fullID = group.efforts[effort] else {
+            return base
+        }
+        return fullID
+    }
+
+    /// Inverse of `fullModelID`: given the id currently stored on the task,
+    /// finds which group it belongs to and which effort (if any) it
+    /// represents, so the composer can preselect both menus correctly.
+    static func currentSelection(
+        model: String,
+        groups: [AntigravityModelGroup]
+    ) -> (baseID: String, effort: String?) {
+        for group in groups {
+            if group.baseID == model {
+                return (group.baseID, nil)
+            }
+            for (effort, fullID) in group.efforts where fullID == model {
+                return (group.baseID, effort)
+            }
+        }
+        return (model, nil)
+    }
+
     static func detectPath() -> String {
         RuntimePathResolver.detectAntigravityPath()
     }
@@ -71,28 +195,51 @@ enum AntigravityCLIRuntime {
     }
 
     static func modelNames(executablePath: String) -> [String]? {
+        modelOptions(executablePath: executablePath)?.map(\.id)
+    }
+
+    static func modelOptions(executablePath: String) -> [AntigravityModelOption]? {
         guard FileManager.default.isExecutableFile(atPath: executablePath),
               let output = runProbe(executablePath: executablePath, args: ["models"], timeoutSeconds: 8) else {
             return nil
         }
-        let models = parseModelNames(output)
-        return models.isEmpty ? nil : models
+        let options = parseModelOptions(output)
+        return options.isEmpty ? nil : options
     }
 
-    /// Parses `agy models` output: one model per line. The strings double as
-    /// the `--model` value and the display name; parentheticals like
-    /// "(Thinking)" or "(Low)" are part of the model identity, not selection
-    /// markers, so lines are kept verbatim.
+    /// Parses `agy models` output into (id, display name) pairs. Real output
+    /// is tab-separated (`<id>\t<display name>`, confirmed against the
+    /// installed CLI); a bare line with no tab — as in the static
+    /// `bundledModelNames` fallback — keeps that string as both id and
+    /// display name. `agy` also prints a `Fetching available models...`
+    /// progress line to stderr while the table loads, and `runProbe` merges
+    /// stdout+stderr, so that line (and the "Available models"/"Tip:"
+    /// header lines) must be filtered before it is mistaken for a model.
+    static func parseModelOptions(_ output: String) -> [AntigravityModelOption] {
+        var seen: Set<String> = []
+        var options: [AntigravityModelOption] = []
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let lower = line.lowercased()
+            guard !lower.hasPrefix("available models"),
+                  !lower.hasPrefix("tip:"),
+                  !lower.hasPrefix("fetching") else { continue }
+            let columns = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let id = columns[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
+            let displayName = columns.count > 1
+                ? columns[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            options.append(AntigravityModelOption(id: id, displayName: displayName.isEmpty ? id : displayName))
+        }
+        return options
+    }
+
+    /// `[String]` twin of `parseModelOptions`, for callers that only need
+    /// the launch-ready ids (e.g. a log line).
     static func parseModelNames(_ output: String) -> [String] {
-        let lines = output
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { line in
-                guard !line.isEmpty else { return false }
-                let lower = line.lowercased()
-                return !lower.hasPrefix("available models") && !lower.hasPrefix("tip:")
-            }
-        return RuntimeModelAvailability.cleanProviderModels(lines)
+        RuntimeModelAvailability.cleanProviderModels(parseModelOptions(output).map(\.id))
     }
 
     static func configuredModel(settingsURL: URL = settingsURL()) -> String? {

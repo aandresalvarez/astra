@@ -358,42 +358,95 @@ struct ComposerToolbar: View {
                 }
             }
 
-            Menu {
-                let candidates = runtimeModels(for: resolvedRuntime)
-                let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
-                    Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
-                    Divider()
-                }
-                ForEach(candidates, id: \.self) { candidate in
-                    Button { onModelChange?(candidate) } label: {
-                        ModelMenuItemLabel(
-                            presentation: modelPresentation(candidate, runtime: resolvedRuntime),
-                            isSelected: model == candidate
-                        )
-                    }
-                }
-            } label: {
-                Label("Model", systemImage: "cpu")
-            }
+            if resolvedRuntime == .antigravityCLI {
+                let groups = antigravityModelGroups
+                let selection = AntigravityCLIRuntime.currentSelection(model: model, groups: groups)
+                let selectedGroup = groups.first { $0.baseID == selection.baseID }
 
-            if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
                 Menu {
-                    ForEach(reasoningEffortOptions, id: \.self) { option in
-                        Button { onReasoningEffortChange?(option) } label: {
+                    ForEach(groups, id: \.baseID) { group in
+                        Button {
+                            onModelChange?(AntigravityCLIRuntime.fullModelID(
+                                base: group.baseID,
+                                effort: group.baseID == selection.baseID ? selection.effort : group.preferredDefaultEffort,
+                                groups: groups
+                            ))
+                        } label: {
                             HStack {
-                                Text(option.capitalized)
-                                if reasoningEffort == option {
+                                Text(group.baseDisplayName)
+                                if group.baseID == selection.baseID {
                                     Image(systemName: "checkmark")
                                 }
                             }
                         }
                     }
                 } label: {
-                    Label(
-                        "Reasoning: \((reasoningEffort ?? defaultReasoningEffort)?.capitalized ?? "Default")",
-                        systemImage: "gauge.with.needle"
-                    )
+                    Label("Model", systemImage: "cpu")
+                }
+
+                if let selectedGroup, !selectedGroup.sortedEfforts.isEmpty {
+                    Menu {
+                        ForEach(selectedGroup.sortedEfforts, id: \.self) { effort in
+                            Button {
+                                onModelChange?(AntigravityCLIRuntime.fullModelID(
+                                    base: selectedGroup.baseID,
+                                    effort: effort,
+                                    groups: groups
+                                ))
+                            } label: {
+                                HStack {
+                                    Text(effort.capitalized)
+                                    if selection.effort == effort {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(
+                            "Reasoning: \(selection.effort?.capitalized ?? "Default")",
+                            systemImage: "gauge.with.needle"
+                        )
+                    }
+                }
+            } else {
+                Menu {
+                    let candidates = runtimeModels(for: resolvedRuntime)
+                    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
+                        Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
+                        Divider()
+                    }
+                    ForEach(candidates, id: \.self) { candidate in
+                        Button { onModelChange?(candidate) } label: {
+                            ModelMenuItemLabel(
+                                presentation: modelPresentation(candidate, runtime: resolvedRuntime),
+                                isSelected: model == candidate
+                            )
+                        }
+                    }
+                } label: {
+                    Label("Model", systemImage: "cpu")
+                }
+
+                if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
+                    Menu {
+                        ForEach(reasoningEffortOptions, id: \.self) { option in
+                            Button { onReasoningEffortChange?(option) } label: {
+                                HStack {
+                                    Text(option.capitalized)
+                                    if reasoningEffort == option {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(
+                            "Reasoning: \((reasoningEffort ?? defaultReasoningEffort)?.capitalized ?? "Default")",
+                            systemImage: "gauge.with.needle"
+                        )
+                    }
                 }
             }
 
@@ -987,6 +1040,20 @@ struct ComposerToolbar: View {
             for: runtime,
             cache: runtimeModelCache
         )
+    }
+
+    /// Antigravity's model list re-grouped into base models + reasoning
+    /// efforts for display, mirroring the other providers' Model/Effort
+    /// split even though `agy` has no separate `--effort` at launch time —
+    /// see `AntigravityCLIRuntime.AntigravityModelGroup`.
+    private var antigravityModelGroups: [AntigravityCLIRuntime.AntigravityModelGroup] {
+        let options = runtimeModels(for: .antigravityCLI).map { id in
+            AntigravityCLIRuntime.AntigravityModelOption(
+                id: id,
+                displayName: RuntimeModelAvailability.displayName(for: id, runtime: .antigravityCLI, cache: runtimeModelCache)
+            )
+        }
+        return AntigravityCLIRuntime.groupModelOptions(options)
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {

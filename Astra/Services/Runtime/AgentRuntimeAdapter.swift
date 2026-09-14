@@ -2531,13 +2531,25 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
-        let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
-            ?? AntigravityCLIRuntime.availableModelNames()
-        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        let options = AntigravityCLIRuntime.modelOptions(executablePath: executable)
+            ?? AntigravityCLIRuntime.availableModelNames().map {
+                AntigravityCLIRuntime.AntigravityModelOption(id: $0, displayName: $0)
+            }
+        let details = options.map { option in
+            RuntimeModelDetail(
+                value: option.id,
+                displayName: option.displayName == option.id ? nil : option.displayName
+            )
+        }
+        await RuntimeModelAvailability.persistObservedAvailableModelDetails(
+            details,
+            for: id,
+            authority: modelAvailabilityAuthority
+        )
         return RuntimeReadinessCheck(
             id: "antigravity-models",
             title: "Antigravity models",
-            detail: "Available: \(models.joined(separator: ", "))",
+            detail: "Available: \(options.map(\.id).joined(separator: ", "))",
             state: .ready,
             remediation: nil
         )

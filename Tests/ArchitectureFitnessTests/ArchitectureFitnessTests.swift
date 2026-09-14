@@ -1951,7 +1951,11 @@ struct ArchitectureFitnessTests {
             // 2_909 -> 2_917: the Antigravity live-account readiness check threads
             // through the ADC auth mode instead of only the main launch path
             // honoring it (a live run found the readiness card still blocked).
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_917, .owner("Runtime adapter registry")),
+            // 2_917 -> 2_928: modelAvailabilityCheck now persists per-model
+            // RuntimeModelDetail (id + display name) instead of the raw,
+            // tab-corrupted `agy models` lines it used to hand straight to
+            // the flat-string cache.
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_929, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
@@ -2014,7 +2018,9 @@ struct ArchitectureFitnessTests {
             // entry was cut to one line first; raising covers what is left.
             // 2_375 -> 2_387: ratchet bumps for reasoning-effort selection
             // (Codex, Copilot, then Claude Code).
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_393, .owner("Architecture fitness test suite")),
+            // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
+            // Antigravity model-list fix.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_399, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
