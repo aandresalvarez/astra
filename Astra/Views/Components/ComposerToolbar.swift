@@ -431,6 +431,18 @@ struct ComposerToolbar: View {
 
                 if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
                     Menu {
+                        // `nil` is the supported way to say "let the provider
+                        // decide", and the label already reads "Default" for
+                        // it — without this entry a task that has ever been
+                        // given an explicit effort can never be handed back.
+                        Button { onReasoningEffortChange?(nil) } label: {
+                            HStack {
+                                Text("Default")
+                                if reasoningEffort == nil {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
                         ForEach(reasoningEffortOptions, id: \.self) { option in
                             Button { onReasoningEffortChange?(option) } label: {
                                 HStack {

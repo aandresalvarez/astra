@@ -530,7 +530,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct TaskConfig: Codable, Sendable {
-        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, reasoningEffort: String? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
             self.id = id
             self.title = title
             self.goal = goal
@@ -545,6 +545,7 @@ public enum WorkspaceConfigManager {
             self.model = model
             self.runtimeID = runtimeID
             self.runtimeExplicitlySelected = runtimeExplicitlySelected
+            self.reasoningEffort = reasoningEffort
             self.costUSD = costUSD
             self.sessionId = sessionId
             self.maxTurns = maxTurns
@@ -594,6 +595,7 @@ public enum WorkspaceConfigManager {
         public var model: String
         public var runtimeID: String?
         public var runtimeExplicitlySelected: Bool?
+        public var reasoningEffort: String?
         public var costUSD: Double
         public var sessionId: String?
         public var maxTurns: Int
@@ -1948,6 +1950,7 @@ public enum WorkspaceConfigManager {
             model: task.model,
             runtimeID: task.runtimeID,
             runtimeExplicitlySelected: task.runtimeExplicitlySelected ? true : nil,
+            reasoningEffort: task.reasoningEffort,
             costUSD: task.costUSD,
             sessionId: task.sessionId,
             maxTurns: task.maxTurns,
@@ -2434,6 +2437,7 @@ public enum WorkspaceConfigManager {
         task.tokensUsed = config.tokensUsed
         task.runtimeID = importedRuntime.rawValue
         task.runtimeExplicitlySelected = config.runtimeExplicitlySelected ?? false
+        task.reasoningEffort = config.reasoningEffort
         task.costUSD = config.costUSD
         task.sessionId = config.sessionId
         task.maxTurns = config.maxTurns

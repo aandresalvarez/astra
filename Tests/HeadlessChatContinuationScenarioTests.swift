@@ -1417,6 +1417,7 @@ extension HeadlessChatScenarioTests {
         // follow-up should carry it forward exactly like a fork already does
         // (AgentTaskForkService.fork), not silently reset to the default.
         task.runtimeExplicitlySelected = true
+        task.reasoningEffort = "high"
         task.chainedGoal = "Second step"
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
 
@@ -1427,5 +1428,6 @@ extension HeadlessChatScenarioTests {
         let chained = try #require(allTasks.first { $0.chainedFromID == task.id })
         #expect(chained.runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(chained.runtimeExplicitlySelected == true)
+        #expect(chained.reasoningEffort == "high")
     }
 }
