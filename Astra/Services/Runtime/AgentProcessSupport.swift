@@ -352,9 +352,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     let tokenBudget: Int
     let budgetEnforcementMode: BudgetEnforcementMode
-    /// False when `tokenBudget` is the implicit runaway ceiling rather than a
-    /// number the user chose. See `effectiveBudgetEnforcementMode`.
-    let isUserConfiguredBudget: Bool
     let maxTurns: Int
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
@@ -504,23 +501,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
     var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
-    /// Which enforcement mode actually applies to `tokenBudget`.
-    ///
-    /// `budgetEnforcementMode` is a preference about *the user's* budget: in
-    /// `.warning` mode ASTRA says "you have gone past what you asked for" and
-    /// keeps going, which is the right answer for a number the user chose and
-    /// can revise. The implicit runaway ceiling is not that number. It exists
-    /// only to bound a provider that has stopped making sense, the user never
-    /// set it, and no preference they expressed was about it — so warning on it
-    /// would log a line nobody asked for and then let the run keep spending. It
-    /// stops, whatever the mode says.
-    private var effectiveBudgetEnforcementMode: BudgetEnforcementMode {
-        isUserConfiguredBudget ? budgetEnforcementMode : .hardStop
-    }
     init(
         tokenBudget: Int,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
-        isUserConfiguredBudget: Bool = true,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
@@ -537,7 +520,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
-        self.isUserConfiguredBudget = isUserConfiguredBudget
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
@@ -731,7 +713,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if effectiveBudgetEnforcementMode == .warning {
+                if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "stream_usage_budget_exceeded",
                         fields: [
@@ -753,7 +735,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if effectiveBudgetEnforcementMode == .warning {
+                if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "reported_budget_exceeded",
                         fields: [
@@ -806,7 +788,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 "estimated_tokens": String(_estimatedTokens),
                 "token_budget": String(tokenBudget)
             ]
-            if effectiveBudgetEnforcementMode == .warning {
+            if budgetEnforcementMode == .warning {
                 return recordBudgetWarning(
                     reason: "estimated_budget_exceeded",
                     fields: fields,
@@ -1595,10 +1577,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         var auditFields = fields
         auditFields["reason"] = reason
         auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
-        // Without this, a hard stop under an app configured for Warning Only
-        // reads as a bug in the log. It isn't: the ceiling that fired is the
-        // implicit one, which the mode does not govern.
-        auditFields["budget_source"] = isUserConfiguredBudget ? "user" : "runaway_ceiling"
+        auditFields["budget_source"] = "user"
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .error)
         _budgetExceeded = true
         process?.terminate()

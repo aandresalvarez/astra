@@ -2069,14 +2069,13 @@ struct ArchitectureFitnessTests {
             // moved to AgentExecutionScopedProcess.swift. Ratcheted down to what is
             // left rather than banking the headroom — this file is the stream monitor
             // now, and process-launch plumbing belongs in the other one.
-            // 2_095 -> 2_225 on 2026-09-08 (PR #383 review follow-up): four
-            // stream-monitor decisions the file could not make before, each
-            // needing its "why" inline — the implicit runaway ceiling is not
-            // governed by the user's enforcement mode, the semantic-stall branch
-            // must still win when its deadline coincides with the idle one, a
-            // provider gets a bounded wait to act on stdin EOF before the signal
-            // ladder, and a repeated deferral traces once per silence window
-            // rather than once per poll.
+            // 2_095 -> 2_225 on 2026-09-08 (PR #383 review follow-up): the
+            // semantic-stall branch must still win when its deadline coincides
+            // with the idle one, a provider gets a bounded wait to act on stdin
+            // EOF before the signal ladder, and a repeated deferral traces once
+            // per silence window rather than once per poll. The token-ceiling
+            // branch added in that review was later removed when Disabled was
+            // restored to its literal unlimited meaning.
             // 2_225 -> 2_255 on 2026-09-08 (PR #383, third review round): the
             // coincident-deadline fix above was necessary and not sufficient —
             // a deliverable task's window is `idleTimeout * 2`, so under 360s it
@@ -2150,17 +2149,16 @@ struct ArchitectureFitnessTests {
             // buys one extension before the kill, so the cases that used to assert
             // "one evaluation terminates" have to drive the escalation step too and
             // say why the first call returns false.
-            // 3_570 -> 3_685 (PR #383 review follow-up): the implicit runaway
-            // ceiling enforces itself in Warning Only mode, which is only
-            // observable by driving the monitor in both modes against both a
-            // chosen budget and an unset one.
+            // 3_570 -> 3_685 (PR #383 review follow-up): added budget-mode
+            // coverage that was later reduced when an unset budget returned to
+            // its literal unlimited meaning.
             // 3_685 -> 3_775 (PR #383, third review round): the artifact window
             // now outranks a shorter idle deadline, and that is three tests, not
             // one — it defers, a run with no progress at all is still killed on
             // the idle deadline, and the deferral ends. Dropping the middle one
             // would let "every silent run is immortal for an extra window" pass.
-            // 3_775 -> 3_780 (PR #383 review fixes): the implicit ceiling now
-            // scales with team size, the way a chosen budget already did.
+            // 3_775 -> 3_780 (PR #383 review fixes): budget scaling coverage,
+            // later revised so Disabled remains unlimited for a team.
             // 3_780 -> 3_818: a regression test tying the Codex parser to the
             // monitor, after a progress note was mistaken for the end of a turn
             // and killed a run that was still working.

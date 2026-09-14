@@ -7,35 +7,17 @@ import ASTRAPersistence
 struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     let effectiveTokenBudget: Int
     let tokensUsed: Int
-    /// Whether the user actually chose this budget.
-    ///
-    /// An unset budget used to resolve to `Int.max`, which let one value mean
-    /// two different things: "no ceiling exists" and "do not show the user
-    /// budget messages". Now that an unset budget resolves to a finite runaway
-    /// ceiling, those have to be tracked separately — the ceiling is real and
-    /// should stop a run, but the messages quote `task.tokenBudget`, which is
-    /// still 0.
-    ///
-    /// Stated by every caller, never inferred. Deriving it from
-    /// `effectiveTokenBudget != Int.max` was a fair proxy while an unset budget
-    /// resolved to `Int.max`; now that it resolves to a finite ceiling that test
-    /// answers "user-configured" for every run, so a call site that left it to a
-    /// default would silently hand the ceiling the user's Warning Only
-    /// preference — the exact bug this flag exists to prevent.
-    let isUserConfigured: Bool
 
-    init(effectiveTokenBudget: Int, tokensUsed: Int, isUserConfigured: Bool) {
+    init(effectiveTokenBudget: Int, tokensUsed: Int) {
         self.effectiveTokenBudget = effectiveTokenBudget
         self.tokensUsed = tokensUsed
-        self.isUserConfigured = isUserConfigured
     }
 
     @MainActor
     init(task: AgentTask) {
         self.init(
             effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: task),
-            tokensUsed: task.tokensUsed,
-            isUserConfigured: task.tokenBudget != 0
+            tokensUsed: task.tokensUsed
         )
     }
 
@@ -43,16 +25,9 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
         hasEnforceableBudget && tokensUsed > effectiveTokenBudget
     }
 
-    /// Whether any ceiling applies — the user's budget or the implicit runaway
-    /// default. Gates enforcement.
+    /// `Int.max` is the effective representation of the user's Disabled choice.
     var hasEnforceableBudget: Bool {
         effectiveTokenBudget != Int.max
-    }
-
-    /// Whether budget reporting is meaningful to the user. Gates the warning
-    /// event, whose text quotes a budget the user never set.
-    var hasEnabledBudget: Bool {
-        isUserConfigured
     }
 }
 
@@ -74,18 +49,6 @@ enum AgentRuntimeBudgetPolicy {
         let estimatedInputTokens = promptTokens + launchOverhead
         guard estimatedInputTokens > tokenBudget else { return true }
 
-        // The third of three places this distinction has to be made, and the
-        // one that was missed. `effectiveTokenBudget(for:)` substitutes ASTRA's
-        // runaway ceiling when the user set no budget, so `tokenBudget` is
-        // finite here either way and the branches below could not tell the two
-        // apart. Warning Only is a preference about *your* number; the ceiling
-        // is ASTRA's, and a prompt that clears it before the provider has read
-        // a single token is exactly the runaway this pre-launch check exists to
-        // catch. Same rule as `AgentProcessMonitor.effectiveBudgetEnforcementMode`
-        // mid-stream and `shouldTreatAsBudgetExceeded` after exit.
-        let isUserConfiguredBudget = task.tokenBudget != 0
-        let effectiveMode: BudgetEnforcementMode = isUserConfiguredBudget ? budgetEnforcementMode : .hardStop
-
         // The launch overhead models the provider's fixed billed runtime context
         // (e.g. Claude Code's system prompt + tool schemas), not task work the user
         // can trim. When the prompt itself fits the budget and only the fixed floor
@@ -105,21 +68,16 @@ enum AgentRuntimeBudgetPolicy {
             "runtime": runtime.rawValue,
             "token_budget": String(tokenBudget),
             "configured_task_budget": String(task.tokenBudget),
-            "budget_source": isUserConfiguredBudget ? "task" : "runaway_ceiling",
-            // The mode that decided this, not the one that was asked for. They
-            // differ exactly when the ceiling overrode Warning Only, and a log
-            // reading `enforcement=warning` next to a stopped run would be the
-            // one line that makes the stop look like a bug.
-            "enforcement": effectiveMode.rawValue,
-            "configured_enforcement": budgetEnforcementMode.rawValue
+            "budget_source": "task",
+            "enforcement": budgetEnforcementMode.rawValue
         ]
 
-        if effectiveMode == .warning && isLaunchOverheadFloor {
+        if budgetEnforcementMode == .warning && isLaunchOverheadFloor {
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .debug)
             return true
         }
 
-        if effectiveMode == .warning {
+        if budgetEnforcementMode == .warning {
             let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
             modelContext.insert(TaskEvent(
                 task: task,
@@ -135,15 +93,7 @@ enum AgentRuntimeBudgetPolicy {
         run.completedAt = Date()
         run.typedStopReason = .maxBudgetReached
         TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
-        // Two wordings, for the same reason the budget-exceeded event in
-        // `AgentRuntimeWorker` has two: "the task budget" names a number the
-        // user can go and change, and when the ceiling is what fired there is
-        // no such number — `task.tokenBudget` is 0. Telling someone to raise a
-        // budget they never set sends them looking for a setting that would not
-        // have prevented this.
-        let message = isUserConfiguredBudget
-            ? "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
-            : "Launch estimate exceeds ASTRA's runaway safety ceiling before launch (\(estimatedInputTokens)/\(tokenBudget) tokens). No token budget was set for this task, so this ceiling applied. Provider was not started."
+        let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.Budget.exceeded,
@@ -165,33 +115,9 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        // Enforcement, not reporting: a run that blows through the implicit
-        // runaway ceiling still has to be stopped and labelled, even though the
-        // user never set a budget of their own.
         guard budget.hasEnforceableBudget else { return false }
-        // `.warning` is a preference about the user's own budget — go past the
-        // number you chose and ASTRA tells you rather than stopping you. It says
-        // nothing about the runaway ceiling, which the user never chose, so a
-        // ceiling breach is a hard stop in either mode. Matches
-        // `AgentProcessMonitor.effectiveBudgetEnforcementMode`, which decides the
-        // same question mid-stream; this is the post-hoc half, for the tokens the
-        // provider only reports at the end.
-        let enforcesReportedOverage = budgetEnforcementMode == .hardStop || !budget.isUserConfigured
         return result.budgetExceeded ||
-            (enforcesReportedOverage && hasReportedTokensAboveBudget(budget: budget))
-    }
-
-    @MainActor
-    static func shouldTreatAsBudgetExceeded(
-        result: AgentProcessResult,
-        task: AgentTask,
-        budgetEnforcementMode: BudgetEnforcementMode
-    ) -> Bool {
-        shouldTreatAsBudgetExceeded(
-            result: result,
-            budget: AgentRuntimeBudgetSnapshot(task: task),
-            budgetEnforcementMode: budgetEnforcementMode
-        )
+            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }
 
     @MainActor
@@ -203,9 +129,10 @@ enum AgentRuntimeBudgetPolicy {
         phase: RunPhase,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
-        guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
+        let budget = AgentRuntimeBudgetSnapshot(task: task)
+        guard budget.hasEnforceableBudget else { return }
 
-        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
+        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(budget: budget)
         guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
             return
         }
@@ -234,10 +161,5 @@ enum AgentRuntimeBudgetPolicy {
 
     static func hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot) -> Bool {
         budget.hasReportedTokensAboveBudget
-    }
-
-    @MainActor
-    static func hasReportedTokensAboveBudget(task: AgentTask) -> Bool {
-        hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot(task: task))
     }
 }

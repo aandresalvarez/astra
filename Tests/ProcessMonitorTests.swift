@@ -3663,23 +3663,18 @@ struct RuntimeBudgetProfileTests {
 
     @Test("Effective budget scales team budgets without audit side effects")
     func effectiveBudgetScalesTeamBudgets() {
-        // An unset budget resolves to a bounded default, not `Int.max`: the
-        // silence watchdog is no longer the app's de-facto spend limit, so the
-        // spend limit has to be an actual number. And a team multiplies it the
-        // way it multiplies a chosen budget — the usage a team reports is the
-        // sum over its members, so a flat ceiling would fire on healthy team
-        // runs before anything else.
+        // Disabled stays unlimited for both solo and team runs. Resolve that
+        // sentinel before multiplication so `Int.max` cannot overflow.
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: true,
             teamSize: 3
-        ) == RuntimeProgressSignals.defaultTokenBudget * 3)
+        ) == Int.max)
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: false,
             teamSize: 3
-        ) == RuntimeProgressSignals.defaultTokenBudget)
-        #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)
+        ) == Int.max)
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 100_000,
             usesAgentTeam: false,
@@ -3698,45 +3693,34 @@ struct RuntimeBudgetProfileTests {
     }
 }
 
-// MARK: - Review follow-up: the implicit ceiling is not the user's budget
-
-/// `BudgetEnforcementMode.warning` is a preference about the budget the *user*
-/// chose: go past the number you set and ASTRA tells you rather than stopping
-/// you. The implicit runaway ceiling is a different thing — the user never set
-/// it, it exists only to bound a provider that has stopped making sense, and
-/// warning on it would log a line nobody asked for and then let the run keep
-/// spending. `.warning` is also the app's default enforcement mode, so this is
-/// the configuration almost every run is in.
-@Suite("Implicit runaway ceiling enforcement")
+@Suite("Disabled token budget")
 @MainActor
-struct ImplicitBudgetCeilingTests {
+struct DisabledTokenBudgetTests {
 
-    @Test("The implicit ceiling hard-stops even when the app is in warning mode")
-    func implicitCeilingHardStopsInWarningMode() {
+    @Test("Disabled budget does not stop reported usage")
+    func disabledBudgetDoesNotStopReportedUsage() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
-            tokenBudget: 1_000,
-            budgetEnforcementMode: .warning,
-            isUserConfiguredBudget: false
+            tokenBudget: Int.max,
+            budgetEnforcementMode: .hardStop
         )
         let process = MonitorMockProcess()
 
         let shouldKill = monitor.processEvent(
-            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            .usage(totalInputTokens: 32_000_000, totalOutputTokens: 46_266),
             process: process
         )
 
-        #expect(shouldKill == true)
-        #expect(monitor.budgetExceeded == true)
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
         #expect(monitor.budgetWarning == false)
-        #expect(process.didTerminate)
+        #expect(!process.didTerminate)
     }
 
-    @Test("A budget the user chose still honours warning mode")
-    func userConfiguredBudgetStillWarns() {
+    @Test("Configured budget still honours warning mode")
+    func configuredBudgetStillWarns() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: 1_000,
-            budgetEnforcementMode: .warning,
-            isUserConfiguredBudget: true
+            budgetEnforcementMode: .warning
         )
         let process = MonitorMockProcess()
 
@@ -3751,39 +3735,11 @@ struct ImplicitBudgetCeilingTests {
         #expect(process.didTerminate == false)
     }
 
-    /// The reported-usage half of the same rule. `shouldTreatAsBudgetExceeded`
-    /// runs after the process exits, on the tokens the provider only accounts
-    /// for at the end, and it gated on `budgetEnforcementMode == .hardStop`
-    /// alone — so a run that sailed past the ceiling and then reported it was
-    /// recorded as a normal completion.
-    @Test("Reported usage above the implicit ceiling is enforced in either mode")
-    func reportedUsageAboveImplicitCeilingIsEnforced() {
-        let ceiling = AgentRuntimeBudgetSnapshot(
-            effectiveTokenBudget: RuntimeProgressSignals.defaultTokenBudget,
-            tokensUsed: RuntimeProgressSignals.defaultTokenBudget + 1,
-            isUserConfigured: false
-        )
-        let result = AgentProcessResult(exitCode: 0)
-
-        #expect(ceiling.hasEnforceableBudget)
-        #expect(ceiling.hasReportedTokensAboveBudget)
-        for mode in [BudgetEnforcementMode.hardStop, .warning] {
-            #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
-                result: result,
-                budget: ceiling,
-                budgetEnforcementMode: mode
-            ), "ceiling not enforced in \(mode.rawValue) mode")
-        }
-    }
-
-    /// And the user's own budget keeps the behaviour it had: warning mode is
-    /// still allowed to let a reported overage through.
     @Test("Reported usage above a chosen budget still follows the mode")
     func reportedUsageAboveChosenBudgetFollowsMode() {
         let chosen = AgentRuntimeBudgetSnapshot(
             effectiveTokenBudget: 10,
-            tokensUsed: 11,
-            isUserConfigured: true
+            tokensUsed: 11
         )
         let result = AgentProcessResult(exitCode: 0)
 
@@ -3799,19 +3755,19 @@ struct ImplicitBudgetCeilingTests {
         ))
     }
 
-    /// The snapshot's own default infers `isUserConfigured` from
-    /// `effectiveTokenBudget != Int.max`. That was a fair proxy while an unset
-    /// budget resolved to `Int.max`; now that it resolves to a finite ceiling,
-    /// anything reading the ceiling through that default sees a user-configured
-    /// budget, so the two live call sites have to state it.
-    @Test("An unset task budget produces a snapshot that is not user-configured")
-    func unsetTaskBudgetIsNotUserConfigured() {
-        let task = AgentTask(title: "Ceiling", goal: "Goal", tokenBudget: 0)
-        let snapshot = AgentRuntimeBudgetSnapshot(task: task)
+    @Test("Disabled budget ignores historical task usage after a run")
+    func disabledBudgetIgnoresHistoricalTaskUsage() {
+        let disabled = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: Int.max,
+            tokensUsed: 32_046_266
+        )
 
-        #expect(snapshot.isUserConfigured == false)
-        #expect(snapshot.hasEnabledBudget == false)
-        #expect(snapshot.hasEnforceableBudget)
-        #expect(snapshot.effectiveTokenBudget == RuntimeProgressSignals.defaultTokenBudget)
+        #expect(!disabled.hasEnforceableBudget)
+        #expect(!disabled.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: AgentProcessResult(exitCode: 0),
+            budget: disabled,
+            budgetEnforcementMode: .hardStop
+        ))
     }
 }

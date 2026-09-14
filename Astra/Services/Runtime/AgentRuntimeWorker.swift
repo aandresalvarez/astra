@@ -1242,14 +1242,11 @@ final class AgentRuntimeWorker {
         )
 
         // Built before the outcome chain so the budget branch can decide and
-        // explain itself from the same snapshot. Limit frozen on
-        // `executionTask` — what this run launched with; usage live on `task`.
+        // explain itself from the same snapshot. The limit is frozen on
+        // `executionTask`; task usage remains cumulative across its runs.
         let budgetSnapshot = AgentRuntimeBudgetSnapshot(
             effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
-            tokensUsed: task.tokensUsed,
-            // The ceiling is real but unchosen; `tokenBudget` is the only record
-            // of which one this run is under.
-            isUserConfigured: executionTask.tokenBudget != 0
+            tokensUsed: task.tokensUsed
         )
 
         if cancellationRequested || task.status == .cancelled {
@@ -1302,19 +1299,7 @@ final class AgentRuntimeWorker {
             run.typedStopReason = .maxBudgetReached
             TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-            // Two different things to say, because two different limits can get
-            // here. `task.tokenBudget` is 0 when the user set none, so the
-            // configured wording would render "(25000000/0)" and read as a bug —
-            // and it would name a limit the user could go change, when the one
-            // that actually fired is ASTRA's own.
-            //
-            // Both branches quote the snapshot rather than the live task, so the
-            // number printed is the number enforced: frozen at launch, and
-            // already multiplied by team size for a team run. Reading
-            // `task.tokenBudget` here used to print neither.
-            let payload = budgetSnapshot.isUserConfigured
-                ? "Token budget exceeded (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
-                : "Run stopped at ASTRA's runaway safety ceiling (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget) tokens). No token budget was set for this task, so this ceiling applied. \(outcome)"
+            let payload = "Token budget exceeded (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: payload, run: run)
             modelContext.insert(event)

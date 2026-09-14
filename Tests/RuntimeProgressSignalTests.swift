@@ -348,17 +348,18 @@ struct RunCostBoundTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
-    @Test("An unset token budget resolves to a finite default")
-    func unsetTokenBudgetIsBounded() {
-        #expect(RuntimeProgressSignals.defaultTokenBudget < Int.max)
+    @Test("An unset token budget is unlimited")
+    func unsetTokenBudgetIsUnlimited() {
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: false,
             teamSize: 1
-        ) == RuntimeProgressSignals.defaultTokenBudget)
-        // Above the worst run actually observed in production (17.3M tokens),
-        // so nothing that completes today starts failing.
-        #expect(RuntimeProgressSignals.defaultTokenBudget > 17_300_000)
+        ) == Int.max)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: true,
+            teamSize: 3
+        ) == Int.max)
     }
 }
 
