@@ -71,6 +71,51 @@ struct ClaudeModelAvailabilityServiceTests {
         #expect(stdin.contains(#""subtype":"initialize""#))
     }
 
+    /// Real-world shape captured live from `claude` 2.1.270 (Vertex-backed):
+    /// `sonnet`/`opus`/`default`/`claude-fable-5-1` report `supportsEffort:true`
+    /// plus `supportedEffortLevels:[low..max]`; `haiku` reports neither key at
+    /// all, not `supportsEffort:false` — confirming it has no reasoning-effort
+    /// concept rather than reporting an empty/false capability.
+    private static let initializeResponseLineWithReasoningEffort = """
+    {"type":"control_response","response":{"subtype":"success","request_id":"astra-model-availability","response":{"models":[{"value":"default","resolvedModel":"claude-opus-5","displayName":"Default","description":"Use the default model","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet 5","description":"Custom Sonnet model","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"haiku","resolvedModel":"claude-haiku-4-5@20251001","displayName":"Haiku","description":"Fastest for quick answers"}]}}}
+    """
+
+    @Test("Reasoning-effort support is read per model, matching Codex/Copilot")
+    func reasoningEffortSupportIsPerModel() async throws {
+        let http = StubModelAvailabilityHTTPClient()
+        let runner = ClaudeProbeStubBinaryRunner(result: .exited(
+            code: 0,
+            stdout: Self.initializeResponseLineWithReasoningEffort + "\n",
+            stderr: ""
+        ))
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let service = ClaudeModelAvailabilityService(
+            runner: runner,
+            httpClient: http,
+            environment: { [:] },
+            detectExecutable: { "/opt/test/claude" },
+            isExecutable: { _ in true }
+        )
+
+        _ = await service.refreshAndPersist(
+            configuration: ClaudeModelAvailabilityConfiguration(provider: .anthropic),
+            defaults: defaults
+        )
+
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == ["low", "medium", "high", "xhigh", "max"])
+        // No `supportsEffort` key at all: nil, not an empty/inherited list.
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "haiku", runtime: .claudeCode, defaults: defaults
+        ) == nil)
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "xhigh", for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == "xhigh")
+    }
+
     @Test("Configured executable path is preferred over detection")
     func configuredExecutablePathIsPreferredOverDetection() async {
         let runner = ClaudeProbeStubBinaryRunner(result: .exited(

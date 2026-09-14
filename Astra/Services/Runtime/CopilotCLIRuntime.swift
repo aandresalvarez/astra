@@ -482,13 +482,18 @@ enum CopilotCLIRuntime {
         }
     }
 
+    /// Mirrors `copilot --help`'s `--effort, --reasoning-effort <level>` choices
+    /// (GitHub Copilot CLI 1.0.83). Copilot exposes this as one CLI-wide list,
+    /// not a per-model capability like Codex's `model/list`, so every Copilot
+    /// model gets the same options.
+    static let reasoningEffortChoices = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
     private static func normalizedReasoningEffort(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let lower = trimmed.lowercased()
-        let supported = ["none", "low", "medium", "high", "xhigh", "max"]
-        return supported.contains(lower) ? lower : nil
+        return reasoningEffortChoices.contains(lower) ? lower : nil
     }
 
     static func copilotPermissionArguments(

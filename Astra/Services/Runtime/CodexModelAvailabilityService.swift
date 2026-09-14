@@ -48,7 +48,14 @@ struct CodexModelAvailabilityService {
             // leads the existing cache so all default-model consumers agree.
             let ordered = visible.filter { $0.isDefault == true } + visible.filter { $0.isDefault != true }
             let details = RuntimeModelAvailability.cleanProviderModelDetails(ordered.map {
-                RuntimeModelDetail(value: $0.model, displayName: $0.displayName, description: $0.description, codex: $0)
+                RuntimeModelDetail(
+                    value: $0.model,
+                    displayName: $0.displayName,
+                    description: $0.description,
+                    codex: $0,
+                    supportedReasoningEfforts: $0.supportedReasoningEfforts?.map(\.reasoningEffort),
+                    defaultReasoningEffort: $0.defaultReasoningEffort
+                )
             })
             guard !details.isEmpty else { throw CodexModelProbeError.emptyCatalog }
             // A picker catalog is not an execution allowlist: hidden and custom

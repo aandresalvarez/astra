@@ -7,6 +7,7 @@ import ASTRAModels
 struct AgentTaskLaunchSnapshot: Sendable, Equatable {
     let id: UUID
     let model: String
+    let reasoningEffort: String?
     let maxTurns: Int
     let runtimeID: String?
     let runtimeExplicitlySelected: Bool
@@ -26,6 +27,7 @@ struct AgentTaskLaunchSnapshot: Sendable, Equatable {
     init(task: AgentTask) {
         id = task.id
         model = task.model
+        reasoningEffort = task.reasoningEffort
         maxTurns = task.maxTurns
         runtimeID = task.runtimeID
         runtimeExplicitlySelected = task.runtimeExplicitlySelected
@@ -46,6 +48,7 @@ struct AgentTaskLaunchSnapshot: Sendable, Equatable {
     init(
         id: UUID,
         model: String,
+        reasoningEffort: String?,
         maxTurns: Int,
         runtimeID: String?,
         runtimeExplicitlySelected: Bool,
@@ -64,6 +67,7 @@ struct AgentTaskLaunchSnapshot: Sendable, Equatable {
     ) {
         self.id = id
         self.model = model
+        self.reasoningEffort = reasoningEffort
         self.maxTurns = maxTurns
         self.runtimeID = runtimeID
         self.runtimeExplicitlySelected = runtimeExplicitlySelected

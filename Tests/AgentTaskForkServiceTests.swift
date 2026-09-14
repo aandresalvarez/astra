@@ -29,6 +29,7 @@ struct AgentTaskForkServiceTests {
             validationStrategy: .runTests
         )
         source.testCommand = "swift test --filter ForkCheckpointTests"
+        source.reasoningEffort = "high"
         context.insert(workspace)
         context.insert(source)
 
@@ -72,6 +73,9 @@ struct AgentTaskForkServiceTests {
         #expect(forked.forkedFromID == source.id)
         #expect(forked.forkedAtRunIndex == 0)
         #expect(forked.testCommand == source.testCommand)
+        // A fork re-runs the same work, so it has to re-run it at the same
+        // effort the source was given rather than silently at the default.
+        #expect(forked.reasoningEffort == "high")
         #expect(forked.runs.count == 1)
         let forkedRun = try #require(forked.runs.first)
         let copiedFirstEvent = try #require(forked.events.first { $0.payload.contains("FirstBranchTests") })

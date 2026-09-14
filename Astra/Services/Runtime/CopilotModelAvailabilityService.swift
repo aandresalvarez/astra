@@ -6,6 +6,23 @@ enum CopilotModelAvailabilityResult: Equatable, Sendable {
     case unavailable(reason: String)
 }
 
+/// Per-model reasoning-effort support genuinely varies on Copilot — confirmed
+/// against the live `/models` response: `claude-opus-*` reports
+/// `[low,medium,high,xhigh,max]` (no none/minimal), `mai-code-1.1-flash`
+/// reports only `[low,medium,high]`, and several models (`gpt-4.1`,
+/// `claude-haiku-4.5`) report none at all. The CLI enforces this list itself
+/// and errors the whole run if the requested value isn't in it, so this must
+/// be read per model, never assumed uniform across the runtime.
+private struct CopilotAvailableModel: Equatable, Sendable {
+    var id: String
+    var supportedReasoningEfforts: [String]?
+}
+
+private enum CopilotModelFetchOutcome: Equatable, Sendable {
+    case available(models: [CopilotAvailableModel])
+    case unavailable(reason: String)
+}
+
 protocol ModelAvailabilityHTTPClient: Sendable {
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
@@ -49,16 +66,19 @@ struct CopilotModelAvailabilityService {
     }
 
     func refreshAndPersist(defaults: UserDefaults = .standard) async -> CopilotModelAvailabilityResult {
-        let result = await availableModels()
-        switch result {
+        switch await fetchAvailableModels() {
         case .available(let models):
-            await RuntimeModelAvailability.persistObservedAvailableModels(models, for: .copilotCLI, defaults: defaults)
+            let details = models.map {
+                RuntimeModelDetail(value: $0.id, supportedReasoningEfforts: $0.supportedReasoningEfforts)
+            }
+            await RuntimeModelAvailability.persistObservedAvailableModelDetails(details, for: .copilotCLI, defaults: defaults)
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "result": "available",
                 "model_count": String(models.count),
                 "checked_at": String(Int(Date().timeIntervalSince1970))
             ], level: .debug)
+            return .available(models: models.map(\.id))
         case .unavailable(let reason):
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
@@ -66,17 +86,26 @@ struct CopilotModelAvailabilityService {
                 "reason": reason,
                 "checked_at": String(Int(Date().timeIntervalSince1970))
             ], level: .warning, fieldMaxLength: 220)
+            return .unavailable(reason: reason)
         }
-        return result
     }
 
     func availableModels() async -> CopilotModelAvailabilityResult {
+        switch await fetchAvailableModels() {
+        case .available(let models):
+            return .available(models: models.map(\.id))
+        case .unavailable(let reason):
+            return .unavailable(reason: reason)
+        }
+    }
+
+    private func fetchAvailableModels() async -> CopilotModelFetchOutcome {
         var sawToken = false
         var lastUnavailableReason: String?
         for loadToken in tokenLoaders() {
             guard let token = await loadToken() else { continue }
             sawToken = true
-            let result = await availableModels(token: token)
+            let result = await fetchAvailableModels(token: token)
             if case .available = result {
                 return result
             }
@@ -91,26 +120,33 @@ struct CopilotModelAvailabilityService {
         return .unavailable(reason: lastUnavailableReason ?? "Could not load Copilot model availability.")
     }
 
-    private func availableModels(token: String) async -> CopilotModelAvailabilityResult {
+    private func fetchAvailableModels(token: String) async -> CopilotModelFetchOutcome {
         let apiBaseURL = (try? await copilotAPIBaseURL(token: token)) ?? Self.defaultCopilotAPIBaseURL
         do {
             let models = try await fetchModels(apiBaseURL: apiBaseURL, token: token)
-            let enabledModelIDs = models
-                .filter(\.isEnabled)
-                .map(\.id)
-            let available = RuntimeModelAvailability.cleanProviderModels(enabledModelIDs)
+            let enabled = models.filter(\.isEnabled)
+            let reasoningEffortsByID = Dictionary(
+                enabled.map { ($0.id, $0.supportedReasoningEfforts) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let available = RuntimeModelAvailability.cleanProviderModels(enabled.map(\.id))
             guard !available.isEmpty else {
                 return .unavailable(reason: "Copilot returned no enabled models for this account.")
             }
+            let usableIDs: [String]
             if let cliModels = await installedCLIModelChoices(), !cliModels.isEmpty {
                 let availableSet = Set(available)
                 let usable = cliModels.filter { availableSet.contains($0) }
                 guard !usable.isEmpty else {
                     return .unavailable(reason: "Copilot account models do not overlap with the installed Copilot CLI's supported models.")
                 }
-                return .available(models: usable)
+                usableIDs = usable
+            } else {
+                usableIDs = available
             }
-            return .available(models: available)
+            return .available(models: usableIDs.map {
+                CopilotAvailableModel(id: $0, supportedReasoningEfforts: reasoningEffortsByID[$0] ?? nil)
+            })
         } catch {
             return .unavailable(reason: Self.userFacingMessage(for: error))
         }
@@ -399,11 +435,33 @@ struct CopilotModelInfo: Decodable, Equatable, Sendable {
         var state: String?
     }
 
+    /// Mirrors the live `/models` response shape: `capabilities.supports` carries
+    /// several boolean feature flags plus this one string-array field. Models with
+    /// no reasoning-effort support at all (e.g. `gpt-4.1`, `claude-haiku-4.5`) omit
+    /// the key entirely rather than reporting an empty array.
+    struct Capabilities: Decodable, Equatable, Sendable {
+        struct Supports: Decodable, Equatable, Sendable {
+            var reasoningEffort: [String]?
+
+            enum CodingKeys: String, CodingKey {
+                case reasoningEffort = "reasoning_effort"
+            }
+        }
+
+        var supports: Supports?
+    }
+
     var id: String
     var policy: Policy?
+    var capabilities: Capabilities?
 
     var isEnabled: Bool {
         policy?.state?.lowercased() != "disabled"
+    }
+
+    var supportedReasoningEfforts: [String]? {
+        let efforts = capabilities?.supports?.reasoningEffort
+        return (efforts?.isEmpty ?? true) ? nil : efforts
     }
 }
 

@@ -152,6 +152,7 @@ enum TaskCorrectiveWorkService {
         child.acceptanceCriteria = sourceTask.acceptanceCriteria + [
             "Validation assertion \(payload.failedAssertionID) passes when rerun."
         ]
+        child.reasoningEffort = sourceTask.reasoningEffort
         child.executionRootPath = sourceTask.executionRootPath
         child.executionEnvironmentSnapshotJSON = sourceTask.executionEnvironmentSnapshotJSON
         child.queuePosition = (sourceTask.workspace?.tasks.map(\.queuePosition).max() ?? sourceTask.queuePosition) + 1

@@ -14,6 +14,7 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+    var antigravityAuthMode: AntigravityAuthMode
 
     var availabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
@@ -23,7 +24,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 
@@ -38,7 +40,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexRegion,
             vertexOpusModel,
             vertexSonnetModel,
-            vertexHaikuModel
+            vertexHaikuModel,
+            antigravityAuthMode.rawValue
         ].joined(separator: "|")
     }
 
@@ -67,9 +70,41 @@ struct RuntimeSettingsSnapshot: Equatable, Sendable {
     var defaultBudget: Int
     var skipPermissions: Bool
     var defaultPolicyLevelRaw: String
+    /// Empty means "let the provider decide". Carried on the snapshot rather
+    /// than re-read from user defaults in each sheet, so every task-creation
+    /// path seeds from the same value the settings picker writes.
+    var defaultReasoningEffort: String = ""
     var providerSnapshot: ProviderSettingsSnapshot
     var runtimeModelCache: RuntimeModelAvailabilityCache
     var runtimeModelCacheRevision: Int
+
+    /// The saved default resolved against a runtime/model's reported options,
+    /// so a value left over from a different model never reaches a new task.
+    func normalizedDefaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID
+    ) -> String? {
+        normalizedReasoningEffort(defaultReasoningEffort, for: model, runtime: runtime)
+    }
+
+    /// The same resolution for an effort the user picked in a composer rather
+    /// than in settings. Surfaces that track their own pick need this: the
+    /// runtime gate belongs with the model lookup, not at each call site.
+    func normalizedReasoningEffort(
+        _ raw: String,
+        for model: String,
+        runtime: AgentRuntimeID
+    ) -> String? {
+        guard AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort else {
+            return nil
+        }
+        return RuntimeModelAvailability.normalizedReasoningEffort(
+            raw,
+            for: model,
+            runtime: runtime,
+            cache: runtimeModelCache
+        )
+    }
 
     var normalizedDefaultModel: String {
         RuntimeModelAvailability.normalizedModel(
@@ -122,6 +157,7 @@ enum RuntimeSettingsSnapshotStore {
             vertexOpusModel: defaults.string(forKey: AppStorageKeys.claudeVertexOpusModel) ?? "",
             vertexSonnetModel: defaults.string(forKey: AppStorageKeys.claudeVertexSonnetModel) ?? "",
             vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? "",
+            antigravityAuthModeRaw: defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue,
             defaults: defaults,
             runtimes: runtimes
         )
@@ -137,6 +173,7 @@ enum RuntimeSettingsSnapshotStore {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
+        antigravityAuthModeRaw: String = AntigravityAuthMode.consumer.rawValue,
         defaults: UserDefaults = .standard,
         runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
     ) -> ProviderSettingsSnapshot {
@@ -153,7 +190,8 @@ enum RuntimeSettingsSnapshotStore {
             vertexRegion: vertexRegion.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexOpusModel: vertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexSonnetModel: vertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            vertexHaikuModel: vertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            vertexHaikuModel: vertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
         )
     }
 
@@ -195,6 +233,7 @@ enum RuntimeSettingsSnapshotStore {
             defaultBudget: defaultBudget,
             skipPermissions: skipPermissions,
             defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+            defaultReasoningEffort: defaults.string(forKey: AppStorageKeys.defaultReasoningEffort) ?? "",
             providerSnapshot: providerSnapshot,
             runtimeModelCache: RuntimeModelAvailabilityCache.appStorage(
                 cachedClaudeModelsJSON: cachedClaudeModelsJSON,

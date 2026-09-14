@@ -323,37 +323,52 @@ struct SchemaVersionTests {
     func v17VersionIdentifier() {
         #expect(ASTRASchemaV17.versionIdentifier == Schema.Version(17, 0, 0))
         #expect(ASTRASchemaV17.models.count == 19)
-        // V17 is the first schema to declare the live graph again: V14 through
-        // V16 were repointed at the frozen ASTRASchemaV14Models copies so the
-        // new TaskRun column could not move their fingerprints.
-        #expect(ASTRASchemaV17.models.contains { $0 == TaskRun.self })
+        // V17 was briefly the first schema to declare the live graph again (for
+        // TaskRun.hasProtocolEvents), but V18 repoints it at the frozen
+        // ASTRASchemaV17Models copies so AgentTask.reasoningEffort could not
+        // move its fingerprint. TaskTurnRequest never joined this relationship
+        // closure, so it stays live across the freeze.
+        #expect(!ASTRASchemaV17.models.contains { $0 == TaskRun.self })
+        #expect(!ASTRASchemaV17.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV17.models.contains { $0 == TaskTurnRequest.self })
         #expect(!ASTRASchemaV16.models.contains { $0 == TaskRun.self })
+    }
+
+    @Test("SchemaV18 version identifier is 18.0.0")
+    func v18VersionIdentifier() {
+        #expect(ASTRASchemaV18.versionIdentifier == Schema.Version(18, 0, 0))
+        #expect(ASTRASchemaV18.models.count == 19)
+        // V18 is the first schema to declare the live graph again: V14 through
+        // V17 were repointed at frozen copies so AgentTask.reasoningEffort
+        // could not move their fingerprints.
+        #expect(ASTRASchemaV18.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV18.models.contains { $0 == TaskRun.self })
     }
 
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 17)
-        #expect(ASTRASchemaV17.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 18)
+        #expect(ASTRASchemaV18.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV17")
+    @Test("Migration plan lists SchemaV1 through SchemaV18")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 17)
+        #expect(ASTRAMigrationPlan.schemas.count == 18)
     }
 
-    @Test("Migration plan has V1 to V17 lightweight stages")
+    @Test("Migration plan has V1 to V18 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 16)
+        #expect(ASTRAMigrationPlan.stages.count == 17)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
         // The isolated V12 recovery plans migrate their colliding-V12 store
-        // forward to current: V12x → V13 → V14 → V15 → V16 → V17.
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 6)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 5)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 6)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 5)
+        // forward to current: V12x → V13 → V14 → V15 → V16 → V17 → V18.
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 7)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 6)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 7)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 6)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -651,6 +666,49 @@ struct SchemaVersionTests {
         try context.save()
         let input = try TaskPlanStateReader.read(taskID: migratedTask.id, modelContext: context)
         #expect(Set(input.recoveryRuns.map(\.id)) == [runID, markerRun.id])
+    }
+
+    @MainActor
+    @Test("Populated SchemaV17 store migrates to V18 with a nil reasoning-effort override")
+    func v17StoreMigratesToNilReasoningEffort() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v17-reasoning-effort-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let taskID: UUID
+
+        do {
+            let oldContainer = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV17.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = oldContainer.mainContext
+            let task = ASTRASchemaV17Models.AgentTask()
+            task.title = "V17 task"
+            task.goal = "Predates reasoning-effort selection"
+            task.model = "gpt-5.5"
+            context.insert(task)
+            try context.save()
+            taskID = task.id
+        }
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedTask.id == taskID)
+        #expect(migratedTask.model == "gpt-5.5")
+        // nil, not an inferred value: a pre-V18 task never had a reasoning
+        // effort selection, so the provider's own default applies.
+        #expect(migratedTask.reasoningEffort == nil)
+
+        migratedTask.reasoningEffort = "high"
+        try context.save()
+        #expect(migratedTask.reasoningEffort == "high")
     }
 
     private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {

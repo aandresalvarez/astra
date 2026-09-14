@@ -118,6 +118,11 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     /// runtime's launches. Runtimes without support surface the skip
     /// explicitly instead of silently dropping declared servers.
     public let supportsMCPServers: Bool
+    /// Whether this runtime exposes a reasoning-effort knob at all. A model
+    /// picker still needs to check the selected model's own reported
+    /// `supportedReasoningEfforts` (see `RuntimeModelAvailability`) since
+    /// support can vary per model even within a runtime that has this true.
+    public let supportsReasoningEffort: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -130,7 +135,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         defaultModels: [String],
         supportsAstraRunProtocol: Bool,
         supportsNativeContinuation: Bool = false,
-        supportsMCPServers: Bool = false
+        supportsMCPServers: Bool = false,
+        supportsReasoningEffort: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -149,6 +155,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.supportsNativeContinuation = supportsNativeContinuation
         self.supportsMCPServers = supportsMCPServers
+        self.supportsReasoningEffort = supportsReasoningEffort
     }
 
 }

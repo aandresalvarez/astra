@@ -1542,7 +1542,12 @@ struct ArchitectureFitnessTests {
         // 130 -> 132 for claudeVertexProjectID / claudeVertexRegion: not new
         // settings. The snapshot already declares both, ContentView passed "",
         // and the check read that back as "no project" over a working route.
-        #expect(count <= 132, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // 132 -> 134 for defaultReasoningEffortRaw: a new user-facing default,
+        // read directly in the settings tab (to populate the picker) and in the
+        // chat composer (to seed a new draft task), mirroring defaultModel.
+        // 134 -> 135 for antigravityAuthModeRaw: the Antigravity ADC/consumer
+        // sign-in route toggle, mirroring the existing claudeProviderRaw pattern.
+        #expect(count <= 135, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("AgentTask/Workspace deletions stay routed through turn-request cleanup")
@@ -1902,7 +1907,13 @@ struct ArchitectureFitnessTests {
             // 6_136 -> 6_146: connector-mutation review wiring only (one @State,
             // one dock case, one context argument, one modifier). The state,
             // read-back and sheet live in TaskConnectorMutationReview.swift.
-            "Astra/Views/TaskMainView.swift": .init(6_146, .owner("Task detail and run surface")),
+            // 6_146 -> 6_148: reasoning-effort selection wires two lines onto the
+            // existing ComposerToolbar call (a `reasoningEffort:` argument and an
+            // `onReasoningEffortChange` callback binding straight to `task`).
+            // 6_148 -> 6_152: a routine built from a task now snapshots that task's
+            // reasoning effort alongside its runtime, model and budget, so a scheduled
+            // run stops silently dropping back to the provider default.
+            "Astra/Views/TaskMainView.swift": .init(6_152, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
@@ -1932,8 +1943,27 @@ struct ArchitectureFitnessTests {
             // 3_076 -> 3_079: arming ComposerTypingStallProbe from the composer's
             // existing onChange. The rationale lives in the probe rather than here
             // precisely because this file has no room to spare.
-            "Astra/Views/ChatPanelView.swift": .init(3_079, .owner("Composer chat surface")),
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
+            // 3_079 -> 3_085: reasoning-effort selection needs a defaultReasoningEffortRaw
+            // AppStorage default, a ComposerToolbar argument/callback pair, and setting
+            // the value on each of the three draft/task-creation call sites (saveDraft,
+            // quickRun, createTaskFromSpec) so a new task starts with the chosen default.
+            // 3_085 -> 3_126 (PR #388 review follow-up): the composer's effort is one
+            // global preference shared across runtimes, so every write now resolves it
+            // against the runtime/model it is stored beside and re-resolves on a
+            // runtime/model switch. An open draft moves with it because
+            // runApprovedPlan() submits draftTask without a fresh saveDraft().
+            "Astra/Views/ChatPanelView.swift": .init(3_126, .owner("Composer chat surface")),
+            // 2_900 -> 2_909: Claude Code reasoning-effort selection replaces the
+            // hardcoded artifact-bootstrap-only "--effort low" with a resolved
+            // value that also honors the task's own setting outside bootstrap.
+            // 2_909 -> 2_917: the Antigravity live-account readiness check threads
+            // through the ADC auth mode instead of only the main launch path
+            // honoring it (a live run found the readiness card still blocked).
+            // 2_917 -> 2_928: modelAvailabilityCheck now persists per-model
+            // RuntimeModelDetail (id + display name) instead of the raw,
+            // tab-corrupted `agy models` lines it used to hand straight to
+            // the flat-string cache.
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_929, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
@@ -1994,7 +2024,11 @@ struct ArchitectureFitnessTests {
             // 2_365 -> 2_375: two branches each spent the remaining headroom on
             // ledger entries and only collided at the merge. The Shelf-browser
             // entry was cut to one line first; raising covers what is left.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_375, .owner("Architecture fitness test suite")),
+            // 2_375 -> 2_387: ratchet bumps for reasoning-effort selection
+            // (Codex, Copilot, then Claude Code).
+            // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
+            // Antigravity model-list fix.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_407, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
@@ -2139,7 +2173,9 @@ struct ArchitectureFitnessTests {
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
             // direction in Finding 2 of the extraction doc is untouched and remains its own
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_350, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_350 -> 3_401: regression tests for Copilot and Claude Code
+            // reasoning-effort selection honoring the task's chosen value.
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_401, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_550 -> 2_565 on 2026-09-02 (PR #381 review follow-up): the
             // ordering guard for the discovery save — the proposal is on disk
             // whether or not the event survived, so "persisted before the next
@@ -2164,7 +2200,9 @@ struct ArchitectureFitnessTests {
             // 2_300 -> 2_425 (PR #374 review follow-up): the capability probe is memoised,
             // drained off-thread, and timeout-bounded; each property needs a real `copilot`
             // stand-in (spawn counter, oversized help, hung process) to be provable.
-            "Tests/CopilotRuntimeTests.swift": .init(2_425, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_425 -> 2_456: regression-locks the corrected reasoning-effort choice list
+            // ("minimal" was missing) against the actual `copilot --help` output.
+            "Tests/CopilotRuntimeTests.swift": .init(2_456, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode

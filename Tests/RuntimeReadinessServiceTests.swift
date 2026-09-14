@@ -619,6 +619,47 @@ struct RuntimeReadinessServiceTests {
         ])
     }
 
+    @Test("Antigravity live account check honors the ADC auth route, not just task launches")
+    func antigravityLiveAccountCheckHonorsADCRoute() async throws {
+        // Regression test: the ADC toggle was wired into the task-launch path
+        // (AntigravityCLIRuntime.buildCommand) but this readiness check builds
+        // its own environment from scratch — a live run confirmed it still
+        // showed "Needs sign-in" with the consumer eligibility error after
+        // switching to ADC, because AGY_ADC_AUTH never reached this probe.
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        _ = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: "",
+            antigravityAuthMode: .adc
+        ))
+
+        let environments = await runner.recordedEnvironments()
+        let accountCheckEnvironment = try #require(environments.last ?? nil)
+        #expect(accountCheckEnvironment["AGY_ADC_AUTH"] == "true")
+    }
+
     @Test("Antigravity diagnostic readiness blocks when live check exits zero without output")
     func antigravityDiagnosticReadinessBlocksOnEmptySuccessfulLiveCheck() async {
         let runner = StubBinaryRunner()

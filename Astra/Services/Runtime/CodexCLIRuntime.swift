@@ -45,7 +45,8 @@ enum CodexCLIRuntime {
         includeAstraToolsPath: Bool = false,
         mcpConfigArguments: [String] = [],
         resumeSessionID: String? = nil,
-        permissionArguments: [String]
+        permissionArguments: [String],
+        reasoningEffort: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
         // No `--ephemeral`: native continuation needs the session persisted so a
@@ -54,6 +55,13 @@ enum CodexCLIRuntime {
         let trimmedResumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let usesResume = !trimmedResumeSessionID.isEmpty
         var args = usesResume ? ["exec", "resume"] : ["exec"]
+        // Codex has no dedicated CLI flag for this; it is only settable as a
+        // `-c` config override (the same idiom as the sandbox/approval
+        // overrides below).
+        let trimmedReasoningEffort = reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasoningEffortArguments = trimmedReasoningEffort.isEmpty
+            ? []
+            : ["-c", "model_reasoning_effort=\"\(trimmedReasoningEffort)\""]
 
         if usesResume {
             args += [
@@ -64,6 +72,7 @@ enum CodexCLIRuntime {
             ]
             args += mcpConfigArguments
             args += permissionArguments
+            args += reasoningEffortArguments
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -83,6 +92,7 @@ enum CodexCLIRuntime {
             }
 
             args += permissionArguments
+            args += reasoningEffortArguments
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)

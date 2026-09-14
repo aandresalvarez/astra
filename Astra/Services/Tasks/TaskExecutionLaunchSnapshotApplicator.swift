@@ -22,6 +22,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return AgentTaskLaunchSnapshot(
             id: task.id,
             model: model,
+            reasoningEffort: policy.reasoningEffort,
             maxTurns: policy.maxTurns,
             runtimeID: runtimeID,
             runtimeExplicitlySelected: policy.runtimeExplicitlySelected,
@@ -60,6 +61,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         task.tokenBudget = snapshot.tokenBudget
         task.tokensUsed = source.tokensUsed
         task.model = snapshot.model
+        task.reasoningEffort = snapshot.reasoningEffort
         task.runtimeID = snapshot.runtimeID
         task.runtimeExplicitlySelected = snapshot.runtimeExplicitlySelected
         task.testCommand = snapshot.testCommand

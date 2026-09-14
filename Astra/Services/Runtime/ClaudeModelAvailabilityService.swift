@@ -183,7 +183,8 @@ struct ClaudeModelAvailabilityService {
                 RuntimeModelDetail(
                     value: model.value,
                     displayName: model.displayName,
-                    description: model.description
+                    description: model.description,
+                    supportedReasoningEfforts: model.supportsEffort == true ? model.supportedEffortLevels : nil
                 )
             })
             if !cleaned.isEmpty {
@@ -286,6 +287,12 @@ private struct InitializeControlResponse: Decodable {
                 var value: String
                 var displayName: String?
                 var description: String?
+                /// Absent entirely (not `false`) for models with no
+                /// reasoning-effort concept at all — confirmed live: `haiku`
+                /// reports neither key, while `sonnet`/`opus`/`default`/
+                /// `claude-fable-5-1` report `true` plus a `[low..max]` list.
+                var supportsEffort: Bool?
+                var supportedEffortLevels: [String]?
             }
 
             var models: [ModelInfo]?

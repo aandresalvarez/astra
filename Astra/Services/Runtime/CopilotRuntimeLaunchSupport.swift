@@ -362,6 +362,7 @@ enum CopilotLaunchDiagnostics {
             "supports_available_tools": String(capabilities.supportsAvailableTools),
             "supports_excluded_tools": String(capabilities.supportsExcludedTools),
             "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
+            "reasoning_effort": AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--effort").first ?? "none",
             "supports_additional_mcp_config": String(capabilities.supportsAdditionalMCPConfig),
             "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
             "permission_policy": effectivePermissionPolicy.rawValue,
