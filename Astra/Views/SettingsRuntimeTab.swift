@@ -164,10 +164,14 @@ struct SettingsRuntimeTab: View {
                         settingsDivider
                         antigravityRouteSettings
                     }
-                    if descriptor.supportsReasoningEffort {
-                        settingsDivider
-                        reasoningEffortSettings(for: runtime)
-                    }
+                }
+                // Capability-gated, so it stays outside the provider branch
+                // above: Claude declares `supportsReasoningEffort` too, and
+                // nesting this in the `else` hid the picker from the one
+                // runtime whose probe reports the richest effort list.
+                if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort {
+                    settingsDivider
+                    reasoningEffortSettings(for: runtime)
                 }
             }
         }

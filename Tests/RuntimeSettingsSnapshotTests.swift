@@ -104,6 +104,42 @@ struct RuntimeSettingsSnapshotTests {
         #expect(snapshot.modelCacheSignature.contains("9|"))
     }
 
+    @Test("Runtime snapshot carries the default reasoning effort and normalizes it per model")
+    func runtimeSnapshotCarriesDefaultReasoningEffort() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(AgentRuntimeID.claudeCode.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        defaults.set("sonnet", forKey: AppStorageKeys.defaultModel)
+        defaults.set("high", forKey: AppStorageKeys.defaultReasoningEffort)
+        RuntimeModelAvailability.persistAvailableModelDetails(
+            [
+                RuntimeModelDetail(
+                    value: "sonnet",
+                    displayName: "Sonnet",
+                    supportedReasoningEfforts: ["low", "medium", "high"],
+                    defaultReasoningEffort: "medium"
+                ),
+                RuntimeModelDetail(value: "haiku", displayName: "Haiku")
+            ],
+            for: .claudeCode,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 15)
+        )
+
+        let snapshot = RuntimeSettingsSnapshotStore.runtimeSnapshot(defaults: defaults)
+
+        #expect(snapshot.defaultReasoningEffort == "high")
+        // This is what NewTaskView seeds a new task with, so it has to be
+        // filtered by the model the task will actually run on.
+        #expect(snapshot.normalizedDefaultReasoningEffort(
+            for: snapshot.normalizedDefaultModel, runtime: snapshot.defaultRuntime
+        ) == "high")
+        #expect(snapshot.normalizedDefaultReasoningEffort(for: "haiku", runtime: .claudeCode) == nil)
+        // A runtime with no effort knob at all never gets seeded.
+        #expect(snapshot.normalizedDefaultReasoningEffort(for: "sonnet", runtime: .antigravityCLI) == nil)
+    }
+
     @Test("Runtime snapshot reads legacy default runtime and model keys")
     func runtimeSnapshotReadsLegacyDefaultRuntimeAndModelKeys() {
         let (defaults, suiteName) = makeDefaults()

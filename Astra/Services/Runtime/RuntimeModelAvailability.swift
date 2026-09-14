@@ -285,26 +285,19 @@ enum RuntimeModelAvailability {
     }
 
     /// Resolves a requested reasoning-effort value against the selected
-    /// model's supported set. An empty request or a model with no reported
-    /// options falls back to the model's provider-recommended default (if
-    /// any); a value outside the model's reported set — e.g. carried over
-    /// from a different model — also falls back, since (unlike model IDs)
-    /// Codex rejects an unsupported `-c model_reasoning_effort` value outright
-    /// rather than silently ignoring it.
+    /// model's supported set. An empty request, or a value outside the
+    /// model's reported set — e.g. carried over from a different model —
+    /// falls back to the model's provider-recommended default (if any),
+    /// since (unlike model IDs) Codex rejects an unsupported
+    /// `-c model_reasoning_effort` value outright rather than silently
+    /// ignoring it.
     static func normalizedReasoningEffort(
         _ effort: String,
         for model: String,
         runtime: AgentRuntimeID,
         cache: RuntimeModelAvailabilityCache
     ) -> String? {
-        let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let supported = supportedReasoningEfforts(for: model, runtime: runtime, cache: cache) else {
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        if !trimmed.isEmpty, supported.contains(trimmed) {
-            return trimmed
-        }
-        return defaultReasoningEffort(for: model, runtime: runtime, cache: cache)
+        normalizedReasoningEffort(effort, detail: cachedDetail(for: model, runtime: runtime, cache: cache))
     }
 
     /// `defaults:`-based twin of `normalizedReasoningEffort(_:for:runtime:cache:)`,
@@ -316,16 +309,33 @@ enum RuntimeModelAvailability {
         runtime: AgentRuntimeID,
         defaults: UserDefaults = .standard
     ) -> String? {
+        normalizedReasoningEffort(effort, detail: cachedDetail(for: model, runtime: runtime, defaults: defaults))
+    }
+
+    /// The two branches below are not the same "no options" case, and
+    /// collapsing them emits a flag that fails the run. A model the provider
+    /// never reported has no metadata to contradict the user's choice, so it
+    /// passes through. A model the provider *did* report while saying nothing
+    /// about effort has no effort knob at all — Claude's `haiku` and Copilot's
+    /// `gpt-4.1` are exactly this shape — so switching to one after picking an
+    /// effort must drop the carried-over value rather than hand the CLI an
+    /// `--effort` it rejects. Nothing else can drop it: the composer hides the
+    /// effort menu for those models, so the stale value is unreachable in the UI.
+    private static func normalizedReasoningEffort(
+        _ effort: String,
+        detail: RuntimeModelDetail?
+    ) -> String? {
         let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
-        let detail = cachedDetail(for: model, runtime: runtime, defaults: defaults)
-        let supported = detail?.supportedReasoningEfforts
-        guard let supported, !supported.isEmpty else {
+        guard let detail else {
             return trimmed.isEmpty ? nil : trimmed
+        }
+        guard let supported = detail.supportedReasoningEfforts, !supported.isEmpty else {
+            return nil
         }
         if !trimmed.isEmpty, supported.contains(trimmed) {
             return trimmed
         }
-        return detail?.defaultReasoningEffort
+        return detail.defaultReasoningEffort
     }
 
     private static func cachedDetail(

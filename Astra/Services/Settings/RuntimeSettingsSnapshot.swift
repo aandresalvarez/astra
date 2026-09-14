@@ -70,9 +70,30 @@ struct RuntimeSettingsSnapshot: Equatable, Sendable {
     var defaultBudget: Int
     var skipPermissions: Bool
     var defaultPolicyLevelRaw: String
+    /// Empty means "let the provider decide". Carried on the snapshot rather
+    /// than re-read from user defaults in each sheet, so every task-creation
+    /// path seeds from the same value the settings picker writes.
+    var defaultReasoningEffort: String = ""
     var providerSnapshot: ProviderSettingsSnapshot
     var runtimeModelCache: RuntimeModelAvailabilityCache
     var runtimeModelCacheRevision: Int
+
+    /// The saved default resolved against a runtime/model's reported options,
+    /// so a value left over from a different model never reaches a new task.
+    func normalizedDefaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID
+    ) -> String? {
+        guard AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort else {
+            return nil
+        }
+        return RuntimeModelAvailability.normalizedReasoningEffort(
+            defaultReasoningEffort,
+            for: model,
+            runtime: runtime,
+            cache: runtimeModelCache
+        )
+    }
 
     var normalizedDefaultModel: String {
         RuntimeModelAvailability.normalizedModel(
@@ -201,6 +222,7 @@ enum RuntimeSettingsSnapshotStore {
             defaultBudget: defaultBudget,
             skipPermissions: skipPermissions,
             defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+            defaultReasoningEffort: defaults.string(forKey: AppStorageKeys.defaultReasoningEffort) ?? "",
             providerSnapshot: providerSnapshot,
             runtimeModelCache: RuntimeModelAvailabilityCache.appStorage(
                 cachedClaudeModelsJSON: cachedClaudeModelsJSON,

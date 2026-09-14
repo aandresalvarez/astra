@@ -1618,6 +1618,7 @@ struct ValidationServiceTests {
         let context = ModelContext(container)
         let workspace = Workspace(name: "Corrective", primaryPath: root)
         let task = AgentTask(title: "Corrective validation", goal: "Create a failing correction", workspace: workspace)
+        task.reasoningEffort = "high"
         let run = TaskRun(task: task)
         context.insert(workspace)
         context.insert(task)
@@ -1668,6 +1669,9 @@ struct ValidationServiceTests {
             modelContext: context
         ))
         #expect(child.goal.contains("must-pass"))
+        // The correction retries the source task's work, so it inherits the
+        // effort that work was given.
+        #expect(child.reasoningEffort == "high")
         #expect(task.events.contains { $0.type == TaskCorrectiveEventTypes.taskCreated && $0.payload.contains(child.id.uuidString) })
 
         let duplicateChild = try #require(TaskCorrectiveWorkService.createCorrectiveTask(

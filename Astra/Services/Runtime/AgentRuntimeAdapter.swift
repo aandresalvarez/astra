@@ -2666,7 +2666,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: [AntigravityCLIRuntime.diagnosticLogDirectory(for: diagnosticLogPath)].compactMap { $0 },
-            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths(),
+            sandboxReadablePaths: AntigravityCLIRuntime.launchReadablePaths(),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2792,7 +2792,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: nil,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome],
-            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths()
+            sandboxReadablePaths: AntigravityCLIRuntime.launchReadablePaths()
         )
         let result = await AgentRuntimeProcessRunner().runUtilityProcess(
             AgentUtilityLaunchPlan(
@@ -2834,7 +2834,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         if !trimmedHome.isEmpty {
             extraVars["HOME"] = trimmedHome
         }
-        let environment = RuntimeProcessEnvironment.enriched(extraVariables: extraVars)
+        let environment = AntigravityCLIRuntime.enrichedEnvironment(extraVariables: extraVars, mode: authMode)
 
         let result = await probes.run(
             path: executable,

@@ -184,6 +184,7 @@ struct WorkspacePersistenceTests {
         let historicalTaskUpdatedAt = Date(timeIntervalSince1970: 1_700_000_123)
         sourceTask.isPinned = true
         sourceTask.isDone = true
+        sourceTask.reasoningEffort = "high"
         sourceTask.updatedAt = historicalTaskUpdatedAt
         let sourceRun = try #require(sourceTask.runs.first)
         let approvalGrant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
@@ -234,6 +235,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.skillSnapshots?.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.tasks?.first?.isPinned == true)
         #expect(config.tasks?.first?.isDone == true)
+        #expect(config.tasks?.first?.reasoningEffort == "high")
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.tasks?.first?.updatedAt == historicalTaskUpdatedAt)
         #expect(config.tasks?.first?.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
@@ -282,6 +284,7 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
         #expect(imported.tasks.first?.isDone == true)
+        #expect(importedTask.reasoningEffort == "high")
         #expect(imported.tasks.first?.updatedAt == historicalTaskUpdatedAt)
         #expect(imported.tasks.first?.unreadAt == sourceTask.unreadAt)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)

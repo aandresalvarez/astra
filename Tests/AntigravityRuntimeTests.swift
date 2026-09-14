@@ -240,6 +240,57 @@ struct AntigravityCLIRuntimeTests {
         #expect(events.contains { if case .text = $0 { true } else { false } })
     }
 
+    @Test("Consumer mode strips an inherited AGY_ADC_AUTH instead of overriding it")
+    func consumerModeStripsInheritedADCVariable() {
+        let defaults = InMemoryDefaults()
+
+        #expect(AntigravityCLIRuntime.authEnvironmentRemovedKeys(mode: .consumer) == ["AGY_ADC_AUTH"])
+        #expect(AntigravityCLIRuntime.authEnvironmentRemovedKeys(mode: .adc).isEmpty)
+
+        // `agy` keys ADC routing on the variable being *present*, so a value
+        // reaching the child from the parent shell or the task environment
+        // silently forces ADC. Setting it to "false" would not help; only
+        // removing it can express the consumer route.
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: "/bin/agy",
+            prompt: "hello",
+            workspacePath: "/workspace",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 30,
+            taskEnvironment: ["AGY_ADC_AUTH": "true"],
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+            defaults: defaults
+        )
+        #expect(plan.environment["AGY_ADC_AUTH"] == nil)
+    }
+
+    @Test("ADC mode grants the sandbox read access to the gcloud credentials it needs")
+    func adcModeGrantsGcloudReadablePaths() {
+        #expect(AntigravityCLIRuntime.adcReadablePaths(mode: .consumer, userHome: "/tmp/home").isEmpty)
+
+        let paths = AntigravityCLIRuntime.adcReadablePaths(mode: .adc, userHome: "/tmp/home")
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(homeDirectory: "/tmp/home")
+        #expect(paths == [
+            gcloudConfig,
+            (gcloudConfig as NSString).appendingPathComponent(
+                ExecutionEnvironmentCredentialProjection.gcpADCFileName
+            )
+        ])
+
+        // A blank home yields nothing rather than a path rooted at "/".
+        #expect(AntigravityCLIRuntime.adcReadablePaths(mode: .adc, userHome: "   ").isEmpty)
+
+        let defaults = InMemoryDefaults()
+        #expect(AntigravityCLIRuntime.adcReadablePaths(defaults: defaults, userHome: "/tmp/home").isEmpty)
+        defaults.set(AntigravityAuthMode.adc.rawValue, forKey: AppStorageKeys.antigravityAuthMode)
+        #expect(AntigravityCLIRuntime.adcReadablePaths(defaults: defaults, userHome: "/tmp/home") == paths)
+
+        // What the launch sites actually call: both grants, never one.
+        #expect(AntigravityCLIRuntime.launchReadablePaths(defaults: defaults, userHome: "/tmp/home")
+            == AntigravityCLIRuntime.authReadablePaths(userHome: "/tmp/home") + paths)
+    }
+
     @Test("Version summary is deferred to readiness checks")
     func versionSummaryIsDeferredToReadinessChecks() {
         #expect(AntigravityCLIRuntime.versionSummary(executablePath: "/bin/agy") == nil)

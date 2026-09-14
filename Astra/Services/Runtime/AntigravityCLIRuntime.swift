@@ -171,6 +171,50 @@ enum AntigravityCLIRuntime {
         ]
     }
 
+    /// The ADC route's credentials live outside the keychain, so
+    /// `authReadablePaths` alone leaves `AGY_ADC_AUTH=true` pointing at a file
+    /// Seatbelt denies: readiness passes (it runs the same grant) and the task
+    /// then fails to authenticate. Mirrors
+    /// `ClaudeCodeRuntime.vertexADCReadablePaths`, which grants the same
+    /// directory for the Vertex route. Empty for consumer sign-in, so the
+    /// grant only exists while the route that needs it is selected.
+    static func adcReadablePaths(
+        mode: AntigravityAuthMode,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        guard mode == .adc else { return [] }
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(
+            homeDirectory: trimmedHome
+        )
+        return [
+            gcloudConfig,
+            (gcloudConfig as NSString).appendingPathComponent(
+                ExecutionEnvironmentCredentialProjection.gcpADCFileName
+            )
+        ]
+    }
+
+    /// `defaults:`-based twin of `adcReadablePaths(mode:userHome:)`, for the
+    /// launch and utility paths that resolve the route from settings.
+    static func adcReadablePaths(
+        defaults: UserDefaults = .standard,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        adcReadablePaths(mode: resolvedAuthMode(defaults: defaults), userHome: userHome)
+    }
+
+    /// Everything an Antigravity launch has to be able to read. Callers use
+    /// this rather than concatenating the two lists themselves, so a launch
+    /// site cannot pick up the keychain grant and silently miss the ADC one.
+    static func launchReadablePaths(
+        defaults: UserDefaults = .standard,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        authReadablePaths(userHome: userHome) + adcReadablePaths(defaults: defaults, userHome: userHome)
+    }
+
     static func versionSummary(executablePath: String) -> String? {
         nil
     }
@@ -299,8 +343,26 @@ enum AntigravityCLIRuntime {
     /// the runtime — exporting it in a terminal has no effect on ASTRA's own
     /// launches.
     static func authEnvironment(defaults: UserDefaults = .standard) -> [String: String] {
+        authEnvironment(mode: resolvedAuthMode(defaults: defaults))
+    }
+
+    /// The persisted route, defaulting to consumer sign-in when unset or
+    /// unrecognized.
+    static func resolvedAuthMode(defaults: UserDefaults = .standard) -> AntigravityAuthMode {
         let raw = defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue
-        return authEnvironment(mode: AntigravityAuthMode(rawValue: raw) ?? .consumer)
+        return AntigravityAuthMode(rawValue: raw) ?? .consumer
+    }
+
+    /// Env keys the selected route needs *absent* from the child process.
+    /// `agy` treats the mere presence of `AGY_ADC_AUTH` as "use ADC" — its own
+    /// logout text says to `unset` the variable, not set it to false — so
+    /// consumer mode cannot express itself as an override. If ASTRA was itself
+    /// launched with the variable exported, every env here is built from
+    /// `RuntimeProcessEnvironment.enriched`, which starts from
+    /// `ProcessInfo.processInfo.environment`; without removal the inherited
+    /// value outlives the user switching back to Google Sign-In.
+    static func authEnvironmentRemovedKeys(mode: AntigravityAuthMode) -> [String] {
+        mode == .adc ? [] : ["AGY_ADC_AUTH"]
     }
 
     /// Pure variant for call sites that already have the resolved mode
@@ -310,6 +372,24 @@ enum AntigravityCLIRuntime {
     static func authEnvironment(mode: AntigravityAuthMode) -> [String: String] {
         guard mode == .adc else { return [:] }
         return ["AGY_ADC_AUTH": "true"]
+    }
+
+    /// `RuntimeProcessEnvironment.enriched` with the route's removals applied.
+    /// Antigravity launches go through this instead of `enriched` directly:
+    /// `enriched` only ever sets keys, so it cannot express consumer mode.
+    static func enrichedEnvironment(
+        additionalPaths: [String] = [],
+        extraVariables: [String: String],
+        mode: AntigravityAuthMode
+    ) -> [String: String] {
+        var environment = RuntimeProcessEnvironment.enriched(
+            additionalPaths: additionalPaths,
+            extraVariables: extraVariables
+        )
+        for key in authEnvironmentRemovedKeys(mode: mode) {
+            environment.removeValue(forKey: key)
+        }
+        return environment
     }
 
     static func buildCommand(
@@ -369,9 +449,10 @@ enum AntigravityCLIRuntime {
         let additionalPathPrefix = includeAstraToolsPath
             ? pathPrefix + [RuntimePathResolver.astraToolsPath]
             : pathPrefix
-        let env = RuntimeProcessEnvironment.enriched(
+        let env = enrichedEnvironment(
             additionalPaths: additionalPathPrefix,
-            extraVariables: extraVars
+            extraVariables: extraVars,
+            mode: resolvedAuthMode(defaults: defaults)
         )
 
         return AntigravityCLICommandPlan(

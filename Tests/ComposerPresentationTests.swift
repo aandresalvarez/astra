@@ -330,6 +330,25 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: true) == true)
     }
 
+    @Test("reasoning effort stays clearable in the composer and capability-gated in settings")
+    func reasoningEffortSurfacesStayReachable() throws {
+        let toolbar = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
+        // `nil` is how a task says "let the provider decide". Without an entry
+        // that sends it, a task given an explicit effort could never be handed
+        // back — every other entry sets a concrete value.
+        #expect(toolbar.contains("onReasoningEffortChange?(nil)"))
+
+        // The settings picker has to be a sibling of the provider branch, not
+        // nested in its `else`: Claude declares `supportsReasoningEffort` too,
+        // and the `else` runs only for the runtimes that are not Claude.
+        let settings = try sourceFile("Astra/Views/SettingsRuntimeTab.swift")
+        let branchIndent = "\n                "
+        #expect(settings.contains("\(branchIndent)if runtime == .claudeCode {"))
+        #expect(settings.contains(
+            "\(branchIndent)if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort {"
+        ))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

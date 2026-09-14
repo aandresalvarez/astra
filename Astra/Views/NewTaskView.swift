@@ -206,6 +206,10 @@ struct NewTaskView: View {
             runtimeID = settings.defaultRuntime.rawValue
             model = settings.normalizedDefaultModel
             tokenBudget = settings.defaultBudget
+            reasoningEffort = settings.normalizedDefaultReasoningEffort(
+                for: settings.normalizedDefaultModel,
+                runtime: settings.defaultRuntime
+            )
             policyLevelRaw = AgentPolicyDefaults.effectiveLevel(
                 workspace: workspace,
                 globalDefaultRaw: settings.defaultPolicyLevelRaw
