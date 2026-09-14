@@ -94,38 +94,31 @@ struct CopilotStreamEventParserTests {
         }
     }
 
-    @Test("Copilot commentary never becomes the answer; only final_answer does")
-    func copilotCommentaryPhaseIsNotTheAnswer() {
-        // Both frames captured from a live `copilot --output-format=json` run.
+    @Test("Copilot commentary and final answer both stay completions, so the last one wins")
+    func copilotCommentaryStaysACompletion() {
+        // Both frames captured live. Commentary must NOT become `.text`:
+        // streamed text locks run.output, and the final answer could then
+        // never replace the preamble. Keeping both as completions is what
+        // lets last-completed-wins pick the answer.
         let commentary = #"""
-        {"type":"assistant.message","data":{"messageId":"673c1058","model":"gpt-5.6-sol","phase":"commentary","toolRequests":[],"content":"I'm about to run the requested shell command and capture its output."}}
+        {"type":"assistant.message","data":{"messageId":"673c1058","phase":"commentary","toolRequests":[],"content":"I'm about to run the requested shell command."}}
         """#
-        let commentaryEvents = CopilotStreamEventParser.parseAgentEvents(line: commentary)
-        #expect(!commentaryEvents.contains { if case .completed = $0 { true } else { false } },
-                "commentary must not reach run output, or a truncated run reports its preamble as the answer")
-        if case .text(let text) = commentaryEvents.first {
-            #expect(text.hasPrefix("I'm about to run"))
-        } else {
-            Issue.record("Expected commentary to parse as visible progress, got \(String(describing: commentaryEvents.first))")
+        let finalAnswer = #"""
+        {"type":"assistant.message","data":{"messageId":"f11d8f18","phase":"final_answer","toolRequests":[],"content":"Output: `hello-from-copilot`"}}
+        """#
+
+        for line in [commentary, finalAnswer] {
+            #expect(CopilotStreamEventParser.parseAgentEvents(line: line).contains {
+                if case .completed = $0 { true } else { false }
+            }, "a message with no tool requests stays a completion so a later one can replace it")
+            #expect(!CopilotStreamEventParser.parseAgentEvents(line: line).contains {
+                if case .text = $0 { true } else { false }
+            }, "streamed text would lock run.output against the real answer")
         }
+
+        // Neither is terminal — only the result frame ends the run.
         #expect(!CopilotStreamEventParser.parseAll(line: commentary).contains {
             if case .result = $0 { true } else { false }
-        })
-
-        let finalAnswer = #"""
-        {"type":"assistant.message","data":{"messageId":"f11d8f18","model":"gpt-5.6-sol","phase":"final_answer","toolRequests":[],"content":"Output: `hello-from-copilot`"}}
-        """#
-        if case .completed(let summary) = CopilotStreamEventParser.parseAgentEvents(line: finalAnswer).first {
-            #expect(summary == "Output: `hello-from-copilot`")
-        } else {
-            Issue.record("Expected final_answer to stay a completed AgentEvent for run output")
-        }
-
-        // Builds that send no `phase` still fall back to the tool-requests
-        // heuristic, so this keeps working against an older CLI.
-        let unlabelled = #"{"type":"assistant.message","data":{"content":"final answer"}}"#
-        #expect(CopilotStreamEventParser.parseAgentEvents(line: unlabelled).contains {
-            if case .completed = $0 { true } else { false }
         })
     }
 

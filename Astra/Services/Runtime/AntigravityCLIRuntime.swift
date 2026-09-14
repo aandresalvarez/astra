@@ -405,6 +405,7 @@ enum AntigravityCLIRuntime {
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
         permissionArguments: [String],
+        structuredOutputAllowed: Bool = true,
         defaults: UserDefaults = .standard
     ) -> AntigravityCLICommandPlan {
         // Plain text gives ASTRA prose and nothing else: no turn boundary, no
@@ -413,7 +414,13 @@ enum AntigravityCLIRuntime {
         // run report tokens and end on a real terminal event rather than on
         // process exit alone. Older builds reject the flag and would fail the
         // launch, so this asks first.
-        let structuredOutput = structuredOutputSupported(executablePath: executablePath, defaults: defaults)
+        //
+        // Utility runs opt out: they hand raw stdout straight to their own
+        // parser (commit and PR authoring read `ASTRA_*_SUGGESTION` text), so
+        // wrapping the answer in `init`/`step_update`/`result` envelopes would
+        // leave that parser with nothing it can decode.
+        let structuredOutput = structuredOutputAllowed
+            && structuredOutputSupported(executablePath: executablePath, defaults: defaults)
         var args = ["--print", prompt]
         if structuredOutput {
             args += ["--output-format", "stream-json"]
@@ -627,7 +634,15 @@ enum AntigravityCLIRuntime {
     private static func executableStamp(_ executablePath: String) -> String {
         let trimmed = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "none" }
-        return "\(trimmed)@\(AgentRuntimeProcessRunner.fileModificationTimestamp(trimmed))"
+        // npm-style installs put a symlink on PATH, and a link's own mtime
+        // survives the upgrade that replaces what it points at. Stamping the
+        // link would keep serving the old verdict: an upgraded CLI stuck in
+        // plain text, or worse, a downgraded one still being handed a flag it
+        // no longer understands. Size joins mtime because an in-place rewrite
+        // can land inside the same second.
+        let resolved = URL(fileURLWithPath: trimmed).resolvingSymlinksInPath().path
+        let size = (try? FileManager.default.attributesOfItem(atPath: resolved)[.size] as? Int) ?? nil
+        return "\(resolved)@\(AgentRuntimeProcessRunner.fileModificationTimestamp(resolved))+\(size ?? -1)"
     }
 
     /// Structured frames when the run asked for `--output-format stream-json`,

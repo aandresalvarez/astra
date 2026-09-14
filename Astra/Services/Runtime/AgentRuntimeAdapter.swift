@@ -2778,7 +2778,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: providerHomeDirectory,
-            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+            // This path returns the child's raw stdout to the caller's own
+            // parser, which reads `ASTRA_*_SUGGESTION` text — structured
+            // envelopes would leave it nothing to decode.
+            structuredOutputAllowed: false
         )
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)

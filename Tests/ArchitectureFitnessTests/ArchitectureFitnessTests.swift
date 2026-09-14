@@ -1958,7 +1958,7 @@ struct ArchitectureFitnessTests {
             // 2_929 -> 2_942: Antigravity's stream-json wiring — honouring
             // parsesJSONLines, and probing `--output-format` where the CLI is
             // already being run rather than during launch preflight.
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_942, .owner("Runtime adapter registry")),
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_946, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every

@@ -197,9 +197,11 @@ struct AntigravityCLIRuntimeTests {
         #expect(parsed.count == 1, "one terminal event per run, not one per payload field")
         if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = parsed.first {
             #expect(text == "DONE\n")
-            // Cached reads still occupied the context window, so they count as
-            // input; `thinking_tokens` is already part of the output total.
-            #expect(input == 27_828)
+            // `input_tokens` already counts the 7,296 cached reads, and
+            // `thinking_tokens` is already part of the output total — this
+            // frame's own arithmetic says so: 20,532 + 1,339 == 21,871.
+            #expect(input == 20_532)
+            #expect(input + output == 21_871, "must match the frame's reported total_tokens")
             #expect(output == 1339)
             #expect(duration == 9827)
             #expect(turns == 1)

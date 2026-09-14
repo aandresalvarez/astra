@@ -185,25 +185,19 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized == "assistant.message" {
-            // Copilot labels every message it sends: `commentary` while it
-            // says what it is about to do, `final_answer` for the answer
-            // itself. Only the latter may become run output — a run cut short
-            // mid-work otherwise keeps "I'm about to run the command" as its
-            // result, which is exactly what a real killed run recorded.
-            // Without an answer the run has none, and the empty-result path
-            // says so honestly instead.
-            let phase = firstStringIncludingPayload(in: object, keys: ["phase"])?.lowercased()
-            if let phase, phase != "final_answer" {
-                if let text = textValue(in: object), !text.isEmpty {
-                    return [.text(text: text)]
-                }
-                return [.control(type: "assistant.message.\(phase)")]
-            }
-            // Older builds send no `phase`, so the original heuristic still
-            // stands in for them: a message carrying tool requests is an
-            // intermediate model envelope. The matching tool.execution_start
-            // owns the actionable event; this envelope is not a completed
-            // assistant response.
+            // Copilot labels these `commentary` while it narrates and
+            // `final_answer` for the answer, and it is tempting to route
+            // commentary to `.text` so it can never be mistaken for the
+            // answer. It must not be: `AgentEventRecorder` appends `.text` to
+            // `run.output` and marks the output stream-assembled, after which
+            // `recordCompletedOutput` refuses to replace it — so the preamble
+            // would stick as the answer and the real final answer would be
+            // dropped. Leaving both as completions keeps last-completed-wins,
+            // where the final answer is simply the last one to arrive.
+            //
+            // A message carrying tool requests is an intermediate model
+            // envelope. The matching tool.execution_start owns the actionable
+            // event; this envelope is not a completed assistant response.
             if hasToolRequests(in: object) {
                 if let text = textValue(in: object), !text.isEmpty {
                     return [.text(text: text)]

@@ -134,10 +134,12 @@ public enum AntigravityStreamEventParser {
 
     private static func usageEvent(in result: [String: Any]) -> AgentEvent? {
         let usage = result["usage"] as? [String: Any] ?? [:]
-        // Cached reads still entered the context window, so they belong in the
-        // input total the budget is measured against.
-        let input = (int(in: usage, keys: ["input_tokens"]) ?? 0)
-            + (int(in: usage, keys: ["cache_read_tokens"]) ?? 0)
+        // `input_tokens` already counts cached reads: the captured frame
+        // reports input 20,532 and output 1,339 against a `total_tokens` of
+        // 21,871 exactly, with 7,296 of that input cached. Adding the cached
+        // figure would inflate persisted usage and push cache-heavy runs over
+        // a hard token budget they never actually spent.
+        let input = int(in: usage, keys: ["input_tokens"]) ?? 0
         // `thinking_tokens` is a subset of `output_tokens`, not an addition.
         let output = int(in: usage, keys: ["output_tokens"]) ?? 0
         let duration = double(in: result, keys: ["duration_seconds"]).map { Int($0 * 1000) }
