@@ -1287,6 +1287,7 @@ final class TaskQueue {
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+            TaskInputMaterializer.materialize(task: task, taskFolder: folder)
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
                 "event": "task_folder_prepared",
                 "mode": mode,

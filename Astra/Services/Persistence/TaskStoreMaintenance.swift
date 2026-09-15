@@ -4,8 +4,8 @@ import ASTRAModels
 import ASTRACore
 
 /// One-time-per-launch housekeeping that keeps the task store aligned with the
-/// board invariant ("only meaningful supervisable work"). It does two things,
-/// both conservative and audited rather than silent:
+/// board invariant ("only meaningful supervisable work"). It does three things,
+/// all conservative and audited rather than silent:
 ///
 ///  1. Prune *abandoned* low-signal drafts — never-run greeting/probe chats that
 ///     have gone stale. This is what clears the long tail of "open chat, type
@@ -13,17 +13,20 @@ import ASTRACore
 ///  2. Remove *exact* duplicate Claude Code session imports — tasks that share a
 ///     workspace + provider `sessionId` because an import ran more than once.
 ///     Keeps the earliest copy.
+///  3. Forget pasted composer attachments that macOS has purged from `$TMPDIR`
+///     — the path can never resolve again, and leaving it wedges the task.
 ///
 /// It never deletes work the user ran, pinned, planned, or recently touched.
 public enum TaskStoreMaintenance {
     @discardableResult
     @MainActor
-    public static func runStartupMaintenance(modelContext: ModelContext, now: Date = Date()) -> (prunedDrafts: Int, dedupedImports: Int) {
+    public static func runStartupMaintenance(modelContext: ModelContext, now: Date = Date()) -> (prunedDrafts: Int, dedupedImports: Int, strippedPurgedInputs: Int) {
         let allTasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         let pruned = pruneAbandonedDrafts(allTasks, modelContext: modelContext, now: now)
         let deduped = deduplicateImportedSessions(allTasks, modelContext: modelContext)
+        let stripped = stripPurgedEphemeralInputs(allTasks)
 
-        if pruned > 0 || deduped > 0 {
+        if pruned > 0 || deduped > 0 || stripped > 0 {
             try? modelContext.save()
         }
         // Always emit one line so the pass is observable in logs even on a
@@ -38,9 +41,36 @@ public enum TaskStoreMaintenance {
             "scanned_tasks": String(allTasks.count),
             "pruned_abandoned_drafts": String(pruned),
             "deduped_session_imports": String(deduped),
+            "stripped_purged_inputs": String(stripped),
             "hidden_drafts": String(hidden)
         ], level: .info)
-        return (pruned, deduped)
+        return (pruned, deduped, stripped)
+    }
+
+    /// Drop task inputs that pointed at a pasted or dropped composer
+    /// attachment in `$TMPDIR` which macOS has since purged. The file can
+    /// never come back (its name is random and the directory is system-owned),
+    /// and while the path lingers the launch resolver has to explain it on
+    /// every turn and the header file list shows a phantom entry. Existing
+    /// temp files are left alone — `TaskInputMaterializer` moves those into
+    /// the task folder on the next launch. Returns the number of entries
+    /// removed across all tasks.
+    @MainActor
+    public static func stripPurgedEphemeralInputs(
+        _ tasks: [AgentTask],
+        fileManager: FileManager = .default
+    ) -> Int {
+        var removed = 0
+        for task in tasks where task.inputs.contains(where: { EphemeralComposerAttachment.isEphemeralPath($0) }) {
+            let kept = task.inputs.filter { input in
+                guard EphemeralComposerAttachment.isEphemeralPath(input) else { return true }
+                return fileManager.fileExists(atPath: input.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            guard kept.count != task.inputs.count else { continue }
+            removed += task.inputs.count - kept.count
+            task.inputs = kept
+        }
+        return removed
     }
 
     /// Delete low-signal drafts that have gone stale. Returns the count removed.

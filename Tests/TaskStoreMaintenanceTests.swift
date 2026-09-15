@@ -1,0 +1,74 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+/// Startup maintenance's third job: forgetting pasted attachments that macOS
+/// has already purged from `$TMPDIR`, so a task is not haunted by a path it
+/// can never satisfy again.
+@Suite("Task store maintenance — purged paste inputs")
+@MainActor
+struct TaskStoreMaintenanceTests {
+    private func temporaryFile(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent(name)
+    }
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        return ModelContext(container)
+    }
+
+    @Test("Purged paste inputs are stripped; live pastes, user files and prose survive")
+    func stripsOnlyPurgedEphemeralInputs() throws {
+        let fm = FileManager.default
+        let livePaste = temporaryFile("astra_paste_\(UUID().uuidString.prefix(8)).txt")
+        try "still here".write(toFile: livePaste, atomically: true, encoding: .utf8)
+        defer { try? fm.removeItem(atPath: livePaste) }
+        let purgedPaste = temporaryFile("astra_paste_\(UUID().uuidString.prefix(8)).txt")
+        let purgedDrop = temporaryFile("astra_drop_\(UUID().uuidString.prefix(8)).png")
+        let userFile = "/Users/someone/Documents/removed-but-not-ours.pdf"
+        let prose = "Previous task output (Summarize):\nsome prose"
+
+        let task = AgentTask(title: "Haunted", goal: "Continue")
+        task.inputs = [purgedPaste, livePaste, userFile, purgedDrop, prose]
+        let clean = AgentTask(title: "Clean", goal: "Nothing to do")
+        clean.inputs = [userFile, prose]
+
+        let removed = TaskStoreMaintenance.stripPurgedEphemeralInputs([task, clean])
+
+        #expect(removed == 2)
+        // A missing *user* file is not ours to forget — only composer temp files.
+        #expect(task.inputs == [livePaste, userFile, prose])
+        #expect(clean.inputs == [userFile, prose])
+    }
+
+    @Test("Startup maintenance reports and persists the stripped count")
+    func startupMaintenanceStripsAndSaves() throws {
+        let context = try makeContext()
+        let purgedPaste = temporaryFile("astra_paste_\(UUID().uuidString.prefix(8)).json")
+        let workspace = Workspace(name: "Maintenance", primaryPath: "/tmp/astra-maintenance-\(UUID().uuidString)")
+        let task = AgentTask(title: "Review queries", goal: "Review the pasted queries", workspace: workspace)
+        task.status = .completed
+        task.inputs = [purgedPaste, "inline context"]
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let report = TaskStoreMaintenance.runStartupMaintenance(modelContext: context)
+
+        #expect(report.strippedPurgedInputs == 1)
+        #expect(task.inputs == ["inline context"])
+        // The task itself is untouched — this is not a prune.
+        let survivors = try context.fetch(FetchDescriptor<AgentTask>())
+        #expect(survivors.map(\.id) == [task.id])
+
+        let again = TaskStoreMaintenance.runStartupMaintenance(modelContext: context)
+        #expect(again.strippedPurgedInputs == 0)
+    }
+}

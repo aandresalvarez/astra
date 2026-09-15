@@ -348,6 +348,21 @@ enum TaskLaunchResourceResolver {
         let stripped = AgentRuntimeAttachmentProjection.stripPathDecoratorsForLaunchResources(rawPath)
         guard !stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let normalized = existingPath(stripped, fileManager: fileManager) else {
+            // A pasted or dropped attachment lives in $TMPDIR, which macOS
+            // purges after three days. The user cannot put that file back, so
+            // blocking every provider on it would wedge the task for good; skip
+            // the grant and say what happened instead. Current-message
+            // attachments keep the hard error — a paste made seconds ago
+            // should never be missing.
+            if source == .taskInput, EphemeralComposerAttachment.isEphemeralPath(stripped) {
+                diagnostics.append(RuntimeResourceDiagnostic(
+                    severity: .warning,
+                    code: "input_path_missing_ephemeral_attachment",
+                    message: "ASTRA skipped a pasted attachment that macOS has already cleaned out of the temporary folder: \(stripped)",
+                    repairAction: "Paste or attach the content again if this task still needs it, or remove the input from the task."
+                ))
+                return
+            }
             grants.append(RuntimePathGrant(
                 path: normalizedPath(stripped),
                 access: .read,

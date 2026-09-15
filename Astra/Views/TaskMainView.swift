@@ -4930,7 +4930,7 @@ struct TaskMainView: View {
                     Divider()
                         .overlay(Color.primary.opacity(0.06))
                 }
-
+                ComposerInputChipsView(task: task)
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
