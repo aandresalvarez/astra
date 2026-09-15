@@ -65,6 +65,17 @@ public enum TaskStoreMaintenance {
     ) -> Int {
         var removed = 0
         for task in tasks where task.inputs.contains(where: { EphemeralComposerAttachment.isEphemeralPath($0) }) {
+            // A launch that copied the paste into the task folder but exited
+            // before saving the rewritten path leaves a durable copy behind;
+            // point the input at that copy instead of forgetting it.
+            let inputsFolder = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("inputs")
+            task.inputs = task.inputs.map { input in
+                guard EphemeralComposerAttachment.isEphemeralPath(input) else { return input }
+                let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !fileManager.fileExists(atPath: trimmed) else { return input }
+                let durable = (inputsFolder as NSString).appendingPathComponent((trimmed as NSString).lastPathComponent)
+                return fileManager.fileExists(atPath: durable) ? durable : input
+            }
             let purged = task.inputs.filter { input in
                 EphemeralComposerAttachment.isEphemeralPath(input)
                     && !fileManager.fileExists(atPath: input.trimmingCharacters(in: .whitespacesAndNewlines))

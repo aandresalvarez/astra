@@ -1423,8 +1423,12 @@ final class AgentRuntimeProcessRunner {
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
         // Zero is the persisted sentinel for Disabled. Resolve it before team
         // scaling so an unlimited budget stays unlimited instead of overflowing
-        // when multiplied by the number of agents.
-        guard baseBudget > 0 else { return Int.max }
+        // when multiplied by the number of agents. A negative value is not a
+        // sentinel — it is a malformed persisted config (workspace imports
+        // assign budgets without normalizing) — so it keeps the pre-existing
+        // enforcement behaviour instead of silently becoming unlimited.
+        if baseBudget == 0 { return Int.max }
+        guard baseBudget > 0 else { return baseBudget }
         return usesAgentTeam ? baseBudget * max(2, teamSize) : baseBudget
     }
 

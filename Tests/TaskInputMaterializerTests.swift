@@ -98,6 +98,28 @@ struct TaskInputMaterializerTests {
         #expect(task.inputs == [durable, userFile, prose, purged])
     }
 
+    @Test("A durable copy left by an unsaved launch is adopted once the temp source is gone")
+    func adoptsExistingDurableCopy() throws {
+        let fm = FileManager.default
+        let root = try makeWorkspaceRoot()
+        defer { try? fm.removeItem(at: root) }
+        let purged = temporaryFile("astra_paste_\(UUID().uuidString.prefix(8)).txt")
+        let workspace = Workspace(name: "Adopt", primaryPath: root.path)
+        let task = AgentTask(title: "Review", goal: "Review the paste", workspace: workspace)
+        task.inputs = [purged]
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let inputsFolder = (folder as NSString).appendingPathComponent(TaskInputMaterializer.inputsFolderName)
+        try fm.createDirectory(atPath: inputsFolder, withIntermediateDirectories: true)
+        let durable = (inputsFolder as NSString).appendingPathComponent((purged as NSString).lastPathComponent)
+        try "copied earlier".write(toFile: durable, atomically: true, encoding: .utf8)
+
+        let outcome = TaskInputMaterializer.materialize(task: task, taskFolder: folder)
+
+        #expect(outcome.materialized == [durable])
+        #expect(outcome.alreadyMissing.isEmpty)
+        #expect(task.inputs == [durable])
+    }
+
     @Test("A task with no folder or no ephemeral inputs is left untouched")
     func leavesOrdinaryTasksAlone() throws {
         let root = try makeWorkspaceRoot()

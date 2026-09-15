@@ -57,6 +57,30 @@ struct TaskStoreMaintenanceTests {
         #expect(clean.events.isEmpty)
     }
 
+    @Test("Maintenance adopts a durable copy instead of stripping when one exists")
+    func adoptsDurableCopyInsteadOfStripping() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-maint-adopt-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let context = try makeContext()
+        let purged = temporaryFile("astra_paste_\(UUID().uuidString.prefix(8)).txt")
+        let workspace = Workspace(name: "Adopt", primaryPath: root.path)
+        let task = AgentTask(title: "Review", goal: "Continue", workspace: workspace)
+        task.inputs = [purged]
+        context.insert(workspace); context.insert(task); try context.save()
+        let inputsFolder = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("inputs")
+        try fm.createDirectory(atPath: inputsFolder, withIntermediateDirectories: true)
+        let durable = (inputsFolder as NSString).appendingPathComponent((purged as NSString).lastPathComponent)
+        try "copied earlier".write(toFile: durable, atomically: true, encoding: .utf8)
+
+        let removed = TaskStoreMaintenance.stripPurgedEphemeralInputs([task], modelContext: context)
+
+        #expect(removed == 0)
+        #expect(task.inputs == [durable])
+        #expect(task.events.isEmpty)
+    }
+
     @Test("Startup maintenance reports and persists the stripped count")
     func startupMaintenanceStripsAndSaves() throws {
         let context = try makeContext()

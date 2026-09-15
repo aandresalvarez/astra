@@ -361,6 +361,15 @@ struct RunCostBoundTests {
             teamSize: 3
         ) == Int.max)
     }
+
+    @Test("A negative persisted budget is malformed, not unlimited")
+    func negativeTokenBudgetIsNotUnlimited() {
+        // Only the zero sentinel means Disabled; a `-1` from an unnormalized
+        // workspace import must not restore a task as silently unlimited.
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(baseBudget: -1, usesAgentTeam: false, teamSize: 1) == -1)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(baseBudget: -1, usesAgentTeam: true, teamSize: 3) == -1)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(baseBudget: 500, usesAgentTeam: true, teamSize: 3) == 1500)
+    }
 }
 
 // MARK: - Phase 5: a breach is not automatically a death sentence

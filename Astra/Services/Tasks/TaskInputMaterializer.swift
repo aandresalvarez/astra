@@ -42,14 +42,22 @@ enum TaskInputMaterializer {
         for (index, rawInput) in task.inputs.enumerated() {
             guard EphemeralComposerAttachment.isEphemeralPath(rawInput) else { continue }
             let source = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard fileManager.fileExists(atPath: source) else {
-                outcome.alreadyMissing.append(source)
-                continue
-            }
-
             let destinationFolder = (taskFolder as NSString).appendingPathComponent(inputsFolderName)
             let destination = (destinationFolder as NSString)
                 .appendingPathComponent((source as NSString).lastPathComponent)
+            guard fileManager.fileExists(atPath: source) else {
+                // A previous launch may have copied the file and then exited
+                // before the rewritten path was saved; the durable copy is the
+                // one that matters, so adopt it rather than report a loss.
+                if fileManager.fileExists(atPath: destination) {
+                    rewritten[index] = destination
+                    outcome.materialized.append(destination)
+                } else {
+                    outcome.alreadyMissing.append(source)
+                }
+                continue
+            }
+
             do {
                 try fileManager.createDirectory(atPath: destinationFolder, withIntermediateDirectories: true)
                 // Paste names carry a random suffix, so an existing destination

@@ -60,6 +60,9 @@ struct ComposerInputChipsView: View {
                     }
                     return (missing, thumbs)
                 }.value
+                // The detached decode outlives a cancelled `.task`; a slower,
+                // older refresh must not overwrite the state of a newer one.
+                guard !Task.isCancelled, fileInputs == inputs else { return }
                 missingInputs = missing
                 thumbnails = thumbs
             }
