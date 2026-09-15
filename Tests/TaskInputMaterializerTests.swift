@@ -86,6 +86,9 @@ struct TaskInputMaterializerTests {
         #expect(try String(contentsOfFile: durable, encoding: .utf8) == "pasted queries")
         // The temp original is left for autosave drafts that still point at it.
         #expect(fm.fileExists(atPath: paste))
+        // The copy lands via staging + rename; nothing partial is left behind.
+        let inputsFolder = (folder as NSString).appendingPathComponent(TaskInputMaterializer.inputsFolderName)
+        #expect(try fm.contentsOfDirectory(atPath: inputsFolder) == [(paste as NSString).lastPathComponent])
 
         // A second launch finds nothing ephemeral left to move.
         let again = TaskInputMaterializer.materialize(task: task, taskFolder: folder)

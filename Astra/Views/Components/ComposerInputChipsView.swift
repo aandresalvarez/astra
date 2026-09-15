@@ -50,9 +50,12 @@ struct ComposerInputChipsView: View {
                     var missing: Set<String> = []
                     var thumbs: [String: NSImage] = [:]
                     for path in inputs {
-                        guard FileManager.default.fileExists(atPath: path) else { missing.insert(path); continue }
-                        guard imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()),
-                              let image = NSImage(contentsOfFile: path) else { continue }
+                        // Inputs may carry prompt-projection whitespace; the
+                        // filesystem sees the trimmed path, the chip keys on the original.
+                        let filePath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard FileManager.default.fileExists(atPath: filePath) else { missing.insert(path); continue }
+                        guard imageExtensions.contains(URL(fileURLWithPath: filePath).pathExtension.lowercased()),
+                              let image = NSImage(contentsOfFile: filePath) else { continue }
                         thumbs[path] = Self.thumbnail(of: image, side: 44)
                     }
                     return (missing, thumbs)
@@ -64,7 +67,7 @@ struct ComposerInputChipsView: View {
     }
 
     private func chip(_ path: String, isMissing: Bool) -> some View {
-        let name = URL(fileURLWithPath: path).lastPathComponent
+        let name = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespacesAndNewlines)).lastPathComponent
 
         return HStack(spacing: 6) {
             if isMissing {

@@ -53,9 +53,20 @@ enum TaskInputMaterializer {
             do {
                 try fileManager.createDirectory(atPath: destinationFolder, withIntermediateDirectories: true)
                 // Paste names carry a random suffix, so an existing destination
-                // is this same file from an earlier launch, not a collision.
+                // is this same file from an earlier launch, not a collision —
+                // and it is complete, because the copy lands under a staging
+                // name and is only renamed into place once it has succeeded.
+                // A failed copy can therefore never masquerade as materialized.
                 if !fileManager.fileExists(atPath: destination) {
-                    try fileManager.copyItem(atPath: source, toPath: destination)
+                    let staging = (destinationFolder as NSString)
+                        .appendingPathComponent(".\((source as NSString).lastPathComponent).partial-\(UUID().uuidString.prefix(8))")
+                    do {
+                        try fileManager.copyItem(atPath: source, toPath: staging)
+                        try fileManager.moveItem(atPath: staging, toPath: destination)
+                    } catch {
+                        try? fileManager.removeItem(atPath: staging)
+                        throw error
+                    }
                 }
                 rewritten[index] = destination
                 outcome.materialized.append(destination)
