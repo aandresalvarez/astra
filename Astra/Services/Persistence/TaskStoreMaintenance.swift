@@ -24,7 +24,7 @@ public enum TaskStoreMaintenance {
         let allTasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         let pruned = pruneAbandonedDrafts(allTasks, modelContext: modelContext, now: now)
         let deduped = deduplicateImportedSessions(allTasks, modelContext: modelContext)
-        let stripped = stripPurgedEphemeralInputs(allTasks)
+        let stripped = stripPurgedEphemeralInputs(allTasks, modelContext: modelContext)
 
         if pruned > 0 || deduped > 0 || stripped > 0 {
             try? modelContext.save()
@@ -53,22 +53,31 @@ public enum TaskStoreMaintenance {
     /// and while the path lingers the launch resolver has to explain it on
     /// every turn and the header file list shows a phantom entry. Existing
     /// temp files are left alone — `TaskInputMaterializer` moves those into
-    /// the task folder on the next launch. Returns the number of entries
-    /// removed across all tasks.
+    /// the task folder on the next launch. Each affected task gets a durable
+    /// `system.info` event naming what was dropped, so the thread itself
+    /// explains a later run that lacks that context. Returns the number of
+    /// entries removed across all tasks.
     @MainActor
     public static func stripPurgedEphemeralInputs(
         _ tasks: [AgentTask],
+        modelContext: ModelContext,
         fileManager: FileManager = .default
     ) -> Int {
         var removed = 0
         for task in tasks where task.inputs.contains(where: { EphemeralComposerAttachment.isEphemeralPath($0) }) {
-            let kept = task.inputs.filter { input in
-                guard EphemeralComposerAttachment.isEphemeralPath(input) else { return true }
-                return fileManager.fileExists(atPath: input.trimmingCharacters(in: .whitespacesAndNewlines))
+            let purged = task.inputs.filter { input in
+                EphemeralComposerAttachment.isEphemeralPath(input)
+                    && !fileManager.fileExists(atPath: input.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            guard kept.count != task.inputs.count else { continue }
-            removed += task.inputs.count - kept.count
-            task.inputs = kept
+            guard !purged.isEmpty else { continue }
+            task.inputs.removeAll { purged.contains($0) }
+            removed += purged.count
+            let names = purged.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: "ASTRA removed \(purged.count == 1 ? "a pasted attachment" : "\(purged.count) pasted attachments") that macOS had already cleaned out of the temporary folder: \(names). Later runs will not have that content unless it is pasted or attached again."
+            ))
         }
         return removed
     }

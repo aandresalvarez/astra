@@ -217,4 +217,13 @@ struct GeneratedDependencyPathPolicyTests {
             scope: scope
         ))
     }
+    @Test("Materialized composer inputs under the task folder are internal state, not deliverables")
+    func materializedInputsAreInternalState() {
+        #expect(TaskOutputArtifactPathPolicy.isInternalStateRelativePath("inputs/astra_paste_1234ABCD.txt"))
+        #expect(TaskOutputArtifactPathPolicy.isInternalStateRelativePath("inputs"))
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("inputs_summary.md"))
+        // Only the task folder has an ASTRA-owned `inputs/`; a workspace may legitimately ship one.
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("inputs/data.csv", context: .workspace))
+    }
+
 }

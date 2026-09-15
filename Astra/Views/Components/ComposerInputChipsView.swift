@@ -19,6 +19,7 @@ struct ComposerInputChipsView: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var missingInputs: Set<String> = []
+    @State private var thumbnails: [String: NSImage] = [:]
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "heic"]
 
@@ -38,23 +39,32 @@ struct ComposerInputChipsView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 2)
             }
-            // A `stat` per input per render would land in the keystroke path
-            // (TaskMainView re-evaluates its body on every character), so the
-            // existence check runs off-main and only when the inputs change.
+            // A `stat` or an image decode per input per render would land in
+            // the keystroke path (TaskMainView re-evaluates its body on every
+            // character), so both run off-main, once per change of the inputs,
+            // and `chip` only reads the cached results.
             .task(id: fileInputs.joined(separator: "|")) {
                 let inputs = fileInputs
-                let missing = await Task.detached(priority: .utility) {
-                    Set(inputs.filter { !FileManager.default.fileExists(atPath: $0) })
+                let imageExtensions = Self.imageExtensions
+                let (missing, thumbs) = await Task.detached(priority: .utility) { () -> (Set<String>, [String: NSImage]) in
+                    var missing: Set<String> = []
+                    var thumbs: [String: NSImage] = [:]
+                    for path in inputs {
+                        guard FileManager.default.fileExists(atPath: path) else { missing.insert(path); continue }
+                        guard imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()),
+                              let image = NSImage(contentsOfFile: path) else { continue }
+                        thumbs[path] = Self.thumbnail(of: image, side: 44)
+                    }
+                    return (missing, thumbs)
                 }.value
                 missingInputs = missing
+                thumbnails = thumbs
             }
         }
     }
 
     private func chip(_ path: String, isMissing: Bool) -> some View {
         let name = URL(fileURLWithPath: path).lastPathComponent
-        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
-        let isImage = Self.imageExtensions.contains(ext)
 
         return HStack(spacing: 6) {
             if isMissing {
@@ -62,7 +72,7 @@ struct ComposerInputChipsView: View {
                     .font(Stanford.ui(11))
                     .foregroundStyle(Stanford.poppy)
                     .frame(width: 16)
-            } else if isImage, let nsImage = NSImage(contentsOfFile: path) {
+            } else if let nsImage = thumbnails[path] {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -101,6 +111,20 @@ struct ComposerInputChipsView: View {
         )
         .help(isMissing ? "\(path)\n\nMissing — macOS may have cleaned it out of the temporary folder." : path)
         .accessibilityLabel(isMissing ? "Missing task input \(name)" : "Task input \(name)")
+    }
+
+    /// A small pre-scaled copy so the chip never holds a full screenshot in
+    /// memory or rescales it on every draw.
+    private static func thumbnail(of image: NSImage, side: CGFloat) -> NSImage {
+        let source = image.size
+        guard source.width > 0, source.height > 0 else { return image }
+        let scale = min(side / source.width, side / source.height, 1)
+        let target = NSSize(width: source.width * scale, height: source.height * scale)
+        let thumb = NSImage(size: target)
+        thumb.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: source), operation: .copy, fraction: 1)
+        thumb.unlockFocus()
+        return thumb
     }
 
     private func remove(_ path: String, wasMissing: Bool) {

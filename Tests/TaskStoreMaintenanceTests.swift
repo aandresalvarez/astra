@@ -35,17 +35,26 @@ struct TaskStoreMaintenanceTests {
         let userFile = "/Users/someone/Documents/removed-but-not-ours.pdf"
         let prose = "Previous task output (Summarize):\nsome prose"
 
+        let context = try makeContext()
         let task = AgentTask(title: "Haunted", goal: "Continue")
         task.inputs = [purgedPaste, livePaste, userFile, purgedDrop, prose]
         let clean = AgentTask(title: "Clean", goal: "Nothing to do")
         clean.inputs = [userFile, prose]
+        context.insert(task)
+        context.insert(clean)
+        try context.save()
 
-        let removed = TaskStoreMaintenance.stripPurgedEphemeralInputs([task, clean])
+        let removed = TaskStoreMaintenance.stripPurgedEphemeralInputs([task, clean], modelContext: context)
 
         #expect(removed == 2)
         // A missing *user* file is not ours to forget — only composer temp files.
         #expect(task.inputs == [livePaste, userFile, prose])
         #expect(clean.inputs == [userFile, prose])
+        // The thread records what was dropped so a later run's missing context is explained.
+        let note = try #require(task.events.first { $0.type == TaskEventTypes.System.info.rawValue })
+        #expect(note.payload.contains((purgedPaste as NSString).lastPathComponent))
+        #expect(note.payload.contains((purgedDrop as NSString).lastPathComponent))
+        #expect(clean.events.isEmpty)
     }
 
     @Test("Startup maintenance reports and persists the stripped count")
@@ -64,6 +73,7 @@ struct TaskStoreMaintenanceTests {
 
         #expect(report.strippedPurgedInputs == 1)
         #expect(task.inputs == ["inline context"])
+        #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("pasted attachment") })
         // The task itself is untouched — this is not a prune.
         let survivors = try context.fetch(FetchDescriptor<AgentTask>())
         #expect(survivors.map(\.id) == [task.id])

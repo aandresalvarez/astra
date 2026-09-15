@@ -351,10 +351,10 @@ enum TaskLaunchResourceResolver {
             // A pasted or dropped attachment lives in $TMPDIR, which macOS
             // purges after three days. The user cannot put that file back, so
             // blocking every provider on it would wedge the task for good; skip
-            // the grant and say what happened instead. Current-message
-            // attachments keep the hard error — a paste made seconds ago
-            // should never be missing.
-            if source == .taskInput, EphemeralComposerAttachment.isEphemeralPath(stripped) {
+            // the grant and say what happened instead. This covers message
+            // attachments too: a durably queued follow-up can wait out the
+            // purge, so "the current message" is not necessarily recent.
+            if EphemeralComposerAttachment.isEphemeralPath(stripped) {
                 diagnostics.append(RuntimeResourceDiagnostic(
                     severity: .warning,
                     code: "input_path_missing_ephemeral_attachment",

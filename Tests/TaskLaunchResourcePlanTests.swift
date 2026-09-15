@@ -122,8 +122,8 @@ struct TaskLaunchResourcePlanTests {
         #expect(!plan.hostPathGrants.contains { $0.path == purgedPaste })
     }
 
-    @Test("A purged paste attached to the current message still blocks launch")
-    func missingEphemeralPasteInCurrentMessageStaysBlocking() throws {
+    @Test("A purged paste in a queued follow-up message also degrades to a warning")
+    func missingEphemeralPasteInMessageDegradesToWarning() throws {
         let workspaceRoot = try makeTempDir("resource-plan-missing-message-paste")
         defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
 
@@ -143,9 +143,12 @@ struct TaskLaunchResourcePlanTests {
             gitCredentialContextProvider: { _, _, _, _ in .empty }
         )
 
-        let diagnostic = try #require(plan.diagnostics.first { $0.code == "input_path_missing" })
-        #expect(diagnostic.severity == .error)
-        #expect(!plan.diagnostics.contains { $0.code == "input_path_missing_ephemeral_attachment" })
+        // A durably queued follow-up can outlive the three-day purge, so the
+        // message path gets the same recovery as a task input.
+        let diagnostic = try #require(plan.diagnostics.first { $0.code == "input_path_missing_ephemeral_attachment" })
+        #expect(diagnostic.severity == .warning)
+        #expect(!plan.diagnostics.contains { $0.code == "input_path_missing" })
+        #expect(!plan.hostPathGrants.contains { $0.path == purgedPaste })
     }
 
     @Test("Resource resolver records user attachments and Git credential grants")
