@@ -1900,21 +1900,10 @@ struct ArchitectureFitnessTests {
 
     private var lineBudgetRegistry: [String: LineBudgetEntry] {
         [
-            // Budget raised 6,130 -> 6,136 for the PR #347 review follow-up
-            // that keeps the runtime-permission dock visible over a queued
-            // follow-up's waiting dock: the guard and its "why" comment
-            // aren't safely compressible without losing the reasoning.
-            // 6_136 -> 6_146: connector-mutation review wiring only (one @State,
-            // one dock case, one context argument, one modifier). The state,
-            // read-back and sheet live in TaskConnectorMutationReview.swift.
-            // 6_146 -> 6_148: reasoning-effort selection wires two lines onto the
-            // existing ComposerToolbar call (a `reasoningEffort:` argument and an
-            // `onReasoningEffortChange` callback binding straight to `task`).
-            // 6_148 -> 6_152: a routine built from a task now snapshots that task's
-            // reasoning effort alongside its runtime, model and budget, so a scheduled
-            // run stops silently dropping back to the provider default.
-            // 6_152 -> 6_150: dock git-publish/mutation answers moved to TaskMainViewDecisionOutcomes.swift.
-            "Astra/Views/TaskMainView.swift": .init(6_150, .owner("Task detail and run surface")),
+            // 6_130 -> 6_150: PR #347 runtime-permission dock, connector-mutation review wiring,
+            // reasoning-effort selection and routines, and TaskMainViewDecisionOutcomes extraction.
+            // 6_150 -> 6_170: runtimeHealthNow quantised to whole seconds for live pacer metrics.
+            "Astra/Views/TaskMainView.swift": .init(6_170, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one

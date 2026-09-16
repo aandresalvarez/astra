@@ -296,6 +296,15 @@ private struct KanbanTaskFingerprint: Equatable {
     }
 }
 
+/// Reference-held drag geometry avoids invalidating and remeasuring the board.
+/// Drop targeting reads it imperatively; see `WorkspaceSidebarAnchorTracker`.
+@MainActor
+private final class KanbanDropGeometry {
+    var columnFrames: [KanbanCategory: CGRect] = [:]
+    var taskFrames: [UUID: CGRect] = [:]
+    var utilityDropFrame: CGRect = .null
+}
+
 /// Reference-type memo for the board's per-column buckets. Held in `@State`
 /// on `KanbanBoardView`; because it is a class, mutating it in place does NOT
 /// invalidate the view (unlike mutating a value-type `@State`), so the lazy
@@ -384,9 +393,7 @@ struct KanbanBoardView: View {
     @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
     @AppStorage("kanbanShowCardDetails") private var showCardDetails = true
     @State private var expandedEmptyCategories: Set<KanbanCategory> = []
-    @State private var columnFrames: [KanbanCategory: CGRect] = [:]
-    @State private var taskFrames: [UUID: CGRect] = [:]
-    @State private var utilityDropFrame: CGRect = .null
+    @State private var dropGeometry = KanbanDropGeometry()
     @State private var dragState: KanbanDragState?
     @State private var taskPendingDiscard: AgentTask?
     @State private var showClearAllDoneConfirm = false
@@ -692,14 +699,14 @@ struct KanbanBoardView: View {
     }
 
     private func targetCategory(at location: CGPoint, for task: AgentTask? = nil) -> KanbanDropTarget? {
-        if utilityDropFrame.insetBy(dx: -8, dy: -8).contains(location) {
+        if dropGeometry.utilityDropFrame.insetBy(dx: -8, dy: -8).contains(location) {
             if let task, canDiscard(task) {
                 return .discard
             }
         }
 
         if let category = visibleCategories.reversed().first(where: { category in
-            guard let frame = columnFrames[category] else { return false }
+            guard let frame = dropGeometry.columnFrames[category] else { return false }
             guard frame.insetBy(dx: -8, dy: -8).contains(location) else { return false }
             guard let task else { return true }
             return isActionableDropTarget(category, for: task)
@@ -716,7 +723,7 @@ struct KanbanBoardView: View {
         value: DragGesture.Value
     ) {
         guard task.status != .running else { return }
-        guard let sourceFrame = taskFrames[task.id] else { return }
+        guard let sourceFrame = dropGeometry.taskFrames[task.id] else { return }
 
         if dragState?.taskID != task.id {
             AppLogger.info(
@@ -857,14 +864,15 @@ struct KanbanBoardView: View {
                     .padding(.bottom, 6)
                 }
                 .coordinateSpace(name: kanbanBoardCoordinateSpace)
+                // Reference writes avoid re-entering layout from these preferences.
                 .onPreferenceChange(KanbanColumnFramePreferenceKey.self) { frames in
-                    columnFrames = frames
+                    dropGeometry.columnFrames = frames
                 }
                 .onPreferenceChange(KanbanTaskFramePreferenceKey.self) { frames in
-                    taskFrames = frames
+                    dropGeometry.taskFrames = frames
                 }
                 .onPreferenceChange(KanbanUtilityDropFramePreferenceKey.self) { frame in
-                    utilityDropFrame = frame
+                    dropGeometry.utilityDropFrame = frame
                 }
                 .overlay(alignment: .topLeading) {
                     dragPreviewOverlay

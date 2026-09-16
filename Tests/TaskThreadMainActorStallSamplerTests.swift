@@ -88,6 +88,50 @@ struct TaskThreadMainActorStallSamplerTests {
         try #require(sampler.probeCount > count, "the probe never woke")
     }
 
+    @Test("The control window and the telemetry window drain independently")
+    func theControlAndTelemetryWindowsDrainIndependently() {
+        let sampler = TaskThreadMainActorStallSampler()
+        sampler.record(wakeGapNanoseconds: 750_000_000)
+
+        // The pacer drains on every scheduling decision; the cadence line drains
+        // at most once a second. Sharing one accumulator is how the incident hid
+        // itself, so prove neither consumer can blind the other.
+        let control = sampler.consumeControlWindow()
+        #expect(control.busyMilliseconds == 700)
+        #expect(sampler.consumeControlWindow().busyNanoseconds == 0)
+
+        let telemetry = sampler.consumeTelemetryFields()
+        #expect(telemetry["main_actor_max_stall_ms"] == "700.00")
+        #expect(telemetry["main_actor_hitch_count"] == "1")
+    }
+
+    @Test("Sub-frame wake jitter is not counted as occupancy")
+    func subFrameJitterIsNotCountedAsOccupancy() {
+        let sampler = TaskThreadMainActorStallSampler()
+        // 20 wakes each 2 ms late on a completely idle main actor: a whole
+        // second of probing. Summed naively this forges 40 ms of "busy" and
+        // makes the pacer throttle a thread that is doing nothing.
+        for _ in 0..<20 {
+            sampler.record(
+                wakeGapNanoseconds: TaskThreadMainActorStallSampler.probeIntervalNanoseconds + 2_000_000
+            )
+        }
+        #expect(sampler.consumeControlWindow().busyNanoseconds == 0)
+        // The telemetry window is unchanged: it still reports the worst wake.
+        #expect(sampler.maxOvershootMilliseconds == 2)
+    }
+
+    @Test("The control window sums every block in the window")
+    func theControlWindowSumsEveryBlock() {
+        let sampler = TaskThreadMainActorStallSampler()
+        sampler.record(wakeGapNanoseconds: 750_000_000)   // 700 ms render
+        sampler.record(wakeGapNanoseconds: 70_000_000)    //  20 ms merge
+        sampler.record(wakeGapNanoseconds: 65_000_000)    //  15 ms pre-read save
+        let control = sampler.consumeControlWindow()
+        #expect(control.busyMilliseconds == 735)
+        #expect(control.longestBlockMilliseconds == 700)
+    }
+
     @Test("Stopping the sampler leaves no probe behind")
     func stoppingTheSamplerLeavesNoProbeBehind() async throws {
         let sampler = TaskThreadMainActorStallSampler()
