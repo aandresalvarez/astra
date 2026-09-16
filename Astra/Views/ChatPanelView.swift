@@ -417,8 +417,8 @@ struct ChatPanelView: View {
     @State var draftTask: AgentTask?
     // True only when the user genuinely touched ComposerToolbar's runtime picker
     // (never from a stored default) — mirrors TaskComposerCoordinator.applyRuntimeSwitch
-    // / NewTaskView.runtimeIDSelection so the launch resolver blocks instead of
-    // silently rerouting a runtime picked here. Reset per composer session below.
+    // so the launch resolver blocks instead of silently rerouting a runtime picked
+    // here. Reset per composer session below.
     @State var composerRuntimeExplicitlySelected = false
     @State var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     // Composer-scoped skip-permissions: seeded from the global default but never
