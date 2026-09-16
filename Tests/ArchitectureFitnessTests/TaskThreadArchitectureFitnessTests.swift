@@ -233,6 +233,32 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
     }
 
+    /// On the 2026-09-15 production profile, `taskDecisionDockPresentation`
+    /// reached `pendingGitHubPullRequest(task:run:)` and `pendingMutations(task:)`
+    /// on every body pass — every keystroke — and each faulted every event of a
+    /// 362-event thread through `performAndWait`. The answers now live in
+    /// `TaskMainViewDecisionOutcomes.swift`, recomputed only when the snapshot
+    /// revision or the task's durable revision moves.
+    @Test("Decision-dock outcomes are resolved off the snapshot, not per body pass")
+    func decisionDockOutcomesAreNotResolvedPerBodyPass() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let outcomes = try source("Astra/Views/TaskMainViewDecisionOutcomes.swift", root: root)
+
+        #expect(!taskMainView.contains("hasPendingGitHubPullRequest(task:"))
+        #expect(!taskMainView.contains("pendingGitHubPullRequest(task:"))
+        #expect(!taskMainView.contains("pendingTargets(task:"))
+        #expect(!taskMainView.contains("pendingMutations(task:"))
+        #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
+        #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
+        #expect(outcomes.contains("pendingMutations(taskID: task.id, in: modelContext)"))
+        #expect(!outcomes.contains("task.events"))
+        #expect(!outcomes.contains("task.runs"))
+    }
+
     @Test("Waiting-turn dock never preempts a live permission decision")
     func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
         let root = URL(fileURLWithPath: #filePath)
