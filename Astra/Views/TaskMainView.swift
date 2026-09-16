@@ -606,7 +606,7 @@ struct TaskMainView: View {
         .background {
             ComposerCapabilitySnapshotLoader(workspace: task.workspace) { snapshot in
                 capabilitySnapshot = snapshot
-            }
+            }.equatable()
         }
         .background {
             TaskPlanEventObserver(task: task) {
@@ -1750,7 +1750,7 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        conversationItemsList(decisionDockVisible: decisionDockVisible)
+        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
     }
 
     // Fetch turn-request snapshots once per body pass, not per `.userMessage`

@@ -793,7 +793,7 @@ struct ChatPanelView: View {
         .background {
             ComposerCapabilitySnapshotLoader(workspace: workspace) { snapshot in
                 capabilitySnapshot = snapshot
-            }
+            }.equatable()
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()

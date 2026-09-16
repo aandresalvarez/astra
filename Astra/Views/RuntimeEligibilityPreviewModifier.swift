@@ -5,7 +5,7 @@ import ASTRAModels
 struct RuntimeEligibilityPreviewState {
     private enum Phase {
         case idle
-        case pending(signature: String)
+        case pending(signature: String, previous: TaskRuntimeEligibilitySnapshot?)
         case resolved(signature: String, snapshot: TaskRuntimeEligibilitySnapshot)
         case unavailable(signature: String)
     }
@@ -14,8 +14,28 @@ struct RuntimeEligibilityPreviewState {
 
     static let idle = RuntimeEligibilityPreviewState(phase: .idle)
 
-    static func pending(signature: String) -> RuntimeEligibilityPreviewState {
-        RuntimeEligibilityPreviewState(phase: .pending(signature: signature))
+    /// `previous` is the verdict this state supersedes. The composer keeps
+    /// showing it while the re-check runs, so typing no longer flips the
+    /// provider pill to "Checking…" and back on every pause.
+    static func pending(
+        signature: String,
+        previous: TaskRuntimeEligibilitySnapshot? = nil
+    ) -> RuntimeEligibilityPreviewState {
+        RuntimeEligibilityPreviewState(phase: .pending(signature: signature, previous: previous))
+    }
+
+    /// The verdict most recently resolved for this composer, whatever text it
+    /// was for. Display only: `currentSnapshot(for:)` stays signature-exact,
+    /// so a send can never ride on a verdict for different text.
+    var lastResolvedSnapshot: TaskRuntimeEligibilitySnapshot? {
+        switch phase {
+        case .idle, .unavailable:
+            return nil
+        case .pending(_, let previous):
+            return previous
+        case .resolved(_, let snapshot):
+            return snapshot
+        }
     }
 
     static func evaluated(
@@ -43,7 +63,7 @@ struct RuntimeEligibilityPreviewState {
 
     func isPending(for expectedSignature: String?) -> Bool {
         guard let expectedSignature,
-              case .pending(let signature) = phase else {
+              case .pending(let signature, _) = phase else {
             return false
         }
         return signature == expectedSignature
@@ -94,6 +114,8 @@ enum RuntimeEligibilitySubmissionPolicy {
 struct RuntimeEligibilityPreviewRequest {
     let signature: String
     let hasAcceptedTurn: Bool
+    let taskID: UUID?
+    let acceptedTurnCharacterCount: Int
     private let evaluation: @MainActor () async -> TaskRuntimeEligibilitySnapshot?
 
     func evaluate() async -> TaskRuntimeEligibilitySnapshot? {
@@ -123,9 +145,10 @@ struct RuntimeEligibilityPreviewRequest {
 
         return RuntimeEligibilityPreviewRequest(
             signature: signature,
-            hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            taskID: task.id,
+            acceptedTurnCharacterCount: acceptedTurn.count
         ) {
-            guard await debounce(acceptedTurn) else { return nil }
             let intent = TaskTurnIntentResolver.preview(for: task, acceptedTurn: acceptedTurn)
             return evaluate(
                 task: task,
@@ -170,9 +193,10 @@ struct RuntimeEligibilityPreviewRequest {
 
         return RuntimeEligibilityPreviewRequest(
             signature: signature,
-            hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            taskID: draftTask?.id,
+            acceptedTurnCharacterCount: acceptedTurn.count
         ) {
-            guard await debounce(acceptedTurn) else { return nil }
             let goal = acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines)
             // Preview the task the composer will actually submit, never the managed
             // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the
@@ -250,14 +274,6 @@ struct RuntimeEligibilityPreviewRequest {
         )
     }
 
-    private static func debounce(_ acceptedTurn: String) async -> Bool {
-        guard !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
-        try? await Task.sleep(for: .milliseconds(180))
-        return !Task.isCancelled
-    }
-
     private static func readinessSignature(
         _ states: [AgentRuntimeID: RuntimeReadinessState]
     ) -> [String] {
@@ -268,6 +284,13 @@ struct RuntimeEligibilityPreviewRequest {
 }
 
 private struct RuntimeEligibilityPreviewModifier: ViewModifier {
+    /// The evaluation runs on the main actor and, on a 360-event thread, costs
+    /// several hundred milliseconds (`runtime_eligibility_preview` in the log).
+    /// At 180 ms it fired between most words; at 350 ms it fires when the user
+    /// actually pauses, and the verdict is still back before they reach for
+    /// Send.
+    static let debounce: Duration = .milliseconds(350)
+
     let request: RuntimeEligibilityPreviewRequest
     @Binding var state: RuntimeEligibilityPreviewState
 
@@ -277,9 +300,26 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
                 state = .idle
                 return
             }
-            state = .pending(signature: request.signature)
+            // Nothing is written until the debounce elapses: a keystroke that
+            // is followed by another one within 350 ms costs no state change and
+            // therefore no extra body pass of the 6,000-line composer view.
+            try? await Task.sleep(for: Self.debounce)
+            guard !Task.isCancelled else { return }
+            state = .pending(signature: request.signature, previous: state.lastResolvedSnapshot)
+            let startedAt = DispatchTime.now().uptimeNanoseconds
             let snapshot = await request.evaluate()
             guard !Task.isCancelled else { return }
+            PerformanceTelemetry.logIfNeeded(
+                "runtime_eligibility_preview",
+                start: startedAt,
+                thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+                fields: [
+                    "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
+                    "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
+                    "result": snapshot == nil ? "unavailable" : "resolved"
+                ],
+                taskID: request.taskID
+            )
             state = .evaluated(signature: request.signature, snapshot: snapshot)
         }
     }

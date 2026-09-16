@@ -233,6 +233,22 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
     }
 
+    /// Between "shell visible" and "snapshot applied" a large thread spent
+    /// 1–1.5 s rendering as a goal bubble over an empty column. The gate keys
+    /// on the applied-snapshot readiness for *this* task, so a previous task's
+    /// snapshot can never stand in for it.
+    @Test("Transcript shows a loading state until its first snapshot applies")
+    func transcriptShowsLoadingStateUntilFirstSnapshotApplies() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        #expect(taskMainView.contains(
+            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id))"
+        ))
+    }
+
     @Test("Waiting-turn dock never preempts a live permission decision")
     func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
         let root = URL(fileURLWithPath: #filePath)
