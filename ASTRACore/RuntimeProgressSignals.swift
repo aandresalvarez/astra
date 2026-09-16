@@ -56,11 +56,4 @@ public enum RuntimeProgressSignals {
     /// bound, and it is the resource a user actually feels.
     public static let defaultMaxRunSeconds: TimeInterval = 4 * 3600
 
-    /// Token ceiling applied when a task carries no explicit budget.
-    ///
-    /// Previously an unset budget meant `Int.max` — literally unbounded. This
-    /// is set above the worst run observed in production (17.3M tokens on a
-    /// single task) so nothing that completes today starts failing, while still
-    /// being a finite number that a runaway loop will reach.
-    public static let defaultTokenBudget = 25_000_000
 }

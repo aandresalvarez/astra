@@ -844,10 +844,6 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
-        // `effectiveTokenBudget` substitutes the implicit runaway ceiling for an
-        // unset budget, so the monitor can no longer tell the two apart — and it
-        // must, because the enforcement mode governs only the one the user chose.
-        let isUserConfiguredBudget = task.tokenBudget != 0
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that
@@ -905,7 +901,6 @@ final class AgentRuntimeProcessRunner {
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 budgetEnforcementMode: budgetEnforcementMode,
-                isUserConfiguredBudget: isUserConfiguredBudget,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -1426,15 +1421,15 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        // "No budget set" used to mean literally unbounded, which left the
-        // silence watchdog as the only thing between a runaway task and an
-        // open-ended bill. The default is a per-run allowance the user never
-        // chose, sized above the worst single run seen in production. A team
-        // multiplies it exactly as it multiplies a chosen budget: the usage a
-        // team reports is the sum over its members, and a ceiling that ignored
-        // that would fire on healthy team runs first.
-        let budget = baseBudget == 0 ? RuntimeProgressSignals.defaultTokenBudget : baseBudget
-        return usesAgentTeam ? budget * max(2, teamSize) : budget
+        // Zero is the persisted sentinel for Disabled. Resolve it before team
+        // scaling so an unlimited budget stays unlimited instead of overflowing
+        // when multiplied by the number of agents. A negative value is not a
+        // sentinel — it is a malformed persisted config (workspace imports
+        // assign budgets without normalizing) — so it keeps the pre-existing
+        // enforcement behaviour instead of silently becoming unlimited.
+        if baseBudget == 0 { return Int.max }
+        guard baseBudget > 0 else { return baseBudget }
+        return usesAgentTeam ? baseBudget * max(2, teamSize) : baseBudget
     }
 
     static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {

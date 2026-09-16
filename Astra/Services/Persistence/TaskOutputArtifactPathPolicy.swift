@@ -169,6 +169,9 @@ public enum TaskOutputArtifactPathPolicy {
 
         if normalized == "session_history.md" ||
             normalized == "outputs" || normalized.hasPrefix("outputs/") ||
+            // Durable copies of pasted/dropped composer attachments
+            // (`TaskInputMaterializer`) are user-supplied sources, not deliverables.
+            normalized == "inputs" || normalized.hasPrefix("inputs/") ||
             normalized == "turns" || normalized.hasPrefix("turns/") ||
             normalized == "fork_sources/history" || normalized.hasPrefix("fork_sources/history/") {
             return true

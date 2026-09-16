@@ -6,6 +6,45 @@ import ASTRAModels
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    @Test("Disabled budget stays unlimited for a task with high lifetime usage")
+    func disabledBudgetIgnoresHighLifetimeUsageOnContinuation() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-unlimited-budget","model":"claude-sonnet-4-6"}'
+            printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"Completed within the provider limits","usage":{"input_tokens":100,"output_tokens":10}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Continue a long-lived task",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 0
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+
+        // Production task 4ADDF8E1 had this lifetime total. A Disabled budget
+        // must not reinterpret it as a hidden ASTRA ceiling on the next run.
+        task.tokensUsed = 32_046_266
+        _ = await harness.continueTask(task: task, message: "Continue", worker: worker)
+
+        let latestRun = try #require(task.runs.max { $0.startedAt < $1.startedAt })
+        #expect(task.status == .completed)
+        #expect(latestRun.status == .completed)
+        #expect(task.tokenBudget == 0)
+        #expect(task.tokensUsed > 32_046_266)
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
     @Test("Headless chat enforces budget guardrails")
     func headlessChatEnforcesBudget() async throws {
         let harness = try HeadlessChatHarness()
