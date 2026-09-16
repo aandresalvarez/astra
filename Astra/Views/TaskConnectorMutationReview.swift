@@ -23,11 +23,6 @@ final class TaskConnectorMutationReviewState {
     private(set) var unreadable: TaskStagedConnectorMutation?
     private(set) var isPreparing = false
 
-    /// Destinations of everything still awaiting review, for the dock row.
-    static func pendingTargets(task: AgentTask) -> [String] {
-        ConnectorMutationRequirementResolver.pendingMutations(task: task).map(\.target)
-    }
-
     /// Reads the oldest pending proposal back off disk and opens the sheet.
     ///
     /// Opens on the oldest rather than the newest so the user works through them

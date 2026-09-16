@@ -58,16 +58,28 @@ enum TaskExternalOutcomeRequirementResolver {
     ) -> TaskRequiredExternalOutcomeRequest? {
         let targetRun = run ?? task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
         guard let targetRun else { return nil }
+        return pendingGitHubPullRequest(
+            task: task,
+            targetRunID: targetRun.id,
+            events: task.events.map { TaskOutcomeEventRecord(event: $0) }
+        )
+    }
 
-        let requestEvent = task.events
+    /// The same rule over event values the caller already holds, so a view
+    /// can answer it from its transcript snapshot without faulting a row.
+    /// `events` must cover the target run.
+    @MainActor
+    static func pendingGitHubPullRequest(
+        task: AgentTask,
+        targetRunID: UUID,
+        events: [TaskOutcomeEventRecord]
+    ) -> TaskRequiredExternalOutcomeRequest? {
+        let requestEvent = events
             .filter {
-                $0.run?.id == targetRun.id
+                $0.runID == targetRunID
                     && $0.type == TaskExternalOutcomeEventTypes.publicationRequested
             }
-            .sorted { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
+            .sorted(by: TaskOutcomeEventRecord.isChronologicallyOrdered)
             .last
         if let requestEvent,
            let data = requestEvent.payload.data(using: .utf8),
@@ -75,8 +87,8 @@ enum TaskExternalOutcomeRequirementResolver {
             TaskRequiredExternalOutcomeRequest.self,
             from: data
            ) {
-            let hasMatchingReceipt = task.events.contains {
-                $0.run?.id == targetRun.id
+            let hasMatchingReceipt = events.contains {
+                $0.runID == targetRunID
                     && $0.type == TaskExternalOutcomeEventTypes.publicationReceipt
                     && $0.timestamp >= requestEvent.timestamp
             }
@@ -95,7 +107,8 @@ enum TaskExternalOutcomeRequirementResolver {
         guard requestsGitHubPullRequest(task) else { return nil }
         guard let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
             task: task,
-            run: targetRun
+            targetRunID: targetRunID,
+            events: events
         ) else { return nil }
         return TaskRequiredExternalOutcomeRequest(
             kind: failure.kind,

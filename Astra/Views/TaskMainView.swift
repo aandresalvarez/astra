@@ -230,6 +230,7 @@ struct TaskMainView: View {
     @State private var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
+    @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -564,6 +565,9 @@ struct TaskMainView: View {
         }
         .task(id: decisionArtifactPathsInputSignature) {
             await recomputeDecisionArtifactPaths()
+        }
+        .task(id: decisionOutcomeInputSignature) {
+            recomputeDecisionOutcomes()
         }
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
@@ -3921,7 +3925,7 @@ struct TaskMainView: View {
             pendingReviewState: pendingTaskReviewState,
             runtimePermission: runtimePermissionState,
             hasGitPublishRequest: shouldOfferGitPublishReview,
-            pendingConnectorMutationTargets: TaskConnectorMutationReviewState.pendingTargets(task: task),
+            pendingConnectorMutationTargets: decisionOutcomeCache.pendingConnectorMutationTargets,
             executableApprovedPlan: executableApprovedPlan,
             skipPermissions: taskSkipPermissions,
             planExecutionMode: planCheckpointExecutionMode,
@@ -3954,12 +3958,6 @@ struct TaskMainView: View {
         decisionArtifactPathsCache
     }
 
-    private var shouldOfferGitPublishReview: Bool {
-        TaskGitPullRequestPublishReviewPolicy.shouldOffer(
-            taskStatus: task.status, latestRunStopReason: latestRun.flatMap { TaskRunStopReason(rawValue: $0.stopReason) },
-            hasPendingPublication: TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
-        )
-    }
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
         TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
             status: task.status,
