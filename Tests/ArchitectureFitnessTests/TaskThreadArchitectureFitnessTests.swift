@@ -233,6 +233,22 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
     }
 
+    /// Between "shell visible" and "snapshot applied" a large thread spent
+    /// 1–1.5 s rendering as a goal bubble over an empty column. The gate keys
+    /// on the applied-snapshot readiness for *this* task, so a previous task's
+    /// snapshot can never stand in for it.
+    @Test("Transcript shows a loading state until its first snapshot applies")
+    func transcriptShowsLoadingStateUntilFirstSnapshotApplies() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        #expect(taskMainView.contains(
+            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id))"
+        ))
+    }
+
     /// On the 2026-09-15 production profile, `taskDecisionDockPresentation`
     /// reached `pendingGitHubPullRequest(task:run:)` and `pendingMutations(task:)`
     /// on every body pass — every keystroke — and each faulted every event of a

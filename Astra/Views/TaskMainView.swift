@@ -610,7 +610,7 @@ struct TaskMainView: View {
         .background {
             ComposerCapabilitySnapshotLoader(workspace: task.workspace) { snapshot in
                 capabilitySnapshot = snapshot
-            }
+            }.equatable()
         }
         .background {
             TaskPlanEventObserver(task: task) {
@@ -737,7 +737,7 @@ struct TaskMainView: View {
 
     private func refreshRuntimeAvailability() async {
         let states = await RuntimeProviderAvailabilityService().states(
-            configuration: runtimeAvailabilityConfiguration
+            configuration: runtimeAvailabilityConfiguration, cache: .shared
         )
         // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
         // the running task when the signature changes, causing withTaskGroup's for-await loop to
@@ -1754,7 +1754,7 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        conversationItemsList(decisionDockVisible: decisionDockVisible)
+        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
     }
 
     // Fetch turn-request snapshots once per body pass, not per `.userMessage`

@@ -478,6 +478,15 @@ struct TaskTurnIntentAdmissionTests {
             signature: "current",
             snapshot: nil
         )
+        // A re-check carries the verdict it supersedes for display, but never
+        // lets it answer for the new signature.
+        let recheck = RuntimeEligibilityPreviewState.pending(signature: "next", previous: snapshot)
+        #expect(recheck.lastResolvedSnapshot?.requestedRuntime == .cursorCLI)
+        #expect(recheck.currentSnapshot(for: "next") == nil)
+        #expect(recheck.isPending(for: "next"))
+        #expect(state.lastResolvedSnapshot?.requestedRuntime == .cursorCLI)
+        #expect(pending.lastResolvedSnapshot == nil)
+        #expect(unavailable.lastResolvedSnapshot == nil)
 
         #expect(state.currentSnapshot(for: "stale") == nil)
         #expect(pending.isPending(for: "current"))

@@ -793,7 +793,7 @@ struct ChatPanelView: View {
         .background {
             ComposerCapabilitySnapshotLoader(workspace: workspace) { snapshot in
                 capabilitySnapshot = snapshot
-            }
+            }.equatable()
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -1413,7 +1413,7 @@ struct ChatPanelView: View {
 
     private func refreshRuntimeAvailability() async {
         let states = await RuntimeProviderAvailabilityService().states(
-            configuration: runtimeAvailabilityConfiguration
+            configuration: runtimeAvailabilityConfiguration, cache: .shared
         )
         // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
         // the running task when the signature changes, causing withTaskGroup's for-await loop to
