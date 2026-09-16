@@ -169,6 +169,16 @@ struct TaskActivityPresentation: Equatable, Sendable {
         return Self(taskID: taskID, kind: .idle, request: nil)
     }
 
+    /// One entry per task that is doing or awaiting work. An absent entry means
+    /// idle, which is how every consumer already reads it: `SidebarTaskIndex`
+    /// resolves a missing task with no requests, and the rows, menus and
+    /// liveness counts treat `nil` as `.idle`.
+    ///
+    /// It has to be sparse. A full map carried an entry for every one of the
+    /// production store's 1,576 tasks — 2.5 MB — and on the 2026-09-15 heap
+    /// SwiftUI held 25 copies of it for diffing (63 MB, the largest object
+    /// class in the process) while comparing the whole thing, including each
+    /// `TaskTurnRequestSnapshot`'s JSON strings, on every graph update.
     static func resolveByTaskID(
         tasks: [AgentTask],
         requests: [TaskTurnRequestSnapshot]
@@ -178,12 +188,17 @@ struct TaskActivityPresentation: Equatable, Sendable {
         // O(tasks × requests) in the sidebar, which recomputes on every body
         // re-render.
         let requestsByTaskID = Dictionary(grouping: requests, by: \.taskID)
-        return Dictionary(uniqueKeysWithValues: tasks.map { task in
-            (
-                task.id,
-                resolve(taskID: task.id, taskStatus: task.status, requests: requestsByTaskID[task.id] ?? [])
-            )
-        })
+        var activities: [UUID: TaskActivityPresentation] = [:]
+        for task in tasks {
+            let taskRequests = requestsByTaskID[task.id] ?? []
+            let status = task.status
+            // `resolve` only leaves idle for a running status or a live request.
+            guard status == .running || !taskRequests.isEmpty else { continue }
+            let activity = resolve(taskID: task.id, taskStatus: status, requests: taskRequests)
+            guard activity.kind != .idle else { continue }
+            activities[task.id] = activity
+        }
+        return activities
     }
 }
 
