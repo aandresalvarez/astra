@@ -370,7 +370,32 @@ struct TaskActivityPresentationTests {
         #expect(activities[taskA.id]?.request?.id == waitingA.id)
         #expect(activities[taskB.id]?.kind == .running)
         #expect(activities[taskB.id]?.request?.id == runningB.id)
-        #expect(activities[taskC.id]?.kind == .idle)
-        #expect(activities[taskC.id]?.request == nil)
+        // Idle is the absent entry; see `resolveByTaskIDIsSparse`.
+        #expect(activities[taskC.id] == nil)
+    }
+
+    /// The sidebar rebuilds this map on every body pass and SwiftUI keeps the
+    /// old copies to diff against. With one entry per stored task it was
+    /// 2.5 MB × 25 live copies on the 2026-09-15 production heap. Idle tasks
+    /// must stay out of it; a running-status task with no request must stay in,
+    /// because its row still shows the running glyph.
+    @Test("resolveByTaskID carries only tasks with live work")
+    func resolveByTaskIDIsSparse() {
+        let workspace = makeWorkspace()
+        let idle = makeTask(status: .completed, workspace: workspace)
+        let runningByStatus = makeTask(status: .running, workspace: workspace)
+        let waiting = makeTask(status: .completed, workspace: workspace)
+        let waitingRequest = request(for: waiting, sequence: 1, state: .waitingForWorker)
+
+        let activities = TaskActivityPresentation.resolveByTaskID(
+            tasks: [idle, runningByStatus, waiting],
+            requests: [waitingRequest]
+        )
+
+        #expect(Set(activities.keys) == [runningByStatus.id, waiting.id])
+        #expect(activities[runningByStatus.id]?.kind == .running)
+        #expect(activities[runningByStatus.id]?.request == nil)
+        #expect(activities[waiting.id]?.kind == .waitingForWorker)
+        #expect(activities[waiting.id]?.request?.id == waitingRequest.id)
     }
 }
