@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 enum ConnectorMutationEventTypes {
@@ -108,7 +109,36 @@ enum ConnectorMutationRequirementResolver {
     /// the agent composed them.
     @MainActor
     static func pendingMutations(task: AgentTask) -> [TaskStagedConnectorMutation] {
-        let ordered = task.events.sorted(by: isChronologicallyOrdered)
+        pendingMutations(events: task.events.map { TaskOutcomeEventRecord(event: $0) })
+    }
+
+    /// The same rule over only the rows that can matter. Fetching by type keeps
+    /// the answer exact across every run the task ever had — unlike a
+    /// transcript window, which stops 50 runs back — while faulting nothing but
+    /// the (usually zero) mutation events, so a view can afford to ask on every
+    /// transcript refresh.
+    @MainActor
+    static func pendingMutations(
+        taskID: UUID,
+        in modelContext: ModelContext
+    ) throws -> [TaskStagedConnectorMutation] {
+        let types = [
+            ConnectorMutationEventTypes.staged,
+            ConnectorMutationEventTypes.receipt,
+            ConnectorMutationEventTypes.indeterminate,
+            ConnectorMutationEventTypes.declined,
+            ConnectorMutationEventTypes.quarantined
+        ]
+        let descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> { event in
+                event.task?.id == taskID && types.contains(event.type)
+            }
+        )
+        return pendingMutations(events: try modelContext.fetch(descriptor).map { TaskOutcomeEventRecord(event: $0) })
+    }
+
+    static func pendingMutations(events: [TaskOutcomeEventRecord]) -> [TaskStagedConnectorMutation] {
+        let ordered = events.sorted(by: TaskOutcomeEventRecord.isChronologicallyOrdered)
         let decoder = TaskEventPayloadCodec.makeDecoder()
 
         var pending: [String: TaskStagedConnectorMutation] = [:]
@@ -189,10 +219,5 @@ enum ConnectorMutationRequirementResolver {
             return nil
         }
         return path.isEmpty ? nil : path
-    }
-
-    private static func isChronologicallyOrdered(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
-        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-        return lhs.id.uuidString < rhs.id.uuidString
     }
 }

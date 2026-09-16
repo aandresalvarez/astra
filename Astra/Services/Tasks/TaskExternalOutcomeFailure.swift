@@ -45,14 +45,29 @@ enum TaskExternalOutcomeFailureClassifier {
         guard TaskExternalOutcomeRequirementResolver.requestsGitHubPullRequest(task) else { return nil }
         let targetRun = run ?? task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
         guard let targetRun else { return nil }
+        return pendingGitHubPullRequestFailure(
+            task: task,
+            targetRunID: targetRun.id,
+            events: task.events.map { TaskOutcomeEventRecord(event: $0) }
+        )
+    }
 
-        let runEvents = task.events
-            .filter { $0.run?.id == targetRun.id }
-            .sorted { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-        let receiptTimestamp = task.events
+    /// The same rule over event values the caller already holds; `events`
+    /// must cover the target run. A receipt older than the window would only
+    /// ever predate a failure in the latest run, which is the answer its
+    /// absence gives anyway.
+    @MainActor
+    static func pendingGitHubPullRequestFailure(
+        task: AgentTask,
+        targetRunID: UUID,
+        events: [TaskOutcomeEventRecord]
+    ) -> TaskRequiredExternalOutcomeFailure? {
+        guard TaskExternalOutcomeRequirementResolver.requestsGitHubPullRequest(task) else { return nil }
+
+        let runEvents = events
+            .filter { $0.runID == targetRunID }
+            .sorted(by: TaskOutcomeEventRecord.isChronologicallyOrdered)
+        let receiptTimestamp = events
             .filter { $0.type == TaskExternalOutcomeEventTypes.publicationReceipt }
             .map(\.timestamp)
             .max()
@@ -77,7 +92,7 @@ enum TaskExternalOutcomeFailureClassifier {
             .filter { $0.type == TaskEventTypes.Tool.resultFailed.rawValue }
             .reversed()
         for failedEvent in failedEvents {
-            let hasLaterReceipt = task.events.contains {
+            let hasLaterReceipt = events.contains {
                 $0.type == TaskExternalOutcomeEventTypes.publicationReceipt
                     && $0.timestamp >= failedEvent.timestamp
             }
@@ -94,7 +109,7 @@ enum TaskExternalOutcomeFailureClassifier {
             return TaskRequiredExternalOutcomeFailure(
                 version: 1,
                 kind: .githubPullRequest,
-                runID: targetRun.id,
+                runID: targetRunID,
                 sourceEventID: failedEvent.id,
                 message: String(message.prefix(1_000))
             )

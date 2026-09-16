@@ -155,6 +155,38 @@ struct ConnectorMutationRequirementTests {
         #expect(ConnectorMutationRequirementResolver.recordedStagedPaths(task: task) == [staged])
     }
 
+    /// The dock asks on every transcript refresh, so the answer has to come
+    /// from the mutation rows alone — not from faulting the whole event log,
+    /// and not from a transcript window that stops 50 runs back.
+    @Test("Fetching pending mutations by type sees only this task's mutation rows")
+    func fetchedResolutionIsScopedToTheTask() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let (task, run) = makeTask(context: context)
+        let (otherTask, otherRun) = makeTask(context: context)
+        let mine = "/tmp/jira-create_issue-run-1.json"
+        let theirs = "/tmp/jira-create_issue-run-2.json"
+
+        stage(path: mine, at: 1_000, task: task, run: run, context: context)
+        stage(path: theirs, at: 1_001, task: otherTask, run: otherRun, context: context)
+        resolve(
+            type: ConnectorMutationEventTypes.declined,
+            path: theirs,
+            at: 1_002,
+            task: otherTask,
+            run: otherRun,
+            context: context
+        )
+        let noise = TaskEvent(task: task, type: "tool.result", payload: "not a mutation", run: run)
+        context.insert(noise)
+        try context.save()
+
+        let fetched = try ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: context)
+        #expect(fetched.map(\.stagedPayloadPath) == [mine])
+        #expect(fetched == ConnectorMutationRequirementResolver.pendingMutations(task: task))
+        #expect(try ConnectorMutationRequirementResolver.pendingMutations(taskID: otherTask.id, in: context).isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func makeTask(context: ModelContext) -> (AgentTask, TaskRun) {

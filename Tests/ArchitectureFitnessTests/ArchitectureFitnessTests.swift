@@ -1913,7 +1913,8 @@ struct ArchitectureFitnessTests {
             // 6_148 -> 6_152: a routine built from a task now snapshots that task's
             // reasoning effort alongside its runtime, model and budget, so a scheduled
             // run stops silently dropping back to the provider default.
-            "Astra/Views/TaskMainView.swift": .init(6_152, .owner("Task detail and run surface")),
+            // 6_152 -> 6_150: dock git-publish/mutation answers moved to TaskMainViewDecisionOutcomes.swift.
+            "Astra/Views/TaskMainView.swift": .init(6_150, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
