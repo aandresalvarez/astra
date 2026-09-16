@@ -635,10 +635,7 @@ struct TaskSidebarView: View {
                         )
                     }
                 }
-                // Both sinks write a reference, not view state: the values they
-                // carry are measured inside this body, so a `@State` write here
-                // re-entered layout through the preference that produced it.
-                // See `WorkspaceSidebarAnchorTracker`.
+                // Reference writes avoid re-entering layout; see `WorkspaceSidebarAnchorTracker`.
                 .onPreferenceChange(WorkspaceSidebarViewportHeightPreferenceKey.self) { height in
                     anchorTracker.viewportHeight = height
                 }

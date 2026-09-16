@@ -296,15 +296,8 @@ private struct KanbanTaskFingerprint: Equatable {
     }
 }
 
-/// Drag hit-test geometry, held in a reference so republishing it does not
-/// invalidate the board. In `@State` these closed a loop: `taskFrames` holds
-/// one `CGRect` per card, so any scroll or card move rewrote the dictionary,
-/// invalidated the board, re-measured every card and republished. Nothing
-/// reads them but drop targeting, and the one read reachable from `body`
-/// (`gestureDropTarget`) is live only mid-drag, when `dragState` already
-/// re-renders on every pointer delta; the drop itself re-runs the hit test
-/// imperatively. See `WorkspaceSidebarAnchorTracker`; same idiom as
-/// `KanbanBucketCache`.
+/// Reference-held drag geometry avoids invalidating and remeasuring the board.
+/// Drop targeting reads it imperatively; see `WorkspaceSidebarAnchorTracker`.
 @MainActor
 private final class KanbanDropGeometry {
     var columnFrames: [KanbanCategory: CGRect] = [:]
@@ -871,9 +864,7 @@ struct KanbanBoardView: View {
                     .padding(.bottom, 6)
                 }
                 .coordinateSpace(name: kanbanBoardCoordinateSpace)
-                // All three sinks write a reference, not view state: the frames
-                // are measured inside this body, so a `@State` write here
-                // re-entered layout through the preference that produced it.
+                // Reference writes avoid re-entering layout from these preferences.
                 .onPreferenceChange(KanbanColumnFramePreferenceKey.self) { frames in
                     dropGeometry.columnFrames = frames
                 }
