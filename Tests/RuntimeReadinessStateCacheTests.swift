@@ -64,4 +64,25 @@ struct RuntimeReadinessStateCacheTests {
         let bypassed = await service.states(configuration: configuration(), cache: nil)
         #expect(bypassed == probed)
     }
+
+    /// The default must stay uncached. A cache keyed only by configuration
+    /// cannot tell two differently-probed services apart, so a shared default
+    /// made one caller's verdict answer for another's — it broke
+    /// `RuntimeReadinessServiceTests` the moment both ran in one process.
+    @Test("Availability service does not cache unless the caller passes one")
+    func serviceDoesNotCacheByDefault() async {
+        let readyEverything = RuntimeProviderAvailabilityService(
+            readinessService: RuntimeReadinessService(
+                runner: StubBinaryRunner(),
+                detectExecutable: { _ in "" },
+                isExecutable: { _ in false }
+            )
+        )
+        let first = await readyEverything.states(configuration: configuration())
+        await RuntimeReadinessStateCache.shared.store([.claudeCode: .ready], for: configuration())
+        let second = await readyEverything.states(configuration: configuration())
+        #expect(second == first)
+        #expect(second.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+        await RuntimeReadinessStateCache.shared.removeAll()
+    }
 }

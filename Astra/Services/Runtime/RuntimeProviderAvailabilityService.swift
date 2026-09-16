@@ -85,14 +85,20 @@ struct RuntimeProviderAvailabilityService {
         self.readinessService = readinessService
     }
 
-    /// Readiness younger than this is served from `RuntimeReadinessStateCache`
-    /// without re-probing the CLIs, so opening a task shows its provider at
-    /// once instead of "Checking provider" until the slowest probe answers.
+    /// Readiness younger than this is served from the passed cache without
+    /// re-probing the CLIs, so opening a task shows its provider at once
+    /// instead of "Checking provider" until the slowest probe answers.
     static let cacheMaxAge: TimeInterval = 300
 
+    /// Caching is opt-in per caller, never a default. A cache keyed only by
+    /// configuration cannot know which `readinessService` produced an answer,
+    /// so defaulting to the shared one let two callers with equal settings but
+    /// different probes serve each other's verdicts — which is exactly what it
+    /// did to `RuntimeReadinessServiceTests` once both ran in the same process.
+    /// The views pass `.shared` because they all probe the real CLIs.
     func states(
         configuration: RuntimeProviderAvailabilityConfiguration,
-        cache: RuntimeReadinessStateCache? = .shared,
+        cache: RuntimeReadinessStateCache? = nil,
         cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
