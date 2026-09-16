@@ -293,6 +293,23 @@ enum ExecutionRequestSubmissionService {
         )
     }
 
+    /// Whose words a request's source text carries.
+    ///
+    /// Resume envelopes carry prose ASTRA wrote to restart an interrupted turn,
+    /// not a new instruction from the user. Deriving this from the event type in
+    /// one place keeps the durable submission path and TaskQueue's legacy
+    /// request-recovery path from disagreeing, and means a future submit* entry
+    /// point cannot forget to classify itself.
+    static func authorship(forSourceEventType eventType: String) -> TaskTurnAuthorship {
+        switch eventType {
+        case TaskEventTypes.ExecutionRequest.resume.rawValue,
+             TaskEventTypes.ExecutionRequest.permissionResume.rawValue:
+            return .generatedContinuation
+        default:
+            return .user
+        }
+    }
+
     static func decodeSourcePayload(_ event: TaskEvent) -> TaskExecutionSourcePayloadV1? {
         guard [
             TaskEventTypes.ExecutionRequest.initial,
@@ -367,7 +384,8 @@ enum ExecutionRequestSubmissionService {
             for: task,
             sourceEventID: event.id,
             acceptedTurn: acceptedTurn,
-            includeTaskInputs: kind == .initial || kind == .scheduled
+            includeTaskInputs: kind == .initial || kind == .scheduled,
+            authorship: authorship(forSourceEventType: sourceEventType)
         )
         let request = TaskTurnRequest(
             task: task,

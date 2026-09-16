@@ -15,6 +15,7 @@ public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
 /// queryable columns on `TaskTurnRequest`.
 public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     public let version: Int
+    public let reasoningEffort: String?
     public let runtimeExplicitlySelected: Bool
     public let maxTurns: Int
     public let isolationStrategyRawValue: String
@@ -37,6 +38,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil
     ) {
         version = 1
+        reasoningEffort = task.reasoningEffort
         runtimeExplicitlySelected = task.runtimeExplicitlySelected
         maxTurns = task.maxTurns
         isolationStrategyRawValue = task.isolationStrategy.rawValue

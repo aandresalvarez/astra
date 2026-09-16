@@ -19,6 +19,7 @@ enum ChainedTaskSubmissionService {
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
         nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
+        nextTask.reasoningEffort = task.reasoningEffort
         nextTask.executionRootPath = task.executionRootPath
         nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !run.output.isEmpty {

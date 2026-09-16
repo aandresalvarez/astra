@@ -108,7 +108,7 @@ struct TaskTurnIntentAdmissionTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
         let resolution = TaskRuntimeCompatibilityService.resolve(
             requestedRuntime: .cursorCLI,
@@ -226,7 +226,7 @@ struct TaskTurnIntentAdmissionTests {
             task: task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
 
         #expect(snapshot.providerLaunch.connectors.map(\.id) == [jira.id])
@@ -245,6 +245,126 @@ struct TaskTurnIntentAdmissionTests {
             AgentRuntimeCapabilityProfile.defaultProfile(for: .cursorCLI)
                 .usesHostControlCLIRelay
         )
+    }
+
+    /// Regression for task B129DA53: approving a Jira credential prompt
+    /// "for similar requests in this task" resumed the run with the Jira
+    /// connector pruned out of scope, so `mcp__astra_host__jira` failed with
+    /// "No Jira connector is projected into ASTRA_CONNECTORS". The resume
+    /// envelope's generated prose had become the turn's activation text, and it
+    /// shares no token with Jira — while unrelated capabilities matched it on
+    /// generic words. An approval must never subtract authority.
+    @Test("Approving a credential prompt keeps the approved connector in the resumed run's scope")
+    func permissionResumeKeepsApprovedConnectorInScope() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira resume", primaryPath: "/tmp/astra-permission-resume")
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Read Jira tickets",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__jira; do not use Bash."
+        )
+        let jira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira issues",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.skill = jiraSkill
+        jira.workspace = workspace
+
+        // The decoy that actually won in production: its prose shares generic
+        // tokens ("run", "task", "operation") with the approval sentence.
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Run Google Cloud operations for this task",
+            behaviorInstructions: "Always use ASTRA host-control MCP tool mcp__astra_host__gcloud to run the requested operation for this task."
+        )
+        let gcloud = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Run cloud operations for this task",
+            baseURL: "https://cloudresourcemanager.googleapis.com",
+            authMethod: "bearer"
+        )
+        gcloud.skill = gcloudSkill
+        gcloud.workspace = workspace
+
+        let task = AgentTask(
+            title: "Jira tickets",
+            goal: "Answer questions about the user's work",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        task.skills = [jiraSkill, gcloudSkill]
+        context.insert(workspace)
+        context.insert(jiraSkill)
+        context.insert(jira)
+        context.insert(gcloudSkill)
+        context.insert(gcloud)
+        context.insert(task)
+
+        let userTurn = TaskEvent(
+            task: task,
+            type: TaskEventTypes.Conversation.userMessage.rawValue,
+            payload: "can you see my open tickets in Jira SS project? user alvaro1?"
+        )
+        userTurn.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(userTurn)
+        try context.save()
+
+        // Exactly what approveSimilarRuntimePermissionForTask submits.
+        let grants: [PermissionGrant] = [
+            .credential(label: "JIRA_API_TOKEN"),
+            .credential(label: "JIRA_EMAIL")
+        ]
+        let resumeMessage = PermissionBroker.resumeMessage(
+            providerID: .claudeCode,
+            grants: grants,
+            fallback: nil,
+            scopeDescription: "task-scoped runtime permission for similar requests in this task"
+        )
+        #expect(!resumeMessage.lowercased().contains("jira"))
+
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: resumeMessage,
+            executionPolicy: .default,
+            for: task,
+            into: context
+        ) else {
+            Issue.record("Expected the permission resume to persist")
+            return
+        }
+
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        let intent = try #require(request.executionPolicySnapshot?.turnIntentSnapshot)
+        #expect(intent.activationText == "can you see my open tickets in Jira SS project? user alvaro1?")
+
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: resumeMessage,
+            turnIntentSnapshot: intent,
+            runtime: .claudeCode
+        )
+        #expect(snapshot.providerLaunch.connectors.map(\.id).contains(jira.id))
+
+        // The connector must survive all the way to the run-scoped broker, which
+        // is what actually answers mcp__astra_host__jira.
+        let requiredTools = HostControlPlaneMCPProjection.requiredToolNames(
+            capabilityScope: snapshot.providerLaunch
+        )
+        #expect(requiredTools.contains("jira"))
+
+        let brokeredTools = Set(requiredTools)
+        let brokeredConnectors = snapshot.providerLaunch.connectors.filter {
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                    .map(brokeredTools.contains) == true
+        }
+        #expect(brokeredConnectors.map(\.id) == [jira.id])
     }
 
     @Test("Candidate admission is invariant across requested runtime and evaluation order")
@@ -358,6 +478,15 @@ struct TaskTurnIntentAdmissionTests {
             signature: "current",
             snapshot: nil
         )
+        // A re-check carries the verdict it supersedes for display, but never
+        // lets it answer for the new signature.
+        let recheck = RuntimeEligibilityPreviewState.pending(signature: "next", previous: snapshot)
+        #expect(recheck.lastResolvedSnapshot?.requestedRuntime == .cursorCLI)
+        #expect(recheck.currentSnapshot(for: "next") == nil)
+        #expect(recheck.isPending(for: "next"))
+        #expect(state.lastResolvedSnapshot?.requestedRuntime == .cursorCLI)
+        #expect(pending.lastResolvedSnapshot == nil)
+        #expect(unavailable.lastResolvedSnapshot == nil)
 
         #expect(state.currentSnapshot(for: "stale") == nil)
         #expect(pending.isPending(for: "current"))
@@ -515,7 +644,7 @@ struct TaskTurnIntentAdmissionTests {
             task: fixture.task,
             capabilityResolutionSnapshot: snapshot,
             executionEnvironment: .host,
-            browserBridgeAttached: false
+            browserBridgeRequired: false
         )
         let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: fixture.task,
@@ -548,6 +677,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -590,6 +720,128 @@ struct TaskTurnIntentAdmissionTests {
         #expect(!FileManager.default.fileExists(atPath: socketPath))
     }
 
+    @Test("Reachable-but-unnarrated brokered connectors keep their secrets sealed")
+    func unnarratedBrokeredConnectorSecretsStaySealed() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Summarize the README in this workspace"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        // The turn never says "Jira", so the connector is reachable but not
+        // narrated — the exact shape that must not widen secret egress.
+        #expect(!snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+        #expect(snapshot.providerLaunch.reachableConnectors.contains { $0.id == fixture.connector.id })
+
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: StaticAdmissionSecretStore(values: [
+                "JIRA_EMAIL": "person@example.edu",
+                "JIRA_API_TOKEN": "must-stay-sealed"
+            ])
+        )
+        #expect(!environment.values.contains("person@example.edu"))
+        #expect(!environment.values.contains("must-stay-sealed"))
+        // The route itself still materializes: config is reachability, secrets are not.
+        #expect(environment["JIRA_JIRA_PROJECTS"] == "ASTRA")
+    }
+
+    @Test("A durable credential grant unseals a reachable-but-unnarrated connector")
+    func durableGrantUnsealsUnnarratedBrokeredConnector() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Summarize the README in this workspace"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        #expect(!snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+        // Recorded after the capture: a grant that predates this turn's scope is
+        // exactly the case the `.approvedLabels` branch exists to serve.
+        let labels = fixture.connector.credentialKeys.map {
+            ConnectorRuntimeProjection.credentialLabel(for: fixture.connector, key: $0)
+        }
+        _ = TaskRuntimePermissionGrants.record(
+            grants: labels.map { .credential(label: $0) },
+            providerID: .claudeCode,
+            task: fixture.task,
+            modelContext: fixture.container.mainContext,
+            source: "test"
+        )
+
+        let secretStore = StaticAdmissionSecretStore(values: [
+            "JIRA_EMAIL": "person@example.edu",
+            "JIRA_API_TOKEN": "already-approved"
+        ])
+        #expect(HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+        // A grant is provider-native: it must not be replayed for a runtime
+        // the caller never identified, or for a different one.
+        #expect(!HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: nil,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+        #expect(!HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .codexCLI,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: secretStore
+        ).values.contains("already-approved"))
+    }
+
+    @Test("A narrated brokered connector keeps the exposure the user approved")
+    func narratedBrokeredConnectorKeepsApprovedExposure() throws {
+        let fixture = try makeJiraAdmissionFixture()
+        let turn = "Read ASTRA-123 in Jira"
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: fixture.task,
+            providerLaunchContextText: turn,
+            turnIntentSnapshot: TaskTurnIntentSnapshot(
+                taskID: fixture.task.id,
+                sourceEventID: nil,
+                acceptedTurn: turn
+            ),
+            runtime: .claudeCode
+        )
+        #expect(snapshot.providerLaunch.connectors.contains { $0.id == fixture.connector.id })
+
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: snapshot.providerLaunch,
+            requiredTools: ["jira"],
+            secretStore: StaticAdmissionSecretStore(values: [
+                "JIRA_EMAIL": "person@example.edu",
+                "JIRA_API_TOKEN": "narrated-and-approved"
+            ])
+        )
+        #expect(environment.values.contains("person@example.edu"))
+        #expect(environment.values.contains("narrated-and-approved"))
+    }
+
     @Test("Broker preparation fails before readiness when the relay helper is unavailable")
     func brokerPreparationRequiresExecutableHelper() throws {
         let fixture = try makeJiraAdmissionFixture()
@@ -609,6 +861,7 @@ struct TaskTurnIntentAdmissionTests {
         #expect(!HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -640,6 +893,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",
@@ -701,6 +955,7 @@ struct TaskTurnIntentAdmissionTests {
         let prepared = HostControlBrokerSessionRegistry.shared.prepare(
             task: fixture.task,
             runID: runID,
+            runtime: .claudeCode,
             capabilityScope: snapshot.providerLaunch,
             requiredTools: ["jira"],
             currentDirectory: "/tmp",

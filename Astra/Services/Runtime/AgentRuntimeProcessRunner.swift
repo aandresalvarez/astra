@@ -85,6 +85,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult
@@ -182,13 +183,12 @@ final class AgentRuntimeProcessRunner {
         // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
         // is always already computed, so this fallback rarely runs in production —
         // but any direct caller of runRuntimeProcess/sandboxedPlan (tests, or a
-        // future secondary launch path) that omits launchResourcePlan hits it. Pass
-        // context.runtimeRequirements through for the same reason
-        // AgentRuntimeWorker now does at its own TaskLaunchResourceResolver.resolve
-        // call site: without it, this fallback would independently re-derive GitHub
-        // host-control routing from a second capability-scope capture instead of
-        // reusing the resolver's single precomputed answer. See
-        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        // future secondary launch path) that omits it lands here. The precomputed
+        // requirements and capability profile are passed for the same reason
+        // AgentRuntimeWorker passes them at its own call site: without them this
+        // fallback re-derives GitHub host-control routing, and what transport the
+        // runtime has, from second captures instead of the launch's single answers.
+        // See Tests/HostControlRequirementDerivationConsistencyTests.swift.
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
@@ -203,10 +203,18 @@ final class AgentRuntimeProcessRunner {
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             },
-            precomputedRuntimeRequirements: context.runtimeRequirements
+            precomputedRuntimeRequirements: context.runtimeRequirements,
+            runtimeCapabilityProfile: context.executionPolicy.runtimeCapabilityProfile
         )
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
+        // Immediately, before anything else reads `plan.environment`. Each
+        // adapter builds its environment from `ProcessInfo`, so the brokered
+        // strip its overlay went through does not cover a credential ASTRA was
+        // itself launched with.
+        plan = plan.strippingBrokeredConnectorEnvironment(
+            capabilityScope: resolvedContext.capabilityResolutionSnapshot.providerLaunch
+        )
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let readOnlyInputBoundary = ReadOnlyInputEnforcementBoundary(
             contract: launchResourcePlan.readOnlyResourceContract,
@@ -685,6 +693,7 @@ final class AgentRuntimeProcessRunner {
         runtimeRequirements: TaskRuntimeRequirementSet? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        maxRunSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -711,14 +720,13 @@ final class AgentRuntimeProcessRunner {
             task: task,
             capabilityResolutionSnapshot: launchContext.capabilityResolutionSnapshot,
             executionEnvironment: DockerExecutionPlanner.resolveEnvironment(for: task),
-            browserBridgeAttached: launchContext.capabilityResolutionSnapshot.providerLaunch.exposesBrowserBridge
+            browserBridgeRequired: launchContext.capabilityResolutionSnapshot.providerLaunch.requiresBrowserBridge
         )
         let requiresHostControlBroker = !effectiveRequirements.hostControlTools.isEmpty
-        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
+        let supportsHostControlBroker = AgentRuntimeCapabilityProfileService.profile(
             for: adapter.id,
             executablePath: executablePath
-        )
-        let supportsHostControlBroker = runtimeCapabilityProfile.canDeliverHostControlPlane
+        ).canDeliverHostControlPlane
         if requiresHostControlBroker, !supportsHostControlBroker {
             let message = "\(adapter.id.displayName) cannot attach ASTRA host tools required by this turn."
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
@@ -733,12 +741,13 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             )
         }
-        let brokerPrepared = requiresHostControlBroker
+        let brokerPrepared = supportsHostControlBroker && effectiveRequirements.offersHostControlPlane
             && hostControlBrokerSessionManager.prepare(
             task: task,
             runID: runID,
+            runtime: adapter.id,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
-            requiredTools: effectiveRequirements.hostControlTools,
+            requiredTools: effectiveRequirements.offeredHostControlTools,
             currentDirectory: workspacePath
         )
         if requiresHostControlBroker, !brokerPrepared {
@@ -790,6 +799,7 @@ final class AgentRuntimeProcessRunner {
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -813,6 +823,7 @@ final class AgentRuntimeProcessRunner {
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+            maxRunSeconds: maxRunSeconds,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -828,11 +839,20 @@ final class AgentRuntimeProcessRunner {
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
+        maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
         let taskID = task.id
+
+        // The one place that owns a live agent process, so the one place that
+        // can say a redaction scope must not be evicted yet. A run that spends
+        // ten minutes on a tool call writes nothing, and without this the LRU
+        // treats it as finished: sixteen shorter runs starting meanwhile drop
+        // its secrets, and its next line of output is persisted in the clear.
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        defer { RunSecretRedactionScope.endRun(taskID: taskID) }
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -885,9 +905,10 @@ final class AgentRuntimeProcessRunner {
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
+                maxRunSeconds: maxRunSeconds,
                 taskID: task.id,
                 policyGuard: permissionManifest.map {
-                    AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
+                    AgentRuntimePolicyGuard(manifest: $0, boundary: RunBoundary(manifest: $0, plan: plan))
                 },
                 liveApprovalsActive: plan.interactiveAsk != nil,
                 sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext(
@@ -970,10 +991,14 @@ final class AgentRuntimeProcessRunner {
             // that window: whichever side reaches the lock first fully
             // drains-and-processes what it read before the other side can
             // even perform its own read.
+            // Stream volume is counted off the raw chunk, never per parsed line:
+            // `handleLine` only runs on a newline, so one large frame would hold
+            // the tally flat. `StreamVolumeAccountingTests` pins both sites.
             process.stdoutFileHandle.readabilityHandler = { handle in
                 lineBuffer.synchronized {
                     let data = handle.availableData
                     guard !data.isEmpty else { return }
+                    monitor.recordStreamVolume(bytes: data.count)
                     let chunk = String(decoding: data, as: UTF8.self)
                     lineBuffer.appendAndProcessLinesLocked(chunk, handleLine)
                 }
@@ -992,7 +1017,12 @@ final class AgentRuntimeProcessRunner {
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
                 lineBuffer.synchronized {
-                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    let finalStdoutData = proc.stdoutFileHandle.readDataToEndOfFile()
+                    // Too late to hold off a watchdog that has already decided,
+                    // but `stream_bytes` is also what the exit audit reports,
+                    // and a tally stopping short of EOF understates short runs.
+                    monitor.recordStreamVolume(bytes: finalStdoutData.count)
+                    let finalStdoutChunk = String(decoding: finalStdoutData, as: UTF8.self)
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }
@@ -1029,6 +1059,19 @@ final class AgentRuntimeProcessRunner {
                         level: .error,
                         fieldMaxLength: 900
                     )
+                }
+                // Always on, unlike the opt-in stream debug capture. Frames the
+                // parser could not classify are the upstream cause of runs being
+                // killed while they are still working, so the count has to be
+                // visible by default rather than only when someone already
+                // suspected a parser gap.
+                if monitor.unrecognizedEventCount > 0 {
+                    AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: taskID, fields: [
+                        "runtime": plan.runtime.rawValue,
+                        "unknown_events": String(monitor.unrecognizedEventCount),
+                        "stream_bytes": String(monitor.streamBytesObserved),
+                        "exit_code": String(Int(proc.terminationStatus))
+                    ], level: .warning)
                 }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
@@ -1283,7 +1326,8 @@ final class AgentRuntimeProcessRunner {
             requestID: control.requestID,
             toolName: control.toolName ?? "Tool",
             inputSummary: control.inputSummary,
-            commandText: control.commandText
+            commandText: control.commandText,
+            pathText: control.pathText
         )
         let heartbeat = Task.detached {
             while !Task.isCancelled {
@@ -1350,7 +1394,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func runtimeLocalToolCommands(in capabilityScope: TaskCapabilityPromptScope) -> [String] {
-        return Array(Set(capabilityScope.localTools.compactMap { tool in
+        return Array(Set(capabilityScope.reachableLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -1377,13 +1421,15 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        if baseBudget == 0 {
-            return Int.max
-        }
-        if usesAgentTeam {
-            return baseBudget * max(2, teamSize)
-        }
-        return baseBudget
+        // Zero is the persisted sentinel for Disabled. Resolve it before team
+        // scaling so an unlimited budget stays unlimited instead of overflowing
+        // when multiplied by the number of agents. A negative value is not a
+        // sentinel — it is a malformed persisted config (workspace imports
+        // assign budgets without normalizing) — so it keeps the pre-existing
+        // enforcement behaviour instead of silently becoming unlimited.
+        if baseBudget == 0 { return Int.max }
+        guard baseBudget > 0 else { return baseBudget }
+        return usesAgentTeam ? baseBudget * max(2, teamSize) : baseBudget
     }
 
     static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {
@@ -1429,6 +1475,19 @@ final class AgentRuntimeProcessRunner {
             additionalPaths: prefixPaths,
             extraVariables: extraVars
         )
+        // Registered from the environment the subprocess actually gets, not
+        // from the capability overlay that produced part of it.
+        //
+        // `enriched` starts from `ProcessInfo.processInfo.environment`, so
+        // anything ASTRA was itself launched with is inherited by the agent —
+        // and for a developer build started from a shell that exports
+        // `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, that is a live provider
+        // credential. Registering only `taskEnv` meant those were handed to the
+        // agent and left out of the redaction set, so echoing one wrote it
+        // straight into the transcript. The overlay is still registered where
+        // it is built, because that is where the brokered strip has happened;
+        // this adds what only the launch can see.
+        RunSecretRedactionScope.register(taskID: task.id, environment: env)
         if !taskEnv.isEmpty {
             AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
                 "phase": phase.rawValue,
@@ -1733,16 +1792,20 @@ final class AgentRuntimeProcessRunner {
         for task: AgentTask,
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String = "",
-        executionPolicy _: AgentRuntimeExecutionPolicy = .default,
-        runtimeRequirements: TaskRuntimeRequirementSet? = nil
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        // Intentionally unread: a brokered connector's credentials are stripped
+        // from the scope the broker owns them for, not from the scope the
+        // runtime managed to deliver the tool to.
+        runtimeRequirements _: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
-        stripBrokeredConnectorEnvironment(
-            from: &taskEnv,
-            capabilityScope: capabilityScope,
-            runtimeRequirements: runtimeRequirements
-        )
-        if hasStanfordOutlookMailAccess(in: capabilityScope) {
+        BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
+        if StanfordOutlookMailRuntimeAccess.isGranted(
+            for: task,
+            in: capabilityScope,
+            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
+            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+        ) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
@@ -1763,6 +1826,9 @@ final class AgentRuntimeProcessRunner {
                 taskEnv[BrowserAutomationEngineRequirement.environmentKey] = requiredEngine.rawValue
             }
         }
+        // Post-strip, so what the persistence funnel later redacts is exactly
+        // what this launch can leak - no brokered secret the agent never saw.
+        RunSecretRedactionScope.register(taskID: task.id, environment: taskEnv)
         return taskEnv
     }
 
@@ -1771,11 +1837,11 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext,
         runtime: AgentRuntimeID
     ) -> [String: String] {
-        let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: runtime)
-        guard profile.usesHostControlCLIRelay,
-              context.runtimeRequirements?.requiresHostControlPlane == true else {
-            return [:]
-        }
+        // Offered, not required: the broker session is started for every tool
+        // the run offers, so requiring here would leave `astra-host-control
+        // jira` with no socket on exactly the turns that never narrate it.
+        guard AgentRuntimeCapabilityProfileService.defaultProfile(for: runtime).usesHostControlCLIRelay,
+              context.runtimeRequirements?.offersHostControlPlane == true else { return [:] }
         let environment = HostControlPlaneMCPProjection.environmentVariables(
             task: context.task,
             environment: DockerExecutionPlanner.resolveEnvironment(for: context.task),
@@ -1789,68 +1855,6 @@ final class AgentRuntimeProcessRunner {
             return [:]
         }
         return environment
-    }
-
-    @MainActor
-    private static func stripBrokeredConnectorEnvironment(
-        from environment: inout [String: String],
-        capabilityScope: TaskCapabilityPromptScope,
-        runtimeRequirements: TaskRuntimeRequirementSet?
-    ) {
-        guard let runtimeRequirements, !runtimeRequirements.hostControlTools.isEmpty else {
-            return
-        }
-        let brokeredTools = Set(runtimeRequirements.hostControlTools)
-        let brokeredConnectors = capabilityScope.connectors.filter {
-            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                    .map(brokeredTools.contains) == true
-        }
-        let brokeredSnapshotConfigKeys = Set(
-            capabilityScope.resolver.detachedSnapshots
-                    .flatMap { $0.connectorSnapshots ?? [] }
-                    .filter {
-                        HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                            && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                                .map(brokeredTools.contains) == true
-                    }
-                    .flatMap(\.configKeys)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-        )
-        guard !brokeredConnectors.isEmpty || !brokeredSnapshotConfigKeys.isEmpty else { return }
-
-        let brokeredProjection = ConnectorRuntimeProjection(connectors: brokeredConnectors)
-        for key in brokeredProjection.declaredEnvironmentBindingKeys()
-            .union(brokeredSnapshotConfigKeys) {
-            environment.removeValue(forKey: key)
-        }
-
-        guard let manifestJSON = environment["ASTRA_CONNECTORS"],
-              let manifestData = manifestJSON.data(using: .utf8),
-              var manifest = try? JSONDecoder().decode(
-                  ConnectorRuntimeProjection.Manifest.self,
-                  from: manifestData
-              ) else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-            return
-        }
-        let brokeredConnectorIDs = Set(brokeredConnectors.map { $0.id.uuidString.lowercased() })
-        manifest.connectors.removeAll {
-            brokeredConnectorIDs.contains($0.id.lowercased())
-        }
-        guard !manifest.connectors.isEmpty else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-            return
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        if let filteredData = try? encoder.encode(manifest),
-           let filteredJSON = String(data: filteredData, encoding: .utf8) {
-            environment["ASTRA_CONNECTORS"] = filteredJSON
-        } else {
-            environment.removeValue(forKey: "ASTRA_CONNECTORS")
-        }
     }
 
     @MainActor
@@ -1878,14 +1882,9 @@ final class AgentRuntimeProcessRunner {
             for: task,
             providerLaunchContextText: contextText
         ).providerLaunch
-        return scope.localTools.contains { tool in
+        return scope.reachableLocalTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-    }
-
-    private static func hasStanfordOutlookMailAccess(in capabilityScope: TaskCapabilityPromptScope) -> Bool {
-        capabilityScope.connectors.contains { $0.isStanfordOutlookMail } ||
-            capabilityScope.localTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     static func providerAllowedTools(

@@ -185,6 +185,24 @@ struct ConnectorRuntimeProjection {
         Self.uniquedSorted(configuredCredentialBindings().map(\.label))
     }
 
+    /// Labels for the credentials a connector *declares*, whether or not this
+    /// process can load their values.
+    ///
+    /// `configuredCredentialLabels()` answers "what did we hand out", so it has
+    /// to read the value. Reporting a credential ASTRA withholds is the other
+    /// question - "what does this connector own that the agent will not get" -
+    /// and that answer must not change because the reader lacks Keychain
+    /// access. Derived from the same declared basis as
+    /// `declaredEnvironmentBindingKeys()` so the withheld report and the strip
+    /// cannot disagree about which keys are covered.
+    func declaredCredentialLabels() -> [String] {
+        ConnectorRuntimeProjection(
+            connectors: connectors,
+            secretStore: DeclaredConnectorSecretStore(),
+            credentialExposurePolicy: .allowAllCredentials
+        ).configuredCredentialLabels()
+    }
+
     func unapprovedCredentialLabelsRequiringApproval() -> [String] {
         Self.uniquedSorted(unapprovedCredentialApprovalRequests().flatMap(\.labels))
     }
@@ -217,8 +235,15 @@ struct ConnectorRuntimeProjection {
     }
 
     static func credentialLabel(for connector: Connector, key: String) -> String {
+        credentialLabel(connectorID: connector.id, key: key)
+    }
+
+    /// For callers that have the identifier but not the model — the broker
+    /// reports a withheld credential by ID, and a grant it cannot spell the same
+    /// way as the projection is a grant that never matches.
+    static func credentialLabel(connectorID: UUID, key: String) -> String {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "connector:\(connector.id.uuidString):\(trimmedKey)"
+        return "connector:\(connectorID.uuidString):\(trimmedKey)"
     }
 
     static func alias(for connector: Connector) -> String {

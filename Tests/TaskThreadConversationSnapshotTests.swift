@@ -1585,7 +1585,16 @@ extension TaskThreadSnapshotTests {
             try await TaskThreadSnapshot.buildAsync(input: obsoleteInput, fields: [:])
         }
 
-        try await Task.sleep(for: .milliseconds(2))
+        // Cancelled immediately rather than after a sleep. Every assertion below
+        // holds whether cancellation is observed at the executor's entry check
+        // or part-way through construction — `build` increments the active and
+        // maximum counters before it checks cancellation — so waiting buys no
+        // coverage and costs correctness. A fixed sleep can only overshoot, and
+        // under full-suite load a 2ms sleep overslept the whole build once,
+        // leaving `cancel()` to no-op on a finished task and `obsolete.value` to
+        // return a snapshot on a test whose subject is cancellation. Mid-flight
+        // interruption is proven deterministically by the barrier-driven
+        // huge-item and huge-run-output tests below.
         obsolete.cancel()
         let replacement = try await TaskThreadSnapshot.buildAsync(
             input: TaskThreadSnapshotInput(goal: "Latest", createdAt: .now, events: [], runs: []),

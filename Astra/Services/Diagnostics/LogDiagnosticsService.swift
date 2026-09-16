@@ -1805,6 +1805,16 @@ enum LogDiagnosticsService {
             )
         }
 
+        if lower.contains(AuditEvent.runtimeAgentReportedError.rawValue) {
+            return (
+                key: "runtime.agent_reported_error",
+                title: "Agent reported an error mid-run",
+                severity: .warning,
+                signal: AuditEvent.runtimeAgentReportedError.rawValue,
+                analysis: "The provider emitted an error event during the stream. This is not the run's verdict — check the run's own exit status, since a run can report this and still complete successfully."
+            )
+        }
+
         if lower.contains(AuditEvent.taskFailed.rawValue) {
             return (
                 key: "task.failed",

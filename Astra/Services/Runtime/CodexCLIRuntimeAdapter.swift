@@ -24,8 +24,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModels: CodexCLIRuntime.availableModelNames(),
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
+    let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
     let readinessCheckID = "codex-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .codexCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
@@ -114,9 +116,53 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 ))
             } else if let executable = cliStatus.executable {
                 checks.append(await checkCodexAuth(executable: executable, probes: probes))
+                checks.append(await checkCodexMCPPolicy(configuration: configuration, executable: executable))
             }
         }
         return RuntimeReadinessReport(checks: checks)
+    }
+
+    /// Asks Codex whether it would run an MCP server ASTRA hands it, and says
+    /// so here rather than letting a task discover it mid-turn. Also warms the
+    /// cache the launch path reads, the same way Copilot's capability probe is
+    /// warmed from readiness so the main-actor path never has to shell out.
+    private func checkCodexMCPPolicy(
+        configuration: RuntimeReadinessConfiguration,
+        executable: String
+    ) async -> RuntimeReadinessCheck {
+        let policy = await CodexMCPPolicyService().policy(
+            executablePath: executable,
+            homeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
+        switch policy {
+        case .permitted:
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                detail: "Codex accepts ASTRA's MCP server, so connector tools are available to this runtime.",
+                state: .ready, remediation: nil
+            )
+        case .serversDisabled(let policyName):
+            let named = policyName.map { " (\"\($0)\")" } ?? ""
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                // Still a warning rather than a block — a `.blocked` readiness
+                // check stops every launch on this runtime — but no longer a
+                // dead end. The refusal reroutes host-control onto the typed
+                // relay, which is a shell command and so is not something an
+                // MCP policy can switch off. Reads work; writes do not, because
+                // the relay's allowlist is deliberately narrower than the
+                // broker's, so the warning has to say which half is missing.
+                detail: "Your organization's Codex policy\(named) disables all MCP servers, so ASTRA is routing connectors through its typed command relay instead. Read operations work; staging a change for review still needs a runtime that accepts MCP.",
+                state: .warning,
+                remediation: "Run tasks that propose connector writes on Claude Code, or ask your Codex administrator to allow ASTRA's MCP server."
+            )
+        case .unknown:
+            return RuntimeReadinessCheck(
+                id: "codex-connectors", title: "ASTRA connectors",
+                detail: "Codex did not report its MCP server policy. ASTRA will attach connectors as usual.",
+                state: .ready, remediation: nil
+            )
+        }
     }
 
     private func checkCodexAuth(
@@ -173,27 +219,43 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        let models = CodexCLIRuntime.availableModelNames()
-        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
-        return RuntimeReadinessCheck(
-            id: "codex-models",
-            title: "Codex models",
-            detail: "Available: \(models.joined(separator: ", "))",
-            state: .ready,
-            remediation: nil
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let result = await CodexModelAvailabilityService().refreshAndPersist(
+            executablePath: configuration.executablePath(for: id),
+            homeDirectory: configuration.providerSettings.homeDirectory(for: id)
         )
+        switch result {
+        case .available(let models):
+            return RuntimeReadinessCheck(
+                id: "codex-models", title: "Codex models",
+                detail: "Available: \(models.map(\.value).joined(separator: ", "))",
+                state: .ready, remediation: nil
+            )
+        case .unavailable(let reason):
+            return RuntimeReadinessCheck(
+                id: "codex-models", title: "Codex models",
+                detail: "Using cached or default model choices until Codex model discovery succeeds.",
+                state: .warning, remediation: reason
+            )
+        }
     }
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        var taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy,
             runtimeRequirements: context.runtimeRequirements
         )
+        // Empty unless the provider has refused ASTRA's MCP server, in which
+        // case this carries the broker socket the typed relay dials. Codex is
+        // the only runtime where both routes exist, so this merge is a no-op on
+        // every run whose MCP server actually loaded.
+        taskEnv.merge(
+            AgentRuntimeProcessRunner.hostControlCLIRelayEnvironment(context: context, runtime: id)
+        ) { _, brokerValue in brokerValue }
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
@@ -204,6 +266,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
+        // Falls back to the model's own reported default when the stored
+        // choice doesn't apply to this model (e.g. carried over from a
+        // different model, or the model reports no options at all).
+        let reasoningEffort = context.taskSnapshot.reasoningEffort.flatMap { effort in
+            RuntimeModelAvailability.normalizedReasoningEffort(effort, for: providerModel, runtime: id)
+        }
         // `--add-dir` grants a directory WRITE access (Codex reads the host
         // filesystem ambiently regardless — its sandbox cannot restrict reads).
         // Project only explicitly granted directories; widening an exact-file
@@ -249,12 +317,17 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                // The relay is only invocable if the directory holding
+                // `astra-host-control` is on PATH — the prompt tells the agent
+                // to type a bare command name.
+                || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             mcpConfigArguments: mcpProjection.configArguments,
             resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).codexLaunchPermissionArguments(
                 resumingNativeSession: resumingNativeSession
-            )
+            ),
+            reasoningEffort: reasoningEffort
         )
         let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
             providerHomeDirectory: context.providerHomeDirectory,
@@ -290,6 +363,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": providerModel,
+                "reasoning_effort": reasoningEffort ?? "none",
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "parses_json_lines": String(plan.parsesJSONLines),
                 "additional_paths_count": String(additionalPaths.count),
@@ -437,6 +511,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? CodexCLIRuntime.detectPath() : configuredPath
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         let permissionPolicy: PermissionPolicy = toolMode == .readOnly ? .interactive : .restricted
+        // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
+        // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
+        // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
+        // Output validity is still enforced by the caller's validation + repair loop. Always
+        // "low" regardless of the task's own reasoning-effort setting — that setting is for the
+        // interactive agent session, not this internal one-shot call.
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: prompt,
@@ -450,21 +530,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
                 policy: permissionPolicy,
                 resumingNativeSession: false
-            )
+            ),
+            reasoningEffort: "low"
         )
-
-        // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
-        // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
-        // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
-        // Output validity is still enforced by the caller's validation + repair loop.
-        var arguments = plan.arguments
-        if let execIndex = arguments.firstIndex(of: "exec") {
-            arguments.insert(contentsOf: ["-c", "model_reasoning_effort=\"low\""], at: execIndex + 1)
-        }
         let processPlan = AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: plan.executablePath,
-            arguments: arguments,
+            arguments: plan.arguments,
             currentDirectory: workspacePath,
             environment: plan.environment,
             browserShimDirectory: nil,

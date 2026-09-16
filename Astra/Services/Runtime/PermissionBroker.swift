@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import HostControlToolSupport
 
 enum PermissionBroker {
     static let brokerVersion = 1
@@ -229,6 +230,12 @@ enum PermissionBroker {
             return safeProviderToolGrant(toolName).map { [$0] } ?? []
         case .gitPublish(let authorization):
             return [.gitPublish(authorization: authorization)]
+        case .connectorMutation(let authorization):
+            // Exactly one grant, carrying the whole authorization. No companion
+            // tool grant: `mcp__astra_host__jira` is already allowed — that is
+            // what let the agent stage — and adding it here would turn approving
+            // one ticket into a grant that outlives it.
+            return [.connectorMutation(authorization: authorization)]
         }
     }
 
@@ -288,6 +295,8 @@ enum PermissionBroker {
             toolName
         case .gitPublish:
             "GitHub draft publication"
+        case .connectorMutation(let authorization):
+            "\(authorization.serviceType.capitalized) \(authorization.operation)"
         }
     }
 
@@ -307,6 +316,11 @@ enum PermissionBroker {
             safeDisplayField(path, limit: 4_096)
         case .gitPublish(let authorization):
             "\(authorization.repository): \(authorization.headBranch) -> \(authorization.baseBranch) at \(authorization.expectedHeadSHA)"
+        case .connectorMutation(let authorization):
+            // Scope and digest only. The ticket body is content, and it belongs
+            // in the review sheet that reads the staged file, not in a detail
+            // line that gets persisted into the permission ledger.
+            "\(authorization.target) at \(authorization.requestDigest)"
         }
     }
 
@@ -455,7 +469,7 @@ enum PermissionBroker {
     private static func providerEligibleGrants(_ grants: [PermissionGrant]) -> [PermissionGrant] {
         sanitizeGrants(grants).filter { grant in
             switch grant {
-            case .sandboxPath, .gitPublish:
+            case .sandboxPath, .gitPublish, .connectorMutation:
                 return false
             default:
                 return true
@@ -490,6 +504,8 @@ enum PermissionBroker {
             return isSafeSandboxPath(path) && isSafeSandboxAccess(access)
         case .gitPublish(let authorization):
             return isSafeGitPublishAuthorization(authorization)
+        case .connectorMutation(let authorization):
+            return isSafeConnectorMutationAuthorization(authorization)
         }
     }
 
@@ -497,7 +513,20 @@ enum PermissionBroker {
         switch grant {
         case .shellCommand:
             return ShellCommandRiskClassifier.allowsTaskScopedReuse(grant)
-        case .sandboxPath, .gitPublish:
+        // `.connectorMutation` is here on purpose, and it is the deliberate
+        // inverse of the change that made connector discovery approvals durable
+        // for a task. That change was right: re-asking for the *same* access
+        // because the agent rephrased its request was the bug, and the thing
+        // being consented to there is access, which does not change between
+        // calls.
+        //
+        // A mutation approval consents to content — this ticket, this body,
+        // this project — and content is exactly what changes between calls.
+        // Reusing it would mean the second write is authorized by the user
+        // having read the first. So each one is bound to its own digest and
+        // spent when it is used. If that ever looks like a papercut worth
+        // fixing, the fix is a better review surface, not a wider grant.
+        case .sandboxPath, .gitPublish, .connectorMutation:
             return false
         default:
             return true
@@ -552,6 +581,47 @@ enum PermissionBroker {
             return false
         }
         return authorization.baseBranch != authorization.headBranch
+    }
+
+    /// Shape check on a staged-mutation approval before it is allowed into the
+    /// ledger. Not a substitute for the commit-time check: the bytes are
+    /// re-hashed against `requestDigest` immediately before the request leaves
+    /// the app, and the path is re-proved to be inside the task's staging
+    /// directory there. This is the filter that keeps a malformed or forged
+    /// authorization from being recorded as consent in the first place.
+    private static func isSafeConnectorMutationAuthorization(
+        _ authorization: ConnectorMutationAuthorization
+    ) -> Bool {
+        // A service the broker does not own has no in-process credential, so
+        // there is no commit path that could honour this approval — and an
+        // approval for a write nothing can perform is one the user has been
+        // asked to read for nothing.
+        guard HostControlBrokeredServices.ownsConfiguration(ofServiceType: authorization.serviceType),
+              authorization.serviceType == authorization.serviceType.lowercased(),
+              isSafeConnectorOperation(authorization.operation),
+              isSafeBoundedField(authorization.target, limit: 256),
+              isSafeStagedPayloadPath(authorization.stagedPayloadPath),
+              isHexDigest(authorization.requestDigest, lengths: 64...64) else {
+            return false
+        }
+        return true
+    }
+
+    private static func isSafeConnectorOperation(_ value: String) -> Bool {
+        isSafeBoundedField(value, limit: 64)
+            && value.range(of: #"^[a-z][a-z0-9_]*$"#, options: [.regularExpression]) != nil
+    }
+
+    private static func isSafeStagedPayloadPath(_ value: String) -> Bool {
+        guard isSafeBoundedField(value, limit: 4_096),
+              value.hasPrefix("/"),
+              !value.contains(".."),
+              value.hasSuffix(".json") else {
+            return false
+        }
+        // The directory name is the broker's, so an approval that does not name
+        // it is not describing a file the broker staged.
+        return value.contains("/\(ConnectorMutationStaging.directoryName)/")
     }
 
     private static func isSafeGitRef(_ value: String) -> Bool {

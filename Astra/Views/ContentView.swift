@@ -85,6 +85,8 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
@@ -148,6 +150,16 @@ struct ContentView: View {
     @State private var browserSessionPolicyCache = BrowserSessionPolicyCache()
     @State private var browserSessionPolicyRefreshGate = BrowserSessionPolicyRefreshGate()
     @State private var browserSessionPolicyRefreshTask: Task<Void, Never>?
+    /// The last policy this view actually published, kept for telemetry only.
+    /// `browserSessionPolicyRefreshGate.policy` cannot answer "did anything
+    /// change?" because `begin()` resets it to `.failClosed` at the start of
+    /// every refresh, so by the time a refresh finishes the gate has already
+    /// forgotten what it was showing.
+    ///
+    /// Tagged with the session it came from. This view outlives any one task,
+    /// so an untagged policy silently becomes the `previous` for whatever the
+    /// user switches to next.
+    @State private var lastPublishedBrowserSessionPolicy: BrowserSessionPolicyPublication?
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -233,8 +245,14 @@ struct ContentView: View {
             copilotPath: copilotPath,
             providerSettingsRevision: runtimeProviderSettingsRevision,
             claudeProviderRaw: claudeProviderRaw,
-            vertexProjectID: "",
-            vertexRegion: "",
+            // These were hard-coded empty, which was survivable only while
+            // nothing read them: the availability check's Vertex branch used to
+            // return the three model aliases without looking at the route. Now
+            // that it validates the project, a blank here reports "Project ID is
+            // required" over a correctly configured Vertex setup — the same kind
+            // of lie about configuration state, just inverted.
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
@@ -1783,6 +1801,7 @@ struct ContentView: View {
     }
     private func refreshBrowserSessionPolicy(source: String) {
         browserSessionPolicyRefreshTask?.cancel()
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let token = browserSessionPolicyRefreshGate.begin(), task = selectedTask; syncBrowserPresentation()
         let taskID = task?.id, workspace = task?.workspace ?? effectiveWorkspace
         let workspaceID = workspace?.id, enabledCapabilityIDs = normalizedEnabledCapabilityIDs(for: task)
@@ -1840,12 +1859,27 @@ struct ContentView: View {
             )
             guard browserSessionPolicyRefreshGate.accept(policy, for: token) else { return }
             syncBrowserPresentation()
-            AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: [
-                "event": "browser_session_policy_refreshed",
-                "source": source,
-                "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
-                "github_read_only_mode": String(policy.githubReadOnlyMode)
-            ])
+            // Most of these fires are no-ops; `BrowserSessionPolicyRefreshAudit`
+            // owns why that is and what it costs to say so.
+            // Read against this refresh's own identity, so a policy left over
+            // from the task the user just switched away from is treated as no
+            // previous policy at all rather than as agreement.
+            let audit = BrowserSessionPolicyRefreshAudit(
+                source: source,
+                previous: lastPublishedBrowserSessionPolicy?.policyForSession(
+                    taskID: signature.taskID,
+                    workspaceID: signature.workspaceID
+                ),
+                published: policy,
+                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt)
+            )
+            lastPublishedBrowserSessionPolicy = BrowserSessionPolicyPublication(
+                taskID: signature.taskID,
+                workspaceID: signature.workspaceID,
+                policy: policy
+            )
+            AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID,
+                            fields: audit.fields, level: audit.level)
         }
     }
     private func handleBrowserPolicyTaskEventInsertion(_ insertion: DurableTaskEventInsertion) {
@@ -3613,44 +3647,13 @@ private struct NewWorkspaceSheet: View {
     }
 }
 
-private enum WorkspaceCapabilityValidationState: Equatable {
-    case unchecked
-    case checking
-    case ready(String)
-    case failed(String)
-}
-
-private struct WorkspaceSetupValidationSecretStore: SecretStore {
-    var credentials: [String: String]
-
-    func load(key: String, entityID _: String) -> String? {
-        credentials[key] ?? credentials[key.uppercased()]
-    }
-
-    @discardableResult
-    func save(key _: String, value _: String, entityID _: String, label _: String?) -> Bool {
-        false
-    }
-
-    @discardableResult
-    func delete(key _: String, entityID _: String) -> Bool {
-        false
-    }
-
-    func deleteAll(entityID _: String) {}
-
-    func exists(key: String, entityID _: String) -> Bool {
-        load(key: key, entityID: "") != nil
-    }
-}
-
 struct WorkspaceSetupForm: View {
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.scenePhase) private var scenePhase
     @Binding var draft: NewWorkspaceDraft
     @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
+    /// Unfiltered: `copyableCapabilitySetupKey` has to see workspace-owned edits.
+    @Query private var allConnectors: [Connector]
     let rootPath: String
     let mode: WorkspaceSetupFormMode
     @Binding var validationIssues: [String]
@@ -3666,6 +3669,7 @@ struct WorkspaceSetupForm: View {
     @State private var capabilityValidationStates: [String: WorkspaceCapabilityValidationState] = [:]
     @State private var capabilityValidationSignatures: [String: String] = [:]
     @State private var copiedCapabilitySetup: CapabilitySetupCopySummary?
+    @State private var copyableCapabilitySetups: [CopyableCapabilitySetup] = []
 
     private enum Field {
         case name
@@ -3814,6 +3818,15 @@ struct WorkspaceSetupForm: View {
         .onChange(of: capabilityValidationStates) {
             refreshValidationIssues()
         }
+        // Keyed rather than bare `.task`, so the sweep re-runs when the source
+        // workspaces or global connectors actually change — and, because the
+        // key is "collapsed" while the section is shut, is never paid at all by
+        // a user who does not open Capabilities. It deliberately does not
+        // depend on `draft`: typing a workspace name changes nothing this list
+        // is derived from.
+        .task(id: copyableCapabilitySetupKey) {
+            recomputeCopyableCapabilitySetups()
+        }
     }
 
     private var capabilitiesSection: some View {
@@ -3828,7 +3841,7 @@ struct WorkspaceSetupForm: View {
                     availableCapabilityShortcut
                 }
 
-                if !copyableCapabilitySetupSourceWorkspaces.isEmpty {
+                if !copyableCapabilitySetups.isEmpty {
                     copyCapabilitySetupShortcut
                 }
 
@@ -3909,9 +3922,9 @@ struct WorkspaceSetupForm: View {
                 .truncationMode(.tail)
             Spacer()
             Menu {
-                ForEach(copyableCapabilitySetupSourceWorkspaces, id: \.id) { workspace in
-                    Button(copyMenuTitle(for: workspace)) {
-                        copyCapabilitySetup(from: workspace)
+                ForEach(copyableCapabilitySetups) { setup in
+                    Button(setup.menuTitle) {
+                        copyCapabilitySetup(from: setup)
                     }
                 }
             } label: {
@@ -4236,11 +4249,27 @@ struct WorkspaceSetupForm: View {
         return "\(prefix): \(names.joined(separator: ", "))"
     }
 
-    private var copyableCapabilitySetupSourceWorkspaces: [Workspace] {
-        capabilitySetupSourceWorkspaces.filter { workspace in
-            let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
-            return !summary.selectedPackageIDs.isEmpty && !summary.inputsByPackageID.isEmpty
+    /// Cheap key describing when the copy-from list could have changed. Unlike
+    /// `recomputeCopyableCapabilitySetups`, this *is* evaluated on every body
+    /// pass, so it must stay free of relationship traversal and Keychain reads.
+    private var copyableCapabilitySetupKey: String {
+        guard isCapabilitiesExpanded else { return "collapsed" }
+        return CopyableCapabilitySetupResolver.key(
+            sources: capabilitySetupSourceWorkspaces,
+            connectors: allConnectors
+        )
+    }
+
+    @MainActor
+    private func recomputeCopyableCapabilitySetups() {
+        guard isCapabilitiesExpanded else {
+            copyableCapabilitySetups = []
+            return
         }
+        copyableCapabilitySetups = CopyableCapabilitySetupResolver.resolve(
+            sources: capabilitySetupSourceWorkspaces,
+            connectors: allConnectors
+        )
     }
 
     private var copyCapabilitySetupText: String {
@@ -4251,16 +4280,8 @@ struct WorkspaceSetupForm: View {
         return "Copied \(label) from \(copiedCapabilitySetup.sourceWorkspaceName)"
     }
 
-    private func copyMenuTitle(for workspace: Workspace) -> String {
-        let names = OnboardingCapabilitySetup.selectedDisplayNames(
-            from: CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors).selectedPackageIDs
-        )
-        guard !names.isEmpty else { return workspace.name }
-        return "\(workspace.name) - \(names.joined(separator: ", "))"
-    }
-
-    private func copyCapabilitySetup(from workspace: Workspace) {
-        let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
+    private func copyCapabilitySetup(from setup: CopyableCapabilitySetup) {
+        let summary = setup.summary
         guard !summary.selectedPackageIDs.isEmpty, !summary.inputsByPackageID.isEmpty else { return }
 
         draft.selectedCapabilityIDs = summary.selectedPackageIDs
@@ -4499,18 +4520,38 @@ struct WorkspaceSetupForm: View {
         capabilityValidationStates[packageID] = .checking
         refreshValidationIssues()
 
-        let result = await runCapabilityValidation(for: packageID)
+        let traceID = WorkspaceCapabilityValidationTelemetry.makeTraceID()
+        WorkspaceCapabilityValidationTelemetry.started(packageID: packageID, traceID: traceID)
+
+        let result = await runCapabilityValidation(for: packageID, traceID: traceID)
         guard capabilityValidationSignature(for: packageID) == signature else {
             capabilityValidationStates[packageID] = .unchecked
             refreshValidationIssues()
+            WorkspaceCapabilityValidationTelemetry.superseded(packageID: packageID, traceID: traceID)
             return
         }
 
         capabilityValidationStates[packageID] = result
         refreshValidationIssues()
+        WorkspaceCapabilityValidationTelemetry.finished(
+            packageID: packageID,
+            traceID: traceID,
+            state: result,
+            credentials: validationCredentials(for: packageID)
+        )
     }
 
-    private func runCapabilityValidation(for packageID: String) async -> WorkspaceCapabilityValidationState {
+    private func validationCredentials(for packageID: String) -> [String: String] {
+        WorkspaceCapabilityConnectorValidation.draftCredentials(
+            packageID: packageID,
+            configuration: draft.capabilityConfiguration
+        )
+    }
+
+    private func runCapabilityValidation(
+        for packageID: String,
+        traceID: String
+    ) async -> WorkspaceCapabilityValidationState {
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
             await probeCapabilityPrerequisites(for: packageID, forceRefresh: true)
@@ -4525,79 +4566,39 @@ struct WorkspaceSetupForm: View {
             }
             return await validateGCloudProject()
         case OnboardingCapabilitySetup.jiraPackageID:
-            return await validateConnectorCapability(
+            return await WorkspaceCapabilityConnectorValidation.validate(
                 packageID: packageID,
-                connector: jiraValidationConnector(),
-                credentials: [
-                    "JIRA_EMAIL": draft.capabilityConfiguration.jiraEmail,
-                    "JIRA_API_TOKEN": draft.capabilityConfiguration.jiraAPIToken
-                ]
+                connector: WorkspaceCapabilityConnectorValidation
+                    .jiraConnector(configuration: draft.capabilityConfiguration),
+                credentials: validationCredentials(for: packageID),
+                source: mode.validationSource,
+                traceID: traceID
             )
         case OnboardingCapabilitySetup.redcapPackageID:
-            return await validateConnectorCapability(
+            return await WorkspaceCapabilityConnectorValidation.validate(
                 packageID: packageID,
-                connector: redcapValidationConnector(),
-                credentials: [
-                    "REDCAP_API_TOKEN": draft.capabilityConfiguration.redcapAPIToken
-                ]
+                connector: WorkspaceCapabilityConnectorValidation
+                    .redcapConnector(configuration: draft.capabilityConfiguration),
+                credentials: validationCredentials(for: packageID),
+                source: mode.validationSource,
+                traceID: traceID
             )
         default:
             return .ready("No connection test is required for this capability.")
         }
     }
 
-    private func validateConnectorCapability(
-        packageID: String,
-        connector: Connector,
-        credentials: [String: String]
-    ) async -> WorkspaceCapabilityValidationState {
-        let traceID = AuditTrace.make("workspace-capability-validate")
-        let result = await connector.testConnection(
-            store: WorkspaceSetupValidationSecretStore(credentials: credentials),
-            source: mode.validationSource,
-            packageID: packageID,
-            traceID: traceID
-        )
-        return result.0 ? .ready(result.1) : .failed(result.1)
-    }
-
-    private func jiraValidationConnector() -> Connector {
-        let config = draft.capabilityConfiguration
-        let connector = Connector(
-            name: "Jira",
-            serviceType: "jira",
-            icon: "list.bullet.clipboard",
-            connectorDescription: "Atlassian Jira REST API v3",
-            baseURL: trimmed(config.jiraBaseURL),
-            authMethod: "basic"
-        )
-        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
-        connector.credentialValues = ["", ""]
-        connector.configKeys = ["JIRA_PROJECTS"]
-        connector.configValues = [trimmed(config.jiraProjects)]
-        return connector
-    }
-
-    private func redcapValidationConnector() -> Connector {
-        let config = draft.capabilityConfiguration
-        let connector = Connector(
-            name: "REDCap",
-            serviceType: "redcap",
-            icon: "tablecells",
-            connectorDescription: "Stanford REDCap API",
-            baseURL: trimmed(config.redcapAPIURL),
-            authMethod: "api_key"
-        )
-        connector.credentialKeys = ["REDCAP_API_TOKEN"]
-        connector.credentialValues = [""]
-        connector.testHTTPMethod = "POST"
-        return connector
-    }
-
     private func validateGCloudProject() async -> WorkspaceCapabilityValidationState {
         let project = trimmed(draft.capabilityConfiguration.gcpProject)
         guard !project.isEmpty else {
             return .failed("Add a GCP project before testing.")
+        }
+        // Refuse a value that cannot be a project before spending a subprocess
+        // on it. Without this the field's contents go straight to `gcloud` as
+        // one argument, and the user is shown Google's INVALID_ARGUMENT — a
+        // message about their cloud account for what is a malformed text field.
+        if let reason = GCPProjectIdentifier.rejectionReason(for: project) {
+            return .failed(reason)
         }
         guard let gcloudPath = healthyPrerequisitePath(for: OnboardingCapabilitySetup.gcloudPackageID, binary: "gcloud") else {
             return .failed("Google Cloud CLI path was not resolved.")
@@ -4613,9 +4614,14 @@ struct WorkspaceSetupForm: View {
             let verifiedProject = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             return .ready(verifiedProject.isEmpty
                 ? "gcloud can access the configured project."
-                : "gcloud can access project \(verifiedProject).")
+                : "gcloud can access project \(GCPProjectIdentifier.displayValue(verifiedProject)).")
         }
-        return .failed("gcloud could not access \(project): \(runResultMessage(result))")
+        // The project is interpolated through the same kind of cleanup the
+        // process output already got from `runResultMessage`. It is the more
+        // dangerous of the two — it is whatever is in the text field.
+        return .failed(
+            "gcloud could not access \(GCPProjectIdentifier.displayValue(project)): \(runResultMessage(result))"
+        )
     }
 
     private func healthyPrerequisitePath(for packageID: String, binary: String) -> String? {

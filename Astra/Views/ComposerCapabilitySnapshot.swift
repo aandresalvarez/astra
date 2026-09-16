@@ -39,6 +39,18 @@ enum ComposerCapabilitySnapshotBuilder {
     }
 }
 
+/// Parent-driven diffing only. The loader sits in `TaskMainView` and
+/// `ChatPanelView`, whose bodies re-run on every keystroke, and it takes a
+/// closure — so without this SwiftUI re-evaluated it, and the
+/// relationship-walking `capabilityRefreshSignature` with it, per keystroke.
+/// Its own `@Query` and `@State` changes still invalidate it directly; the
+/// call sites opt in with `.equatable()`.
+extension ComposerCapabilitySnapshotLoader: Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.workspace?.persistentModelID == rhs.workspace?.persistentModelID
+    }
+}
+
 struct ComposerCapabilitySnapshotLoader: View {
     let workspace: Workspace?
     let onSnapshotChange: @MainActor (ComposerCapabilitySnapshot) -> Void

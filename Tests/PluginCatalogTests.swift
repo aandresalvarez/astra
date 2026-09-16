@@ -212,10 +212,14 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.2.0")
+        #expect(package.version == "2.4.0")
         #expect(package.description.contains("credential broker"))
-        #expect(package.governance.externalEffects == [.readOnly])
+        // The capability can now end in a created ticket, so the effect list has
+        // to say so — declaring .readOnly here would be the understatement the
+        // governance surface exists to prevent.
+        #expect(package.governance.externalEffects == [.ticketMutation])
         #expect(package.governance.policyNotes.contains("not projected into provider environments"))
+        #expect(package.governance.policyNotes.contains("cannot send one"))
         #expect(skill.behaviorInstructions.contains("ASTRA HOST-CONTROL"))
         #expect(skill.allowedTools.contains("Bash"))
         #expect(skill.behaviorInstructions.contains("Shell is permitted only to invoke that exact broker command"))
@@ -229,7 +233,41 @@ struct PluginCatalogBuiltInTests {
         #expect(skill.behaviorInstructions.contains("next_page_token"))
         #expect(!skill.behaviorInstructions.contains("If /myself returns 401/403, stop"))
         #expect(skill.behaviorInstructions.contains("Do not request raw method, path, or body inputs"))
-        #expect(skill.behaviorInstructions.contains("Do not create, update, comment on, transition, delete"))
+        #expect(skill.behaviorInstructions.contains("Do not update, comment on, transition, delete"))
+    }
+
+    /// The failure this capability actually produced: the agent could not file a
+    /// ticket, so it wrote the user a script that exported the API token. The
+    /// guidance has to name both halves — the route that works, and the
+    /// workaround that must not be offered when it doesn't.
+    @Test("Jira capability routes ticket creation through review, not through a script")
+    func jiraCapabilityProposesRatherThanScripting() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let skill = try #require(package.skills.first)
+
+        #expect(skill.behaviorInstructions.contains("operation propose_issue"))
+        #expect(skill.behaviorInstructions.contains("sent: false"))
+        #expect(skill.behaviorInstructions.contains("That is success, not a failure"))
+        #expect(skill.behaviorInstructions.contains("Never write a script, curl command, or set of instructions"))
+        #expect(skill.behaviorInstructions.contains("say the ticket cannot be filed and stop"))
+        #expect(!skill.behaviorInstructions.contains("READ-ONLY OPERATIONS"))
+    }
+
+    /// The inverse of the Jira case, and it has to be stated as plainly. REDCap
+    /// declared `.externalAPIWrite` and offered to "manage" projects, which read
+    /// as "writes are possible here, under confirmation" — but the broker
+    /// enumerates reads and refuses everything else, so no confirmation exists
+    /// that could authorise one. An overstated effect list trains the user to
+    /// discount the list.
+    @Test("REDCap capability declares the read-only reach it actually has")
+    func redcapCapabilityDeclaresReadOnlyReach() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
+
+        #expect(package.version == "2.1.0")
+        #expect(package.governance.externalEffects == [.readOnly])
+        #expect(package.governance.policyNotes.contains("This capability cannot write"))
+        #expect(package.governance.policyNotes.contains("no task-time confirmation"))
+        #expect(!package.description.localizedCaseInsensitiveContains("manage"))
     }
 
     @Test("Security auditor bundled capability version matches fallback catalog")

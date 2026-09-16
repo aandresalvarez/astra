@@ -271,6 +271,35 @@ struct SchedulerLifecycleTests {
 
         await queue.cancelAllAndWait()
     }
+
+    /// A routine snapshots its source task's execution defaults. Effort was
+    /// task-owned from the start but had no schedule column, so every
+    /// scheduled run silently dropped back to the provider default.
+    @Test("A scheduled task inherits the routine's reasoning effort")
+    func fireScheduleCarriesReasoningEffort() async throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let scheduler = TaskScheduler()
+        let queue = TaskQueue()
+        let workspace = Workspace(
+            name: "Effort Routine",
+            primaryPath: "/tmp/astra_scheduler_effort_\(UUID().uuidString)"
+        )
+        let schedule = TaskSchedule(name: "Routine", goal: "Run routine", workspace: workspace)
+        #expect(schedule.reasoningEffort == nil)
+        schedule.reasoningEffort = "high"
+
+        ctx.insert(workspace)
+        ctx.insert(schedule)
+        try ctx.save()
+
+        scheduler.fireSchedule(schedule, modelContext: ctx, taskQueue: queue)
+
+        let scheduledTask = try #require(workspace.tasks.first { $0.originScheduleID == schedule.id })
+        #expect(scheduledTask.reasoningEffort == "high")
+
+        await queue.cancelAllAndWait()
+    }
 }
 
 @Suite("TaskLifecycleCoordinator Schedule Visibility")

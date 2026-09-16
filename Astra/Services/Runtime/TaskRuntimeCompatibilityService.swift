@@ -8,6 +8,10 @@ enum TaskRuntimeIncompatibility: Equatable, Sendable {
     case hostControlBrokerUnavailable
     case missingDockerWorkspaceShell
     case missingBrowserControlTransport
+    /// The provider itself refuses to run MCP servers, so every ASTRA
+    /// capability that rides on one is unreachable no matter what ASTRA
+    /// renders into the launch manifest.
+    case providerMCPServersDisabled(policyName: String?)
     case policyBlocked(reason: String)
     case invalidLaunchResourceContract(reason: String)
 
@@ -23,9 +27,32 @@ enum TaskRuntimeIncompatibility: Equatable, Sendable {
             return "Docker workspace shell MCP"
         case .missingBrowserControlTransport:
             return "browser control transport"
+        case .providerMCPServersDisabled(let policyName):
+            return policyName.map { "ASTRA connectors (blocked by Codex policy \"\($0)\")" }
+                ?? "ASTRA connectors (blocked by your organization's Codex policy)"
         case .policyBlocked(let reason), .invalidLaunchResourceContract(let reason):
             return reason
         }
+    }
+
+    /// Plain-language wording for a block whose real cause is outside ASTRA.
+    /// The generic "cannot satisfy: <capability list>" phrasing reads as if
+    /// ASTRA were missing a feature, which sends the user looking in the wrong
+    /// place; this says who refused and what to do instead. Returns nil for
+    /// every incompatibility the generic phrasing already describes correctly.
+    func launchBlockPhrasing(
+        runtime: AgentRuntimeID,
+        suggestedRuntime: AgentRuntimeID?
+    ) -> (message: String, remediation: String)? {
+        guard case .providerMCPServersDisabled(let policyName) = self else { return nil }
+        let policy = policyName.map { "your organization's Codex policy (\"\($0)\")" }
+            ?? "your organization's Codex policy"
+        let ask = "ask your Codex administrator to allow ASTRA's MCP server"
+        return (
+            message: "\(runtime.displayName) cannot use ASTRA's connectors: \(policy) disables all MCP servers.",
+            remediation: suggestedRuntime.map { "Run this task on \($0.displayName), or \(ask)." }
+                ?? "\(ask.prefix(1).uppercased())\(ask.dropFirst())."
+        )
     }
 }
 
@@ -157,6 +184,14 @@ enum TaskRuntimeCompatibilityService {
         if !isRuntimeUsable {
             missing.append(.runtimeUnavailable)
         }
+        if let refusal = providerMCPRefusal(requirements: requirements, profile: profile) {
+            // Report the cause, not its symptoms. Listing "ASTRA host tools for
+            // jira" and "Docker workspace shell MCP" separately would describe
+            // two ASTRA gaps when there is one provider refusal, and would send
+            // the reader looking for a fix inside ASTRA.
+            missing.append(refusal)
+            return missing
+        }
         if requirements.requiresHostControlPlane && !profile.canDeliverHostControlPlane {
             missing.append(.missingHostControlPlane(requiredTools: requirements.hostControlTools))
         }
@@ -184,12 +219,17 @@ enum TaskRuntimeCompatibilityService {
             requirements: requirements,
             incompatibilities: incompatibilities
         )
-        let remediation = suggestedRuntime.map { "Switch to \($0.displayName)." }
+        let phrasing = incompatibilities.compactMap {
+            $0.launchBlockPhrasing(runtime: runtime, suggestedRuntime: suggestedRuntime)
+        }.first
+        let remediation = phrasing?.remediation
+            ?? suggestedRuntime.map { "Switch to \($0.displayName)." }
             ?? "Switch to a runtime that can attach ASTRA host tools."
         return TaskRuntimeCompatibilityLaunchBlock(
             stopReason: stopReason(for: runtime, incompatibilities: incompatibilities),
             title: "Selected runtime is incompatible with required ASTRA capabilities",
-            message: "\(runtime.displayName) cannot satisfy: \(missing.joined(separator: ", ")).",
+            message: phrasing?.message
+                ?? "\(runtime.displayName) cannot satisfy: \(missing.joined(separator: ", ")).",
             remediation: remediation,
             missingCapabilities: missing,
             suggestedRuntime: suggestedRuntime
@@ -206,6 +246,23 @@ enum TaskRuntimeCompatibilityService {
         return AgentRuntimeAdapterRegistry.adapter(for: runtime)
             .missingExecutableStopReason()
             ?? runtimeCapabilityIncompatibleReason
+    }
+
+    /// The provider refuses MCP servers *and* this turn needs one. Both halves
+    /// matter: a refusal only blocks a launch when a required capability has no
+    /// other route, so a turn that never asked for a connector still runs, and
+    /// a runtime that carries host control over a CLI relay is unaffected.
+    /// Browser control is deliberately absent — it has a shell transport.
+    private static func providerMCPRefusal(
+        requirements: TaskRuntimeRequirementSet,
+        profile: AgentRuntimeCapabilityProfile
+    ) -> TaskRuntimeIncompatibility? {
+        guard profile.providerMCPPolicy.refusesServers,
+              profile.hasTaskScopedMCPDeliveryMechanism else { return nil }
+        let needsMCP = (requirements.requiresHostControlPlane && !profile.supportsHostControlCLIRelay)
+            || requirements.requiresDockerWorkspaceShell
+        guard needsMCP else { return nil }
+        return .providerMCPServersDisabled(policyName: profile.providerMCPPolicy.policyName)
     }
 
     private static func recordCompatibility(

@@ -40,6 +40,13 @@ public final class AgentTask {
     public var tokenBudget: Int
     public var tokensUsed: Int
     public var model: String
+    /// The user's chosen reasoning-effort label for `model`, when the
+    /// runtime/model combination supports one (currently Codex only). Nil
+    /// means no override — the provider's own default applies. Values are
+    /// whatever the provider's own catalog reports (e.g. Codex's per-model
+    /// `supportedReasoningEfforts`), not a fixed enum, since supported labels
+    /// vary by model and provider version.
+    public var reasoningEffort: String?
     public var runtimeID: String?
     /// True when the current `runtimeID` was set by the user explicitly
     /// picking a runtime in the composer (`task_runtime_changed`), as opposed
@@ -51,6 +58,15 @@ public final class AgentTask {
     public var runtimeExplicitlySelected: Bool = false
     public var testCommand: String
     public var costUSD: Double
+    /// Manual ordering slot for the board's Queued lane. Nothing in the app
+    /// offers a way to set it: `TaskCorrectiveWorkService` is its only non-zero
+    /// writer, so real stores hold 0 for every row.
+    ///
+    /// Never use this as a SwiftData `sort:` key. It has no `#Index`, so
+    /// ordering on it makes SQLite build a temp B-tree and spill the entire
+    /// result set — `goal` blobs included — to disk on every fetch, for a sort
+    /// that produces nothing. `KanbanCategory.sortedTasks` reads it in memory
+    /// with an `updatedAt` tiebreaker instead.
     public var queuePosition: Int
     public var sessionId: String?
     public var chainedGoal: String          // If set, auto-creates a follow-up task on completion

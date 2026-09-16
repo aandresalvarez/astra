@@ -9,6 +9,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+    var antigravityAuthMode: AntigravityAuthMode
 
     init(
         claudePath: String,
@@ -18,7 +19,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.init(
             providerSettings: AgentRuntimeProviderSettings(
@@ -35,7 +37,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 
@@ -46,7 +49,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.providerSettings = providerSettings
         self.claudeProvider = claudeProvider
@@ -55,6 +59,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         self.vertexOpusModel = vertexOpusModel
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
+        self.antigravityAuthMode = antigravityAuthMode
     }
 
     func readinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
@@ -67,7 +72,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 }
@@ -79,10 +85,26 @@ struct RuntimeProviderAvailabilityService {
         self.readinessService = readinessService
     }
 
+    /// Readiness younger than this is served from the passed cache without
+    /// re-probing the CLIs, so opening a task shows its provider at once
+    /// instead of "Checking provider" until the slowest probe answers.
+    static let cacheMaxAge: TimeInterval = 300
+
+    /// Caching is opt-in per caller, never a default. A cache keyed only by
+    /// configuration cannot know which `readinessService` produced an answer,
+    /// so defaulting to the shared one let two callers with equal settings but
+    /// different probes serve each other's verdicts — which is exactly what it
+    /// did to `RuntimeReadinessServiceTests` once both ran in the same process.
+    /// The views pass `.shared` because they all probe the real CLIs.
     func states(
-        configuration: RuntimeProviderAvailabilityConfiguration
+        configuration: RuntimeProviderAvailabilityConfiguration,
+        cache: RuntimeReadinessStateCache? = nil,
+        cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
-        await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
+        if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
+            return cached
+        }
+        let states = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
             for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
                 group.addTask {
                     let report = await readinessService.check(
@@ -98,6 +120,12 @@ struct RuntimeProviderAvailabilityService {
             }
             return states
         }
+        // A cancelled group exits early with fewer entries than runtimes; the
+        // caller already discards those, and so must the cache.
+        if let cache, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count {
+            await cache.store(states, for: configuration)
+        }
+        return states
     }
 
     static func readyRuntimes(

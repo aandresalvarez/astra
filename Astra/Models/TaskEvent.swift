@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Model
 public final class TaskEvent {
@@ -15,6 +16,16 @@ public final class TaskEvent {
     public var teamName: String?     // e.g. "rest-api-debate"
     public var category: String       // "lifecycle", "conversation", "tool", "system", "team"
 
+    /// Designated initializer, and the single construction point for every
+    /// event in the app — the convenience initializer and both
+    /// `structuredPayloadEvent` factories delegate here, and there is no other
+    /// way to make a `TaskEvent`.
+    ///
+    /// That is why the redaction pass lives here rather than at the ~100
+    /// `modelContext.insert(TaskEvent(...))` call sites: a payload cannot reach
+    /// the store without passing through this line, so there is no site to
+    /// forget. Redaction is a no-op — and does not copy the string — unless the
+    /// task has a registered credential set (`RunSecretRedactionScope`).
     public init(task: AgentTask, type: String, payload: String = "", run: TaskRun? = nil,
          agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
         let now = Date()
@@ -22,7 +33,7 @@ public final class TaskEvent {
         self.task = task
         self.run = run
         self.type = type
-        self.payload = payload
+        self.payload = RunSecretRedactionScope.redact(payload, taskID: task.id)
         self.timestamp = now
         self.agentName = agentName
         self.agentId = agentId

@@ -88,6 +88,41 @@ enum ClaudeProvider: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// How the Antigravity CLI authenticates. Only matters for the
+/// `antigravity_cli` runtime.
+///
+/// Consumer is the default: `agy`'s own interactive Google Sign-In, which
+/// Google's own eligibility check generally restricts to personal
+/// (gmail.com-style) accounts. When set to `adc`, the spawned `agy` process
+/// gets `AGY_ADC_AUTH=true`, which routes it through Google Cloud
+/// Application Default Credentials instead — the documented path for
+/// Workspace/enterprise Google accounts (e.g. a university GCP project)
+/// that the consumer eligibility check rejects. Authentication itself
+/// piggybacks on `gcloud auth application-default login` (plus
+/// `set-quota-project` for the target project) already having been run
+/// once outside ASTRA; this toggle only supplies the one env var `agy`
+/// reads to prefer that credential source.
+enum AntigravityAuthMode: String, CaseIterable, Identifiable, Sendable {
+    case consumer
+    case adc
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .consumer: "Google Sign-In"
+        case .adc:      "Google Cloud (ADC)"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .consumer: "person.circle"
+        case .adc:      "cloud.fill"
+        }
+    }
+}
+
 /// User-controllable override for light/dark mode. Persisted in
 /// `@AppStorage("appearancePreference")`. The scene applies
 /// `preferredColorScheme(_:)` with the resolved value — `nil` means

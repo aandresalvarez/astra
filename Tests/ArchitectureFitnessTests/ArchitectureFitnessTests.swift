@@ -1539,7 +1539,15 @@ struct ArchitectureFitnessTests {
         // (sandboxEnforcement / sandboxReadScope / sandboxAllowNetwork /
         // sandboxLayerNativeProviders), which are user-facing toggles following
         // the existing SettingsView pattern.
-        #expect(count <= 130, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // 130 -> 132 for claudeVertexProjectID / claudeVertexRegion: not new
+        // settings. The snapshot already declares both, ContentView passed "",
+        // and the check read that back as "no project" over a working route.
+        // 132 -> 134 for defaultReasoningEffortRaw: a new user-facing default,
+        // read directly in the settings tab (to populate the picker) and in the
+        // chat composer (to seed a new draft task), mirroring defaultModel.
+        // 134 -> 135 for antigravityAuthModeRaw: the Antigravity ADC/consumer
+        // sign-in route toggle, mirroring the existing claudeProviderRaw pattern.
+        #expect(count <= 135, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("AgentTask/Workspace deletions stay routed through turn-request cleanup")
@@ -1845,6 +1853,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/TaskSchedule.swift": ["self"],
             "Astra/Models/TaskValidationContract.swift": ["self"],
             "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
+            // `AstraKeychainFailureReport.status` is an OSStatus, not a task's.
+            "Astra/Services/Persistence/AstraSecureKeychainStore.swift": ["self"],
             "Astra/Services/Persistence/SessionScanner.swift": ["run"],
             "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
@@ -1894,7 +1904,17 @@ struct ArchitectureFitnessTests {
             // that keeps the runtime-permission dock visible over a queued
             // follow-up's waiting dock: the guard and its "why" comment
             // aren't safely compressible without losing the reasoning.
-            "Astra/Views/TaskMainView.swift": .init(6_136, .owner("Task detail and run surface")),
+            // 6_136 -> 6_146: connector-mutation review wiring only (one @State,
+            // one dock case, one context argument, one modifier). The state,
+            // read-back and sheet live in TaskConnectorMutationReview.swift.
+            // 6_146 -> 6_148: reasoning-effort selection wires two lines onto the
+            // existing ComposerToolbar call (a `reasoningEffort:` argument and an
+            // `onReasoningEffortChange` callback binding straight to `task`).
+            // 6_148 -> 6_152: a routine built from a task now snapshots that task's
+            // reasoning effort alongside its runtime, model and budget, so a scheduled
+            // run stops silently dropping back to the provider default.
+            // 6_152 -> 6_150: dock git-publish/mutation answers moved to TaskMainViewDecisionOutcomes.swift.
+            "Astra/Views/TaskMainView.swift": .init(6_150, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
@@ -1921,8 +1941,33 @@ struct ArchitectureFitnessTests {
             // 3_075 -> 3_076 (PR #374 review follow-up): `attachedFiles` is now read by the
             // cross-file preview extension, and the one line marking that is what keeps a
             // future reader from re-privatising it into a compile error.
-            "Astra/Views/ChatPanelView.swift": .init(3_076, .owner("Composer chat surface")),
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
+            // 3_076 -> 3_079: arming ComposerTypingStallProbe from the composer's
+            // existing onChange. The rationale lives in the probe rather than here
+            // precisely because this file has no room to spare.
+            // 3_079 -> 3_085: reasoning-effort selection needs a defaultReasoningEffortRaw
+            // AppStorage default, a ComposerToolbar argument/callback pair, and setting
+            // the value on each of the three draft/task-creation call sites (saveDraft,
+            // quickRun, createTaskFromSpec) so a new task starts with the chosen default.
+            // 3_085 -> 3_126 (PR #388 review follow-up): the composer's effort is one
+            // global preference shared across runtimes, so every write now resolves it
+            // against the runtime/model it is stored beside and re-resolves on a
+            // runtime/model switch. An open draft moves with it because
+            // runApprovedPlan() submits draftTask without a fresh saveDraft().
+            "Astra/Views/ChatPanelView.swift": .init(3_126, .owner("Composer chat surface")),
+            // 2_900 -> 2_909: Claude Code reasoning-effort selection replaces the
+            // hardcoded artifact-bootstrap-only "--effort low" with a resolved
+            // value that also honors the task's own setting outside bootstrap.
+            // 2_909 -> 2_917: the Antigravity live-account readiness check threads
+            // through the ADC auth mode instead of only the main launch path
+            // honoring it (a live run found the readiness card still blocked).
+            // 2_917 -> 2_928: modelAvailabilityCheck now persists per-model
+            // RuntimeModelDetail (id + display name) instead of the raw,
+            // tab-corrupted `agy models` lines it used to hand straight to
+            // the flat-string cache.
+            // 2_929 -> 2_942: Antigravity's stream-json wiring — honouring
+            // parsesJSONLines, and probing `--output-format` where the CLI is
+            // already being run rather than during launch preflight.
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_950, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
@@ -1937,26 +1982,119 @@ struct ArchitectureFitnessTests {
             // threshold from the file-access-broker tests added for issue
             // #323's WorkspacePackage subsystem. It's a flat suite, not a
             // companion of one production file, so it owns itself here.
-            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_150, .owner("Architecture fitness test suite")),
+            // 2_150 -> 2_155: three budget raises above, each carrying its reason.
+            // 2_155 -> 2_185: the guard against sorting a SwiftData fetch on
+            // AgentTask.queuePosition. That sort cost the app 8.6 GB of SQLite
+            // temp-sorter spill and seconds-long main-thread stalls while the
+            // user typed, and it reads like a harmless default, so it needs a
+            // standing check rather than reviewer memory.
+            // 2_185 -> 2_215: the companion guard keeping the sidebar container
+            // off an unfiltered AgentTask @Query. Reintroducing it would restore
+            // a ~64 ms main-thread read per streamed token while leaving every
+            // other test green, so nothing but this would catch it.
+            // 2_230 -> 2_236: two budget changes for the connector-mutation seam,
+            // each carrying the "why" this registry exists to preserve.
+            // 2_236 -> 2_250 on 2026-09-02 (PR #381 review follow-up): the two
+            // entries above say why they moved, which is the only thing that
+            // stops a budget line from being a number someone raised once.
+            // 2_250 -> 2_256: the sidebar rebuild-coalescing entry above, and
+            // this line, which is the same bargain applied to itself.
+            // 2_256 -> 2_270: the two watchdog entries below, one recording a
+            // ratchet-down after a file split and one a raise, plus this line.
+            // 2_270 -> 2_273: the keychain-report allowlist receiver, plus this
+            // line. GitService briefly earned its first entry here at 2_035;
+            // moving `GitProcessState` out put it back under the threshold.
+            // 2_273 -> 2_300: the three PR #383 raises above, each carrying the
+            // reason it was raised, plus this line. AgentRuntimeProcessRunner
+            // reached 2_001 on the same branch and was trimmed back under rather
+            // than opening a new entry — a first entry is the ratchet that
+            // matters most, and it should cost more than a comment.
+            // 2_300 -> 2_320: the two third-round raises above. The watchdog one
+            // amends a raise from the round before it rather than replacing it,
+            // because "the earlier fix was necessary and not sufficient" is the
+            // part a future reader needs and a rewritten comment would lose.
+            // 2_320 -> 2_330: the two review-fix entries below, plus this line.
+            // 2_330 -> 2_345: the two reachability-vs-narration raises below, plus
+            // this line. AgentRuntimeProcessRunner crossed 2_000 again on the same
+            // branch and was again trimmed back under rather than opening a first
+            // entry — naming the value for what it is cost fewer lines than
+            // explaining it, and the explanation belongs on the field it reads.
+            // 2_345 -> 2_350: the two capability-profile raises above, plus this
+            // line. AgentRuntimeProcessRunner crossed 2_000 a third time on this
+            // branch and was again trimmed under — the argument it gained is
+            // explained by the comment already above that call, rewrapped.
+            // 2_350 -> 2_365: the AgentPromptBuilder and resolver-test raises
+            // above, and their reasons.
+            // 2_365 -> 2_375: two branches each spent the remaining headroom on
+            // ledger entries and only collided at the merge. The Shelf-browser
+            // entry was cut to one line first; raising covers what is left.
+            // 2_375 -> 2_387: ratchet bumps for reasoning-effort selection
+            // (Codex, Copilot, then Claude Code).
+            // 2_387 -> 2_397: the AgentRuntimeAdapter raise above, for the
+            // Antigravity model-list fix.
+            // 2_399 -> 2_404: the two companion raises above.
+            "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift": .init(2_421, .owner("Architecture fitness test suite")),
             // Budget raised for issue #322: the Routines section, sort/star-filter
             // controls, and empty-state copy each need their own gate — three
             // call sites, not one boundary to extract.
-            "Astra/Views/TaskSidebarView.swift": .init(2_510, .owner("Task sidebar")),
+            // 2_510 -> 2_525: the container's switch from an unfiltered @Query to
+            // SidebarTaskStore — the signal-query rationale, the model context,
+            // and the reconcile-after wrapper for the two membership-changing
+            // handlers.
+            // 2_525 -> 2_530: coalescing the index rebuild off
+            // `sidebarTasksVersion`. The window itself is a separate file
+            // (SidebarTaskIndexRebuildScheduler); what is left here is three
+            // wiring lines and the note on why search stays uncoalesced.
+            "Astra/Views/TaskSidebarView.swift": .init(2_530, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
             // WorkspaceConfigManager.swift's entry above for why.
             "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
+            // 2_300 -> 2_305: threading that same profile to the connector
+            // section, so the prompt stops reading a static table that guesses
+            // whether the installed Copilot binary can carry the broker.
+            // 2_305 -> 2_355: the offered tier's local-tool route summary. The
+            // permission list already allowlists every reachable tool; the
+            // prompt named only the narrated subset, so a permitted command
+            // the agent was never told about read as an absent capability.
+            // 2_355 -> 2_325: the Shelf browser block moved to ShelfBrowserPromptSection.swift, which carries the reason; ratcheted to what is left.
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_325, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
-            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
+            // 2_150 -> 2_160 (run-boundary fix): the one branch that drops a
+            // policy observation without a user-visible outcome now audits it.
+            // 2_160 -> 2_095 on 2026-09-04 (watchdog progress signals): stream-volume
+            // progress, the run wall clock, and kill escalation pushed this file past
+            // its ceiling, so AgentExecutionScopedProcess and its two supporting types
+            // moved to AgentExecutionScopedProcess.swift. Ratcheted down to what is
+            // left rather than banking the headroom — this file is the stream monitor
+            // now, and process-launch plumbing belongs in the other one.
+            // 2_095 -> 2_225 on 2026-09-08 (PR #383 review follow-up): the
+            // semantic-stall branch must still win when its deadline coincides
+            // with the idle one, a provider gets a bounded wait to act on stdin
+            // EOF before the signal ladder, and a repeated deferral traces once
+            // per silence window rather than once per poll. The token-ceiling
+            // branch added in that review was later removed when Disabled was
+            // restored to its literal unlimited meaning.
+            // 2_225 -> 2_255 on 2026-09-08 (PR #383, third review round): the
+            // coincident-deadline fix above was necessary and not sufficient —
+            // a deliverable task's window is `idleTimeout * 2`, so under 360s it
+            // lands *after* the idle deadline and the generic branch killed the
+            // run first, every time. The new predicate holds that branch while
+            // the first window is live, and the arithmetic that makes it dead
+            // code otherwise is the whole of its "why".
+            // 2_255 -> 2_295 on 2026-09-08 (PR #383, review fixes): the
+            // unknown-frame deferral orders events by sequence number instead
+            // of by `Date()` — which resolves to ~1 µs and made back-to-back
+            // events carry the same timestamp — the wall clock pauses while a
+            // managed workspace job is heartbeating rather than killing a run
+            // the job was told to wait on, and the graceful-stop wait is paid
+            // only when there was a stdin channel to close.
+            // 2_295 -> 2_300: the terminal-progress reap now also requires
+            // the provider to have gone quiet, and says why.
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
-            // Crossed the 2,000-line threshold in PR #374: one renderer per provider, each
-            // translating the same policy contract into that CLI's flags. Splitting per
-            // provider would hide the cross-provider diff this file exists to make legible,
-            // so it owns itself with a tight ceiling instead.
-            "Astra/Services/Runtime/AgentPolicyAdapters.swift": .init(2_050, .owner("Provider policy rendering")),
             // Budget raised for the run-before-resolve reordering fix (PR #281
             // review follow-up) - the launch-sequencing comment explaining why
             // TaskRun must be constructed before requirements are resolved
@@ -1969,7 +2107,24 @@ struct ArchitectureFitnessTests {
             // runs must hold their durable turn request open until post-run
             // checkpoint/contract validation decides the outcome, so the verdict
             // has to be threaded from the session defer back to executeApprovedPlan.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_150, .owner("Runtime worker execution")),
+            // 2_150 -> 2_160 on 2026-09-02 (PR #381 review follow-up): a staged
+            // connector proposal is durable on disk the moment the broker
+            // returns, so its pending event has to be saved before the minutes
+            // of post-run awaits that follow — and the save going through the
+            // persistence coordinator means a refusal is reported rather than
+            // swallowed.
+            // 2_161 -> 2_190 on 2026-09-08 (PR #383 review follow-up): the
+            // budget branch decides and explains itself from one snapshot taken
+            // before the outcome chain, because "no budget was set, so ASTRA's
+            // own ceiling applied" and "you went past the number you chose" are
+            // different things to tell the user and only the snapshot knows
+            // which one fired. Quoting the snapshot in both wordings also closed
+            // the allowlisted cosmetic gap where the event named a limit that
+            // was not the one enforced.
+            // 2_190 -> 2_200: the run's capability profile is resolved once here,
+            // after the reroute, and carried on the execution policy instead of
+            // being re-derived by every surface that describes the run.
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_200, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -1982,23 +2137,71 @@ struct ArchitectureFitnessTests {
             // through `.running` because `.admitted` has no edge to `.completed`.
             "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
-            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
-            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
+            // Tools/HostControlToolSupport/HostControlToolSupport.swift held
+            // 2_040 (down from 2_160 on 2026-08-19, when the Jira request policy
+            // moved to JiraHostControlPolicy.swift). Entry removed on 2026-09-10:
+            // the connector status struct, its formatter, and three copies of the
+            // env-key lookup left for BrokeredConnectorCredentialStatus.swift, and
+            // the file is under the 2_000 threshold again.
+            // 3_500 -> 3_510 (run-boundary fix): an out-of-boundary read pauses
+            // for approval now, and each affected case says why that still holds.
+            // 3_510 -> 3_570 (watchdog escalation): a breached silence window now
+            // buys one extension before the kill, so the cases that used to assert
+            // "one evaluation terminates" have to drive the escalation step too and
+            // say why the first call returns false.
+            // 3_570 -> 3_685 (PR #383 review follow-up): added budget-mode
+            // coverage that was later reduced when an unset budget returned to
+            // its literal unlimited meaning.
+            // 3_685 -> 3_775 (PR #383, third review round): the artifact window
+            // now outranks a shorter idle deadline, and that is three tests, not
+            // one — it defers, a run with no progress at all is still killed on
+            // the idle deadline, and the deferral ends. Dropping the middle one
+            // would let "every silent run is immortal for an extra window" pass.
+            // 3_775 -> 3_780 (PR #383 review fixes): budget scaling coverage,
+            // later revised so Disabled remains unlimited for a team.
+            // 3_780 -> 3_818: a regression test tying the Codex parser to the
+            // monitor, after a progress note was mistaken for the end of a turn
+            // and killed a run that was still working.
+            "Tests/ProcessMonitorTests.swift": .init(3_818, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             // 2_950 -> 3_015 (PR #374 review follow-up): a relay example is only useful if
             // the relay tokenizer accepts it, and proving that needs a full brokered
             // jira + gcloud workspace fixture.
-            "Tests/TaskCapabilityResolverTests.swift": .init(3_015, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_015 -> 3_070 (reachability vs narration): the three halves of the
+            // split each need their own fixture — the misspelled turn that keeps
+            // its route, the credential that still does not travel with it, and
+            // the connector the workspace never enabled that stays out. Collapsing
+            // them would let "everything is reachable" pass.
+            // 3_070 -> 3_085: two prune tests now assert that a reachable tool's
+            // command is named while its instructions stay pruned, with the
+            // reasoning for the flip inline.
+            "Tests/TaskCapabilityResolverTests.swift": .init(3_085, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // Bumped 3_200 -> 3_201 for Track A2 (Models -> Runtime edge break: moved
             // WorkspaceExecutionEnvironment/ConnectorSecurityPolicy value types to ASTRACore
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
             // direction in Finding 2 of the extraction doc is untouched and remains its own
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_350, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 3_350 -> 3_401: regression tests for Copilot and Claude Code
+            // reasoning-effort selection honoring the task's chosen value.
+            // 3_401 -> 3_404: the Antigravity launch plan now states why an
+            // unprobed binary stays on plain text.
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_404, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_550 -> 2_565 on 2026-09-02 (PR #381 review follow-up): the
+            // ordering guard for the discovery save — the proposal is on disk
+            // whether or not the event survived, so "persisted before the next
+            // await" is the invariant, and it is only checkable against the
+            // source.
+            // 2_565 -> 2_570 (PR #383 review fixes): the process-runner fake gained
+            // the `maxRunSeconds` parameter the protocol now carries.
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_530, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             // 2_650 -> 2_660 (PR #374 review follow-up): read-only policy levels must not
             // ship local tool grants on the real Copilot command line, asserted against a
             // `.build` control so the test cannot pass vacuously.
-            "Tests/AgentPolicyTests.swift": .init(2_660, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_660 -> 2_665 (reachability vs narration): the pruned-capability
+            // manifest case now has to say which half it is asserting — the
+            // command grant follows enablement, the environment does not — and
+            // an assertion that inverted needs its reason next to it.
+            "Tests/AgentPolicyTests.swift": .init(2_665, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             // Budget raised for runtimeExplicitlySelected export/import round-trip
             // coverage (PR #281 review follow-up) - two new tests matching this
@@ -2007,20 +2210,91 @@ struct ArchitectureFitnessTests {
             // 2_300 -> 2_425 (PR #374 review follow-up): the capability probe is memoised,
             // drained off-thread, and timeout-bounded; each property needs a real `copilot`
             // stand-in (spawn counter, oversized help, hung process) to be provable.
-            "Tests/CopilotRuntimeTests.swift": .init(2_425, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // 2_425 -> 2_456: regression-locks the corrected reasoning-effort choice list
+            // ("minimal" was missing) against the actual `copilot --help` output.
+            // 2_456 -> 2_500: coverage for the same fix on Copilot, whose
+            // narration messages carried the same false terminal.
+            // 2_500 -> 2_548: live-captured commentary/final_answer frames.
+            "Tests/CopilotRuntimeTests.swift": .init(2_548, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
             // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode
             // Keychain-read grant: one kernel-verified readable-roots test per
             // runtime (mirrors the existing Claude Code auth-readable-roots test).
             "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift")),
+            // 2_100 -> 2_175 on 2026-08-10: URL-capture tests proving get_issue carries the body, a list does not, and get_comments reaches the thread.
+            // Companion -> owner on 2026-09-10: the file it accompanied dropped
+            // under the threshold and lost its entry, and a companion of nothing
+            // fails the registry's own consistency rule.
+            "Tests/HostControlToolSupportTests.swift": .init(2_175, .owner("Host-control MCP tool tests")),
             // New in PR #364: ExecutionEnvironmentSharedMountTests coverage for the
             // shared-workspace mount-downgrade fix pushed this over the 2,000-line
             // threshold. Owns itself since ExecutionEnvironment.swift is still
             // under budget.
             "Tests/ExecutionEnvironmentTests.swift": .init(2_100, .owner("Execution environment tests"))
         ]
+    }
+
+    /// `AgentTask.queuePosition` has no `#Index` and holds 0 for every row in
+    /// real stores, so a SwiftData `sort:` on it makes SQLite build a temp
+    /// B-tree and spill the whole result set — including 10+ MB of `goal` text
+    /// — to a temp file on every fetch. That fetch runs on the main thread
+    /// inside the view transaction: production stackshots caught 687 of 711
+    /// main-thread samples inside it while the user was typing, alongside
+    /// `disk writes` diagnostic reports recording 8.6 GB dirtied in under an
+    /// hour. Every consumer re-sorts in Swift, so the ordering bought nothing.
+    ///
+    /// This is easy to reintroduce by reflex — it reads like a harmless
+    /// default — and the damage is invisible in code review, so pin it here.
+    @Test("No SwiftData query sorts on the unindexed, all-zero queuePosition")
+    func noQuerySortsOnQueuePosition() throws {
+        let root = try repositoryRoot()
+        let sources = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"),
+            includingPropertiesForKeys: nil
+        )?.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        #expect(!sources.isEmpty, "Found no Swift sources to scan; the guard would pass vacuously")
+
+        var offenders: [String] = []
+        for source in sources {
+            let text = try String(contentsOf: source, encoding: .utf8)
+            guard text.contains("sort: \\AgentTask.queuePosition") else { continue }
+            offenders.append(source.lastPathComponent)
+        }
+        #expect(
+            offenders.isEmpty,
+            "Sorting a SwiftData fetch on queuePosition spills the table through SQLite's external sorter for no ordering benefit. Sort in Swift instead: \(offenders)"
+        )
+    }
+
+    /// The sidebar's task list comes from `SidebarTaskStore`, not from a
+    /// `@Query`. An unfiltered `@Query private var tasks: [AgentTask]` in the
+    /// container re-read all 726 rows — ~64 ms on the main thread, inside the
+    /// view transaction — on every mutation to any task, which meant on every
+    /// streamed token of any running task. The store keeps a one-row query for
+    /// the invalidation signal and pays for the full read only when membership
+    /// actually changed.
+    ///
+    /// Reintroducing the query would restore the stall silently: the sidebar
+    /// would still be correct, just slow again, and nothing else would fail.
+    @Test("The sidebar container does not hold an unfiltered AgentTask query")
+    func sidebarContainerDoesNotQueryEveryTask() throws {
+        let root = try repositoryRoot()
+        let source = root.appendingPathComponent("Astra/Views/TaskSidebarView.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        #expect(!text.isEmpty, "TaskSidebarView.swift is empty; the guard would pass vacuously")
+
+        #expect(
+            text.contains("SidebarTaskFetch.invalidationSignalDescriptor()"),
+            "The sidebar container must subscribe through the one-row signal query, not an unfiltered fetch"
+        )
+        #expect(
+            !text.contains("@Query private var tasks: [AgentTask]"),
+            """
+            TaskSidebarContainerView is back to querying every AgentTask. That re-reads the \
+            whole table on the main thread for every streamed token; use SidebarTaskStore.
+            """
+        )
     }
 
     private func repositoryRoot() throws -> URL {

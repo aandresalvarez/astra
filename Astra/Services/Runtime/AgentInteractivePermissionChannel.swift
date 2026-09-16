@@ -38,12 +38,25 @@ struct AgentInteractiveAskRequest: Sendable {
     /// `inputSummary`. Nil when the input has no such key (e.g. file/web tools,
     /// which carry a path/url instead).
     let commandText: String?
+    /// The bare path extracted from the structured input's `file_path`/`path`
+    /// key. Policy matching needs it for the same reason it needs
+    /// `commandText`: without it the live classifier judges a *different input*
+    /// than the post-hoc guard, so a file tool can be allowed at the ask and
+    /// then flagged out-of-boundary from the stream a moment later.
+    let pathText: String?
 
-    init(requestID: String, toolName: String, inputSummary: String?, commandText: String? = nil) {
+    init(
+        requestID: String,
+        toolName: String,
+        inputSummary: String?,
+        commandText: String? = nil,
+        pathText: String? = nil
+    ) {
         self.requestID = requestID
         self.toolName = toolName
         self.inputSummary = inputSummary
         self.commandText = commandText
+        self.pathText = pathText
     }
 }
 
@@ -57,7 +70,16 @@ enum ClaudeControlProtocol {
 
         /// The bare shell command from the structured input, if present.
         var commandText: String? {
-            for key in ["command", "cmd"] {
+            firstStringValue(forKeys: ["command", "cmd"])
+        }
+
+        /// The bare file path from the structured input, if present.
+        var pathText: String? {
+            firstStringValue(forKeys: ["file_path", "path", "filePath", "notebook_path"])
+        }
+
+        private func firstStringValue(forKeys keys: [String]) -> String? {
+            for key in keys {
                 if let value = inputJSON?[key] as? String,
                    !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return value
@@ -321,6 +343,7 @@ extension AgentRuntimeWorker {
                 AutoApprovalClassifier.decide(
                     toolName: ask.toolName,
                     command: ask.commandText,
+                    path: ask.pathText,
                     permissionPolicy: permissionPolicy,
                     manifest: $0
                 )
@@ -361,8 +384,8 @@ extension AgentRuntimeWorker {
                     // Recorded as system.info, NOT permission.denied: this is a
                     // gracefully-handled policy denial (the provider is told no
                     // and continues), not an unmet runtime permission prompt.
-                    // shouldPauseForRuntimePermissionApproval pauses any failed
-                    // run carrying a permission.denied event, so using that type
+                    // RuntimePermissionApprovalGate pauses any failed run
+                    // carrying a permission.denied event, so using that type
                     // here would wrongly surface an approval card if the run
                     // later exited non-zero for an unrelated reason. The denial
                     // is already recorded by the permission.request.resolved

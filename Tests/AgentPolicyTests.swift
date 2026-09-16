@@ -1337,13 +1337,11 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest declares the OS sandbox tier for wrapped runtimes")
     func preflightManifestDeclaresOSSandboxTier() throws {
-        // Pin the relevant sandbox defaults in an isolated suite (not
+        // Pin the relevant sandbox defaults in an isolated store (not
         // `.standard`) so this is deterministic regardless of any developer's
         // stored preference AND immune to the other `@Test`s in this suite
         // concurrently mutating `.standard` for their own scenarios.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         defaults.set(false, forKey: AppStorageKeys.sandboxLayerNativeProviders)
 
@@ -1395,11 +1393,9 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest layers the OS sandbox tier over a self-sandboxing provider when opted in")
     func preflightManifestLayersOSSandboxTierWhenOptedIn() throws {
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // Isolated store — see `preflightManifestDeclaresOSSandboxTier` above
         // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         defaults.set(true, forKey: AppStorageKeys.sandboxLayerNativeProviders) // opt in to layering
 
@@ -1431,11 +1427,9 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest omits the OS sandbox tier when the sandbox would not actually apply")
     func preflightManifestOmitsTierWhenSandboxWontApply() throws {
-        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // Isolated store — see `preflightManifestDeclaresOSSandboxTier` above
         // for why this can't mutate `.standard`.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
@@ -1471,9 +1465,7 @@ struct RunPermissionManifestTests {
         // has a persisted Auto selection. The provider render is what launch
         // uses, so the OS-sandbox tier must follow that rendered autonomous mode
         // instead of the stale fallback argument.
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
@@ -1819,18 +1811,20 @@ struct RunPermissionManifestTests {
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira Connector Probe", primaryPath: "/tmp/jira-connector-probe")
+        let workspace = Workspace(name: "Portal Connector Probe", primaryPath: "/tmp/portal-connector-probe")
+        // Unbrokered on purpose: a brokered connector is stripped from the
+        // launch environment, so there is no manifest for the agent to probe.
         let connector = Connector(
-            name: "Jira-new",
-            serviceType: "jira",
-            connectorDescription: "Atlassian Jira REST API v3",
-            baseURL: "https://stanfordmed.atlassian.net",
-            authMethod: "basic"
+            name: "Study Portal",
+            serviceType: "custom_http",
+            connectorDescription: "Study portal REST API",
+            baseURL: "https://portal.example.edu",
+            authMethod: "api_key"
         )
         connector.workspace = workspace
-        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
-        connector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
-        let task = AgentTask(title: "Review Jira issues", goal: "List open Jira issues", workspace: workspace)
+        connector.configKeys = ["PORTAL_BASE_URL", "PORTAL_PROJECTS"]
+        connector.configValues = ["https://portal.example.edu", "SS"]
+        let task = AgentTask(title: "Review portal issues", goal: "List open portal issues", workspace: workspace)
         let run = TaskRun(task: task)
         context.insert(workspace)
         context.insert(connector)
@@ -2520,9 +2514,13 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
+        // Pruning is narration, so what it removes is the skill's instructions
+        // and its environment - the exposure. The command grant follows what the
+        // user attached to the task, because a permission allowlist that shrinks
+        // when a sentence changes wording denies capabilities the user enabled.
         #expect(manifest.environmentKeyNames.isEmpty)
-        #expect(!manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
-        #expect(!manifest.providerRender.generatedConfigPreview.contains("stanford-graph-mail"))
+        #expect(manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
+        #expect(!manifest.providerRender.generatedConfigPreview.contains("MAIL_PROFILE"))
     }
 
     @Test("Preflight manifest includes catalog-approved MCP servers")

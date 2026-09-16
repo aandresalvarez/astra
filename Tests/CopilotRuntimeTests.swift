@@ -73,6 +73,91 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("A Copilot narration message is visible progress, not the end of the run")
+    func copilotNarrationMessageIsNotTerminal() {
+        // Shape captured from run 5108, which was terminated 30s after a note
+        // like this one and still reported as completed — its whole recorded
+        // answer being two progress notes and no conclusion.
+        let line = #"{"type":"assistant.message","data":{"content":"I'll compare the new file with the current translated SQL and report."}}"#
+
+        let parsed = CopilotStreamEventParser.parseAll(line: line)
+        if case .text(let text) = parsed.first {
+            #expect(text == "I'll compare the new file with the current translated SQL and report.")
+        } else {
+            Issue.record("Expected visible progress, got \(String(describing: parsed.first))")
+        }
+        #expect(!parsed.contains { if case .result = $0 { true } else { false } })
+
+        // The recorder still receives `.completed`, so run output is unchanged.
+        if case .completed = CopilotStreamEventParser.parseAgentEvents(line: line).first {} else {
+            Issue.record("Expected the narration to stay a completed AgentEvent for run output")
+        }
+    }
+
+    @Test("Copilot commentary and final answer both stay completions, so the last one wins")
+    func copilotCommentaryStaysACompletion() {
+        // Both frames captured live. Commentary must NOT become `.text`:
+        // streamed text locks run.output, and the final answer could then
+        // never replace the preamble. Keeping both as completions is what
+        // lets last-completed-wins pick the answer.
+        let commentary = #"""
+        {"type":"assistant.message","data":{"messageId":"673c1058","phase":"commentary","toolRequests":[],"content":"I'm about to run the requested shell command."}}
+        """#
+        let finalAnswer = #"""
+        {"type":"assistant.message","data":{"messageId":"f11d8f18","phase":"final_answer","toolRequests":[],"content":"Output: `hello-from-copilot`"}}
+        """#
+
+        for line in [commentary, finalAnswer] {
+            #expect(CopilotStreamEventParser.parseAgentEvents(line: line).contains {
+                if case .completed = $0 { true } else { false }
+            }, "a message with no tool requests stays a completion so a later one can replace it")
+            #expect(!CopilotStreamEventParser.parseAgentEvents(line: line).contains {
+                if case .text = $0 { true } else { false }
+            }, "streamed text would lock run.output against the real answer")
+        }
+
+        // Neither is terminal — only the result frame ends the run.
+        #expect(!CopilotStreamEventParser.parseAll(line: commentary).contains {
+            if case .result = $0 { true } else { false }
+        })
+    }
+
+    @Test("Copilot's real result frame ends the run though it carries no token counts")
+    func copilotLiveResultFrameIsTerminal() {
+        // Captured live: the terminal frame reports premium requests and
+        // durations, not tokens, so the stats merge has nothing to merge and
+        // the frame's own marker has to carry the ending.
+        let frame = #"""
+        {"type":"result","timestamp":"2026-09-14T20:41:48.383Z","sessionId":"b52995c9","exitCode":0,"usage":{"premiumRequests":1,"totalApiDurationMs":6186,"sessionDurationMs":8356,"codeChanges":{"linesAdded":0,"linesRemoved":0,"filesModified":[]}}}
+        """#
+        #expect(CopilotStreamEventParser.parseAll(line: frame).contains { event in
+            if case .result(_, _, _, _, _, _, let isError) = event { !isError } else { false }
+        })
+    }
+
+    @Test("A Copilot result frame ends the run, with or without usage")
+    func copilotResultFrameIsTerminal() {
+        let withUsage = #"""
+        {"type":"result","data":{"content":"done"},"usage":{"input_tokens":125992,"output_tokens":1609}}
+        """#
+        let merged = CopilotStreamEventParser.parseAll(line: withUsage).compactMap { event -> (String?, Int, Int)? in
+            if case .result(let text, _, let input, let output, _, _, let isError) = event, !isError {
+                return (text, input, output)
+            }
+            return nil
+        }
+        #expect(merged.count == 1, "one terminal result per frame, not one per completion case")
+        #expect(merged.first?.0 == "done")
+        #expect(merged.first?.1 == 125_992)
+        #expect(merged.first?.2 == 1609)
+
+        // A result frame carrying no usage still has to end the run.
+        let withoutUsage = #"{"type":"result","data":{"content":"done"}}"#
+        #expect(CopilotStreamEventParser.parseAll(line: withoutUsage).contains { event in
+            if case .result(_, _, _, _, _, _, let isError) = event { !isError } else { false }
+        })
+    }
+
     @Test("Assistant reasoning delta maps Copilot data payload to thinking")
     func assistantReasoningDeltaDataPayload() {
         let line = #"{"type":"assistant.reasoning_delta","data":{"deltaContent":"checking repository state"}}"#
@@ -842,6 +927,41 @@ struct CopilotCLICommandPlanningTests {
         )
 
         #expect(!unsupportedPlan.arguments.contains("--effort"))
+    }
+
+    @Test("Reasoning effort choices include minimal (GitHub Copilot CLI 1.0.83)")
+    func reasoningEffortChoicesIncludesMinimal() throws {
+        // `copilot --help` documents `--effort, --reasoning-effort <level>` with
+        // choices none/minimal/low/medium/high/xhigh/max. "minimal" postdates
+        // this runtime's original hardcoded list; regression-lock it so a future
+        // CLI bump can't silently drop it again.
+        #expect(CopilotCLIRuntime.reasoningEffortChoices.contains("minimal"))
+
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --effort LEVEL"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: "minimal",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: capabilities
+            )
+        )
+
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "minimal")
     }
 
     @Test("Provider home overrides task and provider HOME for Copilot startup caches")

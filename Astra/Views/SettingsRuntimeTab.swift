@@ -29,7 +29,9 @@ struct SettingsRuntimeTab: View {
         ExecutionSandboxSettings.defaultAllowNetwork
     @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders =
         ExecutionSandboxSettings.defaultLayerNativeProviders
+    @AppStorage(AppStorageKeys.defaultReasoningEffort) private var defaultReasoningEffortRaw = ""
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.antigravityAuthMode) private var antigravityAuthModeRaw = AntigravityAuthMode.consumer.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
@@ -158,6 +160,18 @@ struct SettingsRuntimeTab: View {
                             .foregroundStyle(Stanford.coolGrey)
                             .textSelection(.enabled)
                     }
+                    if runtime == .antigravityCLI {
+                        settingsDivider
+                        antigravityRouteSettings
+                    }
+                }
+                // Capability-gated, so it stays outside the provider branch
+                // above: Claude declares `supportsReasoningEffort` too, and
+                // nesting this in the `else` hid the picker from the one
+                // runtime whose probe reports the richest effort list.
+                if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort {
+                    settingsDivider
+                    reasoningEffortSettings(for: runtime)
                 }
             }
         }
@@ -277,6 +291,71 @@ struct SettingsRuntimeTab: View {
         Divider().opacity(0.45)
     }
 
+    /// Silent while the field is empty: an untouched Vertex form should read as
+    /// unconfigured, not as wrong. Readiness still blocks on the empty case.
+    private var vertexProjectIDIssue: String? {
+        let trimmed = claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return GCPProjectIDValidation.failure(for: trimmed)?.message
+    }
+
+    /// The options come from the default model's own reported capability, not
+    /// a fixed enum — different models on the same provider can support
+    /// different reasoning-effort scales.
+    @ViewBuilder
+    private func reasoningEffortSettings(for runtime: AgentRuntimeID) -> some View {
+        let options = RuntimeModelAvailability.supportedReasoningEfforts(
+            for: defaultModel,
+            runtime: runtime,
+            cache: runtimeModelCache
+        ) ?? []
+        if options.isEmpty {
+            Text("\(RuntimeModelAvailability.displayName(for: defaultModel, runtime: runtime, cache: runtimeModelCache)) does not report reasoning-effort options.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            let defaultOption = RuntimeModelAvailability.defaultReasoningEffort(
+                for: defaultModel,
+                runtime: runtime,
+                cache: runtimeModelCache
+            )
+            // `""` is the stored form of "let the provider decide", so it needs
+            // a row of its own: without one the picker cannot round-trip back
+            // to the provider default once an explicit level has been saved.
+            Picker("Default Reasoning Effort", selection: $defaultReasoningEffortRaw) {
+                Text(defaultOption.map { "Default (\($0.capitalized))" } ?? "Default").tag("")
+                ForEach(options, id: \.self) { option in
+                    Text(option.capitalized).tag(option)
+                }
+            }
+            Text("Applies to new tasks using \(runtime.displayName). Each task can still override it.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var antigravityRouteSettings: some View {
+        Picker("Sign-in method", selection: $antigravityAuthModeRaw) {
+            ForEach(AntigravityAuthMode.allCases) { mode in
+                Label(mode.label, systemImage: mode.symbolName)
+                    .tag(mode.rawValue)
+            }
+        }
+        .onChange(of: antigravityAuthModeRaw) {
+            Task { await refreshSharedRuntimeSetup(force: true) }
+        }
+
+        if antigravityAuthModeRaw == AntigravityAuthMode.adc.rawValue {
+            Text("Routes through Google Cloud Application Default Credentials instead of agy's own Google Sign-In. Use this for a Workspace/enterprise Google account that the consumer eligibility check rejects. Requires `gcloud auth application-default login` (and `set-quota-project` for the target project) to already be set up outside ASTRA.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     @ViewBuilder
     private var claudeRouteSettings: some View {
         Picker("Route through", selection: $claudeProviderRaw) {
@@ -295,6 +374,16 @@ struct SettingsRuntimeTab: View {
                 text: $claudeVertexProjectID,
                 prompt: Text("my-gcp-project")
             )
+            // Shown while typing rather than only at readiness: the value that
+            // caused this check to exist was eleven pasted copies of a real
+            // project ID, and the field looked fine because the overflow was
+            // scrolled out of sight.
+            if let projectIssue = vertexProjectIDIssue {
+                Text(projectIssue)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.errorRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             TextField(
                 "Region",
                 text: $claudeVertexRegion,
@@ -428,7 +517,8 @@ struct SettingsRuntimeTab: View {
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
-            vertexHaikuModel: claudeVertexHaikuModel
+            vertexHaikuModel: claudeVertexHaikuModel,
+            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
         )
     }
 

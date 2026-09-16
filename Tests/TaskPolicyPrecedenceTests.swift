@@ -104,15 +104,44 @@ struct TaskPolicyPrecedenceTests {
             for: task,
             globalDefaultLevel: .autonomous,
             fallbackPermissionPolicy: .autonomous,
-            executionPolicy: .approvedRuntimePermission(
-                runtime: .codexCLI,
-                allowedTools: ["Bash(git status --short *)"]
+            executionPolicy: AgentRuntimeExecutionPolicy(
+                permissionPolicyOverride: .restricted,
+                allowedToolsOverride: ["Bash(git status --short *)"]
             )
         )
 
         #expect(resolution.level == .review)
         #expect(resolution.scope == .oneRunEscalation)
         #expect(resolution.policy.level == .review)
+    }
+
+    @Test("A permission approval adds authority without demoting the run's level")
+    func permissionApprovalDoesNotDemoteResolvedLevel() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy", goal: "Inspect repository state")
+        context.insert(task)
+        TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        let approval = AgentRuntimeExecutionPolicy.approvedRuntimePermission(
+            runtime: .codexCLI,
+            allowedTools: ["Bash(git status --short *)"]
+        )
+        // An approval carries added tools, never a permission policy: saying yes
+        // to one prompt must not silently re-enter a narrower enforcement tier.
+        #expect(approval.permissionPolicyOverride == nil)
+
+        let resolution = TaskPolicyStore.resolve(
+            for: task,
+            globalDefaultLevel: .review,
+            fallbackPermissionPolicy: .restricted,
+            executionPolicy: approval
+        )
+
+        #expect(resolution.level == .autonomous)
+        #expect(resolution.scope == .taskOverride)
+        #expect(resolution.policy.level == .autonomous)
     }
 
     private func makeContainer() throws -> ModelContainer {

@@ -118,27 +118,6 @@ struct CopilotCLICommandPlan: Equatable {
     var parsesJSONLines: Bool
 }
 
-/// Collects a probe's stdout on a reader queue so the parent never blocks on a full pipe.
-private final class ProbeOutputBuffer {
-    private let ready = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private var data: Data?
-
-    func finish(_ value: Data) {
-        lock.lock()
-        data = value
-        lock.unlock()
-        ready.signal()
-    }
-
-    func wait(timeout: DispatchTime) -> Data? {
-        guard ready.wait(timeout: timeout) == .success else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        return data
-    }
-}
-
 enum CopilotCLIRuntime {
     static let executableName = "copilot"
     static let defaultModel = "claude-sonnet-4.6"
@@ -503,13 +482,18 @@ enum CopilotCLIRuntime {
         }
     }
 
+    /// Mirrors `copilot --help`'s `--effort, --reasoning-effort <level>` choices
+    /// (GitHub Copilot CLI 1.0.83). Copilot exposes this as one CLI-wide list,
+    /// not a per-model capability like Codex's `model/list`, so every Copilot
+    /// model gets the same options.
+    static let reasoningEffortChoices = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
     private static func normalizedReasoningEffort(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let lower = trimmed.lowercased()
-        let supported = ["none", "low", "medium", "high", "xhigh", "max"]
-        return supported.contains(lower) ? lower : nil
+        return reasoningEffortChoices.contains(lower) ? lower : nil
     }
 
     static func copilotPermissionArguments(

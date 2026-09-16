@@ -75,13 +75,47 @@ follow-up ticket, not a signing issue.
 | Channel | Identity | codesign flags | Use |
 |--------|----------|----------------|-----|
 | `dev` (default), no cert | ad-hoc (`--sign -`) | `--force --deep --entitlements` | Throwaway local builds; churns the Keychain on every rebuild |
-| `dev`, with `ASTRA Local Dev` cert | self-signed | `--force --deep --entitlements` (no hardened runtime) | **Recommended for day-to-day dev** — stable Keychain, same runtime behavior as ad-hoc |
+| `dev`, with `ASTRA Local Dev` cert | self-signed | `--force --deep --entitlements` (no hardened runtime) | **Recommended for day-to-day dev** — stable trusted-app ACL (but see [Keychain ACLs](#keychain-acls-what-a-signing-identity-does-and-does-not-buy)), same runtime behavior as ad-hoc |
 | `prod` / `beta`, with identity | Developer ID | inside-out: tools + Sparkle.framework signed individually, then the app, with `--timestamp --options runtime` | Distribution; notarizable |
 
 All modes sign with `--entitlements script/ASTRA.entitlements` (apple-events only) on the outer app bundle; the dev/prod difference is the identity plus `--timestamp --options runtime`.
 Do not add `com.apple.security.app-sandbox` without also replacing or preserving
 ASTRA's runtime Seatbelt launcher; see
 `docs/security/host-app-sandbox-assessment.md`.
+
+### Keychain ACLs: what a signing identity does and does not buy
+
+A keychain item carries **two** independent access gates, and a signing identity
+fixes one of them.
+
+1. **The trusted-application list.** Entries are Designated Requirements. An
+   ad-hoc signature's DR is a bare cdhash, so every rebuild is a different
+   application; any identity, self-signed included, gives a DR that survives
+   rebuilds. This is the gate the table row above is about.
+2. **The partition list** (`ACLAuthorizationPartitionID`, added in Sierra).
+   securityd derives the accessing process's partition ID from its signature:
+   `teamid:<TEAM>` when the certificate carries a Team ID, and `cdhash:<hash>`
+   when it does not. A self-signed certificate has no Team ID, so this gate still
+   sees a brand-new principal after every rebuild.
+
+The practical consequence, measured against the prod bootstrap item on
+2026-08-17: its partition list reads `teamid:2BKAYYACN9` plus **23 accreted
+`cdhash:` entries**, one per rebuild that had to be re-authorized. A running
+build whose cdhash is not in that list gets `errSecAuthFailed` (-25293) — and
+gets it *silently*, with no dialog, whenever Keychain UI is disabled, which is
+ASTRA's default for every background read.
+
+So:
+
+- **Ad-hoc** — both gates miss on every rebuild.
+- **Self-signed** — gate 1 holds; gate 2 still prompts once per rebuild.
+- **Developer ID for team 2BKAYYACN9** — both gates hold permanently, because
+  that `teamid:` entry is already in the list. This is the only configuration
+  that stops the treadmill.
+
+Do not try to fix this with `security set-generic-password-partition-list`: it
+rewrites the ACL of an item holding a live credential, and it needs the item's
+password on stdin.
 
 ### Why the prod/beta path doesn't use `--deep`
 

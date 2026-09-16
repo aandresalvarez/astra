@@ -27,11 +27,15 @@ struct StructuredRuntimeLifecycleTests {
                 CopilotStreamEventParser.parseAll(line: #"{"type":"assistant.turn_end","data":{},"ephemeral":true}"#),
                 CopilotStreamEventParser.parseAgentEvents(line: #"{"type":"assistant.turn_end","data":{},"ephemeral":true}"#)
             ),
+            // Codex's transient frame is `turn.started`, not `turn.completed`:
+            // the latter is the one point in the stream where the turn really
+            // is over, so it is terminal by design and is covered by
+            // `codexTurnCompletedIsTerminalAndReportsUsage` instead.
             (
                 "codex",
-                #"{"type":"turn.completed"}"#,
-                CodexStreamEventParser.parseAll(line: #"{"type":"turn.completed"}"#),
-                CodexStreamEventParser.parseAgentEvents(line: #"{"type":"turn.completed"}"#)
+                #"{"type":"turn.started"}"#,
+                CodexStreamEventParser.parseAll(line: #"{"type":"turn.started"}"#),
+                CodexStreamEventParser.parseAgentEvents(line: #"{"type":"turn.started"}"#)
             ),
             (
                 "claude",

@@ -71,6 +71,51 @@ struct ClaudeModelAvailabilityServiceTests {
         #expect(stdin.contains(#""subtype":"initialize""#))
     }
 
+    /// Real-world shape captured live from `claude` 2.1.270 (Vertex-backed):
+    /// `sonnet`/`opus`/`default`/`claude-fable-5-1` report `supportsEffort:true`
+    /// plus `supportedEffortLevels:[low..max]`; `haiku` reports neither key at
+    /// all, not `supportsEffort:false` — confirming it has no reasoning-effort
+    /// concept rather than reporting an empty/false capability.
+    private static let initializeResponseLineWithReasoningEffort = """
+    {"type":"control_response","response":{"subtype":"success","request_id":"astra-model-availability","response":{"models":[{"value":"default","resolvedModel":"claude-opus-5","displayName":"Default","description":"Use the default model","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet 5","description":"Custom Sonnet model","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"haiku","resolvedModel":"claude-haiku-4-5@20251001","displayName":"Haiku","description":"Fastest for quick answers"}]}}}
+    """
+
+    @Test("Reasoning-effort support is read per model, matching Codex/Copilot")
+    func reasoningEffortSupportIsPerModel() async throws {
+        let http = StubModelAvailabilityHTTPClient()
+        let runner = ClaudeProbeStubBinaryRunner(result: .exited(
+            code: 0,
+            stdout: Self.initializeResponseLineWithReasoningEffort + "\n",
+            stderr: ""
+        ))
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let service = ClaudeModelAvailabilityService(
+            runner: runner,
+            httpClient: http,
+            environment: { [:] },
+            detectExecutable: { "/opt/test/claude" },
+            isExecutable: { _ in true }
+        )
+
+        _ = await service.refreshAndPersist(
+            configuration: ClaudeModelAvailabilityConfiguration(provider: .anthropic),
+            defaults: defaults
+        )
+
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == ["low", "medium", "high", "xhigh", "max"])
+        // No `supportsEffort` key at all: nil, not an empty/inherited list.
+        #expect(RuntimeModelAvailability.supportedReasoningEfforts(
+            for: "haiku", runtime: .claudeCode, defaults: defaults
+        ) == nil)
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "xhigh", for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == "xhigh")
+    }
+
     @Test("Configured executable path is preferred over detection")
     func configuredExecutablePathIsPreferredOverDetection() async {
         let runner = ClaudeProbeStubBinaryRunner(result: .exited(
@@ -240,6 +285,8 @@ struct ClaudeModelAvailabilityServiceTests {
         let result = await service.availableModels(
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: .vertex,
+                vertexProjectID: "example-project",
+                vertexRegion: "us-east5",
                 vertexOpusModel: " claude-opus-4-6@default ",
                 vertexSonnetModel: "claude-sonnet-4-6@default",
                 vertexHaikuModel: "claude-sonnet-4-6@default"
@@ -250,6 +297,59 @@ struct ClaudeModelAvailabilityServiceTests {
             RuntimeModelDetail(value: "claude-opus-4-6@default"),
             RuntimeModelDetail(value: "claude-sonnet-4-6@default")
         ]))
+    }
+
+    /// The observed value: a GCP project ID field pasted into eleven times.
+    /// Aliases were configured, so the old code reported three models available
+    /// while every call over that route returned 403.
+    @Test("A malformed Vertex project ID makes the aliases unavailable, not available")
+    func vertexModelAvailabilityRejectsMalformedProjectID() async {
+        let service = ClaudeModelAvailabilityService(
+            runner: ClaudeProbeStubBinaryRunner(result: .exited(code: 0, stdout: "", stderr: "")),
+            environment: { [:] },
+            detectExecutable: { "" },
+            isExecutable: { _ in false }
+        )
+
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(
+                provider: .vertex,
+                vertexProjectID: String(repeating: "example-project", count: 11),
+                vertexRegion: "us-east5",
+                vertexOpusModel: "claude-opus-4-6@default",
+                vertexSonnetModel: "claude-sonnet-4-6@default",
+                vertexHaikuModel: "claude-haiku-4-5@default"
+            )
+        )
+
+        guard case .unavailable(let reason) = result else {
+            Issue.record("Expected a malformed project ID to be unavailable, got \(result).")
+            return
+        }
+        #expect(reason.contains("at most 30 characters"))
+    }
+
+    @Test("A missing Vertex region makes the aliases unavailable")
+    func vertexModelAvailabilityRequiresRegion() async {
+        let service = ClaudeModelAvailabilityService(
+            runner: ClaudeProbeStubBinaryRunner(result: .exited(code: 0, stdout: "", stderr: "")),
+            environment: { [:] },
+            detectExecutable: { "" },
+            isExecutable: { _ in false }
+        )
+
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(
+                provider: .vertex,
+                vertexProjectID: "example-project",
+                vertexRegion: "  ",
+                vertexOpusModel: "claude-opus-4-6@default",
+                vertexSonnetModel: "claude-sonnet-4-6@default",
+                vertexHaikuModel: "claude-haiku-4-5@default"
+            )
+        )
+
+        #expect(result == .unavailable(reason: "No Vertex region is configured."))
     }
 
     @Test("Initialize parser skips junk lines and error responses")

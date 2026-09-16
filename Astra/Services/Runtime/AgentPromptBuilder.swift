@@ -182,7 +182,8 @@ enum AgentPromptBuilder {
                 connectorCredentialExposurePolicy: capabilityResolutionSnapshot?.connectorCredentialExposurePolicy ?? connectorCredentialExposurePolicy(
                     for: task,
                     executionPolicy: executionPolicy
-                )
+                ),
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
             )
         )
     }
@@ -560,19 +561,26 @@ enum AgentPromptBuilder {
         task: AgentTask,
         runtime: AgentRuntimeID,
         credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
         to sections: inout [PromptContextSection]
     ) {
         if let section = AgentPromptConnectorContextBuilder.section(
             from: capabilityScope,
             task: task,
             runtime: runtime,
-            credentialExposurePolicy: credentialExposurePolicy
+            credentialExposurePolicy: credentialExposurePolicy,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
         ) {
             sections.append(section)
         }
     }
 
-    private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
+    private static func appendToolContext(
+        from capabilityScope: TaskCapabilityPromptScope,
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
+        to sections: inout [PromptContextSection]
+    ) {
         let allLocalTools = capabilityScope.localTools.filter { !$0.command.isEmpty }
         let cliTools = allLocalTools.filter { $0.toolType != "mcp" }
         let mcpTools = allLocalTools.filter { $0.toolType == "mcp" }
@@ -600,6 +608,49 @@ enum AgentPromptBuilder {
                 sourcePointers: toolSourcePointers(mcpTools)
             )
         }
+
+        appendOfferedToolRoutes(
+            from: capabilityScope,
+            narrated: allLocalTools,
+            runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
+            to: &sections
+        )
+    }
+
+    /// The offered tier's half of the tool section. `OfferedToolRoutes` owns
+    /// which tools qualify; this is only how they are rendered.
+    ///
+    /// Only the name and the command, deliberately: restoring the pruned
+    /// descriptions and usage notes would give back the tokens the prune exists
+    /// to save. Enough to call it, or to say it is there when the user asks.
+    private static func appendOfferedToolRoutes(
+        from capabilityScope: TaskCapabilityPromptScope,
+        narrated: [LocalTool],
+        runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?,
+        to sections: inout [PromptContextSection]
+    ) {
+        let offered = OfferedToolRoutes.nameable(
+            in: capabilityScope,
+            narrated: narrated,
+            runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
+        )
+        guard !offered.isEmpty else { return }
+
+        let descriptions = offered.map { tool in
+            tool.toolType == "mcp"
+                ? "- \(tool.name): \(tool.command)"
+                : "- \(tool.name): `\(tool.displayCommand)`"
+        }.joined(separator: "\n")
+        appendSection(
+            "Also available and callable in this run (details omitted because this turn did not appear to need them - if the user asks for one of these, use it, do not report it as unavailable):\n"
+                + descriptions,
+            kind: .tools,
+            to: &sections,
+            sourcePointers: toolSourcePointers(offered)
+        )
     }
 
     private static func appendDocumentReaderContext(to sections: inout [PromptContextSection]) {
@@ -611,39 +662,6 @@ enum AgentPromptBuilder {
         For directories: `readfile <folder>` — lists contents recursively.
         Add `--metadata` for file metadata. Run via Bash tool: `\(readfilePath) <path>`
         """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "document reader executable", target: readfilePath)])
-    }
-
-    private static func appendShelfBrowserContext(
-        for task: AgentTask,
-        contextText: String,
-        enabledBrowserAdapters: [String],
-        to sections: inout [PromptContextSection]
-    ) {
-        guard TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) else { return }
-        let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
-        guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
-            for: task.id,
-            enabledBrowserAdapters: override
-        ) else { return }
-        appendSection(
-            browserContext,
-            kind: .browser,
-            to: &sections,
-            sourcePointers: [sourcePointer(label: "live browser bridge", target: "astra-browser snapshot/read-page for task \(task.id.uuidString)")]
-        )
-        if MailTaskIntent.isReadOnlyMailRequest([
-            task.title,
-            task.goal,
-            task.inputs.joined(separator: " "),
-            task.acceptanceCriteria.joined(separator: " ")
-        ]) {
-            appendSection("""
-            Mail Read Safety:
-            The current task is a read-only mail request. If a read-only mail helper is available in the listed tools, use it before browser scraping: `stanford-mail`, `stanford-graph-mail`, or `stanford-apple-mail`.
-            If only the browser is available, treat Outlook/mail pages as read-only evidence. Use `astra-browser read-page` and `analyze` for inspection, ignore reminders/toasts/calendar panes unless the user asked about them, and verify that any opened message subject/sender matches the requested inbox item before summarizing.
-            Do not click Reply, Reply all, Forward, Send, Delete, Archive, Move, Mark read/unread, Junk, Report phishing, or Discard for this task. If the latest email cannot be identified from read-only evidence, ask for clarification instead of mutating the mailbox.
-            """, kind: .browser, to: &sections, sourcePointers: [sourcePointer(label: "mail read safety", target: "current task intent")])
-        }
     }
 
     static func buildFreshFollowUpPrompt(
@@ -711,7 +729,8 @@ enum AgentPromptBuilder {
                 runtime: capabilityContext.runtime,
                 capabilityScope: capabilityContext.snapshot.providerLaunch,
                 ioSnapshot: ioSnapshot,
-                connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy
+                connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy,
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
             )
         )
     }
@@ -1239,10 +1258,16 @@ enum AgentPromptBuilder {
                 task: context.task,
                 runtime: context.runtime,
                 credentialExposurePolicy: context.connectorCredentialExposurePolicy,
+                runtimeCapabilityProfile: context.runtimeCapabilityProfile,
                 to: &sections
             )
             if context.mode == .initialRun {
-                appendToolContext(from: context.capabilityScope, to: &sections)
+                appendToolContext(
+                    from: context.capabilityScope,
+                    runtime: context.runtime,
+                    runtimeCapabilityProfile: context.runtimeCapabilityProfile,
+                    to: &sections
+                )
             }
         }
     }
@@ -1256,12 +1281,13 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             let contextText = context.mode == .initialRun ? "" : context.followUpMessage
-            appendShelfBrowserContext(
+            sections.append(contentsOf: ShelfBrowserPromptSection.sections(
                 for: context.task,
                 contextText: contextText,
                 enabledBrowserAdapters: context.capabilityScope.enabledBrowserAdapters,
-                to: &sections
-            )
+                runtime: context.runtime,
+                runtimeCapabilityProfile: context.runtimeCapabilityProfile
+            ))
         }
     }
 

@@ -541,6 +541,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             .init(title: "Paths", value: compactList([manifest.workspacePath] + manifest.additionalPaths, empty: "None"), isMonospaced: true),
             .init(title: "Environment keys", value: compactList(redactedEnvironmentKeyNames(manifest.environmentKeyNames, credentialLabels: manifest.credentialLabels), empty: "None"), isMonospaced: true),
             .init(title: "Credential labels", value: compactList(redactedCredentialLabels(manifest.credentialLabels), empty: "None")),
+            .init(title: "Held by ASTRA (not in agent env)", value: brokeredCredentialsFactValue(manifest)),
             .init(title: "MCP servers", value: mcpServersFactValue(manifest)),
             .init(title: "Approvals", value: compactList(manifest.approvalsGranted, empty: "None"))
         ]
@@ -563,6 +564,15 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             facts.append(.init(title: "Diagnostics", value: diagnostics))
         }
         return facts
+    }
+
+    /// "The run can reach Jira" and "the agent process holds the Jira token"
+    /// read identically in a flat label list. This row is the difference: these
+    /// labels are usable through a broker tool and are absent from the
+    /// environment keys row above.
+    static func brokeredCredentialsFactValue(_ manifest: RunPermissionManifest) -> String {
+        guard !manifest.brokeredCredentialLabels.isEmpty else { return "None" }
+        return compactList(redactedCredentialLabels(manifest.brokeredCredentialLabels))
     }
 
     static func mcpServersFactValue(_ manifest: RunPermissionManifest) -> String {

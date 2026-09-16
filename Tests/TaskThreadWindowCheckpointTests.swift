@@ -5,6 +5,67 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+/// Bound on the retry loop that waits for a live refresh to be throttled. It is
+/// a hang breaker, not a latency assertion: the loop stops on the first attempt
+/// the throttle defers, which on any healthy machine is the first one, so this
+/// number is never reached. It exists only because the loop is otherwise
+/// unbounded — a throttle that never engages at all would spin here forever
+/// instead of failing.
+///
+/// Nothing about the value is a claim on how long a snapshot takes. It has to
+/// sit far above what the machine can plausibly cost us, because the case being
+/// survived is a parallel suite blocking the main actor for tens of seconds,
+/// which is what broke this test on 2026-09-10. A throttle that is genuinely
+/// broken still fails, just slowly — verified on 2026-09-11 by forcing the
+/// scheduled delay to zero, which fails here rather than passing.
+///
+/// Both bounds have to be exhausted before the loop gives up. The attempt floor
+/// is the half that matters under load: a stall long enough to swallow the
+/// deadline whole would otherwise end the loop on its first real turn and report
+/// the starvation it suffered as a throttle that never fired.
+private let hangBreakerTimeout: TimeInterval = 120
+
+/// Turns a wait is owed before its deadline is allowed to end it.
+///
+/// A deadline alone cannot tell a stuck test from a starved one, because both
+/// halves of the subject live on the main actor: a parallel suite that blocks it
+/// stalls the snapshot build *and* the loop watching for the build, so the
+/// budget expires in wall clock while the loop gets no turns at all. The loop
+/// then resumes once, finds the deadline gone, and reports the starvation it
+/// suffered as a snapshot that never arrived — which is exactly the
+/// `revision: 0` failure of 2026-09-10. The floor makes a wait spend real
+/// scheduled turns before it concludes anything.
+///
+/// Larger than the 40 used for the subprocess waits in 2a643b5a because these
+/// polls are 1 ms rather than 25 ms, so the same count would buy a
+/// twenty-fifth of the recovery. On a healthy machine it is never reached.
+private let starvationPollFloor = 200
+
+/// Polls a main-actor condition on the tightest interval the runtime will give
+/// us, bounded by both a deadline and a poll floor.
+///
+/// The 1 ms interval is load-bearing, and it is why this does not use the
+/// coordinator's own `waitForPendingWorkForTesting`. The throttle below engages
+/// only if a refresh is issued inside the cadence window of an apply, so the
+/// caller needs to act on the first turn the apply is visible — one main-actor
+/// hop. That helper awaits up to four task handles in sequence, so it hands
+/// control back several hops later, and every one of those hops is time charged
+/// against the window.
+@MainActor
+private func snapshotStateArrived(
+    within timeout: TimeInterval = hangBreakerTimeout,
+    _ condition: () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    var polls = 0
+    while true {
+        if condition() { return true }
+        guard polls < starvationPollFloor || Date() < deadline else { return false }
+        polls += 1
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+}
+
 private actor SnapshotBuildBarrier {
     private var firstContinuation: CheckedContinuation<Void, Never>?
     private var startWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -88,30 +149,73 @@ struct TaskThreadViewModelTests {
         run.status = .running
         task.runs.append(run)
 
+        // This test is about where a throttled request's wait lands in
+        // telemetry, which is the same at any cadence — it is not about the
+        // shipped 120 ms in particular. At 120 ms it can barely reach its own
+        // subject: the refresh has to be issued inside that window of an apply,
+        // and the throttle only clears the 100 ms asserted below if it lands in
+        // the first 20 ms of it. What the main actor actually gives back under a
+        // full parallel run is not that steady. Instrumented on 2026-09-11 over
+        // two runs of the whole suite, the gap between the apply and the refresh
+        // measured 1.1 ms once and 896 ms the other time; at 120 ms the second
+        // one yields no throttle at all, and the loop below can only retry and
+        // hope for a kinder gap.
+        //
+        // So widen the window instead, and the throttle engages by construction:
+        // the same two runs took one attempt each, at 119 ms and 1.104 s of
+        // deferral. The shipped value keeps its coverage from
+        // `rapidLiveRefreshesCoalesceToLatestRevision`, which drives its
+        // refreshes from one synchronous loop and so never races a clock for it.
+        // The window is what a passing run of this test costs, since a deferred
+        // request is admitted only once the window elapses.
+        vm.liveSnapshotMinimumIntervalOverrideForTesting = 2
         vm.reset(for: task, responsivenessContext: context)
-        // Poll tightly here: the assertion below intentionally measures a
-        // nearly full 120 ms cadence window, while the general readiness
-        // helper's 100 ms polling interval would consume most of that window.
-        // Cold/full-suite load can delay the first build substantially. Keep
-        // the tight poll (so it does not consume the 120 ms cadence window),
-        // but give readiness the same generous budget as the shared helper.
-        let initialDeadline = Date().addingTimeInterval(30)
-        while !vm.appliedSnapshotReadiness.isReady(for: task.id), Date() < initialDeadline {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(vm.appliedSnapshotReadiness.isReady(for: task.id))
-        run.setOutput("new streaming output")
-        vm.refreshSnapshot(for: task)
-        let expectedRevision = vm.appliedSnapshotRevision + 1
-        let deadline = Date().addingTimeInterval(30)
-        while vm.appliedSnapshotRevision < expectedRevision, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
+        try #require(
+            await snapshotStateArrived { vm.appliedSnapshotReadiness.isReady(for: task.id) },
+            "the initial snapshot was never applied"
+        )
+
+        // Even widened, landing inside the window is a race this test has to
+        // win rather than a fact it can assert: a long enough stall between the
+        // apply and the refresh means the throttle never engages at all. Queue
+        // wait cannot detect that on its own, because a request delayed by the
+        // throttle and one delayed by a busy main actor produce the same number
+        // — so the stalled case satisfies `>= 100` while proving nothing. Retry
+        // until a refresh is genuinely deferred, and read that off the view
+        // model rather than inferring it from the metric under test.
+        //
+        // Each attempt has to move the run's output into a new 1 KiB bucket.
+        // That bucket, not the exact byte count, is what the snapshot trigger
+        // compares — it is how streaming output is coalesced — so a smaller
+        // increment leaves the trigger equal and the refresh is dropped before
+        // it ever reaches the throttle. Measured on 2026-09-11: growing the
+        // output one character at a time spent 1,004 of 1,005 attempts being
+        // dropped that way, and the attempt that finally worked was the one that
+        // crossed 1,024 bytes.
+        var throttle: TimeInterval = 0
+        var attempts = 0
+        let hangBreaker = Date().addingTimeInterval(hangBreakerTimeout)
+        while throttle < 0.100, attempts < 40 || Date() < hangBreaker {
+            attempts += 1
+            run.setOutput(String(repeating: "x", count: attempts * 1_024))
+            let expectedRevision = vm.appliedSnapshotRevision + 1
+            vm.refreshSnapshot(for: task)
+            throttle = vm.lastScheduledSnapshotThrottleForTesting
+            // Let this build apply before trying again: a deferred request logs
+            // its queue wait on admission, so the assertions below need the
+            // throttled one to have been admitted and applied, and the next
+            // attempt needs a fresh apply to open a new window.
+            try #require(
+                await snapshotStateArrived { vm.appliedSnapshotRevision >= expectedRevision },
+                "refresh attempt \(attempts) was scheduled but never applied"
+            )
         }
 
         let queueWait = try #require(capture.latest("task_open_snapshot_queue_wait"))
         let queueIndex = try #require(capture.lastIndex(of: "task_open_snapshot_queue_wait"))
         let admissionStartIndex = try #require(capture.lastIndex(of: "thread_snapshot_executor_admission_started"))
         let admissionEndIndex = try #require(capture.lastIndex(of: "thread_snapshot_executor_admission_wait"))
+        #expect(throttle >= 0.100, "no refresh in \(attempts) attempts was deferred by the live cadence")
         #expect(queueWait >= 100, "the live cadence throttle should remain visible in queue wait")
         #expect(queueIndex < admissionStartIndex, "executor admission must start only after throttle queue wait ends")
         #expect(admissionStartIndex < admissionEndIndex, "executor admission telemetry must close after it starts")

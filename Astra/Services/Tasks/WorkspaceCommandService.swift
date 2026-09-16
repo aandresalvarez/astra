@@ -83,7 +83,7 @@ enum WorkspaceCommandService {
         modelContext: ModelContext,
         allowCredentialUserInteraction: Bool = false,
         source: String
-    ) -> (connector: Connector, failedCredentialKeys: [String]) {
+    ) -> (connector: Connector, failedCredentialKeys: [String], credentialRejections: [String]) {
         let connector = Connector(
             name: name,
             serviceType: serviceType,
@@ -92,27 +92,40 @@ enum WorkspaceCommandService {
             authMethod: authMethod
         )
         connector.workspace = workspace
+        // Insert before writing credentials so the row has a ModelContext:
+        // `Connector.saveCredentialChecked`'s cross-service reuse check needs
+        // to see the rest of the store, and silently degrades to "not
+        // performed" on a detached row. This path takes an arbitrary
+        // key/value dictionary straight from an agent-authored command, so it
+        // is the one that most needs the check.
+        modelContext.insert(connector)
         var failedCredentialKeys: [String] = []
+        var rejectedCredentials: [(key: String, verdict: ConnectorCredentialAdmissionVerdict)] = []
         for (key, value) in credentials {
-            let saved = connector.saveCredential(
+            let outcome = connector.saveCredentialChecked(
                 key: key,
                 value: value,
                 allowUserInteraction: allowCredentialUserInteraction
             )
-            if !saved {
+            if !outcome.isSaved {
                 failedCredentialKeys.append(key)
+                if let verdict = outcome.rejection {
+                    rejectedCredentials.append((key: key.uppercased(), verdict: verdict))
+                }
             }
         }
-        modelContext.insert(connector)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.connectorCreated, category: "UI", fields: [
             "source": source,
             "workspace_id": workspace.id.uuidString,
             "service_type": serviceType,
             "credential_count": String(credentials.count),
-            "failed_credential_count": String(failedCredentialKeys.count)
+            "failed_credential_count": String(failedCredentialKeys.count),
+            "rejected_credential_count": String(rejectedCredentials.count),
+            "rejection_reasons": rejectedCredentials.map(\.verdict.auditReason).sorted().joined(separator: ",")
         ])
-        return (connector, failedCredentialKeys)
+        let credentialRejections = rejectedCredentials.compactMap { $0.verdict.message(forKey: $0.key) }
+        return (connector, failedCredentialKeys, credentialRejections)
     }
 
     @discardableResult

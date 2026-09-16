@@ -330,6 +330,62 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: true) == true)
     }
 
+    @Test("reasoning effort stays clearable in the composer and capability-gated in settings")
+    func reasoningEffortSurfacesStayReachable() throws {
+        let toolbar = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
+        // `nil` is how a task says "let the provider decide". Without an entry
+        // that sends it, a task given an explicit effort could never be handed
+        // back — every other entry sets a concrete value.
+        #expect(toolbar.contains("onReasoningEffortChange?(nil)"))
+
+        // The settings picker has to be a sibling of the provider branch, not
+        // nested in its `else`: Claude declares `supportsReasoningEffort` too,
+        // and the `else` runs only for the runtimes that are not Claude.
+        let settings = try sourceFile("Astra/Views/SettingsRuntimeTab.swift")
+        let branchIndent = "\n                "
+        #expect(settings.contains("\(branchIndent)if runtime == .claudeCode {"))
+        #expect(settings.contains(
+            "\(branchIndent)if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsReasoningEffort {"
+        ))
+    }
+
+    /// The composer's effort lives in one global preference shared by every
+    /// runtime it can switch to, so a pick always outlives the model it was
+    /// made for. Every surface that persists it has to resolve it against the
+    /// runtime and model it is persisting alongside.
+    @Test("composer effort writes resolve against the selection and reach the draft")
+    func composerEffortWritesResolveAgainstSelection() throws {
+        let chat = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let writes = chat
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.contains(".reasoningEffort = ") }
+        #expect(writes.count >= 6)
+        for write in writes {
+            #expect(
+                write.contains("composerReasoningEffort(")
+                    || write.contains("= effort")
+                    || write.contains("= resolved"),
+                "effort written without resolving it: \(write.trimmingCharacters(in: .whitespaces))"
+            )
+        }
+
+        // runApprovedPlan() submits draftTask without a fresh saveDraft(), so a
+        // pick landing after the draft exists has to reach the draft directly —
+        // both when the user makes it and when a switch re-resolves it.
+        #expect(chat.contains("draftTask?.reasoningEffort = effort"))
+        #expect(chat.contains("draftTask?.reasoningEffort = resolved"))
+        // The existing-draft branch of saveDraft() keeps it in step from then on.
+        #expect(chat.contains("draft.reasoningEffort = composerReasoningEffort("))
+
+        // "" is the stored form of "let the provider decide". Without a row
+        // that writes it, Settings cannot walk an explicit level back.
+        let settings = try sourceFile("Astra/Views/SettingsRuntimeTab.swift")
+        #expect(settings.contains(
+            "Picker(\"Default Reasoning Effort\", selection: $defaultReasoningEffortRaw)"
+        ))
+        #expect(settings.contains(".tag(\"\")"))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -320,8 +320,13 @@ extension HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(body: """
             all_args="$*"
+            # The bare command name is deliberately not a leak: the tool is
+            # allowlisted for this run either way, and the offered-route summary
+            # names it in one line so the agent does not report an attached
+            # capability as missing. What must not appear is the narration - the
+            # skill's instructions, its safety prose, its tool description.
             case "$all_args" in
-              *"Stanford Graph Mail Agent"*|*"stanford-graph-mail"*|*"create rules"*)
+              *"Stanford Graph Mail Agent"*|*"create rules"*|*"Read the locally signed-in Microsoft 365 mailbox"*)
                 printf '%s\\n' 'Prompt leaked irrelevant Graph Mail capability' >&2
                 exit 42
                 ;;
@@ -1412,6 +1417,7 @@ extension HeadlessChatScenarioTests {
         // follow-up should carry it forward exactly like a fork already does
         // (AgentTaskForkService.fork), not silently reset to the default.
         task.runtimeExplicitlySelected = true
+        task.reasoningEffort = "high"
         task.chainedGoal = "Second step"
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
 
@@ -1422,5 +1428,6 @@ extension HeadlessChatScenarioTests {
         let chained = try #require(allTasks.first { $0.chainedFromID == task.id })
         #expect(chained.runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(chained.runtimeExplicitlySelected == true)
+        #expect(chained.reasoningEffort == "high")
     }
 }

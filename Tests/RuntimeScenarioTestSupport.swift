@@ -130,7 +130,8 @@ extension ProviderSettingsSnapshot {
             vertexRegion: "",
             vertexOpusModel: "",
             vertexSonnetModel: "",
-            vertexHaikuModel: ""
+            vertexHaikuModel: "",
+            antigravityAuthMode: .consumer
         )
     }
 }

@@ -84,9 +84,17 @@ extension ProviderPolicyRender {
         policy.cliArguments
     }
 
+    // The persisted render already carries requirement-clamped arguments (the
+    // Codex adapter clamps them in `render`), so the non-resume path keeps using
+    // it verbatim. Resume rebuilds its arguments here because `exec resume`
+    // rejects `--sandbox`, so it re-reads the same requirements to land on the
+    // same sandbox mode the first turn ran under.
     func codexLaunchPermissionArguments(resumingNativeSession: Bool) -> [String] {
         if resumingNativeSession {
-            return CodexCLIRuntime.codexResumePermissionArguments(policy: launchPermissionPolicy)
+            return CodexCLIRuntime.codexResumePermissionArguments(
+                policy: launchPermissionPolicy,
+                requirements: CodexRequirementsService.current()
+            )
         }
         return cliArgumentsSummary
     }
@@ -95,10 +103,14 @@ extension ProviderPolicyRender {
         policy: PermissionPolicy,
         resumingNativeSession: Bool
     ) -> [String] {
+        let requirements = CodexRequirementsService.current()
         if resumingNativeSession {
-            return CodexCLIRuntime.codexResumePermissionArguments(policy: policy)
+            return CodexCLIRuntime.codexResumePermissionArguments(
+                policy: policy,
+                requirements: requirements
+            )
         }
-        return CodexCLIRuntime.codexPermissionArguments(policy: policy)
+        return CodexCLIRuntime.codexPermissionArguments(policy: policy, requirements: requirements)
     }
 
     func cursorLaunchPermissionArguments() -> [String] {

@@ -251,6 +251,40 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(TaskFileIndex.scanTaskFolder(folder).contains { $0.path == path && $0.destination == .files })
     }
 
+    /// The trigger is built inside a view body, once per keystroke in the task
+    /// composer, so it may not read the artifact rows: each one faults through
+    /// Core Data separately, and the old `isStale` field was a `fileExists` on
+    /// top of that. This pins the consequence — a file deleted behind the app's
+    /// back no longer moves the trigger — so the trade is deliberate rather
+    /// than something a later change restores by accident.
+    @Test("generated file trigger does not stat the filesystem per artifact")
+    func generatedFileTriggerIgnoresOnDiskStaleness() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskArtifactPersistenceContainer()
+        let context = ModelContext(container)
+        let task = makeTask(root: root, context: context, title: "Stale Shelf")
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let path = (folder as NSString).appendingPathComponent("notes.md")
+        try "# Notes".write(toFile: path, atomically: true, encoding: .utf8)
+        TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
+
+        let withFile = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
+        #expect(task.artifacts.contains { $0.path == path })
+        try FileManager.default.removeItem(atPath: path)
+        let withoutFile = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
+
+        #expect(withFile == withoutFile)
+        // Reconciliation keeps the row for a file that vanished, so nothing
+        // downstream re-derives staleness from the count either. A row arriving
+        // is the change the trigger does still have to catch.
+        let second = (folder as NSString).appendingPathComponent("summary.md")
+        try "# Summary".write(toFile: second, atomically: true, encoding: .utf8)
+        TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
+        #expect(TaskGeneratedFilesTrigger(task: task, latestRun: nil) != withFile)
+    }
+
     private func makeTask(
         root: String,
         context: ModelContext,

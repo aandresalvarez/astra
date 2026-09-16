@@ -407,6 +407,68 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.modelDescription(for: "sonnet[1m]", runtime: .claudeCode, cache: cache) == nil)
     }
 
+    @Test("A reported model with no effort knob drops a carried-over effort; an unreported one keeps it")
+    func normalizedReasoningEffortDistinguishesUnreportedFromEffortless() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        RuntimeModelAvailability.persistAvailableModelDetails(
+            [
+                RuntimeModelDetail(
+                    value: "sonnet",
+                    displayName: "Sonnet",
+                    supportedReasoningEfforts: ["low", "medium", "high"],
+                    defaultReasoningEffort: "medium"
+                ),
+                // Reported by the probe, but with no effort metadata at all —
+                // the shape Claude's `haiku` and Copilot's `gpt-4.1` have.
+                RuntimeModelDetail(value: "haiku", displayName: "Haiku")
+            ],
+            for: .claudeCode,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 14)
+        )
+
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == "high")
+        // Unsupported for this model, so it falls back to the model's default.
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "max", for: "sonnet", runtime: .claudeCode, defaults: defaults
+        ) == "medium")
+        // The regression this locks: switching to a model with no effort knob
+        // must clear the carried-over value rather than hand the CLI an
+        // `--effort` it rejects. The composer hides the menu for these models,
+        // so nothing else can clear it.
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "haiku", runtime: .claudeCode, defaults: defaults
+        ) == nil)
+        // A model the provider never reported has no metadata to contradict
+        // the user's choice, so it still passes through.
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "never-probed", runtime: .claudeCode, defaults: defaults
+        ) == "high")
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "   ", for: "never-probed", runtime: .claudeCode, defaults: defaults
+        ) == nil)
+
+        // The `cache:` twin is the path the composer and settings UI take, and
+        // it has to agree with the `defaults:` one.
+        let cache = RuntimeModelAvailabilityCache(
+            cachedClaudeModelsJSON: defaults.string(forKey: AppStorageKeys.claudeAvailableModels) ?? "",
+            cachedCopilotModelsJSON: ""
+        )
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "sonnet", runtime: .claudeCode, cache: cache
+        ) == "high")
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "haiku", runtime: .claudeCode, cache: cache
+        ) == nil)
+        #expect(RuntimeModelAvailability.normalizedReasoningEffort(
+            "high", for: "never-probed", runtime: .claudeCode, cache: cache
+        ) == "high")
+    }
+
     @Test("Values-only persistence and legacy snapshots use readable display names")
     func valuesOnlyPersistenceUsesReadableDisplayNames() {
         let (defaults, suiteName) = makeDefaults()

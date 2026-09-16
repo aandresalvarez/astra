@@ -1096,7 +1096,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         ],
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
@@ -1191,6 +1192,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
                 executablePath: configuration.executablePath(for: id),
+                vertexProjectID: configuration.vertexProjectID,
+                vertexRegion: configuration.vertexRegion,
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1314,7 +1317,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            taskEnvironment: taskEnv
         ) {
             mcpServers.append(browserServer)
         }
@@ -1416,8 +1420,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             "--include-partial-messages",
             "--verbose"
         ]
-        if usesArtifactBootstrapProfile {
-            args += ["--effort", "low"]
+        // Artifact bootstrap keeps its own "low" override regardless of the
+        // task's setting — a narrow, internal scaffolding window, not the
+        // interactive session the user is choosing reasoning effort for.
+        let reasoningEffort = usesArtifactBootstrapProfile
+            ? "low"
+            : context.taskSnapshot.reasoningEffort.flatMap { effort in
+                RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
+            }
+        if let reasoningEffort {
+            args += ["--effort", reasoningEffort]
         }
         args += context.requiredProviderPolicyRender(for: id).claudeLaunchPermissionArguments()
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
@@ -1468,7 +1480,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
-                "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
+                "launch_effort": reasoningEffort ?? "default",
                 "allowed_tools_count": String(providerAllowed.count),
                 "base_allowed_tools_count": String(baseProviderAllowed.count),
                 "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
@@ -1700,14 +1712,43 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let sonnet = trimmed(configuration.vertexSonnetModel)
         let haiku = trimmed(configuration.vertexHaikuModel)
 
+        // Non-emptiness is not readiness. A malformed project ID reaches Vertex
+        // and comes back 403, so reporting it Ready sends the user looking for
+        // a permissions problem that does not exist. Anything this check can
+        // prove wrong locally is blocked here, where the value can be fixed.
+        let projectFailure = GCPProjectIDValidation.failure(for: project)
+        let projectRegionDetail: String
+        // The remediation tracks the failure rather than repeating "fill both
+        // fields": a project ID that is present but malformed needs correcting,
+        // and telling the user to fill a field they already filled reads as a
+        // bug in ASTRA rather than a problem with the value.
+        let projectRegionRemediation: String?
+        switch (projectFailure, region.isEmpty) {
+        case (nil, false):
+            projectRegionDetail = "Using project \(project) in \(region)."
+            projectRegionRemediation = nil
+        case (.empty?, true):
+            projectRegionDetail = "GCP Project ID and Region are required for Vertex routing."
+            projectRegionRemediation = "Fill GCP Project ID and Region."
+        case (.empty?, false):
+            projectRegionDetail = GCPProjectIDValidation.Failure.empty.message
+            projectRegionRemediation = "Fill GCP Project ID."
+        case (let failure?, true):
+            projectRegionDetail = "\(failure.message) Region is required for Vertex routing."
+            projectRegionRemediation = "Correct GCP Project ID and fill Region."
+        case (let failure?, false):
+            projectRegionDetail = failure.message
+            projectRegionRemediation = "Correct GCP Project ID in Settings › Runtime."
+        case (nil, true):
+            projectRegionDetail = "Region is required for Vertex routing."
+            projectRegionRemediation = "Fill Region."
+        }
         checks.append(RuntimeReadinessCheck(
             id: "vertex-project-region",
             title: "Vertex project and region",
-            detail: project.isEmpty || region.isEmpty
-                ? "Project ID and region are required for Vertex routing."
-                : "Using project \(project) in \(region).",
-            state: project.isEmpty || region.isEmpty ? .blocked : .ready,
-            remediation: project.isEmpty || region.isEmpty ? "Fill GCP Project ID and Region." : nil
+            detail: projectRegionDetail,
+            state: projectRegionRemediation == nil ? .ready : .blocked,
+            remediation: projectRegionRemediation
         ))
 
         let missingAliases = [
@@ -1790,7 +1831,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
         supportsAstraRunProtocol: true,
-        supportsMCPServers: true
+        supportsMCPServers: true,
+        supportsReasoningEffort: true
     )
     let readinessCheckID = "copilot-cli"
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
@@ -1906,10 +1948,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
+        // The attached list above includes offered routes. Shell denial follows
+        // the required subset, so an enabled-but-unmentioned connector does not
+        // cost this turn its native shell.
+        let requiredHostControlTools = context.runtimeRequirements?.hostControlTools ?? hostControlTools
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: providerLaunchPermissionPolicy,
-            requiredTools: hostControlTools
+            requiredTools: requiredHostControlTools
         )
         let providerAllowed = deniesNativeShellForHostControl
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
@@ -1923,16 +1969,26 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
+        // Offered, not required: an enabled browser tool this turn never named
+        // must not abort the run on a Copilot build with no transport for it.
+        // Dropped before the metadata is computed so the environment, the plan
+        // fields, and the launch guard all describe the same run.
+        let browserBridgeEnv = BrowserBridgeRuntimeLaunchGuard.removingUndeliverableOfferedBridge(
+            from: taskEnv,
+            runtime: id,
+            mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported,
+            required: context.runtimeRequirements?.requiresBrowserControl ?? true
+        )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
             runtime: id,
-            environment: taskEnv,
+            environment: browserBridgeEnv,
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
         if deniesNativeShellForHostControl {
             localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
                 localToolCommands,
-                requiredTools: hostControlTools
+                requiredTools: requiredHostControlTools
             )
         }
         if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
@@ -1940,7 +1996,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
         let surfacedAskFirstTools = askFirstTools
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
-        var launchTaskEnv = taskEnv
+        var launchTaskEnv = browserBridgeEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {
             launchTaskEnv[key] = value
         }
@@ -1948,6 +2004,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             launchTaskEnv[key] = value
         }
         let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
+        // Artifact bootstrap keeps its own "none" override regardless of the
+        // task's setting — it is a narrow, internal scaffolding window, not the
+        // interactive session the user is choosing reasoning effort for.
+        let reasoningEffort = artifactBootstrapTools.isEmpty
+            ? context.taskSnapshot.reasoningEffort.flatMap { effort in
+                RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
+            }
+            : "none"
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1969,7 +2033,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
-            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
+            reasoningEffort: reasoningEffort,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
@@ -2456,6 +2520,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 checks.append(await antigravityLiveAccountCheck(
                     executable: executable ?? "",
                     providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id),
+                    authMode: configuration.antigravityAuthMode,
                     probes: probes
                 ))
             }
@@ -2466,13 +2531,41 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
-        let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
-            ?? AntigravityCLIRuntime.availableModelNames()
-        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        // Asking the CLI what it offers is what this check is for, and it
+        // already runs the binary, so the `--output-format` probe rides along
+        // here rather than in the readiness preflight — a preflight that
+        // starts the provider is exactly what "Provider was not started"
+        // promises it will not do. Skipped entirely once cached for this
+        // binary; the launch path only ever reads the cached verdict, since it
+        // runs on the main actor and must not shell out.
+        AntigravityCLIRuntime.refreshStructuredOutputSupport(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
+        let options = AntigravityCLIRuntime.modelOptions(
+            executablePath: executable,
+            authMode: configuration.antigravityAuthMode,
+            providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
+        )
+            ?? AntigravityCLIRuntime.availableModelNames().map {
+                AntigravityCLIRuntime.AntigravityModelOption(id: $0, displayName: $0)
+            }
+        let details = options.map { option in
+            RuntimeModelDetail(
+                value: option.id,
+                displayName: option.displayName == option.id ? nil : option.displayName
+            )
+        }
+        await RuntimeModelAvailability.persistObservedAvailableModelDetails(
+            details,
+            for: id,
+            authority: modelAvailabilityAuthority
+        )
         return RuntimeReadinessCheck(
             id: "antigravity-models",
             title: "Antigravity models",
-            detail: "Available: \(models.joined(separator: ", "))",
+            detail: "Available: \(options.map(\.id).joined(separator: ", "))",
             state: .ready,
             remediation: nil
         )
@@ -2581,7 +2674,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: [AntigravityCLIRuntime.diagnosticLogDirectory(for: diagnosticLogPath)].compactMap { $0 },
-            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths(),
+            sandboxReadablePaths: AntigravityCLIRuntime.launchReadablePaths(),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2595,18 +2688,23 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
-        AntigravityCLIRuntime.parsePlainText(line: line)
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        AntigravityCLIRuntime.parseEvents(line: line, parsesJSONLines: parsesJSONLines)
     }
 
-    func blockingProcessPermissionMessage(line: String, parsesJSONLines _: Bool) -> String? {
-        AntigravityCLIRuntime.blockingPlainTextMessage(line: line)
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String? {
+        // Structured frames carry their own typed tool errors; this heuristic
+        // reads prose, so it stays pointed at the lines that are still prose.
+        guard !parsesJSONLines || AntigravityStreamEventParser.parseStructured(line: line) == nil else {
+            return nil
+        }
+        return AntigravityCLIRuntime.blockingPlainTextMessage(line: line)
     }
 
-    func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(agentEvents: AntigravityCLIRuntime.parsePlainTextAgentEvents(
+    func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: AntigravityCLIRuntime.parseAgentEvents(
             line: line,
-            appendingNewline: true
+            parsesJSONLines: parsesJSONLines
         ))
     }
 
@@ -2688,7 +2786,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: providerHomeDirectory,
-            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
+            // This path returns the child's raw stdout to the caller's own
+            // parser, which reads `ASTRA_*_SUGGESTION` text — structured
+            // envelopes would leave it nothing to decode.
+            structuredOutputAllowed: false
         )
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2702,7 +2804,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: nil,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome],
-            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths()
+            sandboxReadablePaths: AntigravityCLIRuntime.launchReadablePaths()
         )
         let result = await AgentRuntimeProcessRunner().runUtilityProcess(
             AgentUtilityLaunchPlan(
@@ -2719,6 +2821,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     private func antigravityLiveAccountCheck(
         executable: String,
         providerHomeDirectory: String,
+        authMode: AntigravityAuthMode,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let timeoutSeconds: TimeInterval = 30
@@ -2735,11 +2838,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
-        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedHome.isEmpty {
-            extraVars["HOME"] = trimmedHome
-        }
-        let environment = RuntimeProcessEnvironment.enriched(extraVariables: extraVars)
+        let environment = AntigravityCLIRuntime.probeEnvironment(
+            mode: authMode,
+            providerHomeDirectory: providerHomeDirectory,
+            extraVariables: extraVars
+        )
 
         let result = await probes.run(
             path: executable,
@@ -2753,7 +2856,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 title: "Antigravity account",
                 detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
                 state: .blocked,
-                remediation: "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
+                remediation: authMode != .adc
+                    ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
+                    : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
             )
         }
         guard antigravityReadinessOutputContainsReadyLine(result.stdout) else {

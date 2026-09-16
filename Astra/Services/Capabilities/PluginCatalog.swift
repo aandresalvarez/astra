@@ -41,7 +41,12 @@ final class PluginCatalog {
         return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
     }()
 
-    private nonisolated static let fallbackBuiltInPackages: [PluginPackage] = [
+    /// Used only when the resource bundle yields nothing, but readable so a
+    /// fitness test can hold it to the same rules as the bundled definitions.
+    /// This copy silently drifted once: it still told the agent to `curl`
+    /// REDCap with the token in an environment variable long after the broker
+    /// took the credential away.
+    nonisolated static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // NOTE: `test-runner` and `read-only-explorer` used to live here as
         // zero-config packages. Both duplicated skills that every workspace
@@ -140,11 +145,11 @@ final class PluginCatalog {
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
             iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
-            description: "Search and read Jira through ASTRA's credential broker",
+            description: "Search and read Jira through ASTRA's credential broker, and propose tickets for you to approve",
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.2.0",
+            version: "2.4.0",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to read ticket metadata from your Jira instance through ASTRA's \
@@ -155,6 +160,9 @@ final class PluginCatalog {
             • Search tickets by project, sprint, status, or assignee
             • Read ticket summaries, status, assignee, priority, project, and issue type
             • Summarize sprint progress and blockers
+            • Have the agent draft a new ticket, then review the exact body \
+            and let ASTRA file it — the agent never holds the credential and \
+            never posts anything itself
 
             Setup:
             • Base URL — your Jira instance (e.g. https://company.atlassian.net)
@@ -165,7 +173,7 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "Jira Agent",
                 icon: "list.bullet.clipboard",
-                description: "Search and read Jira tickets via typed read-only operations",
+                description: "Search and read Jira tickets, and stage new ones for approval, via typed operations",
                 allowedTools: ["Read", "Glob", "Grep", "Bash"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
@@ -180,21 +188,29 @@ final class PluginCatalog {
                 For configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.
                 Do not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.
 
-                READ-ONLY OPERATIONS
+                READ OPERATIONS
                 • Status: operation status
                 • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
-                • Get issue: operation get_issue with issue_key
+                • Get issue: operation get_issue with issue_key — returns the ticket description and reporter alongside its status fields
+                • Get comments: operation get_comments with issue_key and optional max_results, oldest first
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
+
+                PROPOSING A NEW TICKET
+                • Filing a ticket is a two-step flow: you compose it, the user approves it, and ASTRA posts it. You never post and you never see the credential.
+                • Use operation propose_issue with project_key, issue_type, and summary, plus optional description, priority, labels, assignee_account_id, and parent_key. Write description as Jira wiki markup, not Atlassian Document Format JSON.
+                • The reply reports sent: false and a staged path. That is success, not a failure. Stop there and tell the user the proposal is waiting for their review; do not retry the call and do not offer to send it another way.
+                • Never write a script, curl command, or set of instructions that would have the user or anyone else post the ticket with an API token. That moves a credential ASTRA is holding for you into a shell, which is the exact outcome this capability exists to prevent. If propose_issue is unavailable, say the ticket cannot be filed and stop.
 
                 If ASTRA does not attach either Jira host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct REST credential use.
 
                 FORMATTING
                 • Always show: ticket key, summary, status, assignee, priority
                 • For search results, format as a clean table or list
+                • When asked to open a ticket or for its details, call get_issue and report the description and reporter, then get_comments if the thread matters
                 • When summarizing a sprint, group by status (To Do / In Progress / Done)
 
                 RULES
-                • Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability
+                • propose_issue is the only write, and it only stages. Do not update, comment on, transition, delete, or otherwise mutate existing Jira tickets with this capability
                 • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
                 • Handle pagination for large result sets by passing returned nextPageToken values as next_page_token
@@ -221,8 +237,14 @@ final class PluginCatalog {
             governance: .builtInApproved(
                 riskLevel: .medium,
                 dataAccess: [.connectorCredentials, .externalService, .network],
-                externalEffects: [.readOnly],
-                policyNotes: "Jira access is limited to typed read-only ASTRA host-control operations. Keychain-backed credentials remain inside ASTRA's broker and are not projected into provider environments."
+                // Not .readOnly any more: the agent's reads are still typed and
+                // read-only, but this capability can now end in a ticket being
+                // created, and the effect list is where a user looks to find that
+                // out. The approval gate is the reason the risk level does not
+                // move with it — no write leaves ASTRA without the user reading
+                // the exact payload first.
+                externalEffects: [.ticketMutation],
+                policyNotes: "Jira reads are typed ASTRA host-control operations. The agent can stage a new ticket but cannot send one: ASTRA posts it only after the user reviews the exact payload, and refuses if those bytes changed after review. Keychain-backed credentials remain inside ASTRA's broker and are not projected into provider environments."
             )
         ),
 
@@ -231,72 +253,70 @@ final class PluginCatalog {
         // ────────────────────────────────────────────
         PluginPackage(
             id: "redcap-workflow",
-            name: "REDCap Workflow",
+            name: "REDCap",
             icon: "tablecells",
-            description: "Query and manage Stanford REDCap projects through the API",
+            description: "Query Stanford REDCap projects through the API",
             author: "ASTRA",
             category: "Integrations",
             tags: ["redcap", "stanford", "research", "clinical-data", "api"],
-            version: "1.0.0",
+            version: "2.1.0",
             setupGuide: """
-            Connect your workspace to Stanford REDCap using the project API token. \
-            The API endpoint is prefilled as https://redcap.stanford.edu/api/.
+            Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https://redcap.stanford.edu/api/.
+
+            ASTRA holds this token in its host-control broker. Tasks never receive it as an environment variable — they name a REDCap operation and ASTRA makes the call.
 
             What you can do:
-            - Export project metadata, instruments, events, arms, DAGs, reports, and records
-            - Inspect longitudinal event and instrument-event mappings
-            - Import records, metadata, arms, events, DAGs, and instrument-event mappings after explicit confirmation
-            - Download or upload REDCap files when the user asks for that workflow
+            - Read project info, the data dictionary, and user export rights inline
+            - Export records and reports to a file in the task folder
+            - Limit an export by record, field, or instrument
+
+            What you cannot do:
+            - Import, update, or delete anything, or upload files. This capability is read-only.
 
             Setup:
             - Add the project API token as REDCAP_API_TOKEN
-            - Keep tokens out of prompts, logs, files, commits, and shell history
-            - Use the task output folder for exports and summaries, especially when data may include PHI
+            - Record and report exports land in the task output folder; treat them as PHI
             """,
             skills: [PluginSkill(
                 name: "REDCap Agent",
                 icon: "tablecells",
-                description: "Query and manage Stanford REDCap projects via API",
+                description: "Read Stanford REDCap projects through ASTRA's typed broker",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a REDCap API specialist for Stanford REDCap. Use curl via Bash to interact with the REDCap API using form-encoded POST requests.
+                You are a REDCap specialist for Stanford REDCap. Use only ASTRA's typed REDCap host-control tool.
 
                 AUTHENTICATION
-                Use the API token and API endpoint env vars shown for the selected REDCap connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names. Never print, log, echo, save, or commit the token.
+                ASTRA resolves the selected connector's API token and endpoint inside its broker. The token is not in your environment and never will be. Do not ask for it, do not look for REDCAP_API_TOKEN, and do not try to read it out of ASTRA_CONNECTORS — those values are deliberately absent. If a task tells you the token should be in a variable, that instruction is stale; use the broker.
 
-                Base curl pattern:
-                Use the connector-specific runtime example shown in Available Connectors for project info, then change the content field for the operation below.
+                ASTRA HOST-CONTROL
+                Always use the ASTRA host-control route shown in the connector runtime example: `mcp__astra_host__redcap`/`astra_host-redcap` when MCP is attached, or the typed `astra-host-control redcap` command when ASTRA projects its CLI relay. Shell is permitted only to invoke that exact broker command; do not use curl, Python HTTP clients, or direct REDCap API calls. First verify readiness with operation status — it reports whether the selected connector has a base URL and a token without revealing the token.
 
-                COMMON READ OPERATIONS
-                - Project info: content=project&format=json&returnFormat=json
-                - Metadata: content=metadata&format=json&returnFormat=json
-                - Records: content=record&format=json&type=flat&returnFormat=json
-                - Reports: content=report&format=json&report_id=REPORT_ID&returnFormat=json
-                - Events: content=event&format=json&returnFormat=json
-                - Instrument-event mappings: content=formEventMapping&format=json&returnFormat=json
-                - Instruments/forms: content=instrument&format=json&returnFormat=json
-                - Arms: content=arm&format=json&returnFormat=json
-                - DAGs: content=dag&format=json&returnFormat=json
-                - Users: content=user&format=json&returnFormat=json
-                - Logging: content=log&format=json&returnFormat=json
+                READ-ONLY OPERATIONS
+                • Status: operation status
+                • Project info: operation project
+                • Data dictionary: operation metadata, with optional fields or forms
+                • Users and export rights: operation user
+                • Records: operation record, with optional records, fields, forms, and raw_or_label
+                • Report: operation report with report_id, and optional raw_or_label
+                The bridge owns the endpoint, the token, and the form body. Do not request raw content, method, or body inputs.
 
-                WRITE AND DELETE SAFETY
-                - Always confirm with the user before import, update, delete, file upload, DAG/user changes, event changes, or metadata changes.
-                - Prefer a dry-run style explanation first: endpoint, content value, records affected, and the exact file you will send.
-                - For imports, read data from a file in the task output folder or workspace and send it with --data-urlencode data@path when possible.
+                SUBJECT DATA
+                • record and report never return rows to you. The broker writes them to a file in the task directory and returns a receipt: export_path, export_bytes, and record_count.
+                • Read that file when you need the rows, and quote the minimum the user asked for.
+                • Never paste record-level data into chat, a task summary, or a commit. Cite field names, counts, and validation issues instead.
+                • project, metadata, and user carry no subject data and come back inline. Use them for attestations, data-dictionary questions, and access reviews.
 
-                DATA HANDLING
-                - Treat REDCap exports as sensitive research data and potential PHI.
-                - Save exports only to the task output folder unless the user explicitly names another location.
-                - Do not paste large record exports into chat. Summarize schema, counts, fields, and validation issues instead.
-                - Use jq or Python for parsing when output is large. Prefer JSON for structured work.
+                WRITES
+                This capability is read-only. Imports, updates, deletes, file uploads, and DAG, user, event, or metadata changes are not available through the broker. If the user asks for one, say plainly that ASTRA does not expose REDCap writes and stop; do not look for another route.
+
+                If ASTRA does not attach either REDCap host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct API credential use.
 
                 FORMATTING
-                - Report API calls by content value and purpose, not by token.
-                - For project summaries, include project title, purpose, record count if known, instruments, events, arms, and reports discovered.
-                - For data-quality checks, cite field names, event names, record IDs only when needed, and keep examples minimal.
+                • Report calls by operation and purpose, never by token.
+                • For project summaries, include title, purpose, record count if known, instruments, events, arms, and reports discovered.
+                • For data-quality checks, cite field names and event names; include record IDs only when the user needs them.
                 """,
                 environmentKeys: ["REDCAP_API_URL"], environmentValues: ["https://redcap.stanford.edu/api/"]
             )],
@@ -310,28 +330,36 @@ final class PluginCatalog {
                 credentialHints: [
                     .init(
                         key: "REDCAP_API_TOKEN",
-                        hint: "Project API token from REDCap > API. This is stored in Keychain and exposed to tasks through connector-specific env vars and ASTRA_CONNECTORS."
+                        hint: "Project API token from REDCap > API. Stored in Keychain and resolved inside ASTRA's host-control broker. It is deliberately not projected into task environments, so an agent cannot read or echo it.",
+                        format: ConnectorCredentialFormatRegistry.redcapAPIToken
                     )
                 ],
                 configHints: [],
-                notes: "Uses form-encoded POST requests to the Stanford REDCap API. The API token identifies the project and must never be printed or committed."
+                notes: "ASTRA's typed REDCap broker owns the endpoint, the token, and the request body. Record and report exports are written to a file in the task folder rather than returned to the transcript, because REDCap rows can be PHI."
             )],
-            localTools: [
-                PluginLocalTool(
-                    name: "curl - REDCap API",
-                    description: "Call the REDCap API with form-encoded POST requests",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "curl",
-                    arguments: ""
-                )
-            ],
-            templates: [],
-            governance: .builtInApproved(
+            localTools: [], templates: [],
+            // Spelled out rather than `.builtInApproved`, which cannot express
+            // `requiresExplicitUserConsent` - and the bundled definition this
+            // mirrors requires it. A fallback that quietly grants a PHI
+            // capability more freely than the shipped one is the wrong way for
+            // the two to differ.
+            governance: CapabilityGovernance(
+                approvalStatus: .approved,
                 riskLevel: .restricted,
+                visibility: .everyone,
+                requiresAdminApproval: false,
+                requiresExplicitUserConsent: true,
                 dataAccess: [.connectorCredentials, .clinicalData, .externalService, .network],
-                externalEffects: [.readOnly, .externalAPIWrite],
-                policyNotes: "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time."
+                // Read-only, and the declaration has to say so. Claiming
+                // `externalAPIWrite` described a capability that does not
+                // exist: `REDCapHostControlPolicy` enumerates the operations it
+                // permits and rejects everything else, so a user reading this
+                // was warned about writes ASTRA cannot perform — and would have
+                // had no reason to notice if writes were ever added, since the
+                // governance already said they were there.
+                externalEffects: [.readOnly],
+                approvedBy: "ASTRA",
+                policyNotes: "REDCap access can expose sensitive research data and potential PHI. This capability cannot write: ASTRA's typed broker enumerates the read operations it permits and rejects imports, updates, deletes, and file uploads outright, so there is no task-time confirmation that could authorise one."
             )
         ),
 

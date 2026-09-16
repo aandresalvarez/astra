@@ -505,6 +505,7 @@ struct TaskPlanServiceTests {
         let task = AgentTask(title: "Plan task", goal: "Do work")
         context.insert(task)
 
+        let taskID = task.id
         var observed: [String] = []
         let token = NotificationCenter.default.addObserver(
             forName: .durableTaskEventInserted,
@@ -512,7 +513,7 @@ struct TaskPlanServiceTests {
             queue: nil
         ) { notification in
             guard let insertion = notification.object as? DurableTaskEventInsertion,
-                  insertion.taskID == task.id else { return }
+                  insertion.taskID == taskID else { return }
             observed.append(insertion.type)
         }
         defer { NotificationCenter.default.removeObserver(token) }

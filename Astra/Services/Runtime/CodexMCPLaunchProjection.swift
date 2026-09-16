@@ -64,7 +64,8 @@ struct CodexMCPLaunchProjection {
         }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: task,
-            contextText: contextText
+            contextText: contextText,
+            taskEnvironment: taskEnvironment
         ) {
             servers.append(browserServer)
             browserServerProjected = true
@@ -89,7 +90,15 @@ struct CodexMCPLaunchProjection {
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             configArguments: configArguments
         )
-        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        // The offered env is not the gate - see CopilotRuntimeLaunchSupport. An
+        // offered route that could not be attached is dropped silently; only a
+        // required one makes the plane unsupported.
+        let requiresHostControlPlane = !HostControlPlaneMCPProjection.requiredToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText,
+            precomputedRuntimeRequirements: runtimeRequirements
+        ).isEmpty
         let hostControlPlaneSupported = !requiresHostControlPlane
             || configArguments.containsMCPServerConfig(for: HostControlPlaneMCPProjection.serverID)
 

@@ -30,16 +30,18 @@ struct GitPullRequestPublishReviewPresentationTests {
 
         // Integration guard: the task view delegates the outcome invariant to
         // the mode-independent policy and must not reintroduce an Auto filter.
+        // The property lives with the dock's other event-derived answers in
+        // TaskMainViewDecisionOutcomes.swift, cached off the body pass.
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Astra/Views/TaskMainView.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Astra/Views/TaskMainViewDecisionOutcomes.swift"),
             encoding: .utf8
         )
-        let propertyStart = try #require(source.range(of: "private var shouldOfferGitPublishReview: Bool"))
-        let nextProperty = try #require(source[propertyStart.upperBound...].range(of: "private var taskDecisionExtraDetails"))
-        let implementation = source[propertyStart.lowerBound..<nextProperty.lowerBound]
+        let propertyStart = try #require(source.range(of: "var shouldOfferGitPublishReview: Bool"))
+        let nextMember = try #require(source[propertyStart.upperBound...].range(of: "func recomputeDecisionOutcomes()"))
+        let implementation = source[propertyStart.lowerBound..<nextMember.lowerBound]
         #expect(implementation.contains("TaskGitPullRequestPublishReviewPolicy.shouldOffer"))
         #expect(!implementation.contains("taskSkipPermissions"))
     }
