@@ -31,7 +31,22 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
 
     @discardableResult
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool {
-        let saved = KeychainService.save(
+        saveCredentialReportingFailure(
+            value,
+            key: key,
+            facts: facts,
+            allowUserInteraction: allowUserInteraction
+        ).didWrite
+    }
+
+    @discardableResult
+    static func saveCredentialReportingFailure(
+        _ value: String,
+        key: String,
+        facts: ConnectorSecretFacts,
+        allowUserInteraction: Bool
+    ) -> KeychainWriteOutcome {
+        let outcome = KeychainService.saveReportingFailure(
             key: key,
             value: value,
             facts: facts,
@@ -41,9 +56,9 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
         AppLogger.audit(.connectorSecretAdded, category: "Keychain", fields: [
             "connector_id": facts.id.uuidString,
             "service_type": facts.serviceType,
-            "result": saved ? "stored" : "failed"
-        ], level: saved ? .info : .warning)
-        return saved
+            "result": outcome.didWrite ? "stored" : "failed"
+        ], level: outcome.didWrite ? .info : .warning)
+        return outcome
     }
 
     @discardableResult

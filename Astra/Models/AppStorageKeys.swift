@@ -20,6 +20,12 @@ public enum AppStorageKeys {
     // ran. Pre-V17 runs carry a nil flag, which readers treat as "might contain
     // markers"; the backfill resolves them to an exact true/false.
     public static let completedRunProtocolMarkerBackfillBuild = "astra.startup.completedRunProtocolMarkerBackfillBuild.v1"
+    // Build number for which the persisted-credential purge last ran. Redaction
+    // at the persistence funnel only protects payloads written after it shipped;
+    // this sweep is what clears credentials already sitting in the store, and it
+    // is build-gated rather than one-shot so a store that gains a leak from an
+    // older build still gets cleaned on the next update.
+    public static let completedPersistedCredentialPurgeBuild = "astra.startup.completedPersistedCredentialPurgeBuild.v1"
     public static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     // Legacy key retained so older preferences remain readable. The guided
     // installer intentionally does not honor a permanent decline: production
@@ -36,6 +42,7 @@ public enum AppStorageKeys {
     public static let appUIScale = "appUIScale"
     public static let defaultRuntimeID = "defaultRuntimeID"
     public static let defaultModel = "defaultModel"
+    public static let defaultReasoningEffort = "astra.defaultReasoningEffort.v1"
     public static let defaultAgentPolicyLevel = "astra.policy.defaultLevel.v1"
     public static let workspacesRoot = "workspacesRoot"
     public static let timeoutSeconds = "timeoutSeconds"
@@ -75,6 +82,7 @@ public enum AppStorageKeys {
     public static let claudePath = "claudePath"
     public static let copilotPath = "copilotPath"
     public static let claudeProvider = "astra.claudeProvider.v1"
+    public static let antigravityAuthMode = "astra.antigravityAuthMode.v1"
     public static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
     public static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
     public static let claudeVertexOpusModel = "astra.claudeVertexOpusModel.v1"
@@ -117,6 +125,20 @@ public enum AppStorageKeys {
         default:
             return "astra.runtime.\(storageComponent(for: runtime)).availableModels.v1"
         }
+    }
+
+    /// Caches what a provider last said about accepting ASTRA's MCP servers.
+    /// Keyed per runtime because the answer belongs to that provider's own
+    /// policy, not to ASTRA's opinion of the runtime.
+    public static func runtimeMCPPolicyKey(for runtime: AgentRuntimeID) -> String {
+        "astra.runtime.\(storageComponent(for: runtime)).mcpPolicy.v1"
+    }
+
+    /// Caches whether the installed CLI understands structured output, stamped
+    /// with the executable's modification time so an upgrade re-probes instead
+    /// of inheriting the previous binary's answer.
+    public static func runtimeStructuredOutputKey(for runtime: AgentRuntimeID) -> String {
+        "astra.runtime.\(storageComponent(for: runtime)).structuredOutput.v1"
     }
 
     public static func runtimeModelsCheckedAtKey(for runtime: AgentRuntimeID) -> String {

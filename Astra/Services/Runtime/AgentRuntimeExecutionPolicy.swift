@@ -23,6 +23,11 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// settings toggle cannot leave a shared lease without its read-only
     /// boundary or turn an Off admission into hidden confinement.
     var sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?
+    /// The capability profile the launch resolved from the runtime's own
+    /// executable, carried so everything that *describes* the run to the agent
+    /// agrees with what the launch actually attaches. The static profile table
+    /// is a guess about the installed Copilot binary; this is the answer.
+    var runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -34,7 +39,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         launchSnapshot: AgentTaskLaunchSnapshot? = nil,
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         workspaceAccessOverride: TaskExecutionResourceAccess? = nil,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) {
         self.permissionPolicyOverride = permissionPolicyOverride
         self.allowedToolsOverride = allowedToolsOverride
@@ -44,6 +50,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         self.turnIntentSnapshot = turnIntentSnapshot
         self.workspaceAccessOverride = workspaceAccessOverride
         self.sandboxEnforcementSnapshot = sandboxEnforcementSnapshot
+        self.runtimeCapabilityProfile = runtimeCapabilityProfile
     }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
@@ -63,13 +70,20 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             launchSnapshot: launchSnapshot,
             turnIntentSnapshot: turnIntentSnapshot,
             workspaceAccessOverride: workspaceAccessOverride,
-            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
+            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
+            runtimeCapabilityProfile: runtimeCapabilityProfile
         )
     }
 
     func withLaunchSnapshot(_ snapshot: AgentTaskLaunchSnapshot?) -> AgentRuntimeExecutionPolicy {
         var copy = self
         copy.launchSnapshot = snapshot
+        return copy
+    }
+
+    func withRuntimeCapabilityProfile(_ profile: AgentRuntimeCapabilityProfile?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.runtimeCapabilityProfile = profile
         return copy
     }
 
@@ -111,17 +125,29 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
     }
 
-    /// A one-run approval is always `.restricted`: granting specific tools for a
-    /// single run must never relax the OS-level enforcement tier. The policy is
-    /// intentionally hardcoded (not a parameter) so a caller cannot accidentally
-    /// widen a per-run approval to `.autonomous`.
+    /// A one-run approval is *additive authority* and carries no permission
+    /// policy of its own.
+    ///
+    /// This used to hardcode `.restricted`, reasoning that granting specific
+    /// tools must never relax the enforcement tier. It doesn't relax anything —
+    /// but it did silently *tighten* it, and that is what broke: approving one
+    /// credential prompt on an Auto-mode task set a non-autonomous override,
+    /// which `TaskPolicyStore.resolve` then read as a cap and downgraded the run
+    /// to `review`, which re-enabled the brokered enforcement tier the user had
+    /// deliberately switched off. The user said yes to one thing and lost Auto
+    /// for the whole run.
+    ///
+    /// Leaving the override nil is the honest encoding: the approval adds
+    /// `allowedTools` and `grants`, and the run keeps whatever level the task,
+    /// workspace, or global default already resolved to. It cannot widen the
+    /// baseline (there is no override to widen it with) and it cannot narrow it.
     static func approvedRuntimePermission(
         runtime _: AgentRuntimeID,
         allowedTools: [String],
         grants: [PermissionGrant] = []
     ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: .restricted,
+            permissionPolicyOverride: nil,
             allowedToolsOverride: allowedTools,
             permissionGrantsOverride: grants,
             providerRenderOverride: nil

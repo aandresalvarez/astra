@@ -88,7 +88,12 @@ enum ProviderLaunchSignatureService {
                 descriptor.deniedInputKeys.joined(separator: "+")
             ].joined(separator: ":")
         }
-        let connectorDescriptors = scope.connectors.map { connector in
+        // Reachability, not narration: the signature exists to say what this run
+        // could do, and that is the question anyone reading it back is asking.
+        // `scopedSkillNames` below stays narration - together the two record the
+        // split, so a later diagnosis can tell "not reachable" from "reachable
+        // but this turn's prompt did not describe it".
+        let connectorDescriptors = scope.reachableConnectors.map { connector in
             [
                 connector.id.uuidString,
                 connector.name,
@@ -96,7 +101,7 @@ enum ProviderLaunchSignatureService {
                 connector.baseURL
             ].joined(separator: ":")
         }
-        let localToolCommands = scope.localTools.compactMap { tool -> String? in
+        let localToolCommands = scope.reachableLocalTools.compactMap { tool -> String? in
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !command.isEmpty else { return nil }
             return command

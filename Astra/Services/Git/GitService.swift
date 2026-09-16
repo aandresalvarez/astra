@@ -317,105 +317,6 @@ private struct GitHubPullRequestChecksViewResponse: Decodable {
     }
 }
 
-/// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
-///
-/// Encapsulates the concurrency-sensitive state shared between the stdout/stderr
-/// readability handlers, the termination handler, and the timeout watchdog so
-/// `GitService.runGit` resumes its continuation exactly once, regardless of the
-/// order in which those events fire.
-private final class GitProcessState: @unchecked Sendable {
-    enum Stream { case standardOutput, standardError }
-
-    private let lock = NSLock()
-    private var outData = Data()
-    private var errData = Data()
-    private var outClosed = false
-    private var errClosed = false
-    private var exitStatus: Int32?
-    private var command = ""
-    private var terminalError: Error?
-    private var outcomeConsumed = false
-
-    func append(_ chunk: Data, to stream: Stream) {
-        lock.lock(); defer { lock.unlock() }
-        switch stream {
-        case .standardOutput: outData.append(chunk)
-        case .standardError: errData.append(chunk)
-        }
-    }
-
-    func markStreamClosed(_ stream: Stream) {
-        lock.lock(); defer { lock.unlock() }
-        switch stream {
-        case .standardOutput: outClosed = true
-        case .standardError: errClosed = true
-        }
-    }
-
-    func markExited(status: Int32, command: String) {
-        lock.lock(); defer { lock.unlock() }
-        exitStatus = status
-        self.command = command
-    }
-
-    func markTimedOut(after seconds: TimeInterval) {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError == nil {
-            terminalError = NSError(
-                domain: "GitError",
-                code: 124,
-                userInfo: [NSLocalizedDescriptionKey: "git timed out after \(Int(seconds))s"]
-            )
-        }
-    }
-
-    func markLaunchFailure(_ error: Error) {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError == nil { terminalError = error }
-    }
-
-    /// True once a terminal outcome is known: either a fatal error (timeout /
-    /// launch failure) occurred, or the process exited and both streams drained.
-    var isComplete: Bool {
-        lock.lock(); defer { lock.unlock() }
-        if terminalError != nil { return true }
-        return exitStatus != nil && outClosed && errClosed
-    }
-
-    var hasFinished: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return outcomeConsumed
-    }
-
-    /// Returns the resolved outcome exactly once; subsequent calls return nil.
-    fileprivate func consumeOutcome() -> ResolvedOutcome? {
-        lock.lock(); defer { lock.unlock() }
-        guard !outcomeConsumed else { return nil }
-        if let terminalError {
-            outcomeConsumed = true
-            return .failure(terminalError)
-        }
-        guard let exitStatus, outClosed, errClosed else { return nil }
-        outcomeConsumed = true
-        if exitStatus != 0 {
-            let message = String(data: errData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            AppLogger.error("git command failed: \(command) — \(message)", category: "Git")
-            return .failure(NSError(
-                domain: "GitError",
-                code: Int(exitStatus),
-                userInfo: [NSLocalizedDescriptionKey: message]
-            ))
-        }
-        return .success(String(data: outData, encoding: .utf8) ?? "")
-    }
-
-    enum ResolvedOutcome {
-        case success(String)
-        case failure(Error)
-    }
-}
-
 /// Environment variables git uses to scope an invocation to one specific
 /// repository (the set `git rev-parse --local-env-vars` reports). Git exports
 /// these to every hook and child process, so a `git`/shell subprocess spawned
@@ -512,11 +413,22 @@ class GitService: GitRepositoryOperating {
     private func isUsableGitRepository(at path: String) async -> Bool {
         guard WorkspacePathPresentation.isGitRepository(at: path) else { return false }
         do {
-            let inside = try await runGit(at: path, arguments: ["rev-parse", "--is-inside-work-tree"])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // The guard above already dropped anything without a `.git`, so what
+            // reaches git here is a path that looks like a repository and may
+            // not be one — a broken checkout, or a `.git` file pointing at a
+            // worktree that is gone. That is an ordinary outcome of this scan;
+            // the `catch` below reports it at the level it deserves.
+            let inside = try await runGit(
+                at: path,
+                arguments: ["rev-parse", "--is-inside-work-tree"],
+                failureLogLevel: .debug
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
             guard inside == "true" else { return false }
-            let root = try await runGit(at: path, arguments: ["rev-parse", "--show-toplevel"])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let root = try await runGit(
+                at: path,
+                arguments: ["rev-parse", "--show-toplevel"],
+                failureLogLevel: .debug
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !root.isEmpty else { return false }
             return true
         } catch {
@@ -589,10 +501,20 @@ class GitService: GitRepositoryOperating {
     }
 
     /// Spawns a git subprocess and returns standard output or throws standard error.
+    ///
+    /// `failureLogLevel` is for the callers that ask git a *question* rather
+    /// than give it an order. For those, a non-zero exit is one of the two
+    /// normal answers — every branch that has never been pushed makes
+    /// `rev-parse @{u}` exit 128 with "no upstream configured", which is the
+    /// whole point of running it. Logging that at ERROR meant the caller's own
+    /// considered `nil` sat next to an ERROR contradicting it, and the ERROR
+    /// channel stopped being a list of things that went wrong. Leave it at the
+    /// default for any command whose failure is genuinely a failure.
     func runGit(
         at repoPath: String,
         arguments: [String],
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        failureLogLevel: LogLevel = .error
     ) async throws -> String {
         AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
         return try await runProcess(
@@ -600,7 +522,8 @@ class GitService: GitRepositoryOperating {
             arguments: ["git", "-C", repoPath] + arguments,
             environment: Self.gitEnvironment(),
             timeout: timeout ?? Self.defaultGitTimeout,
-            label: (["git"] + arguments).joined(separator: " ")
+            label: (["git"] + arguments).joined(separator: " "),
+            failureLogLevel: failureLogLevel
         )
     }
 
@@ -657,7 +580,8 @@ class GitService: GitRepositoryOperating {
         environment: [String: String],
         timeout: TimeInterval,
         label: String,
-        currentDirectory: String? = nil
+        currentDirectory: String? = nil,
+        failureLogLevel: LogLevel = .error
     ) async throws -> String {
         let command = label
         let budget = timeout
@@ -675,7 +599,7 @@ class GitService: GitRepositoryOperating {
         process.standardInput = FileHandle.nullDevice
         process.environment = environment
 
-        let state = GitProcessState()
+        let state = GitProcessState(failureLogLevel: failureLogLevel)
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             let finalize: () -> Void = { [outPipe, errPipe] in
@@ -777,7 +701,8 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["rev-parse", "--verify", "\(ref)^{commit}"]
+                arguments: ["rev-parse", "--verify", "\(ref)^{commit}"],
+                failureLogLevel: .debug
             )
             let sha = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return sha.isEmpty ? nil : sha
@@ -1566,7 +1491,8 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["rev-list", "--count", "HEAD", "--not", "--remotes"]
+                arguments: ["rev-list", "--count", "HEAD", "--not", "--remotes"],
+                failureLogLevel: .debug
             )
             return Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         } catch {
@@ -1579,7 +1505,10 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["rev-list", "--left-right", "--count", "@{u}...HEAD"]
+                arguments: ["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+                // Exits 128 with "no upstream configured" on every branch that
+                // has none, which is the answer this returns `nil` for.
+                failureLogLevel: .debug
             )
             let parts = output
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1597,7 +1526,8 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+                failureLogLevel: .debug
             )
             return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } catch {
@@ -1609,7 +1539,8 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+                failureLogLevel: .debug
             )
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
@@ -1672,7 +1603,12 @@ class GitService: GitRepositoryOperating {
     /// Returns the merge-base ref between two refs (typically `origin/main` and HEAD).
     func getMergeBase(at repoPath: String, refA: String, refB: String) async -> String? {
         do {
-            let output = try await runGit(at: repoPath, arguments: ["merge-base", refA, refB])
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["merge-base", refA, refB],
+                // Exit 1 means "no common ancestor", which is a result.
+                failureLogLevel: .debug
+            )
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         } catch {
@@ -1693,7 +1629,10 @@ class GitService: GitRepositoryOperating {
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["symbolic-ref", "refs/remotes/\(selectedRemote)/HEAD"]
+                arguments: ["symbolic-ref", "refs/remotes/\(selectedRemote)/HEAD"],
+                // Absent on a clone that never ran `remote set-head`; the
+                // candidate loop below exists precisely for that case.
+                failureLogLevel: .debug
             )
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("refs/remotes/") {
@@ -1707,7 +1646,11 @@ class GitService: GitRepositoryOperating {
             do {
                 _ = try await runGit(
                     at: repoPath,
-                    arguments: ["rev-parse", "--verify", "--quiet", "refs/remotes/\(selectedRemote)/\(candidate)"]
+                    arguments: ["rev-parse", "--verify", "--quiet", "refs/remotes/\(selectedRemote)/\(candidate)"],
+                    // `--quiet` means git prints nothing on the miss, so the
+                    // ERROR this used to raise per rejected candidate carried
+                    // an empty message: "git command failed: … — ".
+                    failureLogLevel: .debug
                 )
                 return "\(selectedRemote)/\(candidate)"
             } catch {
@@ -1840,7 +1783,8 @@ class GitService: GitRepositoryOperating {
         do {
             _ = try await runGit(
                 at: repoPath,
-                arguments: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"]
+                arguments: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],
+                failureLogLevel: .debug
             )
             return true
         } catch {
@@ -1963,7 +1907,12 @@ class GitService: GitRepositoryOperating {
             return nil
         }
         do {
-            let output = try await runGit(at: repoPath, arguments: ["config", "--get", "remote.\(selectedRemote).url"])
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["config", "--get", "remote.\(selectedRemote).url"],
+                // `config --get` exits 1 when the key is simply not set.
+                failureLogLevel: .debug
+            )
             let url = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return GitService.webURLFromRemoteURL(url)
         } catch {

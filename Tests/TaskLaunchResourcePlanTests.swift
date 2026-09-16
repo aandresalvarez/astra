@@ -90,6 +90,67 @@ struct TaskLaunchResourcePlanTests {
         #expect(!plan.readOnlyResourceContract.isValid)
     }
 
+    @Test("A purged pasted attachment degrades to a warning instead of blocking every provider")
+    func missingEphemeralPasteInputDegradesToWarning() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-missing-paste")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
+
+        // Exactly the shape ComposerPasteIntake writes, in the directory macOS
+        // purges after three days — and already gone.
+        let purgedPaste = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra_paste_\(UUID().uuidString.prefix(8)).txt").path
+        let workspace = Workspace(name: "Resources", primaryPath: workspaceRoot.path)
+        let task = AgentTask(title: "Review paste", goal: "Read the paste", workspace: workspace)
+        task.inputs = [purgedPaste]
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: "Review the paste",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        let diagnostic = try #require(plan.diagnostics.first { $0.code == "input_path_missing_ephemeral_attachment" })
+        #expect(diagnostic.severity == .warning)
+        #expect(diagnostic.message.contains("temporary folder"))
+        #expect(!plan.diagnostics.contains { $0.code == "input_path_missing" })
+        #expect(!plan.diagnostics.contains { $0.severity == .error })
+        #expect(!plan.hostPathGrants.contains { $0.path == purgedPaste })
+    }
+
+    @Test("A purged paste in a queued follow-up message also degrades to a warning")
+    func missingEphemeralPasteInMessageDegradesToWarning() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-missing-message-paste")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
+
+        let purgedPaste = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra_paste_\(UUID().uuidString.prefix(8)).txt").path
+        let workspace = Workspace(name: "Resources", primaryPath: workspaceRoot.path)
+        let task = AgentTask(title: "Review paste", goal: "Read the paste", workspace: workspace)
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: "Review the paste",
+            contextText: "Attached files:\n- \(purgedPaste)\n",
+            workspacePath: workspaceRoot.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        // A durably queued follow-up can outlive the three-day purge, so the
+        // message path gets the same recovery as a task input.
+        let diagnostic = try #require(plan.diagnostics.first { $0.code == "input_path_missing_ephemeral_attachment" })
+        #expect(diagnostic.severity == .warning)
+        #expect(!plan.diagnostics.contains { $0.code == "input_path_missing" })
+        #expect(!plan.hostPathGrants.contains { $0.path == purgedPaste })
+    }
+
     @Test("Resource resolver records user attachments and Git credential grants")
     func resolverRecordsAttachmentAndGitResources() throws {
         let fm = FileManager.default

@@ -22,10 +22,11 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     }
 
     var hasReportedTokensAboveBudget: Bool {
-        hasEnabledBudget && tokensUsed > effectiveTokenBudget
+        hasEnforceableBudget && tokensUsed > effectiveTokenBudget
     }
 
-    var hasEnabledBudget: Bool {
+    /// `Int.max` is the effective representation of the user's Disabled choice.
+    var hasEnforceableBudget: Bool {
         effectiveTokenBudget != Int.max
     }
 }
@@ -42,7 +43,6 @@ enum AgentRuntimeBudgetPolicy {
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
         let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
-        guard tokenBudget != Int.max else { return true }
 
         let promptTokens = AgentProcessMonitor.estimatedTokenCount(for: prompt)
         let launchOverhead = AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)
@@ -68,6 +68,7 @@ enum AgentRuntimeBudgetPolicy {
             "runtime": runtime.rawValue,
             "token_budget": String(tokenBudget),
             "configured_task_budget": String(task.tokenBudget),
+            "budget_source": "task",
             "enforcement": budgetEnforcementMode.rawValue
         ]
 
@@ -114,22 +115,9 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        guard budget.hasEnabledBudget else { return false }
+        guard budget.hasEnforceableBudget else { return false }
         return result.budgetExceeded ||
             (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
-    }
-
-    @MainActor
-    static func shouldTreatAsBudgetExceeded(
-        result: AgentProcessResult,
-        task: AgentTask,
-        budgetEnforcementMode: BudgetEnforcementMode
-    ) -> Bool {
-        shouldTreatAsBudgetExceeded(
-            result: result,
-            budget: AgentRuntimeBudgetSnapshot(task: task),
-            budgetEnforcementMode: budgetEnforcementMode
-        )
     }
 
     @MainActor
@@ -141,9 +129,10 @@ enum AgentRuntimeBudgetPolicy {
         phase: RunPhase,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
-        guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
+        let budget = AgentRuntimeBudgetSnapshot(task: task)
+        guard budget.hasEnforceableBudget else { return }
 
-        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
+        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(budget: budget)
         guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
             return
         }
@@ -172,10 +161,5 @@ enum AgentRuntimeBudgetPolicy {
 
     static func hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot) -> Bool {
         budget.hasReportedTokensAboveBudget
-    }
-
-    @MainActor
-    static func hasReportedTokensAboveBudget(task: AgentTask) -> Bool {
-        hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot(task: task))
     }
 }

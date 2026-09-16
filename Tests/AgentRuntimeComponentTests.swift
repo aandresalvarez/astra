@@ -220,14 +220,26 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             phase: "run",
             idleTimeoutSeconds: 30
         ) == 60)
+        // A resume is where the deliverable usually gets written, so it needs
+        // the wide window at least as much as the first run does.
         #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: artifactTask,
             phase: "resume",
             idleTimeoutSeconds: 240
-        ) == 180)
+        ) == 360)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "approved_plan",
+            idleTimeoutSeconds: 240
+        ) == 360)
         #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: informationalTask,
             phase: "run",
+            idleTimeoutSeconds: 240
+        ) == 180)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: informationalTask,
+            phase: "resume",
             idleTimeoutSeconds: 240
         ) == 180)
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(namedDeliverableTask))
@@ -236,6 +248,43 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             phase: "run",
             idleTimeoutSeconds: 240
         ) == 360)
+    }
+
+    /// The property that makes this policy depend on the watchdog rather than
+    /// merely inform it: for a deliverable task, every idle timeout below 360s
+    /// produces a window *wider* than the idle deadline itself. The generic
+    /// idle branch therefore has to stand down while that window is live, or
+    /// the number this function returns is never reached and the widening is
+    /// dead code — which is what it was. See
+    /// `artifactWindowDefersTheGenericIdleDeadline`.
+    @Test("A deliverable window is always wider than a sub-360s idle deadline")
+    func deliverableWindowOutlivesShortIdleDeadlines() throws {
+        let workspace = Workspace(name: "Deliverable Window", primaryPath: "/tmp/deliverable-window")
+        let artifactTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace
+        )
+
+        for idleTimeout in [30.0, 60.0, 120.0, 180.0, 300.0, 359.0] {
+            let window = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+                task: artifactTask,
+                phase: "resume",
+                idleTimeoutSeconds: idleTimeout
+            )
+            #expect(window > idleTimeout, "an idle timeout of \(idleTimeout)s must widen")
+        }
+
+        // At and past the 360s cap the two orders swap back, and the semantic
+        // branch reaches its deadline first on its own. Nothing to defer.
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "resume",
+            idleTimeoutSeconds: 600
+        ) < 600)
     }
 }
 
@@ -670,6 +719,71 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.status == .running)
         #expect(run.stopReason.isEmpty)
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
+    }
+
+    @Test("Only a required host tool blocks the launch when its helper is missing")
+    func onlyRequiredHostControlToolBlocksLaunchWhenHelperMissing() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let hostControlHelper = (RuntimePathResolver.astraToolsPath as NSString)
+            .appendingPathComponent("astra-host-control")
+
+        func makeJiraTask(goal: String) throws -> (AgentTask, TaskRun) {
+            let workspace = Workspace(name: "Jira", primaryPath: NSTemporaryDirectory())
+            let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+            skill.workspace = workspace
+            let connector = Connector(
+                name: "Jira",
+                serviceType: "jira",
+                connectorDescription: "Jira REST API",
+                baseURL: "https://example.atlassian.net",
+                authMethod: "none"
+            )
+            connector.workspace = workspace
+            connector.skill = skill
+            let task = AgentTask(title: "Jira", goal: goal, workspace: workspace, runtime: .claudeCode)
+            task.skills = [skill]
+            task.status = .running
+            let run = TaskRun(task: task)
+            for model in [workspace, skill, connector, task, run] as [any PersistentModel] {
+                context.insert(model)
+            }
+            try context.save()
+            return (task, run)
+        }
+
+        // Offered: the turn never says "Jira", so the host-control server is
+        // materialized for a route this turn did not ask for. A capability the
+        // turn never asked for must not be able to abort the run.
+        let (offeredTask, offeredRun) = try makeJiraTask(goal: "Summarize my emails from today")
+        let offered = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: offeredTask,
+            run: offeredRun,
+            modelContext: context,
+            phase: "run",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(offered.didPass)
+        #expect(offered.status == .capabilityRuntimeResourcesPassed)
+        #expect(offeredTask.status == .running)
+        #expect(offeredRun.stopReason.isEmpty)
+
+        // Required: the turn names Jira, so the run cannot honestly proceed
+        // without the route it was told it has.
+        let (requiredTask, requiredRun) = try makeJiraTask(goal: "Read ASTRA-123 in Jira")
+        let required = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: requiredTask,
+            run: requiredRun,
+            modelContext: context,
+            phase: "run",
+            contextText: "Read ASTRA-123 in Jira",
+            mcpIsExecutableFile: { $0 != hostControlHelper }
+        )
+        #expect(!required.didPass)
+        #expect(required.reason == "mcp_server_executable_missing")
+        #expect(required.detail?.contains("astra_host") == true)
+        #expect(requiredTask.status == .failed)
+        #expect(requiredRun.stopReason == "mcp_server_executable_missing")
     }
 
     @Test("Docker workspace preflight blocks when bundled workspace helper is missing")
@@ -1245,28 +1359,102 @@ struct AgentRuntimeBudgetPolicyTests {
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
 
+    @Test("Disabled budget does not block launch")
+    func disabledBudgetAllowsLaunch() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: String(repeating: "x", count: 100_000),
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(allowed)
+        #expect(task.status == .draft)
+        #expect(run.status == .running)
+        #expect(!task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    /// The other half: a budget the user did set still honours Warning Only.
+    /// Without this the fix reads as "ignore the preference", which is not what
+    /// it says.
+    @Test("A configured budget still honours warning mode before launch")
+    func configuredBudgetStillWarnsBeforeLaunch() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 1)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: "this prompt is long enough on its own to exceed the tiny budget",
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(allowed)
+        #expect(task.status == .draft)
+        #expect(task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
     @Test("Reported usage above budget is enforced only in hard stop mode")
     func reportedUsageAboveBudgetFollowsEnforcementMode() {
         let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 10)
         task.tokensUsed = 11
+        let budget = AgentRuntimeBudgetSnapshot(task: task)
         let result = AgentProcessResult(exitCode: 0)
 
-        #expect(AgentRuntimeBudgetPolicy.hasReportedTokensAboveBudget(task: task))
+        #expect(AgentRuntimeBudgetPolicy.hasReportedTokensAboveBudget(budget: budget))
         #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            task: task,
+            budget: budget,
             budgetEnforcementMode: .hardStop
         ))
         #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            task: task,
+            budget: budget,
             budgetEnforcementMode: .warning
+        ))
+    }
+
+    @Test("Disabled budget ignores lifetime task usage above the former ceiling")
+    func disabledBudgetIgnoresLifetimeTaskUsage() {
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        task.tokensUsed = 32_046_266
+        let budget = AgentRuntimeBudgetSnapshot(task: task)
+
+        #expect(budget.effectiveTokenBudget == Int.max)
+        #expect(!budget.hasEnforceableBudget)
+        #expect(!budget.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: AgentProcessResult(exitCode: 0),
+            budget: budget,
+            budgetEnforcementMode: .hardStop
         ))
     }
 
     @Test("Disabled budgets ignore budget result flags")
     func disabledBudgetsIgnoreBudgetResultFlags() {
-        let disabledBudget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: Int.max, tokensUsed: 1_000_000)
+        let disabledBudget = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: Int.max,
+            tokensUsed: 1_000_000
+        )
         let result = AgentProcessResult(exitCode: 1, budgetExceeded: true)
 
         #expect(!disabledBudget.hasReportedTokensAboveBudget)
@@ -1383,5 +1571,91 @@ struct AgentRuntimeFailurePayloadTests {
         )
 
         #expect(payload == "Agent exited with code 1. plain stderr")
+    }
+}
+
+@Suite("Runtime Permission Approval Gate")
+@MainActor
+struct RuntimePermissionApprovalGateTests {
+    /// Task 5FB5E95B: five runs, five approval cards, five identical 403s.
+    /// The gate has to refuse the card for a denial no approval can lift.
+    @Test("A provider-side denial does not raise an approval card")
+    func providerDenialDoesNotPause() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"Failed to authenticate. API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .permissionDenied)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ) == false)
+    }
+
+    @Test("A local approval prompt still raises an approval card")
+    func localApprovalPromptStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Copilot", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 15,
+            rawError: "Copilot is waiting for a permission approval ASTRA cannot answer directly: Allow access to these paths? (y/n):",
+            providerVersion: "GitHub Copilot CLI 0.0.342",
+            stream: nil
+        )
+
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
+    }
+
+    /// The structured signal is unambiguous — the runtime asked for something —
+    /// so narrowing the keyword branch must not narrow this one with it.
+    @Test("A structured permission.denied event still pauses even for a provider-side denial")
+    func structuredPermissionEventStillPauses() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Vertex", goal: "Goal")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent(task: task, type: "permission.denied", payload: "Bash", run: run))
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: #"API Error: 403 {"error":{"status":"PERMISSION_DENIED"}}"#,
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        #expect(diagnostic.isApprovableRuntimePermission == false)
+        #expect(RuntimePermissionApprovalGate.shouldPause(
+            failureDiagnostic: diagnostic,
+            task: task,
+            run: run
+        ))
     }
 }

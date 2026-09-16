@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
@@ -145,13 +146,108 @@ struct ConnectorCredentialSaveFailurePresentation: Equatable {
     let message: String
     let actionTitle: String
     let actionSystemImage: String
+    /// Whether the action button is offered at all. A button that reattempts a
+    /// write which cannot succeed is worse than no button: it puts the blame on
+    /// the user for not clicking hard enough. Two cases have none — an
+    /// admission rejection, where the value itself is the problem, and a
+    /// keychain whose bootstrap item is gone, where no write of any variant can
+    /// reach the store again.
+    let isRetryable: Bool
 
-    static func keychainSaveFailed(key: String) -> ConnectorCredentialSaveFailurePresentation {
+    init(
+        key: String,
+        message: String,
+        actionTitle: String,
+        actionSystemImage: String,
+        isRetryable: Bool = true
+    ) {
+        self.key = key
+        self.message = message
+        self.actionTitle = actionTitle
+        self.actionSystemImage = actionSystemImage
+        self.isRetryable = isRetryable
+    }
+
+    /// `diagnosis` is the keychain layer's own account of why the write failed,
+    /// carried back by the write itself. It has always been in the log and
+    /// never on screen, so both of its cases got the access-prompt message
+    /// below — including the one where no prompt will ever appear because there
+    /// is no item to be denied. `nil` keeps that default, which is the right
+    /// guess when the layer offered no diagnosis at all.
+    static func keychainSaveFailed(
+        key: String,
+        diagnosis: KeychainWriteDiagnosis? = nil
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        switch diagnosis {
+        // No button. `.notConfigured` is `errSecItemNotFound` raised at the
+        // `bootstrap-password` stage, and that stage only asks for the password
+        // without creating one when the keychain file already exists — so this
+        // diagnosis means precisely "the store is on disk and the login-keychain
+        // item that unlocks it is gone". The bootstrap password is 32 random
+        // bytes and is the only key; once it is gone the file cannot be opened
+        // by this app or any other, and no retry changes that.
+        //
+        // Retrying is not merely useless here, it is unreachable: the recovery
+        // that would rebuild the store is fenced by
+        // `dedicatedKeychainIsBeyondRecoveryAtPath:`, which admits only a file
+        // that is missing or unparseable. An intact-but-orphaned keychain is
+        // neither, so `writeSecret` returns without recovering however the
+        // write is spelled. Offering "Rebuild & Save" promised a repair the
+        // layer below declines to perform, and the same failure came back on
+        // every click.
+        case .notConfigured:
+            return ConnectorCredentialSaveFailurePresentation(
+                key: key,
+                message: "Could not save \(key): ASTRA's Keychain is on disk but the login-keychain item "
+                    + "that unlocks it is gone, so it can no longer be opened. Credentials already in it "
+                    + "cannot be recovered, and saving again will not help.",
+                actionTitle: "Not saved",
+                actionSystemImage: "exclamationmark.shield",
+                isRetryable: false
+            )
+        case .accessDenied, .unknown, .none:
+            return ConnectorCredentialSaveFailurePresentation(
+                key: key,
+                message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
+                actionTitle: "Allow & Save",
+                actionSystemImage: MacOSPermissionKind.keychain.systemImage,
+                isRetryable: true
+            )
+        }
+    }
+
+    /// The presentation a failed save earns, read entirely off the outcome the
+    /// write returned.
+    ///
+    /// Nothing here goes back to the Obj-C layer's failure slot after the fact.
+    /// That is one process-global slot emptied by a destructive drain, so between the
+    /// write and this call another failing write — or one of the batch drains on
+    /// the startup, workspace-setup and capability-install paths — can replace or
+    /// empty it, and the user is then told to grant Keychain access for a
+    /// keychain that is merely unconfigured, or the reverse.
+    static func forFailedSave(
+        _ outcome: ConnectorCredentialSaveOutcome,
+        key: String
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        if let verdict = outcome.rejection {
+            return .admissionRejected(key: key, verdict: verdict)
+        }
+        return .keychainSaveFailed(key: key, diagnosis: outcome.keychainDiagnosis)
+    }
+
+    /// The value was refused before it ever reached the Keychain — it is not
+    /// a credential this connector's service can use. See
+    /// `ConnectorCredentialAdmission`.
+    static func admissionRejected(
+        key: String,
+        verdict: ConnectorCredentialAdmissionVerdict
+    ) -> ConnectorCredentialSaveFailurePresentation {
         ConnectorCredentialSaveFailurePresentation(
             key: key,
-            message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
-            actionTitle: "Allow & Save",
-            actionSystemImage: MacOSPermissionKind.keychain.systemImage
+            message: verdict.message(forKey: key) ?? "\(key) is not a valid credential for this connector.",
+            actionTitle: "Not saved",
+            actionSystemImage: "exclamationmark.shield",
+            isRetryable: false
         )
     }
 }
@@ -188,7 +284,7 @@ struct ConnectorEditorView: View {
     @State private var pendingDeletion: PendingConnectorDeletion?
     @FocusState private var isNameFocused: Bool
 
-    private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+    private static let secretPatterns = RunSecretRedaction.keychainBackedKeyPatterns
 
     private static func isSecretKey(_ key: String) -> Bool {
         let upper = key.uppercased()
@@ -1034,12 +1130,22 @@ struct ConnectorEditorView: View {
         saveSharingChange()
     }
 
+    /// Always interactive, first attempt and retry alike: a refused ACL is far
+    /// and away the common failure and securityd's dialog is the only thing
+    /// that clears it. The other variant exists to rebuild an unreadable
+    /// keychain, but that recovery is fenced to a file that is missing or
+    /// unparseable — never one of the states a connector save actually reports
+    /// — so routing a retry through it would trade the dialog for nothing.
     private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        let saved = connector.saveCredential(key: key, value: newCredValue, allowUserInteraction: true)
-        guard saved else {
-            credentialSaveError = .keychainSaveFailed(key: key)
+        let outcome = connector.saveCredentialChecked(
+            key: key,
+            value: newCredValue,
+            allowUserInteraction: true
+        )
+        guard outcome.isSaved else {
+            credentialSaveError = presentation(for: outcome, key: key)
             pendingCredentialSaveContext = .newCredential
             return
         }
@@ -1058,16 +1164,17 @@ struct ConnectorEditorView: View {
         pendingCredentialSaveContext = nil
     }
 
+    /// See `addCredential()` for why this is always the interactive write.
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        let saved = connector.saveCredential(
+        let outcome = connector.saveCredentialChecked(
             key: normalizedKey,
             value: replacementCredentialValue,
             allowUserInteraction: true
         )
-        guard saved else {
-            credentialSaveError = .keychainSaveFailed(key: normalizedKey)
+        guard outcome.isSaved else {
+            credentialSaveError = presentation(for: outcome, key: normalizedKey)
             pendingCredentialSaveContext = .replacement(key: normalizedKey)
             return
         }
@@ -1085,6 +1192,13 @@ struct ConnectorEditorView: View {
         pendingCredentialSaveContext = nil
     }
 
+    private func presentation(
+        for outcome: ConnectorCredentialSaveOutcome,
+        key: String
+    ) -> ConnectorCredentialSaveFailurePresentation {
+        .forFailedSave(outcome, key: key)
+    }
+
     private func credentialSaveErrorLabel(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
         Label(presentation.message, systemImage: "exclamationmark.triangle.fill")
             .font(Stanford.caption(12))
@@ -1092,16 +1206,19 @@ struct ConnectorEditorView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    @ViewBuilder
     private func retryCredentialSaveButton(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
-        Button {
-            retryPendingCredentialSave(for: presentation)
-        } label: {
-            Label(presentation.actionTitle, systemImage: presentation.actionSystemImage)
-                .font(Stanford.caption(12).weight(.semibold))
-                .lineLimit(1)
+        if presentation.isRetryable {
+            Button {
+                retryPendingCredentialSave(for: presentation)
+            } label: {
+                Label(presentation.actionTitle, systemImage: presentation.actionSystemImage)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 
     private func retryPendingCredentialSave(for presentation: ConnectorCredentialSaveFailurePresentation) {

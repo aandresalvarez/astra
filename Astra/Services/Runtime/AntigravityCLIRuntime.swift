@@ -24,6 +24,130 @@ enum AntigravityCLIRuntime {
         "GPT-OSS-120B"
     ]
 
+    /// One line of `agy models`: a launch-ready id (what actually gets
+    /// written to settings.json) paired with its human-facing name.
+    struct AntigravityModelOption: Equatable, Sendable {
+        let id: String
+        let displayName: String
+    }
+
+    /// A family of `agy` SKUs that differ only by a trailing reasoning-effort
+    /// marker (`gemini-3.8-flash-high` / `-medium` / `-low`), discovered by
+    /// stripping a marker shared by both the id and its display name.
+    /// Antigravity has no separate `--model`/`--effort` pairing at the
+    /// settings.json layer `agy` reads from — every SKU `agy models` prints
+    /// is already a complete, independently launchable id — so this grouping
+    /// exists purely to give the composer's Model/Effort menus the same
+    /// two-step shape the other providers have. `fullModelID` always
+    /// resolves a (base, effort) choice back to one of the original ids
+    /// before it reaches `AgentTask.model`, so that field's meaning never
+    /// changes: it is always the exact string `agy` understands.
+    struct AntigravityModelGroup: Equatable, Sendable {
+        let baseID: String
+        let baseDisplayName: String
+        /// effort -> full id, e.g. "high" -> "gemini-3.8-flash-high".
+        let efforts: [String: String]
+
+        static let displayOrder = ["low", "medium", "high"]
+
+        var sortedEfforts: [String] {
+            Self.displayOrder.filter { efforts[$0] != nil }
+        }
+
+        /// Effort to preselect when the user switches to this base model
+        /// without picking one explicitly — "medium" when offered, else the
+        /// next best thing, never silently defaulting to the priciest tier.
+        var preferredDefaultEffort: String? {
+            for candidate in ["medium", "high", "low"] where efforts[candidate] != nil {
+                return candidate
+            }
+            return sortedEfforts.first
+        }
+    }
+
+    private static let effortMarkers: [(idSuffix: String, displaySuffix: String, effort: String)] = [
+        ("-high", " (High)", "high"),
+        ("-medium", " (Medium)", "medium"),
+        ("-low", " (Low)", "low"),
+    ]
+
+    /// Groups `agy models` options by stripping a trailing effort marker
+    /// that both the id and display name agree on. A model with no matching
+    /// marker (Claude's ids, which take no `--effort`) becomes its own
+    /// single-entry group with no efforts, so its Effort menu stays hidden.
+    static func groupModelOptions(_ options: [AntigravityModelOption]) -> [AntigravityModelGroup] {
+        var order: [String] = []
+        var baseDisplayNames: [String: String] = [:]
+        var effortsByBase: [String: [String: String]] = [:]
+
+        for option in options {
+            let split = splitEffort(option)
+            let baseID = split?.baseID ?? option.id
+            let baseDisplayName = split?.baseDisplayName ?? option.displayName
+            if baseDisplayNames[baseID] == nil {
+                order.append(baseID)
+            }
+            baseDisplayNames[baseID] = baseDisplayName
+            if let effort = split?.effort {
+                effortsByBase[baseID, default: [:]][effort] = option.id
+            }
+        }
+
+        return order.map { baseID in
+            AntigravityModelGroup(
+                baseID: baseID,
+                baseDisplayName: baseDisplayNames[baseID] ?? baseID,
+                efforts: effortsByBase[baseID] ?? [:]
+            )
+        }
+    }
+
+    private static func splitEffort(
+        _ option: AntigravityModelOption
+    ) -> (baseID: String, baseDisplayName: String, effort: String)? {
+        for marker in effortMarkers {
+            guard option.id.hasSuffix(marker.idSuffix),
+                  option.displayName.hasSuffix(marker.displaySuffix) else { continue }
+            let baseID = String(option.id.dropLast(marker.idSuffix.count))
+            let baseDisplayName = String(option.displayName.dropLast(marker.displaySuffix.count))
+            guard !baseID.isEmpty, !baseDisplayName.isEmpty else { continue }
+            return (baseID, baseDisplayName, marker.effort)
+        }
+        return nil
+    }
+
+    /// Resolves a (base, effort) choice from the composer back to one of
+    /// `agy`'s real model ids. Falls back to `base` unchanged when there is
+    /// no matching SKU — including when `base` is already a complete id
+    /// (nothing to append to) — which keeps this safe to call on values
+    /// persisted before this grouping existed.
+    static func fullModelID(base: String, effort: String?, groups: [AntigravityModelGroup]) -> String {
+        guard let effort,
+              let group = groups.first(where: { $0.baseID == base }),
+              let fullID = group.efforts[effort] else {
+            return base
+        }
+        return fullID
+    }
+
+    /// Inverse of `fullModelID`: given the id currently stored on the task,
+    /// finds which group it belongs to and which effort (if any) it
+    /// represents, so the composer can preselect both menus correctly.
+    static func currentSelection(
+        model: String,
+        groups: [AntigravityModelGroup]
+    ) -> (baseID: String, effort: String?) {
+        for group in groups {
+            if group.baseID == model {
+                return (group.baseID, nil)
+            }
+            for (effort, fullID) in group.efforts where fullID == model {
+                return (group.baseID, effort)
+            }
+        }
+        return (model, nil)
+    }
+
     static func detectPath() -> String {
         RuntimePathResolver.detectAntigravityPath()
     }
@@ -45,6 +169,50 @@ enum AntigravityCLIRuntime {
         return [
             (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db")
         ]
+    }
+
+    /// The ADC route's credentials live outside the keychain, so
+    /// `authReadablePaths` alone leaves `AGY_ADC_AUTH=true` pointing at a file
+    /// Seatbelt denies: readiness passes (it runs the same grant) and the task
+    /// then fails to authenticate. Mirrors
+    /// `ClaudeCodeRuntime.vertexADCReadablePaths`, which grants the same
+    /// directory for the Vertex route. Empty for consumer sign-in, so the
+    /// grant only exists while the route that needs it is selected.
+    static func adcReadablePaths(
+        mode: AntigravityAuthMode,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        guard mode == .adc else { return [] }
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(
+            homeDirectory: trimmedHome
+        )
+        return [
+            gcloudConfig,
+            (gcloudConfig as NSString).appendingPathComponent(
+                ExecutionEnvironmentCredentialProjection.gcpADCFileName
+            )
+        ]
+    }
+
+    /// `defaults:`-based twin of `adcReadablePaths(mode:userHome:)`, for the
+    /// launch and utility paths that resolve the route from settings.
+    static func adcReadablePaths(
+        defaults: UserDefaults = .standard,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        adcReadablePaths(mode: resolvedAuthMode(defaults: defaults), userHome: userHome)
+    }
+
+    /// Everything an Antigravity launch has to be able to read. Callers use
+    /// this rather than concatenating the two lists themselves, so a launch
+    /// site cannot pick up the keychain grant and silently miss the ADC one.
+    static func launchReadablePaths(
+        defaults: UserDefaults = .standard,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        authReadablePaths(userHome: userHome) + adcReadablePaths(defaults: defaults, userHome: userHome)
     }
 
     static func versionSummary(executablePath: String) -> String? {
@@ -70,29 +238,65 @@ enum AntigravityCLIRuntime {
         uniqueModels([configuredModel(settingsURL: settingsURL)].compactMap { $0 } + bundledModelNames)
     }
 
-    static func modelNames(executablePath: String) -> [String]? {
+    /// `agy models` answers for whichever account the environment points at,
+    /// so discovery has to be handed the same auth route and provider home a
+    /// launch would use. Probing the default home instead would cache another
+    /// account's catalog — or nothing at all, for an ADC-only user.
+    static func modelOptions(
+        executablePath: String,
+        authMode: AntigravityAuthMode,
+        providerHomeDirectory: String
+    ) -> [AntigravityModelOption]? {
         guard FileManager.default.isExecutableFile(atPath: executablePath),
-              let output = runProbe(executablePath: executablePath, args: ["models"], timeoutSeconds: 8) else {
+              let output = runProbe(
+                  executablePath: executablePath,
+                  args: ["models"],
+                  timeoutSeconds: 8,
+                  environment: probeEnvironment(
+                      mode: authMode,
+                      providerHomeDirectory: providerHomeDirectory,
+                      extraVariables: ["NO_COLOR": "1"]
+                  )
+              ) else {
             return nil
         }
-        let models = parseModelNames(output)
-        return models.isEmpty ? nil : models
+        let options = parseModelOptions(output)
+        return options.isEmpty ? nil : options
     }
 
-    /// Parses `agy models` output: one model per line. The strings double as
-    /// the `--model` value and the display name; parentheticals like
-    /// "(Thinking)" or "(Low)" are part of the model identity, not selection
-    /// markers, so lines are kept verbatim.
+    /// Parses `agy models` output into (id, display name) pairs. Real output
+    /// is tab-separated (`<id>\t<display name>`, confirmed against the
+    /// installed CLI); a bare line with no tab — as in the static
+    /// `bundledModelNames` fallback — keeps that string as both id and
+    /// display name. `agy` also prints a `Fetching available models...`
+    /// progress line to stderr while the table loads, and `runProbe` merges
+    /// stdout+stderr, so that line (and the "Available models"/"Tip:"
+    /// header lines) must be filtered before it is mistaken for a model.
+    static func parseModelOptions(_ output: String) -> [AntigravityModelOption] {
+        var seen: Set<String> = []
+        var options: [AntigravityModelOption] = []
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let lower = line.lowercased()
+            guard !lower.hasPrefix("available models"),
+                  !lower.hasPrefix("tip:"),
+                  !lower.hasPrefix("fetching") else { continue }
+            let columns = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let id = columns[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
+            let displayName = columns.count > 1
+                ? columns[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            options.append(AntigravityModelOption(id: id, displayName: displayName.isEmpty ? id : displayName))
+        }
+        return options
+    }
+
+    /// `[String]` twin of `parseModelOptions`, for callers that only need
+    /// the launch-ready ids (e.g. a log line).
     static func parseModelNames(_ output: String) -> [String] {
-        let lines = output
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { line in
-                guard !line.isEmpty else { return false }
-                let lower = line.lowercased()
-                return !lower.hasPrefix("available models") && !lower.hasPrefix("tip:")
-            }
-        return RuntimeModelAvailability.cleanProviderModels(lines)
+        RuntimeModelAvailability.cleanProviderModels(parseModelOptions(output).map(\.id))
     }
 
     static func configuredModel(settingsURL: URL = settingsURL()) -> String? {
@@ -145,6 +349,84 @@ enum AntigravityCLIRuntime {
         }
     }
 
+    /// Resolves the Antigravity auth-routing env var from the persisted
+    /// setting, so the spawned `agy` process inherits the user's chosen
+    /// sign-in method. GUI apps don't pick up shell env from
+    /// `.zshrc`/`.zprofile`, so this is the only place the ADC route reaches
+    /// the runtime — exporting it in a terminal has no effect on ASTRA's own
+    /// launches.
+    static func authEnvironment(defaults: UserDefaults = .standard) -> [String: String] {
+        authEnvironment(mode: resolvedAuthMode(defaults: defaults))
+    }
+
+    /// The persisted route, defaulting to consumer sign-in when unset or
+    /// unrecognized.
+    static func resolvedAuthMode(defaults: UserDefaults = .standard) -> AntigravityAuthMode {
+        let raw = defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue
+        return AntigravityAuthMode(rawValue: raw) ?? .consumer
+    }
+
+    /// Env keys the selected route needs *absent* from the child process.
+    /// `agy` treats the mere presence of `AGY_ADC_AUTH` as "use ADC" — its own
+    /// logout text says to `unset` the variable, not set it to false — so
+    /// consumer mode cannot express itself as an override. If ASTRA was itself
+    /// launched with the variable exported, every env here is built from
+    /// `RuntimeProcessEnvironment.enriched`, which starts from
+    /// `ProcessInfo.processInfo.environment`; without removal the inherited
+    /// value outlives the user switching back to Google Sign-In.
+    static func authEnvironmentRemovedKeys(mode: AntigravityAuthMode) -> [String] {
+        mode == .adc ? [] : ["AGY_ADC_AUTH"]
+    }
+
+    /// Pure variant for call sites that already have the resolved mode
+    /// threaded through (e.g. `RuntimeReadinessConfiguration`), so the
+    /// live-account readiness check honors the same setting as a real
+    /// launch without re-reading `UserDefaults` itself.
+    static func authEnvironment(mode: AntigravityAuthMode) -> [String: String] {
+        guard mode == .adc else { return [:] }
+        return ["AGY_ADC_AUTH": "true"]
+    }
+
+    /// `RuntimeProcessEnvironment.enriched` with the route's removals applied.
+    /// Antigravity launches go through this instead of `enriched` directly:
+    /// `enriched` only ever sets keys, so it cannot express consumer mode.
+    static func enrichedEnvironment(
+        additionalPaths: [String] = [],
+        extraVariables: [String: String],
+        mode: AntigravityAuthMode
+    ) -> [String: String] {
+        var environment = RuntimeProcessEnvironment.enriched(
+            additionalPaths: additionalPaths,
+            extraVariables: extraVariables
+        )
+        for key in authEnvironmentRemovedKeys(mode: mode) {
+            environment.removeValue(forKey: key)
+        }
+        return environment
+    }
+
+    /// The environment every out-of-band `agy` invocation needs: the selected
+    /// auth route on top of the configured provider home. Readiness and model
+    /// discovery both go through it, so neither can end up interrogating a
+    /// different account than the launch it is reporting on — `agy` reads its
+    /// credentials out of `HOME`, and the consumer route has to strip an
+    /// inherited `AGY_ADC_AUTH` rather than merely not set it.
+    static func probeEnvironment(
+        mode: AntigravityAuthMode,
+        providerHomeDirectory: String,
+        extraVariables: [String: String] = [:]
+    ) -> [String: String] {
+        var extraVars = extraVariables
+        for (key, value) in authEnvironment(mode: mode) {
+            extraVars[key] = value
+        }
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty {
+            extraVars["HOME"] = trimmedHome
+        }
+        return enrichedEnvironment(extraVariables: extraVars, mode: mode)
+    }
+
     static func buildCommand(
         executablePath: String,
         prompt: String,
@@ -157,14 +439,28 @@ enum AntigravityCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
-        permissionArguments: [String]
+        permissionArguments: [String],
+        structuredOutputAllowed: Bool = true,
+        defaults: UserDefaults = .standard
     ) -> AntigravityCLICommandPlan {
-        var args = [
-            "--print",
-            prompt,
-            "--print-timeout",
-            printTimeoutArgument(timeoutSeconds)
-        ]
+        // Plain text gives ASTRA prose and nothing else: no turn boundary, no
+        // usage, no session id, and tool calls only as scraped text. The
+        // structured stream carries all four, which is what lets an Antigravity
+        // run report tokens and end on a real terminal event rather than on
+        // process exit alone. Older builds reject the flag and would fail the
+        // launch, so this asks first.
+        //
+        // Utility runs opt out: they hand raw stdout straight to their own
+        // parser (commit and PR authoring read `ASTRA_*_SUGGESTION` text), so
+        // wrapping the answer in `init`/`step_update`/`result` envelopes would
+        // leave that parser with nothing it can decode.
+        let structuredOutput = structuredOutputAllowed
+            && structuredOutputSupported(executablePath: executablePath, defaults: defaults)
+        var args = ["--print", prompt]
+        if structuredOutput {
+            args += ["--output-format", "stream-json"]
+        }
+        args += ["--print-timeout", printTimeoutArgument(timeoutSeconds)]
         if let diagnosticLogPath,
            !diagnosticLogPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--log-file", diagnosticLogPath]
@@ -182,6 +478,9 @@ enum AntigravityCLIRuntime {
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
+        for (key, value) in authEnvironment(defaults: defaults) {
+            extraVars[key] = value
+        }
         for (key, value) in taskEnvironment {
             extraVars[key] = value
         }
@@ -192,16 +491,17 @@ enum AntigravityCLIRuntime {
         let additionalPathPrefix = includeAstraToolsPath
             ? pathPrefix + [RuntimePathResolver.astraToolsPath]
             : pathPrefix
-        let env = RuntimeProcessEnvironment.enriched(
+        let env = enrichedEnvironment(
             additionalPaths: additionalPathPrefix,
-            extraVariables: extraVars
+            extraVariables: extraVars,
+            mode: resolvedAuthMode(defaults: defaults)
         )
 
         return AntigravityCLICommandPlan(
             executablePath: executablePath,
             arguments: args,
             environment: env,
-            parsesJSONLines: false,
+            parsesJSONLines: structuredOutput,
             diagnosticLogPath: diagnosticLogPath
         )
     }
@@ -305,6 +605,116 @@ enum AntigravityCLIRuntime {
         }
     }
 
+    /// Whether this `agy` understands `--output-format`. Older builds reject
+    /// the flag outright and the run dies on launch, so the answer is probed
+    /// from `--help` (50 ms, no auth, no quota) during the readiness check and
+    /// cached — `buildCommand` only ever reads the cached verdict, since it
+    /// runs on the main actor and must not shell out.
+    ///
+    /// Unknown means plain text. That costs a run its token accounting until
+    /// the first readiness check lands, which is the harmless direction to be
+    /// wrong in; assuming support and being wrong fails the run outright.
+    static func structuredOutputSupported(
+        executablePath: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let cached = defaults.string(forKey: AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)),
+              let separator = cached.lastIndex(of: ":") else {
+            return false
+        }
+        let stamp = String(cached[cached.startIndex..<separator])
+        let verdict = String(cached[cached.index(after: separator)...])
+        guard stamp == executableStamp(executablePath) else { return false }
+        return verdict == "true"
+    }
+
+    @discardableResult
+    static func refreshStructuredOutputSupport(
+        executablePath: String,
+        authMode: AntigravityAuthMode = .consumer,
+        providerHomeDirectory: String = "",
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let stamp = executableStamp(executablePath)
+        let key = AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
+        if let cached = defaults.string(forKey: key),
+           let separator = cached.lastIndex(of: ":"),
+           String(cached[cached.startIndex..<separator]) == stamp {
+            return String(cached[cached.index(after: separator)...]) == "true"
+        }
+        guard FileManager.default.isExecutableFile(atPath: executablePath),
+              // `--help` lists flags whoever is signed in, so the route does
+              // not change the answer — but running it under the same
+              // environment as the other probes keeps one CLI invocation from
+              // behaving unlike its neighbours.
+              let help = runProbe(
+                  executablePath: executablePath,
+                  args: ["--help"],
+                  timeoutSeconds: 8,
+                  environment: probeEnvironment(
+                      mode: authMode,
+                      providerHomeDirectory: providerHomeDirectory,
+                      extraVariables: ["NO_COLOR": "1"]
+                  )
+              ) else {
+            return false
+        }
+        let supported = parseStructuredOutputSupport(help)
+        cacheStructuredOutputSupport(supported, executablePath: executablePath, defaults: defaults)
+        return supported
+    }
+
+    static func cacheStructuredOutputSupport(
+        _ supported: Bool,
+        executablePath: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            "\(executableStamp(executablePath)):\(supported)",
+            forKey: AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
+        )
+    }
+
+    /// `agy --help` prints its flags one per line; the flag's presence is the
+    /// whole signal.
+    static func parseStructuredOutputSupport(_ helpText: String) -> Bool {
+        helpText.contains("--output-format")
+    }
+
+    private static func executableStamp(_ executablePath: String) -> String {
+        let trimmed = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "none" }
+        // npm-style installs put a symlink on PATH, and a link's own mtime
+        // survives the upgrade that replaces what it points at. Stamping the
+        // link would keep serving the old verdict: an upgraded CLI stuck in
+        // plain text, or worse, a downgraded one still being handed a flag it
+        // no longer understands. Size joins mtime because an in-place rewrite
+        // can land inside the same second.
+        let resolved = URL(fileURLWithPath: trimmed).resolvingSymlinksInPath().path
+        let size = (try? FileManager.default.attributesOfItem(atPath: resolved)[.size] as? Int) ?? nil
+        return "\(resolved)@\(AgentRuntimeProcessRunner.fileModificationTimestamp(resolved))+\(size ?? -1)"
+    }
+
+    /// Structured frames when the run asked for `--output-format stream-json`,
+    /// falling back to the plain-text parser for anything agy prints outside
+    /// that stream — banners, and the auth/permission notices the plain-text
+    /// path still owns.
+    static func parseEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        guard parsesJSONLines,
+              let events = AntigravityStreamEventParser.parseStructured(line: line) else {
+            return parsePlainText(line: line)
+        }
+        return events
+    }
+
+    static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
+        guard parsesJSONLines,
+              let events = AntigravityStreamEventParser.parseStructuredAgentEvents(line: line) else {
+            return parsePlainTextAgentEvents(line: line, appendingNewline: true)
+        }
+        return events
+    }
+
     static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
         parsePlainTextAgentEvents(line: line, appendingNewline: appendingNewline)
             .compactMap(AgentEventRecorder.parsedEvent(from:))
@@ -340,11 +750,16 @@ enum AntigravityCLIRuntime {
         "\(max(1, Int(timeoutSeconds)))s"
     }
 
-    private static func runProbe(executablePath: String, args: [String], timeoutSeconds: TimeInterval) -> String? {
+    private static func runProbe(
+        executablePath: String,
+        args: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String]
+    ) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = args
-        process.environment = RuntimeProcessEnvironment.enriched(extraVariables: ["NO_COLOR": "1"])
+        process.environment = environment
 
         let stdout = Pipe()
         let stderr = Pipe()

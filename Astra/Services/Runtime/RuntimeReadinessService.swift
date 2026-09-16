@@ -51,6 +51,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+    var antigravityAuthMode: AntigravityAuthMode
 
     init(
         runtime: AgentRuntimeID,
@@ -62,7 +63,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.init(
             runtime: runtime,
@@ -81,7 +83,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
             vertexRegion: vertexRegion,
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
-            vertexHaikuModel: vertexHaikuModel
+            vertexHaikuModel: vertexHaikuModel,
+            antigravityAuthMode: antigravityAuthMode
         )
     }
 
@@ -94,7 +97,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         vertexRegion: String,
         vertexOpusModel: String,
         vertexSonnetModel: String,
-        vertexHaikuModel: String
+        vertexHaikuModel: String,
+        antigravityAuthMode: AntigravityAuthMode = .consumer
     ) {
         self.runtime = runtime
         self.scope = scope
@@ -105,6 +109,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         self.vertexOpusModel = vertexOpusModel
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
+        self.antigravityAuthMode = antigravityAuthMode
     }
 
     var claudePath: String {

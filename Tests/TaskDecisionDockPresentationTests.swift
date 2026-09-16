@@ -19,6 +19,65 @@ struct TaskDecisionDockPresentationTests {
         #expect(!actionTitles(presentation).contains("Approve result"))
     }
 
+    @Test("Staged connector mutation takes the dock with a typed review action")
+    func stagedConnectorMutationUsesTypedReviewAction() throws {
+        var input = context(status: .completed)
+        input.pendingConnectorMutationTargets = ["STAR / Bug"]
+
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(presentation.id == "connector-mutation-approval")
+        #expect(presentation.title == "Send approval needed")
+        #expect(presentation.primaryAction?.kind == .reviewConnectorMutation)
+        #expect(presentation.primaryAction?.title == "Review & send")
+        // Names the destination up front. "Approve" with nothing outside ASTRA
+        // in the sentence is how a user clicks through a write to a live system.
+        #expect(presentation.summary.contains("before ASTRA sends it"))
+        #expect(presentation.details.contains {
+            $0.id == "connector-mutation.targets" &&
+                $0.title == "Destination" &&
+                $0.summary == "STAR / Bug"
+        })
+        #expect(!actionTitles(presentation).contains("Approve result"))
+    }
+
+    /// Single-use approval means two writes are two decisions, and the dock is
+    /// where that stops being an invariant and becomes something a user can see.
+    @Test("Two staged mutations are counted and both destinations are named")
+    func twoStagedConnectorMutationsAreBothNamed() throws {
+        var input = context(status: .completed)
+        input.pendingConnectorMutationTargets = ["STAR / Bug", "STAR / Task"]
+
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(presentation.title == "2 sends need approval")
+        #expect(presentation.details.contains {
+            $0.id == "connector-mutation.targets" &&
+                $0.title == "Destinations" &&
+                $0.summary == "STAR / Bug · STAR / Task"
+        })
+    }
+
+    /// Ordering, pinned because it is a judgement call rather than an accident.
+    /// A staged mutation blocks nothing, so it yields to the request the agent
+    /// is actually waiting on — and outranks the advisory rows, because it is
+    /// the only one that puts something into a system outside ASTRA.
+    @Test("A staged mutation yields to git publish and outranks a correction")
+    func stagedMutationSitsBetweenPublicationAndAdvisoryRows() throws {
+        var publishing = context(status: .completed)
+        publishing.pendingConnectorMutationTargets = ["STAR / Bug"]
+        publishing.hasGitPublishRequest = true
+        #expect(try #require(TaskDecisionDockPresentation.build(publishing)).id == "git-publish-approval")
+
+        var correcting = context(
+            status: .completed,
+            mission: missionNeedingCorrection()
+        )
+        correcting.pendingConnectorMutationTargets = ["STAR / Bug"]
+        let dock = try #require(TaskDecisionDockPresentation.build(correcting))
+        #expect(dock.id == "connector-mutation-approval")
+    }
+
     @Test("dock summarizes result evidence and groups status details")
     func dockSummarizesResultEvidenceAndGroupsStatusDetails() throws {
         let mission = MissionControlPresentation(
@@ -449,6 +508,31 @@ struct TaskDecisionDockPresentationTests {
             launchBlock: launchBlock,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
+        )
+    }
+
+    private func missionNeedingCorrection() -> MissionControlPresentation {
+        MissionControlPresentation(
+            objective: "File the age-filter ticket",
+            statusTitle: "Needs attention",
+            statusSummary: "browser-check failed",
+            tone: .failed,
+            activeStepTitle: "Repair browser behavior",
+            validationSummary: "failed: browser-check",
+            assertionRows: [],
+            latestHandoffSummary: "Fix the browser-visible behavior.",
+            blockerCount: 1,
+            artifactCount: 0,
+            changedFileCount: 0,
+            budgetSummary: "12.0k used / unlimited",
+            nextAction: "Approve the correction or create a separate task.",
+            correction: MissionControlCorrection(
+                correctiveStepID: "repair-browser",
+                failedAssertionID: "browser-check",
+                status: "proposed",
+                suggestedRepair: "Fix the browser-visible behavior, then rerun validation."
+            ),
+            sourcePointerCount: 3
         )
     }
 

@@ -45,6 +45,12 @@ public enum StartupCredentialMigrationService {
 
         migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
         migrateSkillSecrets(skills: skills)
+        // The two passes above touch the dedicated keychain once per connector
+        // and once per skill, so if it cannot be opened at all this is the
+        // earliest and loudest place to find out. Previously it wasn't found out
+        // anywhere: the migration logged `result=checked` just the same, and the
+        // app went on to report every credential as simply not configured.
+        AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
         AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
             "scope": "startup",
             "result": "checked",

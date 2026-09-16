@@ -2,6 +2,22 @@ import Darwin
 import Foundation
 import Testing
 
+/// Budget for the two waits below. Both are waiting on a *separate process* to
+/// reach a milestone — the supervised child signalling ready, and the watchdog
+/// reaping it once the harness is SIGKILLed — and neither is asserting how fast
+/// that happens. They exist to stop a broken supervisor from hanging the suite,
+/// so the budget has to sit far above anything the machine can plausibly cost
+/// us.
+///
+/// At 3 seconds it did not: in the full `swift test` run on 2026-09-05 the ready
+/// wait expired before the harness had started its child, and the PID read below
+/// then failed with ENOENT as a second, misleading issue. The same test finishes
+/// in 0.8 s standalone and took 8.2 s under load. See the matching constant in
+/// `Tests/BinaryRunnerTests.swift` for the full reasoning — spawning a process in
+/// this binary has been measured at ~5 s under that contention, so any budget in
+/// the same order as normal execution is measuring how busy the machine was.
+private let hangBreakerTimeout: TimeInterval = 120
+
 @Suite("Host Control Parent-Death Supervisor", .serialized)
 struct HostControlParentDeathSupervisorTests {
     @Test("Supervisor kills descendants when its parent is killed")
@@ -44,9 +60,16 @@ struct HostControlParentDeathSupervisorTests {
             }
         }
 
-        #expect(waitUntil(timeout: 3) {
-            FileManager.default.fileExists(atPath: ready.path)
-        })
+        // The child writes its PID before it touches the ready file, so the read
+        // below cannot race — but only if we actually saw ready appear. Require
+        // rather than expect: without it a slow spawn fails twice, once here and
+        // once as an ENOENT on a PID file that was never going to exist.
+        try #require(
+            waitUntil(timeout: hangBreakerTimeout) {
+                FileManager.default.fileExists(atPath: ready.path)
+            },
+            "Supervised child never signalled ready, so nothing below is testing the supervisor."
+        )
         supervisedPID = pid_t(try #require(Int32(
             String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -59,9 +82,13 @@ struct HostControlParentDeathSupervisorTests {
         #expect(Darwin.kill(process.processIdentifier, SIGKILL) == 0)
         process.waitUntilExit()
 
-        #expect(waitUntil(timeout: 3) {
+        let supervisedProcessWasReaped = waitUntil(timeout: hangBreakerTimeout) {
             Darwin.kill(supervisedPID, 0) == -1 && errno == ESRCH
-        })
+        }
+        #expect(
+            supervisedProcessWasReaped,
+            "Supervised process \(supervisedPID) outlived the harness that was killed above."
+        )
     }
 
     private func customExecutable(named name: String, root: URL, body: String) throws -> URL {
@@ -74,12 +101,19 @@ struct HostControlParentDeathSupervisorTests {
         return executable
     }
 
+    /// Exhausts a minimum poll count as well as the deadline. Under full-suite
+    /// load this thread can be descheduled for most of its own window, and a
+    /// wait that got to sample the child only once or twice is not evidence
+    /// that the child never got there. A satisfied condition still returns on
+    /// the next poll, so the floor costs nothing on the happy path.
     private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
+        var polls = 0
+        while !condition() {
+            guard polls < 40 || Date() < deadline else { return false }
+            polls += 1
             Thread.sleep(forTimeInterval: 0.02)
         }
-        return condition()
+        return true
     }
 }

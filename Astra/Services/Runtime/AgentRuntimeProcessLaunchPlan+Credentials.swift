@@ -2,6 +2,62 @@ import Foundation
 import ASTRACore
 
 extension AgentRuntimeProcessLaunchPlan {
+    /// Removes broker-owned credentials from the environment the child process
+    /// will actually be given.
+    ///
+    /// `scopedEnvironmentVariables` already strips them, but it strips the
+    /// *capability overlay*, and no runtime launches the overlay. Every adapter
+    /// merges it into `RuntimeProcessEnvironment.enriched(...)`, which starts
+    /// from `ProcessInfo.processInfo.environment` — so a developer build started
+    /// from a shell that exports `JIRA_API_TOKEN` handed the agent the live
+    /// token the broker exists to keep from it. Removing a key from the overlay
+    /// says nothing about a key that was never in the overlay.
+    ///
+    /// Applied here, on the assembled plan, because this is the last point at
+    /// which every runtime agrees: six adapters build environments six ways and
+    /// all of them arrive at `AgentRuntimeProcessRunner` as one
+    /// `AgentRuntimeProcessLaunchPlan`. Doing it per adapter would be six copies
+    /// of a containment rule, and the seventh adapter would not have it.
+    ///
+    /// Idempotent, so applying it after the overlay strip costs a dictionary
+    /// walk and changes nothing when the inherited environment is clean.
+    @MainActor
+    func strippingBrokeredConnectorEnvironment(
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> AgentRuntimeProcessLaunchPlan {
+        var strippedEnvironment = environment
+        BrokeredConnectorEnvironment.strip(from: &strippedEnvironment, capabilityScope: capabilityScope)
+        guard strippedEnvironment != environment else { return self }
+
+        var plannedFields = commandPlannedFields
+        plannedFields["brokered_env_keys_stripped_at_launch"] = String(
+            environment.keys.filter { strippedEnvironment[$0] == nil }.count
+        )
+
+        var plan = AgentRuntimeProcessLaunchPlan(
+            runtime: runtime,
+            executablePath: executablePath,
+            arguments: arguments,
+            currentDirectory: currentDirectory,
+            environment: strippedEnvironment,
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: providerVersion,
+            parsesJSONLines: parsesJSONLines,
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
+            sandboxHomeStateAccess: sandboxHomeStateAccess,
+            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
+            providerDetectedFields: providerDetectedFields,
+            commandPlannedFields: plannedFields,
+            interactiveAsk: interactiveAsk,
+            pathMapper: pathMapper,
+            executionEnvironment: executionEnvironment
+        )
+        plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
+        plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        return plan
+    }
+
     func addingGitCredentialContext(_ context: GitCredentialSandboxContext) -> AgentRuntimeProcessLaunchPlan {
         guard !context.isEmpty else { return self }
         var readable = sandboxReadablePaths

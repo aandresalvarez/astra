@@ -535,10 +535,19 @@ public struct PluginConnector: Codable, Sendable {
     public struct CredentialHint: Codable, Sendable {
         public var key: String
         public var hint: String
+        /// Shape this credential must have, enforced at save time by
+        /// `ConnectorCredentialAdmission`. Optional: omitting it falls back
+        /// to `ConnectorCredentialFormatRegistry`'s built-in rules, which
+        /// already cover the services ASTRA ships. Declare it for a service
+        /// whose credentials have an unambiguous documented format so a
+        /// value pasted from the wrong clipboard is refused rather than sent
+        /// to the service.
+        public var format: ConnectorCredentialFormat?
 
-        public init(key: String, hint: String) {
+        public init(key: String, hint: String, format: ConnectorCredentialFormat? = nil) {
             self.key = key
             self.hint = hint
+            self.format = format
         }
     }
 

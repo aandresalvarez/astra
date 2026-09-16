@@ -7,14 +7,11 @@ import HostControlToolSupport
 struct AstraHostControlTool {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        if let endpoint = ProcessInfo.processInfo.environment[
-            HostControlBrokerIPC.endpointEnvironmentKey
-        ]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !endpoint.isEmpty {
+        if let relay = AstraHostControlBrokerRelay(environment: ProcessInfo.processInfo.environment) {
             if arguments.isEmpty {
-                AstraHostControlBrokerClient.run(socketPath: endpoint)
+                AstraHostControlBrokerClient.run(relay: relay)
             } else {
-                Darwin.exit(AstraHostControlBrokerCLI.run(arguments: arguments, socketPath: endpoint))
+                Darwin.exit(AstraHostControlBrokerCLI.run(arguments: arguments, relay: relay))
             }
             return
         }
@@ -28,27 +25,107 @@ struct AstraHostControlTool {
     }
 }
 
+/// Carries one request at a time to the broker, over whichever transport this
+/// run can actually reach.
+///
+/// The socket is tried first and kept for the rest of the process once it
+/// works: it is the transport with a peer identity, so preferring it is not a
+/// performance choice. Only a failure to *establish* it falls through to the
+/// file drop — a sandboxed provider gets EPERM from `connect(2)` before a byte
+/// moves. A socket that connects and then breaks is a real failure and is
+/// reported as one; retrying such a run on the drop would quietly downgrade the
+/// identity check on a run that had no need to.
+private final class AstraHostControlBrokerRelay {
+    private enum Transport {
+        case socket(String)
+        case fileDrop(directory: String, token: String)
+    }
+
+    private let candidates: [Transport]
+    private var bound: Transport?
+    private var socketDescriptor: Int32 = -1
+    private var pendingReply = Data()
+
+    init?(environment: [String: String]) {
+        func value(_ key: String) -> String? {
+            guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else { return nil }
+            return raw
+        }
+
+        var candidates: [Transport] = []
+        if let socketPath = value(HostControlBrokerIPC.endpointEnvironmentKey) {
+            candidates.append(.socket(socketPath))
+        }
+        if let directory = value(HostControlBrokerFileDrop.directoryEnvironmentKey),
+           let token = value(HostControlBrokerFileDrop.tokenEnvironmentKey) {
+            candidates.append(.fileDrop(directory: directory, token: token))
+        }
+        guard !candidates.isEmpty else { return nil }
+        self.candidates = candidates
+    }
+
+    func request(_ line: String) throws -> String {
+        if let bound {
+            return try send(line, over: bound)
+        }
+        var lastError: Error = HostControlBrokerClientError.unavailable
+        for candidate in candidates {
+            do {
+                let reply = try send(line, over: candidate)
+                bound = candidate
+                return reply
+            } catch {
+                lastError = error
+                closeSocket()
+            }
+        }
+        throw lastError
+    }
+
+    func close() {
+        closeSocket()
+    }
+
+    private func send(_ line: String, over transport: Transport) throws -> String {
+        switch transport {
+        case .socket(let path):
+            if socketDescriptor < 0 {
+                socketDescriptor = try AstraHostControlBrokerClient.connect(socketPath: path)
+            }
+            return try AstraHostControlBrokerClient.exchange(
+                line,
+                descriptor: socketDescriptor,
+                pending: &pendingReply
+            )
+        case .fileDrop(let directory, let token):
+            return try HostControlBrokerFileDropClient.exchange(
+                line,
+                directory: directory,
+                token: token
+            )
+        }
+    }
+
+    private func closeSocket() {
+        guard socketDescriptor >= 0 else { return }
+        Darwin.close(socketDescriptor)
+        socketDescriptor = -1
+        pendingReply = Data()
+    }
+}
+
 private enum AstraHostControlBrokerClient {
     private static let maximumReplyBytes = 1_048_576
 
-    static func run(socketPath: String) {
-        let descriptor: Int32
-        do {
-            descriptor = try connect(socketPath: socketPath)
-        } catch {
-            relayBrokerFailure(error.localizedDescription)
-            return
-        }
-        defer { Darwin.close(descriptor) }
-
-        var pendingReply = Data()
+    static func run(relay: AstraHostControlBrokerRelay) {
+        defer { relay.close() }
         while let line = Swift.readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
             do {
-                try writeLine(line, to: descriptor)
-                let reply = try readLine(from: descriptor, pending: &pendingReply)
+                let reply = try relay.request(line)
                 if !reply.isEmpty {
                     writeLine(reply)
                 }
@@ -58,18 +135,18 @@ private enum AstraHostControlBrokerClient {
                 return
             }
         }
-
     }
 
-    static func request(_ line: String, socketPath: String) throws -> String {
-        let descriptor = try connect(socketPath: socketPath)
-        defer { Darwin.close(descriptor) }
+    static func exchange(
+        _ line: String,
+        descriptor: Int32,
+        pending: inout Data
+    ) throws -> String {
         try writeLine(line, to: descriptor)
-        var pending = Data()
         return try readLine(from: descriptor, pending: &pending)
     }
 
-    private static func connect(socketPath: String) throws -> Int32 {
+    static func connect(socketPath: String) throws -> Int32 {
         let path = try HostControlBrokerIPC.validatedSocketPath(socketPath)
         var address = sockaddr_un()
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -223,7 +300,8 @@ private enum AstraHostControlBrokerClient {
 }
 
 private enum AstraHostControlBrokerCLI {
-    static func run(arguments: [String], socketPath: String) -> Int32 {
+    static func run(arguments: [String], relay: AstraHostControlBrokerRelay) -> Int32 {
+        defer { relay.close() }
         do {
             let invocation = try invocation(arguments)
             let request: [String: Any] = [
@@ -242,10 +320,7 @@ private enum AstraHostControlBrokerCLI {
             guard let requestLine = String(data: requestData, encoding: .utf8) else {
                 throw HostControlBrokerCLIError.invalidArguments
             }
-            let response = try AstraHostControlBrokerClient.request(
-                requestLine,
-                socketPath: socketPath
-            )
+            let response = try relay.request(requestLine)
             FileHandle.standardOutput.write(Data((response + "\n").utf8))
             return responseIndicatesFailure(response) ? 1 : 0
         } catch {
@@ -270,6 +345,8 @@ private enum AstraHostControlBrokerCLI {
         switch tool {
         case "jira":
             return Invocation(tool: tool, arguments: try jiraArguments(remaining))
+        case "redcap":
+            return Invocation(tool: tool, arguments: try redcapArguments(remaining))
         case "ssh":
             return Invocation(tool: tool, arguments: try sshArguments(remaining))
         case "github", "gcloud", "bq":
@@ -297,7 +374,7 @@ private enum AstraHostControlBrokerCLI {
         let operation = (values["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
-        guard ["status", "get_issue", "search_jql"].contains(operation) else {
+        guard ["status", "get_issue", "search_jql", "get_comments"].contains(operation) else {
             throw HostControlBrokerCLIError.invalidArguments
         }
         output["operation"] = operation
@@ -309,6 +386,46 @@ private enum AstraHostControlBrokerCLI {
             output["max_results"] = parsed
         } else if values["--max-results"] != nil {
             throw HostControlBrokerCLIError.invalidArguments
+        }
+        if let value = values["--timeout-seconds"],
+           let parsed = Double(value),
+           parsed.isFinite,
+           parsed > 0 {
+            output["timeout_seconds"] = parsed
+        } else if values["--timeout-seconds"] != nil {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
+        return output
+    }
+
+    /// Comma-separated on the command line, arrays over the wire. The split
+    /// happens here so the broker only ever sees a typed list — a joined string
+    /// forwarded verbatim would put separator handling inside the request
+    /// builder, which is the part that must not be guessable from outside.
+    private static func redcapArguments(_ arguments: [String]) throws -> [String: Any] {
+        let values = try parsedOptions(
+            arguments,
+            allowed: [
+                "--operation", "--alias", "--fields", "--forms", "--records",
+                "--report-id", "--raw-or-label", "--timeout-seconds"
+            ]
+        )
+        let operation = (values["--operation"] ?? "status").lowercased()
+        guard REDCapHostControlPolicy.readOperations.contains(operation) else {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
+        var output: [String: Any] = ["operation": operation]
+        copy("--alias", to: "alias", from: values, into: &output)
+        copy("--report-id", to: "report_id", from: values, into: &output)
+        copy("--raw-or-label", to: "raw_or_label", from: values, into: &output)
+        for (option, key) in [("--fields", "fields"), ("--forms", "forms"), ("--records", "records")] {
+            guard let list = values[option] else { continue }
+            let entries = list
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !entries.isEmpty else { throw HostControlBrokerCLIError.invalidArguments }
+            output[key] = entries
         }
         if let value = values["--timeout-seconds"],
            let parsed = Double(value),
@@ -392,9 +509,14 @@ private enum AstraHostControlBrokerCLI {
 
     private static let usage = """
     Usage:
-      astra-host-control jira --operation status|search-jql|get-issue [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
+      astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
+      astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]
       astra-host-control ssh --alias NAME
       astra-host-control github|gcloud|bq -- ARGUMENT...
+
+    redcap record and report write their rows to a file under the task
+    directory and print only a receipt; nothing subject-level is returned on
+    stdout.
     """
 }
 

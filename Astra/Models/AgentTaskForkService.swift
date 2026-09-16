@@ -116,6 +116,7 @@ public enum AgentTaskForkService {
         forked.skillSnapshotsJSON = source.skillSnapshotsJSON
         forked.runtimeID = source.runtimeID
         forked.runtimeExplicitlySelected = source.runtimeExplicitlySelected
+        forked.reasoningEffort = source.reasoningEffort
         forked.testCommand = source.testCommand
         forked.maxTurns = source.maxTurns
         forked.useAgentTeam = source.useAgentTeam

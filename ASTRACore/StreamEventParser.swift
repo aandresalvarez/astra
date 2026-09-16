@@ -67,6 +67,10 @@ public struct StreamPartialDelta: Decodable {
     public let type: String?
     public let text: String?
     public let thinking: String?
+    /// Streamed chunk of a tool call's JSON arguments (`input_json_delta`).
+    /// A large `Write` arrives entirely through this field, so it has to be
+    /// decoded even though it never becomes conversation text.
+    public let partial_json: String?
 }
 
 public struct StreamToolResultBlock: Decodable {
@@ -214,6 +218,13 @@ public enum ParsedEvent {
 // MARK: - Parser
 
 public enum StreamEventParser {
+    /// Control type emitted while a tool call's JSON arguments stream in.
+    /// The watchdog treats it as real progress rather than mere liveness:
+    /// composing a large tool input is generation work, and a big `Write` can
+    /// occupy the stream for minutes without producing any other event.
+    /// Registered in `RuntimeProgressSignals.progressBearingControlTypes`.
+    public static let toolInputDeltaControlType = "stream_event.tool_input_delta"
+
     private static let transientSystemSubtypes: Set<String> = [
         "post_turn_summary",
         "status"
@@ -381,6 +392,9 @@ public enum StreamEventParser {
             }
             if let thinking = delta.thinking, !thinking.isEmpty {
                 return [.thinking(text: thinking)]
+            }
+            if let partialJSON = delta.partial_json, !partialJSON.isEmpty {
+                return [.control(type: toolInputDeltaControlType)]
             }
             return [.control(type: "stream_event.content_block_delta")]
         case "content_block_stop", "message_stop":

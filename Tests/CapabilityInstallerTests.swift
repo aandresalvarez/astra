@@ -823,7 +823,7 @@ struct CapabilityInstallerTests {
 
         withTemporaryKeychain {
             if canAssertRealKeychain {
-                #expect(connector.saveCredential(key: "GCP_TOKEN", value: "secret"))
+                #expect(connector.saveCredential(key: "GCP_TOKEN", value: "ya29.aQd3fF1kTestOnlyValue"))
                 #expect(KeychainService.exists(key: "GCP_TOKEN", connector: connector))
             }
         }

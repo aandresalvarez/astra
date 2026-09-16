@@ -3,6 +3,24 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
+/// Who authored the text a submitted turn carries.
+///
+/// A user turn states intent. A generated continuation states none: it is
+/// ASTRA telling the provider to carry on with the turn that was already
+/// accepted, so its prose is an implementation detail of the resume protocol.
+///
+/// The distinction matters because activation text prunes the run's capability
+/// scope. Approving a Jira credential prompt submits "ASTRA approved
+/// task-scoped runtime permission…", which shares no token with "Jira" —
+/// so the resumed run pruned out the very connector the user had just
+/// approved, while unrelated capabilities matched on generic words like
+/// "run" and "task". The user said yes and lost the thing they said yes to.
+/// An approval adds authority; it must never subtract it.
+enum TaskTurnAuthorship {
+    case user
+    case generatedContinuation
+}
+
 enum TaskTurnIntentResolver {
     private static let maxTurnCharacters = 8_000
     private static let maxObjectiveCharacters = 1_000
@@ -14,16 +32,28 @@ enum TaskTurnIntentResolver {
         for task: AgentTask,
         sourceEventID: UUID?,
         acceptedTurn: String?,
-        includeTaskInputs: Bool
+        includeTaskInputs: Bool,
+        authorship: TaskTurnAuthorship = .user
     ) -> TaskTurnIntentSnapshot {
+        let submittedTurn: String?
+        switch authorship {
+        case .user:
+            submittedTurn = acceptedTurn
+        case .generatedContinuation:
+            // The turn being executed is still the last one the user accepted.
+            submittedTurn = latestPriorUserTurn(for: task, excluding: sourceEventID)
+        }
         let currentTurn = bounded(
-            firstNonEmpty(acceptedTurn, task.goal),
+            firstNonEmpty(submittedTurn, task.goal),
             limit: maxTurnCharacters
         )
         let referential = isReferentialTurn(currentTurn)
+        // A generated continuation already resolved to the prior user turn, so
+        // inheriting it a second time would only duplicate the same prose.
         let inheritedTurn = referential
             ? latestPriorUserTurn(for: task, excluding: sourceEventID)
                 .map { bounded($0, limit: maxTurnCharacters) }
+                .flatMap { $0 == currentTurn ? nil : $0 }
             : nil
         let activeObjective = bounded(
             TaskContextStateManager.activeObjectiveText(for: task),

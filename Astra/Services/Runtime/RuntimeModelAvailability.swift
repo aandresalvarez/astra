@@ -15,11 +15,29 @@ struct RuntimeModelDetail: Codable, Equatable, Sendable {
     var value: String
     var displayName: String?
     var description: String?
+    var codex: CodexModelInfo?
+    /// Reasoning-effort labels this model accepts, when the provider reports
+    /// per-model capability metadata (currently only Codex's `model/list`).
+    /// Runtime-agnostic so other providers can populate the same fields
+    /// without a new shape.
+    var supportedReasoningEfforts: [String]?
+    /// The provider-recommended reasoning effort for this model, when reported.
+    var defaultReasoningEffort: String?
 
-    init(value: String, displayName: String? = nil, description: String? = nil) {
+    init(
+        value: String,
+        displayName: String? = nil,
+        description: String? = nil,
+        codex: CodexModelInfo? = nil,
+        supportedReasoningEfforts: [String]? = nil,
+        defaultReasoningEffort: String? = nil
+    ) {
         self.value = value
         self.displayName = displayName
         self.description = description
+        self.codex = codex
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.defaultReasoningEffort = defaultReasoningEffort
     }
 }
 
@@ -225,6 +243,101 @@ enum RuntimeModelAvailability {
         cachedDetail(for: model, runtime: runtime, cache: cache)?.description
     }
 
+    /// Reasoning-effort labels this model accepts, when the provider reports
+    /// per-model capability metadata. Nil means the provider either does not
+    /// support reasoning effort or has not reported per-model options.
+    static func supportedReasoningEfforts(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> [String]? {
+        let efforts = cachedDetail(for: model, runtime: runtime, cache: cache)?.supportedReasoningEfforts
+        return (efforts?.isEmpty ?? true) ? nil : efforts
+    }
+
+    /// `defaults:`-based twin of `supportedReasoningEfforts(for:runtime:cache:)`,
+    /// for call sites that read a single runtime's cache directly.
+    static func supportedReasoningEfforts(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> [String]? {
+        let efforts = cachedDetail(for: model, runtime: runtime, defaults: defaults)?.supportedReasoningEfforts
+        return (efforts?.isEmpty ?? true) ? nil : efforts
+    }
+
+    /// Provider-recommended reasoning effort for a model, when reported.
+    static func defaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String? {
+        cachedDetail(for: model, runtime: runtime, cache: cache)?.defaultReasoningEffort
+    }
+
+    /// `defaults:`-based twin of `defaultReasoningEffort(for:runtime:cache:)`.
+    static func defaultReasoningEffort(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        cachedDetail(for: model, runtime: runtime, defaults: defaults)?.defaultReasoningEffort
+    }
+
+    /// Resolves a requested reasoning-effort value against the selected
+    /// model's supported set. An empty request, or a value outside the
+    /// model's reported set — e.g. carried over from a different model —
+    /// falls back to the model's provider-recommended default (if any),
+    /// since (unlike model IDs) Codex rejects an unsupported
+    /// `-c model_reasoning_effort` value outright rather than silently
+    /// ignoring it.
+    static func normalizedReasoningEffort(
+        _ effort: String,
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String? {
+        normalizedReasoningEffort(effort, detail: cachedDetail(for: model, runtime: runtime, cache: cache))
+    }
+
+    /// `defaults:`-based twin of `normalizedReasoningEffort(_:for:runtime:cache:)`,
+    /// for call sites that read a single runtime's cache directly rather than
+    /// building a cross-runtime `RuntimeModelAvailabilityCache`.
+    static func normalizedReasoningEffort(
+        _ effort: String,
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        normalizedReasoningEffort(effort, detail: cachedDetail(for: model, runtime: runtime, defaults: defaults))
+    }
+
+    /// The two branches below are not the same "no options" case, and
+    /// collapsing them emits a flag that fails the run. A model the provider
+    /// never reported has no metadata to contradict the user's choice, so it
+    /// passes through. A model the provider *did* report while saying nothing
+    /// about effort has no effort knob at all — Claude's `haiku` and Copilot's
+    /// `gpt-4.1` are exactly this shape — so switching to one after picking an
+    /// effort must drop the carried-over value rather than hand the CLI an
+    /// `--effort` it rejects. Nothing else can drop it: the composer hides the
+    /// effort menu for those models, so the stale value is unreachable in the UI.
+    private static func normalizedReasoningEffort(
+        _ effort: String,
+        detail: RuntimeModelDetail?
+    ) -> String? {
+        let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let detail else {
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard let supported = detail.supportedReasoningEfforts, !supported.isEmpty else {
+            return nil
+        }
+        if !trimmed.isEmpty, supported.contains(trimmed) {
+            return trimmed
+        }
+        return detail.defaultReasoningEffort
+    }
+
     private static func cachedDetail(
         for model: String,
         runtime: AgentRuntimeID,
@@ -233,6 +346,18 @@ enum RuntimeModelAvailability {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return cachedSnapshot(for: runtime, cache: cache)?
+            .details?
+            .first { $0.value == trimmed }
+    }
+
+    private static func cachedDetail(
+        for model: String,
+        runtime: AgentRuntimeID,
+        defaults: UserDefaults
+    ) -> RuntimeModelDetail? {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return cachedSnapshot(for: runtime, defaults: defaults)?
             .details?
             .first { $0.value == trimmed }
     }
@@ -323,11 +448,7 @@ enum RuntimeModelAvailability {
         if suggestions.contains(trimmed) {
             return trimmed
         }
-        let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
-        if suggestions.contains(runtimeDefaultModel) {
-            return runtimeDefaultModel
-        }
-        return suggestions.first ?? runtimeDefaultModel
+        return defaultSuggestion(for: runtime, suggestions: suggestions)
     }
 
     static func modelForRuntimeSwitch(
@@ -400,7 +521,10 @@ enum RuntimeModelAvailability {
     ) {
         let cleaned = cleanProviderModelDetails(details)
         guard !cleaned.isEmpty else { return }
-        let hasMetadata = cleaned.contains { $0.displayName != nil || $0.description != nil }
+        let hasMetadata = cleaned.contains {
+            $0.displayName != nil || $0.description != nil || $0.codex != nil
+                || $0.supportedReasoningEfforts != nil || $0.defaultReasoningEffort != nil
+        }
         let snapshot = RuntimeModelAvailabilitySnapshot(
             runtimeID: runtime.rawValue,
             models: cleaned.map(\.value),
@@ -487,7 +611,10 @@ enum RuntimeModelAvailability {
             cleaned.append(RuntimeModelDetail(
                 value: value,
                 displayName: normalizedDisplayString(detail.displayName),
-                description: normalizedDisplayString(detail.description)
+                description: normalizedDisplayString(detail.description),
+                codex: detail.codex,
+                supportedReasoningEfforts: detail.supportedReasoningEfforts,
+                defaultReasoningEffort: normalizedDisplayString(detail.defaultReasoningEffort)
             ))
         }
         return cleaned
@@ -584,7 +711,10 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
-        if cachedListIsAuthoritative {
+        // Codex model/list describes picker visibility, not an execution
+        // allowlist. This also prevents older, incorrectly authoritative
+        // bundled snapshots from rewriting explicit model selections.
+        if cachedListIsAuthoritative && runtime != .codexCLI {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
@@ -595,7 +725,7 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
-        if isKnownModel(trimmed, outside: runtime) {
+        if runtime != .codexCLI && isKnownModel(trimmed, outside: runtime) {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
@@ -618,6 +748,9 @@ enum RuntimeModelAvailability {
     }
 
     private static func defaultSuggestion(for runtime: AgentRuntimeID, suggestions: [String]) -> String {
+        // Codex discovery puts its recommended default first. Explicit task
+        // selections are resolved separately and never rewritten by refresh.
+        if runtime == .codexCLI, let first = suggestions.first { return first }
         let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
         if suggestions.contains(runtimeDefaultModel) {
             return runtimeDefaultModel

@@ -842,6 +842,56 @@ struct ProcessMonitorTests {
         #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) != nil)
     }
 
+    @Test("Claude tool input delta is actionable progress")
+    func claudeToolInputDeltaIsActionableProgress() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\": \"/tmp/SPECS.md\""}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        guard case .control(let type) = parsed else {
+            Issue.record("expected a control event, got \(parsed)")
+            return
+        }
+        #expect(type == StreamEventParser.toolInputDeltaControlType)
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .actionableProgress)
+        // One large Write arrives as thousands of these chunks, so they must
+        // stay out of the repetition detector.
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) == nil)
+    }
+
+    @Test("Content block delta without content stays provider liveness")
+    func contentBlockDeltaWithoutContentStaysProviderLiveness() throws {
+        let line = #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}},"session_id":"s1","uuid":"u1"}"#
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .providerLiveness)
+    }
+
+    @Test("Tool input deltas establish semantic progress")
+    func toolInputDeltasEstablishSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let deltaStopped = monitor.processEvent(
+            .control(type: StreamEventParser.toolInputDeltaControlType),
+            process: process
+        )
+        // The first breach buys one extension rather than a kill, so the
+        // terminal decision is on the second evaluation.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(deltaStopped == false)
+        #expect(firstEvaluation == false)
+        #expect(watchdogStopped == true)
+        // Liveness-only activity reports `provider_no_actionable_progress`.
+        // Reaching the after-progress guard instead proves the deltas
+        // registered as real progress.
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+    }
+
     @Test("Thinking-only provider activity stops as no actionable progress")
     func thinkingOnlyProviderActivityStopsAsNoActionableProgress() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -854,9 +904,12 @@ struct ProcessMonitorTests {
             .thinking(text: "The user wants a Masterball page"),
             process: process
         )
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(shouldKillEvent == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_no_actionable_progress")
@@ -873,10 +926,13 @@ struct ProcessMonitorTests {
 
         let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
         let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        // First breach extends the window; the second is the kill.
+        let firstEvaluation = monitor.evaluateWatchdogTimeoutForTesting(process: process)
         let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
 
         #expect(visibleProgressStopped == false)
         #expect(livenessStopped == false)
+        #expect(firstEvaluation == false)
         #expect(watchdogStopped == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
@@ -1068,6 +1124,47 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopReason == "provider_workspace_job_stalled")
     }
 
+    @Test("A Codex progress note does not start the terminal-progress kill countdown")
+    func codexProgressNoteDoesNotStartTerminalExitGrace() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 60,
+            terminalProgressExitGraceSeconds: 0,
+            taskID: UUID()
+        )
+        let process = MonitorMockProcess()
+
+        let preamble = #"""
+        {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll trace the fact-relationship logic first."}}
+        """#
+        for event in CodexCLIRuntime.parseEvents(line: preamble, parsesJSONLines: true) {
+            _ = monitor.processEvent(event, process: process)
+        }
+
+        // The grace is zero here, so if a progress note still counted as the
+        // end of the turn the next watchdog tick would kill a provider that
+        // has only just said what it is about to do. That is the regression:
+        // run F41FEC9F was terminated 30s after a note like this one, three
+        // tool batches into work it never got to report.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.terminatedAfterTerminalProgress == false)
+
+        let turnCompleted = #"""
+        {"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+        """#
+        for event in CodexCLIRuntime.parseEvents(line: turnCompleted, parsesJSONLines: true) {
+            _ = monitor.processEvent(event, process: process)
+        }
+
+        // Codex lingers on stdin after a turn, so reaping it once the turn
+        // really has ended is the behaviour worth keeping.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.terminatedAfterTerminalProgress == true)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     @Test("Terminal progress exit grace terminates without runtime stop")
     func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
         let taskID = UUID()
@@ -1158,6 +1255,90 @@ struct ProcessMonitorTests {
         #expect(watchdogStopped == false)
         #expect(process.didTerminate == false)
         #expect(monitor.runtimeStopReason == nil)
+    }
+
+    /// Widening the semantic window achieves nothing unless the generic idle
+    /// deadline waits for it. `AgentRuntimeProgressTimeoutPolicy` gives a task
+    /// that owes a deliverable `idleTimeout * 2`, so for every idle timeout
+    /// below 360s the artifact window lands *after* the idle one — and the idle
+    /// branch fired first, killing the resumed deliverable at the very deadline
+    /// the wider window was meant to move. Modelled here with the extreme of
+    /// that shape: an idle deadline already breached, a window that is not.
+    @Test("A live artifact window outranks a shorter idle deadline")
+    func artifactWindowDefersTheGenericIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    /// The deferral is scoped, not a waiver. It is owed to a provider that
+    /// produced visible progress and then went quiet; one that never produced
+    /// any has no artifact to be mid-write of, and the idle deadline still owns
+    /// it. Without this the same change would make every silent run immortal
+    /// for the length of the wider window.
+    @Test("A run that never produced progress still times out on the idle deadline")
+    func silentRunStillHitsTheIdleDeadline() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.timedOut == true)
+    }
+
+    /// And it is bounded. Once the window is spent the semantic branch takes the
+    /// kill it was deferred to — it escalates once first, which is the existing
+    /// ladder, so the run ends under a reason that says what happened rather
+    /// than a bare timeout.
+    ///
+    /// The window has to be a real positive interval here, because the deferral
+    /// only engages while `idleDuration` is *inside* it; a zero window is spent
+    /// before it opens and would exercise nothing. Hence the sleeps. They are
+    /// load-safe in the direction that matters: a slow machine only puts more
+    /// time between the event and the poll, and every assertion below wants the
+    /// window already behind it.
+    @Test("A spent artifact window hands the kill to the semantic branch")
+    func spentArtifactWindowStopsUnderTheSemanticReason() {
+        let window: TimeInterval = 0.05
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 0,
+            noSemanticProgressTimeoutSeconds: window
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Writing the deliverable now."), process: process)
+
+        // First breach buys the one extension; the second spends it.
+        Thread.sleep(forTimeInterval: window * 2)
+        let firstBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        Thread.sleep(forTimeInterval: window * 2)
+        let secondBreach = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(firstBreach == false)
+        #expect(secondBreach == true)
+        #expect(process.didTerminate == true)
+        // Not `timedOut`: the idle branch never gets it, so the run is reported
+        // as a stall after progress rather than as silence from the start.
+        #expect(monitor.timedOut == false)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
     }
 
     // MARK: - ProcessResult
@@ -1430,7 +1611,8 @@ struct RuntimePolicyGuardTests {
         )
 
         #expect(shouldKill == true)
-        #expect(monitor.policyViolationMessage?.contains("outside the workspace paths") == true)
+        #expect(monitor.policyApprovalRequired)
+        #expect(monitor.policyApprovalMessage?.contains("outside the read paths") == true)
     }
 
     @Test("Runtime support tools do not trip policy")
@@ -3120,7 +3302,7 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalMessage?.contains(".astra/tasks/requestable/index.html") == true)
     }
 
-    @Test("Read outside allowed paths stops the provider when path is observable")
+    @Test("Read outside allowed paths stops the provider for approval when path is observable")
     func outsidePathReadStopsProvider() {
         let manifest = runtimePolicyManifest(allowedTools: ["Read"])
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -3134,8 +3316,14 @@ struct RuntimePolicyGuardTests {
             process: nil
         )
 
+        // The run still stops here — but as a question, not a verdict. The read
+        // already completed before this event was parsed, so terminating
+        // prevents nothing; asking lets the user widen the read scope and the
+        // retry actually succeed. See RunBoundaryFirstPrinciplesTests.
         #expect(shouldKill == true)
-        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired)
+        #expect(monitor.policyApprovalMessage?.contains("/private/tmp/outside.txt") == true)
     }
 
     @Test("Mutating tool without observable path stops the provider")
@@ -3262,8 +3450,12 @@ struct RuntimePolicyGuardTests {
             process: nil
         )
 
+        // The symlink escape is still caught and the run still stops; a read
+        // outside the boundary is now surfaced as an approval rather than a
+        // kill, so the escape cannot proceed unnoticed either way.
         #expect(shouldKill == true)
-        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired)
     }
 
     @Test("Copilot view tool follows read path policy")
@@ -3471,9 +3663,16 @@ struct RuntimeBudgetProfileTests {
 
     @Test("Effective budget scales team budgets without audit side effects")
     func effectiveBudgetScalesTeamBudgets() {
+        // Disabled stays unlimited for both solo and team runs. Resolve that
+        // sentinel before multiplication so `Int.max` cannot overflow.
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
             baseBudget: 0,
             usesAgentTeam: true,
+            teamSize: 3
+        ) == Int.max)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: false,
             teamSize: 3
         ) == Int.max)
         #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
@@ -3491,5 +3690,84 @@ struct RuntimeBudgetProfileTests {
             usesAgentTeam: true,
             teamSize: 3
         ) == 300_000)
+    }
+}
+
+@Suite("Disabled token budget")
+@MainActor
+struct DisabledTokenBudgetTests {
+
+    @Test("Disabled budget does not stop reported usage")
+    func disabledBudgetDoesNotStopReportedUsage() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            budgetEnforcementMode: .hardStop
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 32_000_000, totalOutputTokens: 46_266),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == false)
+        #expect(!process.didTerminate)
+    }
+
+    @Test("Configured budget still honours warning mode")
+    func configuredBudgetStillWarns() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1_000,
+            budgetEnforcementMode: .warning
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
+        #expect(process.didTerminate == false)
+    }
+
+    @Test("Reported usage above a chosen budget still follows the mode")
+    func reportedUsageAboveChosenBudgetFollowsMode() {
+        let chosen = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: 10,
+            tokensUsed: 11
+        )
+        let result = AgentProcessResult(exitCode: 0)
+
+        #expect(AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .hardStop
+        ))
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: chosen,
+            budgetEnforcementMode: .warning
+        ))
+    }
+
+    @Test("Disabled budget ignores historical task usage after a run")
+    func disabledBudgetIgnoresHistoricalTaskUsage() {
+        let disabled = AgentRuntimeBudgetSnapshot(
+            effectiveTokenBudget: Int.max,
+            tokensUsed: 32_046_266
+        )
+
+        #expect(!disabled.hasEnforceableBudget)
+        #expect(!disabled.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: AgentProcessResult(exitCode: 0),
+            budget: disabled,
+            budgetEnforcementMode: .hardStop
+        ))
     }
 }

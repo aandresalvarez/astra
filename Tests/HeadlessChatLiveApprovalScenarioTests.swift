@@ -357,7 +357,7 @@ extension HeadlessChatScenarioTests {
 
         // Auto-denies a deny-listed ask (handled gracefully), then exits
         // non-zero for an UNRELATED reason. The old permission.denied event
-        // would have made shouldPauseForRuntimePermissionApproval surface a
+        // would have made RuntimePermissionApprovalGate surface a
         // bogus approval card on this failure.
         let claudePath = try harness.writeExecutable(
             named: "claude",

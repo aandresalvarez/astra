@@ -17,9 +17,7 @@ private func makeAgentPolicySandboxAdmissionContainer() throws -> ModelContainer
 struct AgentPolicySandboxAdmissionTests {
     @Test("Preflight sandbox evidence honors the queue admission snapshot")
     func preflightManifestUsesAdmissionSnapshot() throws {
-        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicySandboxAdmissionContainer()
@@ -74,9 +72,7 @@ struct AgentPolicySandboxAdmissionTests {
 
     @Test("Preflight evidence includes the admitted shared-workspace boundary")
     func preflightManifestIncludesSharedWorkspaceBoundary() throws {
-        let suiteName = "astra-agent-policy-shared-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
         defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         defaults.set(false, forKey: AppStorageKeys.sandboxLayerNativeProviders)
 

@@ -10,9 +10,8 @@ struct CodexCLICommandPlan: Equatable {
 
 enum CodexCLIRuntime {
     static let executableName = "codex"
-    // Codex CLI has no model enumeration command (`--model` is free-form),
-    // so this curated list is the only source. Refresh it from
-    // https://developers.openai.com/codex/models when OpenAI ships models.
+    // Offline suggestions only. The configured CLI app-server model/list
+    // supplies the current catalog through CodexModelAvailabilityService.
     static let bundledModelNames = [
         "gpt-5.5",
         "gpt-5.4",
@@ -46,7 +45,8 @@ enum CodexCLIRuntime {
         includeAstraToolsPath: Bool = false,
         mcpConfigArguments: [String] = [],
         resumeSessionID: String? = nil,
-        permissionArguments: [String]
+        permissionArguments: [String],
+        reasoningEffort: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
         // No `--ephemeral`: native continuation needs the session persisted so a
@@ -55,6 +55,13 @@ enum CodexCLIRuntime {
         let trimmedResumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let usesResume = !trimmedResumeSessionID.isEmpty
         var args = usesResume ? ["exec", "resume"] : ["exec"]
+        // Codex has no dedicated CLI flag for this; it is only settable as a
+        // `-c` config override (the same idiom as the sandbox/approval
+        // overrides below).
+        let trimmedReasoningEffort = reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasoningEffortArguments = trimmedReasoningEffort.isEmpty
+            ? []
+            : ["-c", "model_reasoning_effort=\"\(trimmedReasoningEffort)\""]
 
         if usesResume {
             args += [
@@ -65,6 +72,7 @@ enum CodexCLIRuntime {
             ]
             args += mcpConfigArguments
             args += permissionArguments
+            args += reasoningEffortArguments
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -84,6 +92,7 @@ enum CodexCLIRuntime {
             }
 
             args += permissionArguments
+            args += reasoningEffortArguments
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)
@@ -117,35 +126,45 @@ enum CodexCLIRuntime {
         )
     }
 
-    static func codexPermissionArguments(policy: PermissionPolicy) -> [String] {
-        switch policy {
-        case .autonomous:
-            return ["--dangerously-bypass-approvals-and-sandbox"]
-        case .restricted:
-            return nonInteractiveApprovalArguments + ["--sandbox", "workspace-write"]
-        case .interactive:
-            return nonInteractiveApprovalArguments + ["--sandbox", "read-only"]
+    /// `requirements` is what the local Codex install will actually accept. A
+    /// sandbox mode the org forbids is narrowed here rather than by Codex, which
+    /// narrows it to the *most restrictive* allowed mode — so an autonomous task
+    /// asking to bypass the sandbox entirely ends up read-only. See
+    /// `CodexRequirementsPolicy`. Unconstrained is the default and reproduces
+    /// the pre-clamp arguments exactly.
+    static func codexPermissionArguments(
+        policy: PermissionPolicy,
+        requirements: CodexRequirementsPolicy = .unconstrained
+    ) -> [String] {
+        let mode = requirements.permittedSandboxMode(preferring: policy.preferredCodexSandboxMode)
+        if mode == .dangerFullAccess {
+            return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
+        return requirements.windowsSandboxArguments
+            + requirements.approvalArguments
+            + ["--sandbox", mode.rawValue]
     }
 
-    static func codexResumePermissionArguments(policy: PermissionPolicy) -> [String] {
+    static func codexResumePermissionArguments(
+        policy: PermissionPolicy,
+        requirements: CodexRequirementsPolicy = .unconstrained
+    ) -> [String] {
         // `codex exec resume` rejects `-s/--sandbox` (it's an `exec`-only flag),
         // so preserve the run-phase sandbox mode via the supported `-c` config
         // override instead. Without this a restricted (workspace-write) task would
         // silently fall back to codex's default sandbox on a resumed turn,
         // diverging from `codexPermissionArguments` above. The value spellings
         // match the `--sandbox` enum (`sandbox_mode` config key).
-        switch policy {
-        case .autonomous:
-            return ["--dangerously-bypass-approvals-and-sandbox"]
-        case .restricted:
-            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"workspace-write\""]
-        case .interactive:
-            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"read-only\""]
+        let mode = requirements.permittedSandboxMode(preferring: policy.preferredCodexSandboxMode)
+        if mode == .dangerFullAccess {
+            return requirements.windowsSandboxArguments + [bypassApprovalsAndSandboxArgument]
         }
+        return requirements.windowsSandboxArguments
+            + requirements.approvalArguments
+            + ["-c", "sandbox_mode=\"\(mode.rawValue)\""]
     }
 
-    private static let nonInteractiveApprovalArguments = ["-c", "approval_policy=\"never\""]
+    private static let bypassApprovalsAndSandboxArgument = "--dangerously-bypass-approvals-and-sandbox"
 
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

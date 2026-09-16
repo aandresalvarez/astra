@@ -77,6 +77,15 @@ enum TaskGeneratedFiles: Sendable {
                 enumerator.skipDescendants()
                 continue
             }
+            // Prune the whole subtree, before anything in it costs a syscall.
+            // The per-entry work below is a symlink resolve plus a stat, and an
+            // agent that runs `python -m venv` in its task folder adds ~15,000
+            // entries that are all discarded by `shouldDisplayTaskFolderFile`
+            // anyway. Filtering them one at a time still walked every one.
+            guard !TaskOutputArtifactPathPolicy.isGeneratedDependencyDirectoryName(url.lastPathComponent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             let itemURL = url
                 .resolvingSymlinksInPath()
                 .standardizedFileURL

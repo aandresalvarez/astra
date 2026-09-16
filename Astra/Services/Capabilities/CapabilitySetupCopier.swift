@@ -109,7 +109,8 @@ struct CapabilitySetupCopier {
                 if let value = legacyGlobalCredentialValue(
                     for: hint.key,
                     workspace: workspace,
-                    serviceType: pluginConnector.serviceType
+                    pluginConnector: pluginConnector,
+                    globalConnectors: globalConnectors
                 ) {
                     inputs.credentialInputs[hint.key] = value
                 }
@@ -183,18 +184,81 @@ struct CapabilitySetupCopier {
         return nil
     }
 
+    /// Recovers a credential from a pre-package-era global connector.
+    ///
+    /// The alias table below deliberately widens `REDCAP_API_TOKEN` to a bare
+    /// `API_TOKEN`/`TOKEN`, so an unconstrained loop adopts whatever the
+    /// *first* enabled global connector happened to store under that name — a
+    /// Jira token becoming a REDCap token, which is precisely the failure this
+    /// work exists to prevent (invariant #1: a secret belongs to one
+    /// connector). What may be read therefore depends on how much is known
+    /// about the owner:
+    ///
+    /// - The ID resolves to a live row: the row's own service type must match,
+    ///   and then the widened aliases are safe — the owner vouches for them.
+    /// - The ID resolves to nothing (the row was deleted, its Keychain entries
+    ///   outlived it): only a key that already names this service is
+    ///   attributable, so aliases are dropped and an unqualified requested key
+    ///   is skipped entirely.
+    ///
+    /// Takes the whole `PluginConnector` rather than just its service type so it
+    /// can ask `connectorMatches` the same question `matchingConnectors` asked,
+    /// instead of re-deriving the answer from a service-type comparison that
+    /// would drift if the matcher changed.
     private func legacyGlobalCredentialValue(
         for key: String,
         workspace: Workspace,
-        serviceType: String
+        pluginConnector: PluginConnector,
+        globalConnectors: [Connector]
     ) -> String? {
-        let keyCandidates = Self.copyKeyCandidates(
+        let serviceType = pluginConnector.serviceType
+        let aliasedCandidates = Self.copyKeyCandidates(
             requestedKey: key,
             sourceKeys: Self.legacyCredentialKeyAliases(for: key, serviceType: serviceType),
             serviceType: serviceType
         )
+        let servicePrefix = Self.normalizedToken(serviceType)
+        let isServiceQualifiedKey = !servicePrefix.isEmpty
+            && Self.normalizedToken(key).contains(servicePrefix)
+        // Same first-wins dedup `copyKeyCandidates` applies at :295. Without it
+        // this triple is 3 probes for 2 distinct keys on every shipped hint,
+        // because every credential hint in the catalog is already uppercase —
+        // and this branch only runs when the preceding probe missed, so the
+        // repeat is always paid in full.
+        var seenUnattributed = Set<String>()
+        let unattributedCandidates = isServiceQualifiedKey
+            ? [key, key.uppercased(), key.lowercased()].filter { seenUnattributed.insert($0).inserted }
+            : []
+        let wantedServiceType = CapabilityRuntimeResourceMatcher.normalizedServiceType(serviceType)
+        let connectorsByID = Dictionary(
+            globalConnectors.map { (Self.normalizedID($0.id.uuidString), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         for rawID in workspace.enabledGlobalConnectorIDs {
             guard let connectorID = UUID(uuidString: rawID) else { continue }
+            let keyCandidates: [String]
+            if let source = connectorsByID[Self.normalizedID(rawID)] {
+                guard CapabilityRuntimeResourceMatcher.normalizedServiceType(source.serviceType)
+                    == wantedServiceType else { continue }
+                // If the matcher claims this row, `installationInputs` already
+                // swept it through `credentialValue` — over a superset of these
+                // key candidates and a superset of these entity IDs — and got
+                // nil, which is the only reason control reached here. Repeating
+                // it cannot find anything, and on this user's store that dead
+                // branch was a third of every load the sweep issued. The rows
+                // the matcher does *not* claim (an empty or "custom" package
+                // service type, where `connectorMatches` bails before comparing)
+                // are still worth reading: nothing else has looked at them.
+                if CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: source) {
+                    continue
+                }
+                keyCandidates = aliasedCandidates
+            } else {
+                keyCandidates = unattributedCandidates
+            }
+            guard !keyCandidates.isEmpty else { continue }
+
             for entityID in Self.copySourceEntityIDs(for: connectorID) {
                 for candidate in keyCandidates {
                     if let value = nonEmpty(secretStore.load(key: candidate, entityID: entityID)) {

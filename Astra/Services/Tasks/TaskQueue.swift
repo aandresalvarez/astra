@@ -1287,6 +1287,9 @@ final class TaskQueue {
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+            if TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: ["operation": "task_inputs_materialized"])
+            }
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
                 "event": "task_folder_prepared",
                 "mode": mode,
@@ -1547,7 +1550,10 @@ final class TaskQueue {
                     ?? (sourceEvent.type == TaskEventTypes.Conversation.userMessage.rawValue
                         ? sourceEvent.payload
                         : nil),
-                includeTaskInputs: request.kind == .initial || request.kind == .scheduled
+                includeTaskInputs: request.kind == .initial || request.kind == .scheduled,
+                authorship: ExecutionRequestSubmissionService.authorship(
+                    forSourceEventType: sourceEvent.type
+                )
             )
         let requestExecutionPolicy = (source?.executionPolicyOverride?.executionPolicy ?? .default)
             .withLaunchSnapshot(launchSnapshot)

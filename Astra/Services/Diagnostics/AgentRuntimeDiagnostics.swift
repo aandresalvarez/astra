@@ -31,6 +31,19 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
     let summarySource: SummarySource
     let userMessage: String
     let stderrWasWarningOnly: Bool
+    /// Whether a user approving expanded runtime permissions could actually
+    /// change this outcome.
+    ///
+    /// `.permissionDenied` covers two unrelated situations. One is a local
+    /// approval ASTRA holds the power to grant — a CLI approval prompt it
+    /// could not answer, a path outside the allowed directories. The other is
+    /// the model provider refusing the call outright: an HTTP 403, an IAM
+    /// verdict, an org policy. Only the first is approvable. Treating the
+    /// second as approvable produced the loop this flag exists to end: a
+    /// Vertex `403 Permission denied on resource project …` raised an approval
+    /// card, the user approved, the identical call was made again, and it
+    /// failed identically — five times in the logged run.
+    let isApprovableRuntimePermission: Bool
 
     enum SummarySource: String, Sendable {
         case stderr
@@ -106,6 +119,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             summary = fallback
         }
         let resolvedModel = RuntimeModelAvailability.normalizedModel(model, for: runtime)
+        let approvable = isApprovableRuntimePermission(category: category, haystack: haystack)
         return AgentRuntimeFailureDiagnostic(
             runtime: runtime,
             model: resolvedModel,
@@ -116,10 +130,49 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             rawErrorCharacterCount: raw.count,
             resultOutputCharacterCount: resultOutput.count,
             summarySource: summarySource,
-            userMessage: userMessage(for: category, runtime: runtime, model: resolvedModel),
-            stderrWasWarningOnly: warningOnly
+            userMessage: userMessage(
+                for: category,
+                runtime: runtime,
+                model: resolvedModel,
+                isApprovableRuntimePermission: approvable
+            ),
+            stderrWasWarningOnly: warningOnly,
+            isApprovableRuntimePermission: approvable
         )
     }
+
+    /// Withholds the approval card only for denials that can be *proven*
+    /// unapprovable, and leaves every other `.permissionDenied` approvable.
+    ///
+    /// The opposite shape — an allowlist of known local prompts — was tried
+    /// first and is wrong. The set of phrases a CLI uses to say "I need
+    /// permission" is open-ended and grows with every runtime and every
+    /// provider release, so an allowlist quietly withdraws a working escape
+    /// hatch every time it fails to guess one. Withholding the card is the
+    /// destructive direction: the user is left with a dead run and no control.
+    /// Provider refusals, by contrast, are a closed and recognisable set — an
+    /// HTTP status, an IAM or organization-policy verdict, a Google API
+    /// surface — and those are exactly the ones no ASTRA-side grant reaches.
+    private static func isApprovableRuntimePermission(
+        category: AgentRuntimeFailureCategory,
+        haystack: String
+    ) -> Bool {
+        guard category == .permissionDenied else { return false }
+        return !containsAny(haystack, providerAuthorizationNeedles)
+    }
+
+    /// The provider itself refused the call. No ASTRA-side grant reaches this,
+    /// so these must stay narrow enough not to swallow a local approval prompt
+    /// that merely quotes an HTTP status.
+    private static let providerAuthorizationNeedles = [
+        "api error: 403", "http 403", "status 403", "403 forbidden",
+        "\"code\": 403", "\"code\":403", "code: 403",
+        "permission_denied", "permission denied on resource",
+        "iam permission", "iam policy", "iam role",
+        "serviceusage", "googleapis.com",
+        "disabled by organization", "not enabled for this organization",
+        "organization policy", "org policy"
+    ]
 
     func auditFields(phase: String, stream: AgentRuntimeStreamTelemetrySnapshot?) -> [String: String] {
         var fields: [String: String] = [
@@ -137,6 +190,11 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             "error_summary": redactedSummary,
             "stderr_was_warning_only": String(stderrWasWarningOnly)
         ]
+        if category == .permissionDenied {
+            // Only on the category it discriminates, so the field's presence in
+            // a log line is itself the signal that this decision was made.
+            fields["approvable_runtime_permission"] = String(isApprovableRuntimePermission)
+        }
         if let stream {
             fields["raw_lines"] = String(stream.rawLineCount)
             fields["json_lines"] = String(stream.jsonLineCount)
@@ -224,7 +282,12 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             "forbidden", "http 403", "status 403", "disabled by organization",
             "not enabled for this organization", "policy", "permission denied", "access denied",
             "permission approval", "approval prompt", "allow access to these paths",
-            "outside the allowed directories"
+            "outside the allowed directories",
+            // Providers that answer in JSON never spell it as prose. Without
+            // these, a Vertex body carrying only `"status":"PERMISSION_DENIED"`
+            // fell through to the providerProcessFailed catch-all and the user
+            // was told nothing about why the call was refused.
+            "permission_denied", "api error: 403", "\"code\": 403", "\"code\":403"
         ]) {
             return .permissionDenied
         }
@@ -269,7 +332,12 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         return kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func userMessage(for category: AgentRuntimeFailureCategory, runtime: AgentRuntimeID, model: String) -> String {
+    private static func userMessage(
+        for category: AgentRuntimeFailureCategory,
+        runtime: AgentRuntimeID,
+        model: String,
+        isApprovableRuntimePermission: Bool = false
+    ) -> String {
         switch category {
         case .authenticationFailed:
             // Same remediation source as the onboarding Runtime step, so a
@@ -293,7 +361,14 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         case .providerConfigurationInvalid:
             return "\(runtime.displayName) has an invalid or incomplete provider configuration for model `\(model)`."
         case .permissionDenied:
-            return "\(runtime.displayName) was denied access by account, organization, runtime policy, or a CLI approval prompt ASTRA could not answer."
+            // Split because the old single sentence listed four causes at once,
+            // and the one the reader picked was almost always the wrong one: a
+            // Vertex 403 read as "a CLI approval prompt ASTRA could not answer",
+            // so the user approved, and approved, and approved.
+            if isApprovableRuntimePermission {
+                return "\(runtime.displayName) stopped at a CLI approval prompt ASTRA could not answer. Approving the request lets the run continue."
+            }
+            return "\(runtime.displayName) was refused by the provider or your organization, not by ASTRA. Approving more permissions here will not change the result — check the credentials, project, region, and policy configured for model `\(model)`."
         case .unsupportedOutputFormat:
             return "\(runtime.displayName) did not accept ASTRA's streaming/output-format arguments. Update the CLI or use a supported runtime version."
         case .networkFailed:

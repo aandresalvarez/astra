@@ -16,7 +16,7 @@ private func makeCodexRuntimeTestContainer() throws -> ModelContainer {
 
 @Suite("Codex CLI Runtime")
 struct CodexCLIRuntimeTests {
-    @Test("Codex model suggestions match supported CLI models")
+    @Test("Codex offline model suggestions remain available before discovery")
     func codexModelSuggestionsMatchSupportedCLIModels() {
         #expect(CodexCLIRuntime.availableModelNames() == [
             "gpt-5.5",
@@ -46,11 +46,12 @@ struct CodexCLIRuntimeTests {
         let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
         let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
 
-        if case .result(let text, _, _, _, _, _, let isError) = parsed.first {
+        // Visible output, not a terminal result: Codex emits one of these per
+        // assistant message, so the turn is not necessarily over.
+        if case .text(let text) = parsed.first {
             #expect(text == "I am Codex.")
-            #expect(isError == false)
         } else {
-            Issue.record("Expected result event")
+            Issue.record("Expected visible text event")
         }
 
         if case .completed(let summary) = agentEvents.first {
@@ -159,6 +160,53 @@ struct CodexCLIRuntimeTests {
         }
 
         #expect(capture.snapshot().unknownJSONShapes.isEmpty)
+    }
+
+    @Test("A Codex progress note is visible progress, not the end of the turn")
+    func codexProgressNoteIsNotTerminal() {
+        // Shape captured from run F41FEC9F, where Codex emitted this note 27s
+        // in and then ran three more tool batches before it was cut off.
+        let preamble = #"""
+        {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll trace the fact-relationship logic first."}}
+        """#
+
+        let parsed = CodexCLIRuntime.parseEvents(line: preamble, parsesJSONLines: true)
+        if case .text(let text) = parsed.first {
+            #expect(text == "I'll trace the fact-relationship logic first.")
+        } else {
+            Issue.record("Expected a progress note to parse as visible progress, got \(String(describing: parsed.first))")
+        }
+        #expect(!parsed.contains { if case .result = $0 { true } else { false } })
+
+        // The recorder still receives `.completed`, which is what keeps run
+        // output on last-completed-wins terms.
+        let agentEvents = CodexCLIRuntime.parseAgentEvents(line: preamble, parsesJSONLines: true)
+        if case .completed(let summary) = agentEvents.first {
+            #expect(summary == "I'll trace the fact-relationship logic first.")
+        } else {
+            Issue.record("Expected the progress note to stay a completed AgentEvent for run output")
+        }
+    }
+
+    @Test("Codex turn.completed is the terminal event and still reports usage")
+    func codexTurnCompletedIsTerminalAndReportsUsage() {
+        let line = #"""
+        {"type":"turn.completed","usage":{"input_tokens":57141,"cached_input_tokens":45824,"output_tokens":493}}
+        """#
+
+        let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+
+        let usage = parsed.compactMap { event -> (Int, Int)? in
+            if case .usage(let input, let output) = event { return (input, output) }
+            return nil
+        }
+        #expect(usage.count == 1)
+        #expect(usage.first?.0 == 102_965)
+        #expect(usage.first?.1 == 493)
+
+        #expect(parsed.contains { event in
+            if case .result(_, _, _, _, _, _, let isError) = event { !isError } else { false }
+        }, "turn.completed is the only frame the monitor can treat as the end of the turn")
     }
 
     @Test("Codex adapter requires visible result on successful run")

@@ -103,9 +103,15 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case runtimeCommandPlanned = "runtime.command_planned"
     case runtimeModelSelection = "runtime.model_selection"
     case runtimeModelAvailability = "runtime.model_availability"
+    case runtimeMCPPolicy = "runtime.mcp_policy"
     case runtimeProviderDetected = "runtime.provider_detected"
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"
+    /// An error the agent reported mid-stream. Deliberately not `task.failed`:
+    /// a provider can emit several of these and still finish `exit_code=0`, so
+    /// logging them as the task-level verdict made a successful run read as
+    /// three separate failures in the diagnostics report.
+    case runtimeAgentReportedError = "runtime.agent_reported_error"
     case runtimeEmptyOutput = "runtime.empty_output"
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
@@ -182,6 +188,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case connectorUpdated = "connector.updated"
     case connectorDeleted = "connector.deleted"
     case connectorSecretAdded = "connector.secret.added"
+    case connectorSecretRejected = "connector.secret.rejected"
     case connectorSecretRemoved = "connector.secret.removed"
     case connectorTested = "connector.tested"
 
@@ -221,6 +228,12 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case keychainSaveFailed = "keychain.save_failed"
     case keychainDeleteFailed = "keychain.delete_failed"
     case keychainSecretsMigrated = "keychain.secrets_migrated"
+    /// The dedicated keychain could not be opened, so every credential read is
+    /// returning nil. Distinct from `keychainSaveFailed`: nothing failed to
+    /// write, and no individual lookup reports an error — callers just see
+    /// "no credential configured" for everything, which is why this needs its
+    /// own event rather than being inferred from silence.
+    case keychainUnavailable = "keychain.unavailable"
 
     case isolationPrepared = "isolation.prepared"
     case isolationCleanedUp = "isolation.cleaned_up"

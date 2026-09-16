@@ -470,7 +470,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct ScheduleConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, reasoningEffort: String? = nil, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
             self.id = id
             self.name = name
             self.isEnabled = isEnabled
@@ -481,6 +481,7 @@ public enum WorkspaceConfigManager {
             self.templateID = templateID
             self.templateVariablesJSON = templateVariablesJSON
             self.model = model
+            self.reasoningEffort = reasoningEffort
             self.tokenBudget = tokenBudget
             self.scheduleType = scheduleType
             self.nextFireDate = nextFireDate
@@ -510,6 +511,7 @@ public enum WorkspaceConfigManager {
         public var templateID: String?
         public var templateVariablesJSON: String
         public var model: String
+        public var reasoningEffort: String?
         public var tokenBudget: Int
         public var scheduleType: String
         public var nextFireDate: Date
@@ -530,7 +532,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct TaskConfig: Codable, Sendable {
-        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, reasoningEffort: String? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
             self.id = id
             self.title = title
             self.goal = goal
@@ -545,6 +547,7 @@ public enum WorkspaceConfigManager {
             self.model = model
             self.runtimeID = runtimeID
             self.runtimeExplicitlySelected = runtimeExplicitlySelected
+            self.reasoningEffort = reasoningEffort
             self.costUSD = costUSD
             self.sessionId = sessionId
             self.maxTurns = maxTurns
@@ -594,6 +597,7 @@ public enum WorkspaceConfigManager {
         public var model: String
         public var runtimeID: String?
         public var runtimeExplicitlySelected: Bool?
+        public var reasoningEffort: String?
         public var costUSD: Double
         public var sessionId: String?
         public var maxTurns: Int
@@ -1719,6 +1723,7 @@ public enum WorkspaceConfigManager {
             templateID: schedule.templateID?.uuidString,
             templateVariablesJSON: schedule.templateVariablesJSON,
             model: schedule.model,
+            reasoningEffort: schedule.reasoningEffort,
             tokenBudget: schedule.tokenBudget,
             scheduleType: schedule.scheduleType.rawValue,
             nextFireDate: schedule.nextFireDate,
@@ -1948,6 +1953,7 @@ public enum WorkspaceConfigManager {
             model: task.model,
             runtimeID: task.runtimeID,
             runtimeExplicitlySelected: task.runtimeExplicitlySelected ? true : nil,
+            reasoningEffort: task.reasoningEffort,
             costUSD: task.costUSD,
             sessionId: task.sessionId,
             maxTurns: task.maxTurns,
@@ -2251,6 +2257,7 @@ public enum WorkspaceConfigManager {
             workspace: workspace,
             runtimeID: config.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
             model: config.model,
+            reasoningEffort: config.reasoningEffort,
             tokenBudget: config.tokenBudget,
             scheduleType: ScheduleType(rawValue: config.scheduleType) ?? .once,
             nextFireDate: config.nextFireDate
@@ -2434,6 +2441,7 @@ public enum WorkspaceConfigManager {
         task.tokensUsed = config.tokensUsed
         task.runtimeID = importedRuntime.rawValue
         task.runtimeExplicitlySelected = config.runtimeExplicitlySelected ?? false
+        task.reasoningEffort = config.reasoningEffort
         task.costUSD = config.costUSD
         task.sessionId = config.sessionId
         task.maxTurns = config.maxTurns

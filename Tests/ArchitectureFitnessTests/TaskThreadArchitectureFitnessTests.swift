@@ -180,8 +180,8 @@ struct TaskThreadArchitectureFitnessTests {
         }
     }
 
-    @Test("Transcript rows stay grouped below the outer lazy stack")
-    func transcriptRowsStayGroupedBelowOuterLazyStack() throws {
+    @Test("Transcript rows stay grouped below the outer stack, which must not be lazy")
+    func transcriptRowsStayGroupedBelowOuterStack() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -193,7 +193,20 @@ struct TaskThreadArchitectureFitnessTests {
         )
         let summarySource = String(taskMainView[summaryStart.lowerBound..<summaryEnd.lowerBound])
 
-        #expect(summarySource.contains("LazyVStack(alignment: .leading, spacing: 10) {"))
+        #expect(summarySource.contains("VStack(alignment: .leading, spacing: 10) {"))
+        // Deliberately NOT lazy, and this second assertion is load-bearing because
+        // "LazyVStack(alignment:..." also satisfies the `contains` above. Matched on
+        // the call form `LazyVStack(` rather than the bare type name so the
+        // explanatory comment at the stack itself — which necessarily names the type
+        // it is warning against — does not trip it.
+        //
+        // A lazy stack keeps an item-phase cache whose `AllItemsPhaseMutation` writes
+        // back into the AttributeGraph; combined with the intrinsic-size invalidation
+        // every selectable `Text` performs through its `SelectionOverlay`, that forms
+        // a non-terminating `GraphHost.flushTransactions()` cycle. It froze the app
+        // for 2h56m at 99% CPU on a five-row transcript on 2026-08-18. The full
+        // mechanism is written up at the stack itself in TaskMainView.swift.
+        #expect(!summarySource.contains("LazyVStack("))
         #expect(summarySource.contains("chatThreadContent(decisionDockVisible: decisionDockVisible)"))
         #expect(!summarySource.contains("ForEach(currentThreadSnapshot.conversationItems)"))
         #expect(taskMainView.contains("private func chatThreadContentBody(decisionDockVisible: Bool)"))
@@ -218,6 +231,48 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(agentBubbleSource.contains("decisionDockVisible: Bool"))
         #expect(!agentBubbleSource.contains("taskDecisionDockPresentation"))
         #expect(!agentBubbleSource.contains("shouldShowTaskDecisionDock"))
+    }
+
+    /// Between "shell visible" and "snapshot applied" a large thread spent
+    /// 1–1.5 s rendering as a goal bubble over an empty column. The gate keys
+    /// on the applied-snapshot readiness for *this* task, so a previous task's
+    /// snapshot can never stand in for it.
+    @Test("Transcript shows a loading state until its first snapshot applies")
+    func transcriptShowsLoadingStateUntilFirstSnapshotApplies() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        #expect(taskMainView.contains(
+            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id))"
+        ))
+    }
+
+    /// On the 2026-09-15 production profile, `taskDecisionDockPresentation`
+    /// reached `pendingGitHubPullRequest(task:run:)` and `pendingMutations(task:)`
+    /// on every body pass — every keystroke — and each faulted every event of a
+    /// 362-event thread through `performAndWait`. The answers now live in
+    /// `TaskMainViewDecisionOutcomes.swift`, recomputed only when the snapshot
+    /// revision or the task's durable revision moves.
+    @Test("Decision-dock outcomes are resolved off the snapshot, not per body pass")
+    func decisionDockOutcomesAreNotResolvedPerBodyPass() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let outcomes = try source("Astra/Views/TaskMainViewDecisionOutcomes.swift", root: root)
+
+        #expect(!taskMainView.contains("hasPendingGitHubPullRequest(task:"))
+        #expect(!taskMainView.contains("pendingGitHubPullRequest(task:"))
+        #expect(!taskMainView.contains("pendingTargets(task:"))
+        #expect(!taskMainView.contains("pendingMutations(task:"))
+        #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
+        #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
+        #expect(outcomes.contains("pendingMutations(taskID: task.id, in: modelContext)"))
+        #expect(!outcomes.contains("task.events"))
+        #expect(!outcomes.contains("task.runs"))
     }
 
     @Test("Waiting-turn dock never preempts a live permission decision")

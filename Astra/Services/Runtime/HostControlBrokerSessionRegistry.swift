@@ -12,6 +12,7 @@ protocol HostControlBrokerSessionManaging: AnyObject {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String
@@ -36,6 +37,7 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String
@@ -43,6 +45,7 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
         HostControlBrokerSessionRegistry.shared.prepare(
             task: task,
             runID: runID,
+            runtime: runtime,
             capabilityScope: capabilityScope,
             requiredTools: requiredTools,
             currentDirectory: currentDirectory,
@@ -81,6 +84,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     func prepare(
         task: AgentTask,
         runID: UUID?,
+        runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String,
@@ -93,19 +97,12 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             return false
         }
 
-        let brokeredTools = Set(requiredTools.map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        })
-        let brokeredConnectors = capabilityScope.connectors.filter {
-            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
-                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
-                    .map(brokeredTools.contains) == true
-        }
-        let connectorEnvironment = ConnectorRuntimeProjection(
-            connectors: brokeredConnectors,
-            secretStore: KeychainSecretStore(),
-            credentialExposurePolicy: .allowAllCredentials
-        ).environmentVariables()
+        let connectorEnvironment = Self.brokeredConnectorEnvironment(
+            task: task,
+            runtime: runtime,
+            capabilityScope: capabilityScope,
+            requiredTools: requiredTools
+        )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         let hostEnvironment = HostControlPlaneMCPProjection.environmentVariables(
             task: task,
@@ -126,9 +123,12 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
         let session = HostControlBrokerSession(
             configuration: configuration,
-            expectedHelperPath: expectedHelperPath
+            expectedHelperPath: expectedHelperPath,
+            withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID)
         )
-        guard let socketPath = session.start() else { return false }
+        guard let socketPath = session.start(
+            allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
+        ) else { return false }
 
         let key = sessionKey(taskID: task.id, runID: runID)
         lock.lock()
@@ -139,11 +139,107 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         return true
     }
 
+    /// The connector credentials the broker may unseal for this run.
+    ///
+    /// Reachability decides which routes a run *may* use; it must never decide
+    /// which secrets a run may unseal. A narrated connector already cleared the
+    /// first-use approval gate in `AgentRuntimeLaunchPreflight` — the launch
+    /// does not reach here otherwise — so it keeps the full exposure the user
+    /// approved. A connector that is reachable but not narrated never met that
+    /// gate, so it may only unseal a credential an existing durable grant
+    /// already covers.
+    ///
+    /// What the unapproved offered route does *not* do is disappear. It stays in
+    /// the manifest and the tool stays callable, because withdrawing a route
+    /// mid-launch is exactly what the offered tier is forbidden to do — so the
+    /// agent finds a working tool with no credentials behind it. That gap used
+    /// to be silent, and silence reads as "the user never set this up": in
+    /// production an agent told a user their verified Jira credentials were
+    /// missing, and the user re-saved correct credentials twice. So the withheld
+    /// set is projected too, by name, under
+    /// `ASTRA_CONNECTOR_CREDENTIALS_WITHHELD` — never a value, and only into the
+    /// broker's own configuration, never the agent's environment. The broker can
+    /// then say "held back", which is true, instead of "absent", which is not.
+    @MainActor
+    static func brokeredConnectorEnvironment(
+        task: AgentTask,
+        runtime: AgentRuntimeID?,
+        capabilityScope: TaskCapabilityPromptScope,
+        requiredTools: [String],
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> [String: String] {
+        let brokeredTools = Set(requiredTools.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        let brokeredConnectors = capabilityScope.reachableConnectors.filter {
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+                && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
+                    .map(brokeredTools.contains) == true
+        }
+        let narratedConnectorIDs = Set(capabilityScope.connectors.map(\.id))
+        let approvedLabels = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            runtime: runtime
+        ))
+        // One projection over the whole set, not one per tier merged after the
+        // fact. Two projections each emit an `ASTRA_CONNECTORS` manifest and
+        // each compute aliases within their own subset, so merging them either
+        // drops a connector from the manifest — the broker then answers "No …
+        // connector is projected into ASTRA_CONNECTORS" for a route the prompt
+        // just advertised — or hands two connectors the same alias and env
+        // prefix. The tier distinction belongs in the credential policy, not in
+        // the manifest.
+        //
+        // Expressing the narrated tier as approved labels is exact rather than
+        // approximate: `exposeAllCredentials` differs from an approved-label
+        // set only by the credentials that have no value (which project
+        // nothing) and by the non-HTTP compatibility carve-out, which no
+        // broker-owned service type is eligible for.
+        let narratedApprovedLabels = Set(ConnectorRuntimeProjection(
+            connectors: brokeredConnectors.filter { narratedConnectorIDs.contains($0.id) },
+            secretStore: secretStore,
+            credentialExposurePolicy: .allowAllCredentials
+        ).configuredCredentialLabels())
+        let exposedLabels = narratedApprovedLabels.union(approvedLabels)
+        var environment = ConnectorRuntimeProjection(
+            connectors: brokeredConnectors,
+            secretStore: secretStore,
+            credentialExposurePolicy: .approvedLabels(exposedLabels)
+        ).environmentVariables()
+        let withheld = BrokeredCredentialWithholdingProjection.manifest(
+            connectors: brokeredConnectors,
+            secretStore: secretStore,
+            exposedCredentialLabels: exposedLabels
+        )
+        if !withheld.isEmpty, let encoded = withheld.encoded() {
+            environment[BrokeredConnectorCredentialWithholdingManifest.environmentKey] = encoded
+        }
+        return environment
+    }
+
+    /// Runtimes that wrap the provider process in a sandbox of their own making,
+    /// which ASTRA does not author and cannot widen.
+    ///
+    /// Codex is here because its `workspace-write` seatbelt denies `connect(2)`
+    /// on the broker socket outright, so the relay has no transport at all
+    /// without the file drop. Membership buys a run nothing except that
+    /// fallback: the socket is still tried first and still wins whenever it
+    /// works, including on a Codex run that resolved to `danger-full-access`
+    /// and therefore has no sandbox to trip over.
+    static let providerSandboxedRuntimes: Set<AgentRuntimeID> = [.codexCLI]
+
     func endpoint(taskID: UUID, runID: UUID?) -> String? {
         let key = sessionKey(taskID: taskID, runID: runID)
         lock.lock()
         defer { lock.unlock() }
         return sessions[key]?.socketPath
+    }
+
+    func fileDrop(taskID: UUID, runID: UUID?) -> (directory: String, token: String)? {
+        let key = sessionKey(taskID: taskID, runID: runID)
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions[key]?.fileDrop
     }
 
     func registerProviderProcess(taskID: UUID, runID: UUID?, processID: Int32) {
@@ -185,14 +281,23 @@ private final class HostControlBrokerSession: @unchecked Sendable {
     private var listenerSource: DispatchSourceRead?
     private var connectionDescriptors: Set<Int32> = []
     private var invalidated = false
+    private var dropListener: HostControlBrokerDropListener?
     fileprivate var socketPath: String?
+    fileprivate var fileDrop: (directory: String, token: String)?
 
-    init(configuration: HostControlToolConfiguration, expectedHelperPath: String) {
-        server = HostControlMCPServer(configuration: configuration)
+    init(
+        configuration: HostControlToolConfiguration,
+        expectedHelperPath: String,
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil
+    ) {
+        server = HostControlMCPServer(
+            configuration: configuration,
+            withholdingObserver: withholdingObserver
+        )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }
 
-    func start() -> String? {
+    func start(allowsFileDropFallback: Bool = false) -> String? {
         let candidatePath = "/tmp/astra-host-control-\(UUID().uuidString.lowercased()).sock"
         guard let path = try? HostControlBrokerIPC.validatedSocketPath(candidatePath) else {
             return nil
@@ -230,7 +335,39 @@ private final class HostControlBrokerSession: @unchecked Sendable {
             self?.acceptConnections()
         }
         source.resume()
+        if allowsFileDropFallback {
+            startFileDropFallback()
+        }
         return path
+    }
+
+    /// A failure here is not a launch failure. The socket is up either way, and
+    /// a run with no fallback is exactly what every provider outside
+    /// `providerSandboxedRuntimes` already runs with.
+    private func startFileDropFallback() {
+        let token = HostControlBrokerFileDrop.newToken()
+        let listener = HostControlBrokerDropListener(
+            token: token,
+            // The same two questions the socket asks of `LOCAL_PEERPID`, asked
+            // of a PID the caller supplied. Weaker input, identical checks.
+            authorize: { [weak self] processID in
+                guard let self else { return false }
+                return Self.canonicalExecutablePath(processID: processID) == self.expectedHelperPath
+                    && self.helperBelongsToProvider(processID)
+            },
+            handle: { [weak self] line in
+                guard let self else { return "" }
+                self.serverLock.lock()
+                defer { self.serverLock.unlock() }
+                return self.server.handleLine(line) ?? ""
+            }
+        )
+        let candidate = "/tmp/astra-host-control-\(UUID().uuidString.lowercased())"
+        guard let directory = listener.start(candidateDirectory: candidate) else { return }
+        connectionLock.lock()
+        dropListener = listener
+        fileDrop = (directory: directory, token: token)
+        connectionLock.unlock()
     }
 
     func registerProviderProcess(_ processID: Int32) {
@@ -255,6 +392,9 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         let source = listenerSource
         let descriptor = listenerDescriptor
         let path = socketPath
+        let drop = dropListener
+        dropListener = nil
+        fileDrop = nil
         listenerSource = nil
         listenerDescriptor = -1
         for connection in connectionDescriptors {
@@ -262,6 +402,7 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         }
         connectionLock.unlock()
 
+        drop?.invalidate()
         source?.cancel()
         if source != nil {
             listenerQueue.sync {}

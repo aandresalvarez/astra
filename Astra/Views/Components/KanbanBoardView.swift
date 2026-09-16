@@ -72,7 +72,16 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
     func sortedTasks(from tasks: [AgentTask]) -> [AgentTask] {
         switch self {
         case .queued:
-            return tasks.sorted { $0.queuePosition < $1.queuePosition }
+            // `queuePosition` is 0 for effectively every task, and Swift's sort
+            // is not stable, so ordering on it alone left this lane's order
+            // unspecified and dependent on however the fetch happened to
+            // return rows. The `updatedAt` tiebreaker makes it deterministic
+            // and matches how every other lane orders equals.
+            return tasks.sorted { lhs, rhs in
+                lhs.queuePosition == rhs.queuePosition
+                    ? lhs.updatedAt > rhs.updatedAt
+                    : lhs.queuePosition < rhs.queuePosition
+            }
         case .review:
             // Pending-user tasks are actively blocking the agent on a
             // question — surface them above passive terminal outcomes.

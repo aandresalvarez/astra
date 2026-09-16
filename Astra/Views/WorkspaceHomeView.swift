@@ -123,11 +123,14 @@ struct WorkspaceHomeContainerView: View {
         self.sshReloadTrigger = sshReloadTrigger
 
         let workspaceID = workspace.id
+        // Filtered but unsorted: `KanbanCategory.sortedTasks` orders every lane
+        // itself, and `queuePosition` is unindexed and uniformly 0, so a SQL
+        // `ORDER BY` only bought a temp-B-tree sort of the whole result set.
+        // See `TaskSidebarContainerView` for the diagnosis.
         _tasks = Query(
             filter: #Predicate<AgentTask> { task in
                 task.workspace?.id == workspaceID
-            },
-            sort: \AgentTask.queuePosition
+            }
         )
         _workspaceApps = Query(
             filter: #Predicate<WorkspaceApp> { app in

@@ -478,7 +478,10 @@ final class RuntimeSetupModel: ObservableObject {
             vertexRegion: defaults.string(forKey: AppStorageKeys.claudeVertexRegion) ?? "",
             vertexOpusModel: defaults.string(forKey: AppStorageKeys.claudeVertexOpusModel) ?? "",
             vertexSonnetModel: defaults.string(forKey: AppStorageKeys.claudeVertexSonnetModel) ?? "",
-            vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? ""
+            vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? "",
+            antigravityAuthMode: AntigravityAuthMode(
+                rawValue: defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? ""
+            ) ?? .consumer
         )
     }
 

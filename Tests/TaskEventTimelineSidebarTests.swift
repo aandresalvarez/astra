@@ -321,8 +321,12 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [task.id])
     }
 
-    @Test("Sidebar task index invalidation ignores searchable text when search is inactive")
-    func sidebarTaskIndexInvalidationIgnoresSearchableTextWithoutSearch() {
+    /// The signature never reads `goal`, in search or out of it. It used to
+    /// hash it whenever a search was active, which on a real store meant
+    /// hashing 10.83 MB of text per call — and the call sat on the keystroke
+    /// path. `updatedAt` stands in for it: every writer of `goal` bumps it.
+    @Test("Sidebar task index invalidation never hashes the goal text")
+    func sidebarTaskIndexInvalidationIgnoresSearchableText() {
         let workspace = makeWorkspace(name: "Slow Workspace")
         let longGoal = String(repeating: "long goal text ", count: 20_000)
         let task = makeTask(
@@ -333,18 +337,101 @@ struct SidebarGroupingTests {
         )
         task.updatedAt = Date(timeIntervalSince1970: 400)
 
-        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
 
-        task.title = "Changed title"
         task.goal = String(repeating: "changed goal text ", count: 20_000)
 
-        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
-
-        #expect(before == after)
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) == before)
     }
 
-    @Test("Sidebar task index invalidates searchable text when search is active")
-    func sidebarTaskIndexInvalidationIncludesSearchableTextDuringSearch() {
+    /// A rename must reach the index by itself, not by way of `updatedAt`.
+    ///
+    /// `updatedAt` was the whole story while every rename bumped it, and the
+    /// generated-title backfill is the writer that broke that: it restores the
+    /// original timestamp on purpose so renaming a finished thread does not
+    /// shove it back up the rail. With `title` unhashed the write was invisible
+    /// to the signature, so a task whose new title matched the active query
+    /// stayed hidden.
+    @Test("A rename that preserves updatedAt still moves the signature")
+    func sidebarTaskIndexInvalidationTracksSilentRenames() {
+        let workspace = makeWorkspace(name: "Search Workspace")
+        let task = makeTask(
+            title: "Summarize report updates for the",
+            goal: "Summarize report updates for the steering committee",
+            status: .completed,
+            workspace: workspace
+        )
+        let originalUpdatedAt = Date(timeIntervalSince1970: 400)
+        task.updatedAt = originalUpdatedAt
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        // Exactly what `TaskLifecycleCoordinator.backfillGeneratedTitles` does:
+        // a generated title, and the timestamp put back the way it was.
+        task.title = "Steering committee report summary"
+        task.updatedAt = originalUpdatedAt
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [task]) != before,
+            """
+            A backfilled title moved nothing the sidebar can see, so \
+            SidebarTaskStore republishes the same version and the index is \
+            never rebuilt. A search for the new title finds nothing.
+            """
+        )
+    }
+
+    /// The terms used to be XOR-ed into one accumulator, which recorded each
+    /// field's *parity* across the snapshot rather than which task held which
+    /// value. Two pin writes coalesced into one snapshot cancelled exactly — and
+    /// the pin writer restores `updatedAt` on purpose, so nothing else moved
+    /// either.
+    @Test("Two tasks swapping a boolean still moves the signature")
+    func sidebarTaskIndexInvalidationCouplesFieldsToTheirTask() {
+        let workspace = makeWorkspace(name: "Pinned Workspace")
+        let pinned = makeTask(title: "Already pinned", status: .completed, workspace: workspace)
+        let unpinned = makeTask(title: "Not pinned", status: .completed, workspace: workspace)
+        let frozen = Date(timeIntervalSince1970: 400)
+        pinned.updatedAt = frozen
+        unpinned.updatedAt = frozen
+        pinned.isPinned = true
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [pinned, unpinned])
+
+        // Unpin one, pin the other, in the window before a single snapshot.
+        pinned.isPinned = false
+        pinned.updatedAt = frozen
+        unpinned.isPinned = true
+        unpinned.updatedAt = frozen
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [pinned, unpinned]) != before,
+            """
+            The pinned count is unchanged, so a parity fingerprint says nothing \
+            happened and SidebarTaskIndex keeps both tasks in the wrong arrays.
+            """
+        )
+    }
+
+    /// And the fingerprint still must not depend on the order the snapshot
+    /// arrives in — the fix folds per-task hashes with `&+`, not by appending.
+    @Test("The signature does not depend on snapshot order")
+    func sidebarTaskIndexInvalidationIsOrderIndependent() {
+        let workspace = makeWorkspace(name: "Ordering Workspace")
+        let first = makeTask(title: "First", status: .completed, workspace: workspace)
+        let second = makeTask(title: "Second", status: .running, workspace: workspace)
+
+        #expect(
+            SidebarTaskIndexInvalidation.signature(for: [first, second])
+                == SidebarTaskIndexInvalidation.signature(for: [second, first])
+        )
+    }
+
+    /// The ordinary rename path, which does bump `updatedAt`. Kept alongside
+    /// the silent one so a future change cannot satisfy this suite by hashing
+    /// only the timestamp again.
+    @Test("A rename that bumps updatedAt moves the signature")
+    func sidebarTaskIndexInvalidationTracksRenamesViaUpdatedAt() {
         let workspace = makeWorkspace(name: "Search Workspace")
         let task = makeTask(
             title: "Deploy report",
@@ -354,14 +441,26 @@ struct SidebarGroupingTests {
         )
         task.updatedAt = Date(timeIntervalSince1970: 400)
 
-        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
 
+        // Exactly what the rename action in `TaskSidebarView` does.
         task.title = "Archive report"
-        task.goal = "Summarize archive updates"
+        task.updatedAt = Date(timeIntervalSince1970: 401)
 
-        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) != before)
+    }
 
-        #expect(before != after)
+    /// Two writes inside the same wall-clock second used to collapse to one
+    /// signature, because the date terms were truncated to whole seconds.
+    @Test("Sub-second updates move the signature")
+    func sidebarTaskIndexInvalidationSeesSubSecondUpdates() {
+        let task = makeTask(title: "Streaming", status: .running)
+        task.updatedAt = Date(timeIntervalSince1970: 400)
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        task.updatedAt = Date(timeIntervalSince1970: 400.25)
+
+        #expect(SidebarTaskIndexInvalidation.signature(for: [task]) != before)
     }
 
     @Test("TaskThreadSnapshotTrigger ignores unrelated task metadata updates")

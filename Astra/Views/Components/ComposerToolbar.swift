@@ -54,6 +54,7 @@ struct ComposerToolbar: View {
     // MARK: - Required
 
     let model: String
+    var reasoningEffort: String? = nil
     var runtimeID: String = AgentRuntimeID.claudeCode.rawValue
     let budget: Int
     var skills: [Skill] = []
@@ -77,6 +78,7 @@ struct ComposerToolbar: View {
 
     var onStop: (() -> Void)?
     var onModelChange: ((String) -> Void)?
+    var onReasoningEffortChange: ((String?) -> Void)?
     var onRuntimeChange: ((String) -> Void)?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
@@ -356,23 +358,108 @@ struct ComposerToolbar: View {
                 }
             }
 
-            Menu {
-                let candidates = runtimeModels(for: resolvedRuntime)
-                let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
-                    Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
-                    Divider()
+            if resolvedRuntime == .antigravityCLI {
+                let groups = antigravityModelGroups
+                let selection = AntigravityCLIRuntime.currentSelection(model: model, groups: groups)
+                let selectedGroup = groups.first { $0.baseID == selection.baseID }
+
+                Menu {
+                    ForEach(groups, id: \.baseID) { group in
+                        Button {
+                            onModelChange?(AntigravityCLIRuntime.fullModelID(
+                                base: group.baseID,
+                                effort: group.baseID == selection.baseID ? selection.effort : group.preferredDefaultEffort,
+                                groups: groups
+                            ))
+                        } label: {
+                            HStack {
+                                Text(group.baseDisplayName)
+                                if group.baseID == selection.baseID {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Model", systemImage: "cpu")
                 }
-                ForEach(candidates, id: \.self) { candidate in
-                    Button { onModelChange?(candidate) } label: {
-                        ModelMenuItemLabel(
-                            presentation: modelPresentation(candidate, runtime: resolvedRuntime),
-                            isSelected: model == candidate
+
+                if let selectedGroup, !selectedGroup.sortedEfforts.isEmpty {
+                    Menu {
+                        ForEach(selectedGroup.sortedEfforts, id: \.self) { effort in
+                            Button {
+                                onModelChange?(AntigravityCLIRuntime.fullModelID(
+                                    base: selectedGroup.baseID,
+                                    effort: effort,
+                                    groups: groups
+                                ))
+                            } label: {
+                                HStack {
+                                    Text(effort.capitalized)
+                                    if selection.effort == effort {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(
+                            "Reasoning: \(selection.effort?.capitalized ?? "Default")",
+                            systemImage: "gauge.with.needle"
                         )
                     }
                 }
-            } label: {
-                Label("Model", systemImage: "cpu")
+            } else {
+                Menu {
+                    let candidates = runtimeModels(for: resolvedRuntime)
+                    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
+                        Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
+                        Divider()
+                    }
+                    ForEach(candidates, id: \.self) { candidate in
+                        Button { onModelChange?(candidate) } label: {
+                            ModelMenuItemLabel(
+                                presentation: modelPresentation(candidate, runtime: resolvedRuntime),
+                                isSelected: model == candidate
+                            )
+                        }
+                    }
+                } label: {
+                    Label("Model", systemImage: "cpu")
+                }
+
+                if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
+                    Menu {
+                        // `nil` is the supported way to say "let the provider
+                        // decide", and the label already reads "Default" for
+                        // it — without this entry a task that has ever been
+                        // given an explicit effort can never be handed back.
+                        Button { onReasoningEffortChange?(nil) } label: {
+                            HStack {
+                                Text("Default")
+                                if reasoningEffort == nil {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                        ForEach(reasoningEffortOptions, id: \.self) { option in
+                            Button { onReasoningEffortChange?(option) } label: {
+                                HStack {
+                                    Text(option.capitalized)
+                                    if reasoningEffort == option {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(
+                            "Reasoning: \((reasoningEffort ?? defaultReasoningEffort)?.capitalized ?? "Default")",
+                            systemImage: "gauge.with.needle"
+                        )
+                    }
+                }
             }
 
             if RuntimeBudgetPresentation.isEnabled(budget) {
@@ -506,7 +593,7 @@ struct ComposerToolbar: View {
 
     private func runtimeStatusLabel(style: RuntimeStatusLabelStyle) -> some View {
         HStack(spacing: 6) {
-            if isRunning {
+            if isRunning || compatibilityIsPending {
                 ProgressView()
                     .controlSize(.mini)
                     .frame(width: 14, height: 14)
@@ -967,8 +1054,43 @@ struct ComposerToolbar: View {
         )
     }
 
+    /// Antigravity's model list re-grouped into base models + reasoning
+    /// efforts for display, mirroring the other providers' Model/Effort
+    /// split even though `agy` has no separate `--effort` at launch time —
+    /// see `AntigravityCLIRuntime.AntigravityModelGroup`.
+    private var antigravityModelGroups: [AntigravityCLIRuntime.AntigravityModelGroup] {
+        let options = runtimeModels(for: .antigravityCLI).map { id in
+            AntigravityCLIRuntime.AntigravityModelOption(
+                id: id,
+                displayName: RuntimeModelAvailability.displayName(for: id, runtime: .antigravityCLI, cache: runtimeModelCache)
+            )
+        }
+        return AntigravityCLIRuntime.groupModelOptions(options)
+    }
+
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
         runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    /// Nil when this runtime has no reasoning-effort knob at all, or the
+    /// selected model reports no per-model options.
+    private var reasoningEffortOptions: [String]? {
+        guard AgentRuntimeAdapterRegistry.descriptor(for: resolvedRuntime).supportsReasoningEffort else {
+            return nil
+        }
+        return RuntimeModelAvailability.supportedReasoningEfforts(
+            for: model,
+            runtime: resolvedRuntime,
+            cache: runtimeModelCache
+        )
+    }
+
+    private var defaultReasoningEffort: String? {
+        RuntimeModelAvailability.defaultReasoningEffort(
+            for: model,
+            runtime: resolvedRuntime,
+            cache: runtimeModelCache
+        )
     }
 
     private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
@@ -1061,10 +1183,12 @@ struct ComposerToolbar: View {
         if compatibilityIsUnavailable {
             return "Compatibility unavailable"
         }
-        if compatibilityIsPending {
+        // A re-check keeps the previous verdict on the pill (the spinner is
+        // the cue); only a first check has nothing better to say.
+        if compatibilityIsPending, displayedEligibilitySnapshot == nil {
             return "Checking compatibility"
         }
-        guard currentRuntimeEligibilitySnapshot != nil else {
+        guard displayedEligibilitySnapshot != nil else {
             return "Compatibility not checked"
         }
         if selectedRuntimeBlockReason != nil {
@@ -1145,6 +1269,14 @@ struct ComposerToolbar: View {
         )
     }
 
+    /// What the pill describes: the exact verdict when there is one, else the
+    /// verdict a running re-check supersedes. Never consulted for `canSubmit`,
+    /// which stays on the signature-exact snapshot.
+    private var displayedEligibilitySnapshot: TaskRuntimeEligibilitySnapshot? {
+        currentRuntimeEligibilitySnapshot
+            ?? (compatibilityIsPending ? runtimeEligibilityPreviewState.lastResolvedSnapshot : nil)
+    }
+
     private var compatibilityIsUnavailable: Bool {
         hasInput && runtimeEligibilityPreviewState.isUnavailable(
             for: runtimeEligibilityPreviewSignature
@@ -1162,7 +1294,7 @@ struct ComposerToolbar: View {
     }
 
     private var submissionRuntimeCandidate: TaskRuntimeAdmissionCandidate? {
-        guard let snapshot = currentRuntimeEligibilitySnapshot else { return nil }
+        guard let snapshot = displayedEligibilitySnapshot else { return nil }
         return snapshot.candidates[resolvedRuntime]
     }
 

@@ -38,6 +38,12 @@ struct AgentProcessResult {
         maxTurnsExceeded: Bool = false,
         readOnlyBoundaryEvidence: ReadOnlyBoundaryEvidence? = nil
     ) {
+        // ASTRA reaped a provider that had finished its turn and was only
+        // holding the pipe open, so the SIGTERM's own status would libel a run
+        // that succeeded. This is sound only because the reap now demands both
+        // a genuine terminal frame and a quiet grace window; when it fired on
+        // time alone, this line is what dressed a mid-work kill up as a clean
+        // completion and kept the truncation invisible.
         self.exitCode = terminatedAfterTerminalProgress ? 0 : exitCode
         self.error = error
         self.providerVersion = providerVersion

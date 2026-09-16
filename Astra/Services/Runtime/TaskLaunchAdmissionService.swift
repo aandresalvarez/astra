@@ -107,7 +107,7 @@ enum TaskLaunchAdmissionService {
                 task: task,
                 capabilityResolutionSnapshot: capabilitySnapshot,
                 executionEnvironment: environment,
-                browserBridgeAttached: capabilitySnapshot.providerLaunch.exposesBrowserBridge
+                browserBridgeRequired: capabilitySnapshot.providerLaunch.requiresBrowserBridge
             )
             let runtimeGrants = PermissionBroker.sanitizeApprovedGrants(
                 TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: runtime)
@@ -134,7 +134,8 @@ enum TaskLaunchAdmissionService {
                 permissionPolicy: effectivePermissionPolicy,
                 workspaceAccess: executionPolicy.workspaceAccessOverride ?? .exclusive,
                 connectorSecretStore: secretStore,
-                precomputedRuntimeRequirements: requirements
+                precomputedRuntimeRequirements: requirements,
+                runtimeCapabilityProfile: runtimeProfile
             )
             let transportIncompatibilities = TaskRuntimeCompatibilityService.incompatibilities(
                 runtime: runtime,
@@ -246,7 +247,14 @@ enum TaskLaunchAdmissionService {
     ) -> TaskRuntimeCompatibilityLaunchBlock {
         let missing = candidate.incompatibilities.map(\.userFacingName)
         let reason = candidate.blockingReason ?? "the launch contract is incompatible"
-        let remediation = suggestedRuntime.map { "Switch to \($0.displayName)." }
+        // An incompatibility whose cause is outside ASTRA carries its own
+        // wording, because "cannot safely launch because <capability name>"
+        // describes an ASTRA gap and this is not one.
+        let phrasing = candidate.incompatibilities.compactMap {
+            $0.launchBlockPhrasing(runtime: runtime, suggestedRuntime: suggestedRuntime)
+        }.first
+        let remediation = phrasing?.remediation
+            ?? suggestedRuntime.map { "Switch to \($0.displayName)." }
             ?? candidate.policyDiagnostics.first(where: {
                 $0.severity == PolicyDiagnosticSeverity.blocked
             })?.remediation
@@ -257,7 +265,8 @@ enum TaskLaunchAdmissionService {
                 incompatibilities: candidate.incompatibilities
             ),
             title: "Selected runtime is incompatible with this turn",
-            message: "\(runtime.displayName) cannot safely launch because \(reason)",
+            message: phrasing?.message
+                ?? "\(runtime.displayName) cannot safely launch because \(reason)",
             remediation: remediation,
             missingCapabilities: missing.isEmpty ? [reason] : missing,
             suggestedRuntime: suggestedRuntime

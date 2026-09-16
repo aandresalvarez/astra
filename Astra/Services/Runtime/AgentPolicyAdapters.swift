@@ -40,7 +40,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         }
@@ -147,7 +147,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })
@@ -340,7 +340,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })
@@ -484,7 +484,13 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
-        let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
+        // Clamp here rather than at launch: this render is what both the launch
+        // and the UI summary read, so a run that cannot get `danger-full-access`
+        // is described with the sandbox it will actually run under.
+        let args = CodexCLIRuntime.codexPermissionArguments(
+            policy: permissionPolicy,
+            requirements: CodexRequirementsService.current()
+        )
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -713,7 +719,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish, .connectorMutation:
                 return nil
             }
         })
@@ -915,10 +921,17 @@ enum TaskPolicyStore {
             )
         }
 
-        // A scoped approval may narrow Auto, but never broaden an already
-        // narrower task/workspace selection. Treat restricted/interactive
-        // one-run overrides as an execution cap so legacy global Auto cannot
-        // silently turn an exact approval into unrestricted provider authority.
+        // An explicit restricted/interactive override is an execution cap: a
+        // launch that deliberately asks for a narrower policy must not be
+        // widened by a legacy global Auto default.
+        //
+        // This deliberately no longer covers permission *approvals*. Those pass
+        // `permissionPolicyOverride: nil` (see
+        // `AgentRuntimeExecutionPolicy.approvedRuntimePermission`) precisely so
+        // they land here as additive authority instead of tripping this cap:
+        // approving one prompt on an Auto task used to demote the whole run to
+        // `review`, which re-enabled the brokered enforcement tier the user had
+        // switched off — and the very next tool call was killed by it.
         guard executionPolicy.permissionPolicyOverride != nil,
               executionPolicy.permissionPolicyOverride != .autonomous,
               baseResolution.level == .autonomous else {
@@ -1030,8 +1043,15 @@ enum AgentPolicyManifestService {
         let policy = policyApprovedTools.isEmpty
             ? basePolicy
             : basePolicy.applyingOneRunAllowedTools(policyApprovedTools)
+        // A one-run approval ADDS tools; it never replaces the run's resolved
+        // tool set. This used to read `executionPolicy.allowedTools(default:)`,
+        // which substitutes the override for the resolved list — so approving a
+        // single credential prompt swapped an Auto run's tools for whatever the
+        // approval carried (the `review` preset), narrowing the run as a side
+        // effect of saying yes. Unioning means an approval can only ever widen.
         let requestedAllowedTools = uniqueStrings(
-            executionPolicy.allowedTools(default: taskCapabilityScope.resolver.resolvedProviderAllowedTools)
+            taskCapabilityScope.resolver.resolvedProviderAllowedTools
+                + (executionPolicy.allowedToolsOverride ?? [])
                 + taskScopedProviderGrants
         )
         let manifestExecutionPolicy = AgentRuntimeExecutionPolicy(
@@ -1048,15 +1068,36 @@ enum AgentPolicyManifestService {
         // need": reuse the launch resolver's already-computed requirement set
         // when available (the normal launch path) rather than re-deriving it
         // from a second, independently-captured capability scope.
-        let hostControlTools = precomputedRuntimeRequirements?.hostControlTools ?? HostControlPlaneMCPProjection.enabledToolNames(
+        let hostControlTools = precomputedRuntimeRequirements?.offeredHostControlTools ?? HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope
         )
+        // The subset the turn depends on. Only this may block the render or
+        // withdraw the provider's shell; the wider list above only adds routes.
+        let requiredHostControlTools = precomputedRuntimeRequirements?.hostControlTools
+            ?? HostControlPlaneMCPProjection.requiredToolNames(
+                task: task,
+                environment: executionEnvironment,
+                contextText: contextText,
+                capabilityScope: taskCapabilityScope
+            )
+        // Report the environment the agent actually gets, not the resolution it
+        // was built from. These differ by exactly the brokered credentials, and
+        // reporting the pre-strip set is what listed a Jira token against a run
+        // that never held one - an exposure report that overstates is as
+        // untrustworthy as one that understates.
+        var projectedEnvironment = taskCapabilityScope.resolver.resolvedEnvironmentVariables
+        BrokeredConnectorEnvironment.strip(from: &projectedEnvironment, capabilityScope: taskCapabilityScope)
         let envKeys = uniqueStrings(
-            Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys)
+            Array(projectedEnvironment.keys)
                 + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
+        )
+        let brokeredCredentialLabels = BrokeredConnectorEnvironment.credentialLabels(
+            in: taskCapabilityScope,
+            task: task,
+            runtime: runtime
         )
         let manifestCredentialLabels = uniqueStrings(
             credentialLabels(for: task, capabilityScope: taskCapabilityScope)
@@ -1105,7 +1146,8 @@ enum AgentPolicyManifestService {
             runtime: runtime,
             runtimeCapabilityProfile: runtimeCapabilityProfile,
             executionEnvironment: executionEnvironment,
-            hostControlTools: hostControlTools
+            hostControlTools: hostControlTools,
+            requiredHostControlTools: requiredHostControlTools
         )
         render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
         render.allowedShellPatterns = uniqueStrings(
@@ -1125,9 +1167,26 @@ enum AgentPolicyManifestService {
             executionEnvironment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope,
-            hostControlTools: hostControlTools
+            hostControlTools: requiredHostControlTools
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        // Effective authority must be visible wherever it changes. The run that
+        // motivated this said "Auto" in the picker and ran under `review`
+        // enforcement, and nothing anywhere told the user — the only way to see
+        // it was to read the audit log. If the run does not resolve to what the
+        // task selected, say so in the same place every other policy fact is
+        // reported.
+        if let selectedLevel = TaskPolicyStore.latestSelectedLevel(for: task),
+           selectedLevel != resolution.level {
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "policy.effective-level-differs",
+                severity: .warning,
+                title: "Effective policy differs from the selected policy",
+                message: "This task is set to \(selectedLevel.displayName), but this run resolved to \(resolution.level.displayName) (scope: \(resolution.scope.rawValue)). The run is enforced at the effective level, not the selected one.",
+                affectedCapability: "policy",
+                remediation: "Review any one-run approval or execution override attached to this run; clear it to return the task to \(selectedLevel.displayName)."
+            ))
+        }
         if shouldProjectGitCredentials(
             task: task,
             contextText: contextText,
@@ -1215,6 +1274,7 @@ enum AgentPolicyManifestService {
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
+            brokeredCredentialLabels: brokeredCredentialLabels,
             mcpServers: hostControlPlaneAugmentedMCPServers(
                 base: capabilityPackages.map {
                     TaskCapabilityResolver.enabledMCPServerManifests(
@@ -1297,6 +1357,7 @@ enum AgentPolicyManifestService {
             "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "policy_level": manifest.policyLevel.rawValue,
+            "selected_policy_level": TaskPolicyStore.latestSelectedLevel(for: task)?.rawValue ?? "none",
             "policy_scope": manifest.policyScope.rawValue,
             "provider_adapter_version": String(manifest.providerRender.adapterVersion),
             "enforcement": manifest.providerRender.enforcementTiers.map(\.rawValue).joined(separator: ","),
@@ -1357,7 +1418,8 @@ enum AgentPolicyManifestService {
         runtime: AgentRuntimeID,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        hostControlTools: [String]
+        hostControlTools: [String],
+        requiredHostControlTools: [String]
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
@@ -1367,7 +1429,7 @@ enum AgentPolicyManifestService {
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: permissionPolicy,
-            requiredTools: hostControlTools
+            requiredTools: requiredHostControlTools
         ) && !usesHostControlCLIRelay
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
@@ -1398,18 +1460,22 @@ enum AgentPolicyManifestService {
                 } else {
                     updated.askFirstTools = uniqueStrings(updated.askFirstTools + ["Bash"])
                 }
-            } else {
+            } else if !requiredHostControlTools.isEmpty {
+                // Blocked only when the turn actually needs the plane. A runtime
+                // that cannot carry an *offered* route simply does not get it:
+                // the alternative is that switching a connector on turns every
+                // unrelated turn of that task into a blocked run.
                 updated.diagnostics.append(PolicyDiagnostic(
                     id: "\(runtime.rawValue).host-control-plane-unsupported",
                     severity: .blocked,
                     title: "Host control-plane route is unavailable",
                     message: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeDetail(
                         runtime: runtime,
-                        requiredTools: hostControlTools
+                        requiredTools: requiredHostControlTools
                     ),
                     affectedCapability: "control_plane",
                     remediation: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeRemediation(
-                        requiredTools: hostControlTools
+                        requiredTools: requiredHostControlTools
                     )
                 ))
             }
@@ -1639,37 +1705,6 @@ enum AgentPolicyManifestService {
     }
 
     @MainActor
-    static func recordPostRunSummary(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
-        let runEvents = task.events.filter { $0.run?.id == run.id }
-        let manifest = latestManifest(in: runEvents)
-        let deniedActionValues = deniedActions(from: runEvents)
-        let explicitDeniedEventCount = runEvents.filter {
-            $0.type == "permission.denied" || $0.type == "permission.approval.requested"
-        }.count
-        let summary = PolicyRunSummary(
-            runID: run.id,
-            status: run.status.rawValue,
-            stopReason: run.stopReason,
-            toolUseCount: runEvents.filter { $0.type == "tool.use" }.count,
-            deniedCount: max(explicitDeniedEventCount, deniedActionValues.count),
-            fileChangeCount: run.fileChanges.count,
-            toolsUsed: toolsUsed(from: runEvents),
-            commandsRun: commandsRun(from: runEvents),
-            deniedActions: deniedActionValues,
-            filesChanged: run.fileChanges.map(\.path).sorted(),
-            externalDomains: externalDomains(from: runEvents),
-            environmentKeyNames: manifest?.environmentKeyNames ?? [],
-            approvalsGranted: manifest?.approvalsGranted ?? [],
-            approvalGrantDescriptions: manifest?.approvalGrants.map(\.displayName) ?? [],
-            usedBroadProviderPermissions: manifest?.providerRender.usesBroadProviderPermissions ?? false,
-            exceededInitialPermissionLevel: manifest?.policyScope == .oneRunEscalation || manifest?.providerRender.usesBroadProviderPermissions == true,
-            completedAt: run.completedAt ?? Date()
-        )
-        let payload = (try? summary.encodedString()) ?? "{}"
-        modelContext.insert(TaskEvent(task: task, type: summaryEventType, payload: payload, run: run))
-    }
-
-    @MainActor
     private static func localToolCommands(for task: AgentTask, contextText: String) -> [String] {
         let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -1683,7 +1718,10 @@ enum AgentPolicyManifestService {
         capabilityScope: TaskCapabilityPromptScope,
         contextText: String
     ) -> [String] {
-        var commands: [String] = capabilityScope.localTools.compactMap { tool in
+        // The permission allowlist is reachability, not narration. A `Bash(bq *)`
+        // grant dropped because the turn said "table" instead of "bigquery" does
+        // not focus the run, it denies a tool the workspace enabled.
+        var commands: [String] = capabilityScope.reachableLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -1707,7 +1745,7 @@ enum AgentPolicyManifestService {
     private static func credentialLabels(for task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> [String] {
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorLabels = ConnectorRuntimeProjection(
-            connectors: capabilityScope.connectors,
+            connectors: capabilityScope.reachableConnectors,
             credentialExposurePolicy: .approvedLabels(
                 Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
             )
@@ -1774,141 +1812,6 @@ enum AgentPolicyManifestService {
             return
         }
         modelContext.insert(TaskEvent(task: task, type: type, payload: payload, run: run))
-    }
-
-    private struct PolicyRunSummary: Codable {
-        var runID: UUID
-        var status: String
-        var stopReason: String
-        var toolUseCount: Int
-        var deniedCount: Int
-        var fileChangeCount: Int
-        var toolsUsed: [String]
-        var commandsRun: [String]
-        var deniedActions: [String]
-        var filesChanged: [String]
-        var externalDomains: [String]
-        var environmentKeyNames: [String]
-        var approvalsGranted: [String]
-        var approvalGrantDescriptions: [String]
-        var usedBroadProviderPermissions: Bool
-        var exceededInitialPermissionLevel: Bool
-        var completedAt: Date
-
-        func encodedString() throws -> String {
-            let data = try JSONEncoder().encode(self)
-            return String(data: data, encoding: .utf8) ?? "{}"
-        }
-    }
-
-    private static func latestManifest(in events: [TaskEvent]) -> RunPermissionManifest? {
-        events
-            .filter { $0.type == preflightEventType }
-            .sorted { $0.timestamp < $1.timestamp }
-            .compactMap { event -> RunPermissionManifest? in
-                guard let data = event.payload.data(using: .utf8) else { return nil }
-                return try? JSONDecoder().decode(RunPermissionManifest.self, from: data)
-            }
-            .last
-    }
-
-    private static func toolsUsed(from events: [TaskEvent]) -> [String] {
-        uniqueLimited(events.compactMap { event in
-            guard event.type == "tool.use" else { return nil }
-            return toolName(fromToolUsePayload: event.payload)
-        })
-    }
-
-    private static func commandsRun(from events: [TaskEvent]) -> [String] {
-        uniqueLimited(events.compactMap { event in
-            guard event.type == "tool.use",
-                  let tool = toolName(fromToolUsePayload: event.payload)?.lowercased(),
-                  tool == "bash" || tool == "shell",
-                  let summary = toolSummary(fromToolUsePayload: event.payload) else {
-                return nil
-            }
-            return LogSanitizer.sanitize(summary, maxLength: 240)
-        })
-    }
-
-    private static func deniedActions(from events: [TaskEvent]) -> [String] {
-        let explicitActions: [String] = events.compactMap { event -> String? in
-            guard event.type == "permission.denied" || event.type == "permission.approval.requested" else { return nil }
-            return LogSanitizer.sanitize(event.payload, maxLength: 240)
-        }
-        let providerSandboxActions: [String] = events.compactMap(providerSandboxDeniedAction(from:))
-        let osSandboxActions: [String] = events.compactMap(osSandboxDeniedAction(from:))
-        return uniqueLimited(explicitActions + providerSandboxActions + osSandboxActions)
-    }
-
-    private static func providerSandboxDeniedAction(from event: TaskEvent) -> String? {
-        guard event.type == "agent.response" || event.type == "agent.thinking" else { return nil }
-        let lower = event.payload.lowercased()
-        guard lower.contains("write") || lower.contains("create") else { return nil }
-        guard lower.contains("blocked") || lower.contains("rejected") || lower.contains("denied") else { return nil }
-        guard lower.contains("sandbox") || lower.contains("outside") || lower.contains("workspace") else { return nil }
-        guard let path = filesystemPaths(in: event.payload).first else { return nil }
-        return "provider_sandbox_blocked_write path=\(path)"
-    }
-
-    private static func osSandboxDeniedAction(from event: TaskEvent) -> String? {
-        guard event.type == "tool.result" || event.type == "agent.response" || event.type == "agent.thinking" else {
-            return nil
-        }
-        return RuntimeSandboxDenialDiagnostics.fileDenial(in: event.payload)?.deniedActionValue
-    }
-
-    private static func filesystemPaths(in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"(?:~|/)[^\s`"'<>]+"#) else { return [] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard let valueRange = Range(match.range, in: text) else { return nil }
-            let value = String(text[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);:"))
-            return value.isEmpty ? nil : value
-        }
-    }
-
-    private static func externalDomains(from events: [TaskEvent]) -> [String] {
-        let observedURLs = events.flatMap { urls(in: $0.payload) }
-        return uniqueLimited(observedURLs.compactMap { URL(string: $0)?.host?.lowercased() }, limit: 20)
-    }
-
-    private static func toolName(fromToolUsePayload payload: String) -> String? {
-        guard payload.hasPrefix("Using tool:") else { return nil }
-        let remainder = payload.dropFirst("Using tool:".count).trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = remainder.split(separator: ":", maxSplits: 1).first.map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return name?.isEmpty == false ? name : nil
-    }
-
-    private static func toolSummary(fromToolUsePayload payload: String) -> String? {
-        guard let range = payload.range(of: ": ") else { return nil }
-        let afterToolPrefix = payload[range.upperBound...]
-        guard let secondColon = afterToolPrefix.firstIndex(of: ":") else { return nil }
-        let summaryStart = afterToolPrefix.index(after: secondColon)
-        let summary = afterToolPrefix[summaryStart...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return summary.isEmpty ? nil : summary
-    }
-
-    private static func urls(in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s"')<>]+"#) else { return [] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard let valueRange = Range(match.range, in: text) else { return nil }
-            return String(text[valueRange])
-        }
-    }
-
-    private static func uniqueLimited(_ values: [String], limit: Int = 12) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        for value in values {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
-            result.append(trimmed)
-            if result.count >= limit { break }
-        }
-        return result
     }
 }
 

@@ -642,6 +642,20 @@ struct SkillEditorView: View {
                                 RoundedRectangle(cornerRadius: 6)
                                     .stroke(Stanford.sandstone.opacity(0.4), lineWidth: 1)
                             )
+
+                        // Written here rather than discovered at run time: a
+                        // brokered credential named in these instructions is a
+                        // route the agent cannot take.
+                        let brokeredFindings = BrokeredSkillInstructionLint.findings(
+                            instructions: skill.behaviorInstructions,
+                            environmentKeys: skill.environmentKeys
+                        )
+                        ForEach(brokeredFindings) { finding in
+                            Label(finding.message, systemImage: "exclamationmark.triangle.fill")
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(Stanford.poppy)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(.vertical, 4)
                 }

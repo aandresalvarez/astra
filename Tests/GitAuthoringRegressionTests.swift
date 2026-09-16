@@ -327,15 +327,21 @@ struct GitAuthoringRegressionTests {
             timeoutSeconds: 30
         )
 
-        let start = Date()
         let suggestion = try await service.suggestCommitMessage(
             repoPath: root.path,
             diff: "diff --git a/foo b/foo\n+line",
             recentSubjects: ["fix: prior"]
         )
-        let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 30, "Expected fast helper result, took \(elapsed)s")
+        // The helper's own output is the assertion, not a stopwatch. A fired
+        // timeout yields exit 124 with empty output, so "Fast commit" coming
+        // back is proof the deadline never elapsed — and it is proof that holds
+        // on a loaded test host. Timing the call from out here measures
+        // callback-delivery wall time, which is the exact reclassification
+        // `runWithTimeout` refuses to make for the same reason: under parallel
+        // load, scheduler starvation after the child exits gets charged to the
+        // child. That is how this read 34.7s against a 30s budget for a script
+        // that returns immediately.
         #expect(suggestion.subject == "Fast commit")
         #expect(suggestion.type == "test")
     }

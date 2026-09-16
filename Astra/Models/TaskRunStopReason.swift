@@ -17,6 +17,10 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
         TaskRunStopReason(rawValue: rawValue)
     }
 
+    /// The provider's own stream said the turn failed. Distinct from `.failed`,
+    /// which is inferred from a non-zero exit: Codex reports the failure and
+    /// then exits 0, so without this the run's only honest signal is discarded.
+    public static let agentReportedError: TaskRunStopReason = "agent_reported_error"
     public static let appRestarted: TaskRunStopReason = "app_restarted"
     public static let browserActionBudgetExceeded: TaskRunStopReason = "browser_action_budget_exceeded"
     public static let cancelled: TaskRunStopReason = "cancelled"
@@ -43,6 +47,12 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let policyViolation: TaskRunStopReason = "policy_violation"
     public static let providerNoActionableProgress: TaskRunStopReason = "provider_no_actionable_progress"
     public static let providerNoSemanticProgress: TaskRunStopReason = "provider_no_semantic_progress"
+    /// The run hit its wall-clock ceiling. Deterministic and not approvable —
+    /// no answer from the user makes four hours have been three — so it has to
+    /// be spelled here rather than left as a `custom(_:)` raw string, which
+    /// `AgentRuntimeWorker.isTerminalRuntimeStop` cannot classify and would
+    /// therefore park in `pendingUser` as if it were awaiting review.
+    public static let providerRunWallClockExceeded: TaskRunStopReason = "provider_run_wall_clock_exceeded"
     public static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
     public static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
     public static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"

@@ -1750,22 +1750,47 @@ struct TaskThreadSnapshotCache {
     }
 }
 
+/// Change hint for "the files this task produced may have moved."
+///
+/// Built inside `TaskThreadChangeObserver.body`, which SwiftUI re-evaluates
+/// whenever `TaskMainView.body` does — and `messageText` is `@State` on that
+/// view, so that means once per keystroke in the composer.
+///
+/// It used to carry `task.artifacts.map { "\(path)#\(version)#\(isStale)" }
+/// .sorted()`. Every field of that is expensive at scale and all three
+/// compound: `path` and `version` fault one `Artifact` at a time through
+/// `NSManagedObjectContext.performAndWait`, `isStale` is a `fileExists` per
+/// row, and the result is a sorted `[String]` that `onChange` then has to keep
+/// and compare element by element. On the 2026-09-03 production store the open
+/// task had 13,295 artifacts; a sample taken while the app sat idle found the
+/// main thread inside this initializer for 97% of its samples.
+///
+/// So the content hash is gone and the row count stands in for it. What that
+/// still catches is every way the set of artifacts actually changes — rows
+/// added or removed — plus, through the run fields, the re-run that rewrites a
+/// path in place. What it gives up is a file deleted on disk behind the app's
+/// back, which only ever registered here by accident: this is a value read
+/// during a view update, not a filesystem watcher, so it noticed such a
+/// deletion at whatever moment something else happened to redraw.
 struct TaskGeneratedFilesTrigger: Equatable {
     let taskID: UUID
     let taskFolder: String
     let latestRunID: UUID?
+    let latestRunStatus: RunStatus?
     let latestRunFileChangesLength: Int
-    let artifactSignature: [String]
+    let artifactCount: Int
     let status: TaskStatus
 
     init(task: AgentTask, latestRun: TaskRunSnapshot?) {
         taskID = task.id
         taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         latestRunID = latestRun?.id
+        latestRunStatus = latestRun?.status
         latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
-        artifactSignature = task.artifacts
-            .map { "\($0.path)#\($0.version)#\($0.isStale)" }
-            .sorted()
+        // Counting the relationship faults it once; reading a property off each
+        // element faults every row separately. Only the first is affordable
+        // here.
+        artifactCount = task.artifacts.count
         status = task.status
     }
 }

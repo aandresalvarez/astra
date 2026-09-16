@@ -96,8 +96,75 @@ public enum ASTRASchemaV16: VersionedSchema {
 /// LIKE-scanning every run's output blob. The flag is optional: `nil` marks a
 /// pre-V17 row that has never been scanned, which keeps the additive stage
 /// lightweight and keeps recovery correct before the backfill lands.
+///
+/// V18 adds `AgentTask` fields for V19, so V17 now points at
+/// `ASTRASchemaV17Models`'s frozen relationship closure instead of the live
+/// classes it originally referenced — see that file's header for why the
+/// whole closure freezes together. Never edit these in place.
 public enum ASTRASchemaV17: VersionedSchema {
     public static var versionIdentifier = Schema.Version(17, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ASTRASchemaV17Models.Workspace.self,
+            ASTRASchemaV17Models.AgentTask.self,
+            ASTRASchemaV17Models.TaskRun.self,
+            ASTRASchemaV17Models.TaskEvent.self,
+            ASTRASchemaV17Models.Artifact.self,
+            ASTRASchemaV17Models.Skill.self,
+            ASTRASchemaV17Models.Connector.self,
+            ASTRASchemaV17Models.LocalTool.self,
+            ASTRASchemaV17Models.TaskTemplate.self,
+            ASTRASchemaV17Models.TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self,
+            TaskTurnRequest.self
+        ]
+    }
+}
+
+/// V18 adds `AgentTask.reasoningEffort`. Its relationship-connected model
+/// graph is frozen to the shape shipped in production; never point this schema
+/// back at live models or add fields to it in place.
+public enum ASTRASchemaV18: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(18, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ASTRASchemaV18Models.Workspace.self,
+            ASTRASchemaV18Models.AgentTask.self,
+            ASTRASchemaV18Models.TaskRun.self,
+            ASTRASchemaV18Models.TaskEvent.self,
+            ASTRASchemaV18Models.Artifact.self,
+            ASTRASchemaV18Models.Skill.self,
+            ASTRASchemaV18Models.Connector.self,
+            ASTRASchemaV18Models.LocalTool.self,
+            ASTRASchemaV18Models.TaskTemplate.self,
+            ASTRASchemaV18Models.TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self,
+            TaskTurnRequest.self
+        ]
+    }
+}
+
+/// V19 adds `TaskSchedule.reasoningEffort`, the scheduled-task twin of the
+/// task field introduced in V18. Keeping it in a new version lets SwiftData
+/// lightweight-migrate stores written by the production V18 build.
+public enum ASTRASchemaV19: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(19, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
@@ -127,9 +194,9 @@ public enum ASTRASchemaV17: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 17
+    public static let currentVersion = 19
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV17.self)
+        Schema(versionedSchema: ASTRASchemaV19.self)
     }
 }

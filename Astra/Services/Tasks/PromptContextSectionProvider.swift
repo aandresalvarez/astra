@@ -77,6 +77,10 @@ struct PromptContextSectionProviderContext {
     let capabilityScope: TaskCapabilityPromptScope
     let ioSnapshot: PromptContextIOSnapshot
     let connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?
+    /// The profile the launch resolved for `runtime`, when the caller has run
+    /// that resolution. `nil` means "resolve it yourself" - never "assume the
+    /// static table", which for Copilot is a guess about the installed binary.
+    let runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
 
     init(
         mode: PromptAssemblyMode,
@@ -85,7 +89,8 @@ struct PromptContextSectionProviderContext {
         runtime: AgentRuntimeID? = nil,
         capabilityScope: TaskCapabilityPromptScope,
         ioSnapshot: PromptContextIOSnapshot = .empty,
-        connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
+        connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) {
         self.mode = mode
         self.task = task
@@ -94,6 +99,7 @@ struct PromptContextSectionProviderContext {
         self.capabilityScope = capabilityScope
         self.ioSnapshot = ioSnapshot
         self.connectorCredentialExposurePolicy = connectorCredentialExposurePolicy
+        self.runtimeCapabilityProfile = runtimeCapabilityProfile
     }
 }
 

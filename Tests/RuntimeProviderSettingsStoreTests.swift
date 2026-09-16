@@ -111,6 +111,54 @@ struct RuntimeProviderSettingsStoreTests {
         #expect(before == after)
     }
 
+    /// The availability check refuses a Vertex route whose project ID cannot
+    /// name a project. That only helps if correcting the field re-runs the
+    /// check — the refresh is suppressed whenever the signature is unchanged,
+    /// so a signature blind to the project ID would leave the user fixing the
+    /// field and watching nothing happen.
+    @Test("Model refresh signature tracks the Vertex project and region")
+    func modelRefreshSignatureTracksVertexRoute() {
+        func signature(projectID: String, region: String) -> String {
+            RuntimeModelRefreshSignature.make(
+                runtime: .claudeCode,
+                executablePath: "/opt/claude/bin/claude",
+                providerSettings: AgentRuntimeProviderSettings(),
+                claudeProviderRaw: "vertex",
+                claudeVertexProjectID: projectID,
+                claudeVertexRegion: region,
+                claudeVertexOpusModel: "opus",
+                claudeVertexSonnetModel: "sonnet",
+                claudeVertexHaikuModel: "haiku"
+            )
+        }
+
+        let malformed = signature(projectID: "upo-nero-phi-su-deid-jsl  upo-nero-phi-su-deid-jsl", region: "global")
+        let corrected = signature(projectID: "upo-nero-phi-su-deid-jsl", region: "global")
+        #expect(malformed != corrected)
+        #expect(corrected != signature(projectID: "upo-nero-phi-su-deid-jsl", region: "us-east5"))
+    }
+
+    /// Vertex settings belong to the Claude runtime alone, matching how the
+    /// existing provider and model fields are gated.
+    @Test("Vertex project and region stay out of other runtimes' signatures")
+    func vertexRouteIsScopedToClaudeCode() {
+        func signature(projectID: String) -> String {
+            RuntimeModelRefreshSignature.make(
+                runtime: .copilotCLI,
+                executablePath: "/opt/copilot/bin/copilot",
+                providerSettings: AgentRuntimeProviderSettings(),
+                claudeProviderRaw: "vertex",
+                claudeVertexProjectID: projectID,
+                claudeVertexRegion: "global",
+                claudeVertexOpusModel: "opus",
+                claudeVertexSonnetModel: "sonnet",
+                claudeVertexHaikuModel: "haiku"
+            )
+        }
+
+        #expect(signature(projectID: "one-project") == signature(projectID: "another-project"))
+    }
+
     @Test("Provider path status uses persisted path instead of unsaved draft")
     func providerPathStatusUsesPersistedPathInsteadOfUnsavedDraft() throws {
         let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))

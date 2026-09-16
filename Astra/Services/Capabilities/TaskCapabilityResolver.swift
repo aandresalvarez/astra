@@ -498,11 +498,29 @@ struct TaskCapabilityResolver {
         }
 
         let searchableText = Self.searchableTaskText(task: task, contextText: contextText)
+        // The inventory keeps one copy of each logical skill, but a resource's
+        // `skill` back-reference still points at whichever copy owns it — and
+        // that can be the copy dedupe discarded (a global "Jira Agent" and a
+        // workspace copy of the same package component both exist; the newer
+        // one wins). Matching ownership on raw object identity then orphans the
+        // resource: the skill is in scope, its connector is unreachable, and no
+        // wording of the request can recover it. Resolve through the logical
+        // identity the user actually sees.
+        let canonicalSkillsByKey = Dictionary(
+            skills.map { (logicalSkillKey($0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        func canonicalSkill(_ skill: Skill?) -> Skill? {
+            guard let skill else { return nil }
+            return canonicalSkillsByKey[logicalSkillKey(skill)] ?? skill
+        }
+
         var includedSkills: [Skill] = []
         var includedSkillIDs = Set<UUID>()
 
         func includeSkill(_ skill: Skill?) {
-            guard let skill, includedSkillIDs.insert(skill.id).inserted else { return }
+            guard let skill = canonicalSkill(skill),
+                  includedSkillIDs.insert(skill.id).inserted else { return }
             includedSkills.append(skill)
         }
 
@@ -510,13 +528,36 @@ struct TaskCapabilityResolver {
             includeSkill(skill)
         }
 
+        // A connector whose credentials the user already approved for this task
+        // is settled business: they were asked about this exact connector, in
+        // this exact task, and said yes. Re-deciding that from the wording of a
+        // later turn is how "you have accessto jita ,, give methe data" — one
+        // transposed letter — silently strips the connector the run has already
+        // been using, and the agent reports it has no access to a tool the user
+        // just authorized. Word overlap is a hint for discovering capabilities;
+        // it is not evidence for revoking an approved one.
+        //
+        // This widens scope, never exposure: the projection still gates every
+        // credential through `connectorCredentialExposurePolicy`, which is
+        // built from these same approved labels.
+        let approvedConnectorIDs = Self.approvedCredentialConnectorIDs(
+            in: TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: runtime,
+                additionalGrants: additionalCredentialGrants
+            )
+        )
+
         let matchedConnectors = connectors.filter { connector in
             Self.matchesConnector(connector, taskText: searchableText)
         }
         let relevantConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
             from: matchedConnectors,
             contextText: searchableText
-        )
+        ) + connectors.filter { connector in
+            approvedConnectorIDs.contains(connector.id)
+                && !matchedConnectors.contains { $0.id == connector.id }
+        }
         for connector in relevantConnectors {
             includeSkill(connector.skill)
         }
@@ -525,12 +566,12 @@ struct TaskCapabilityResolver {
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
                 return true
             }
-            guard let skill = connector.skill else { return false }
+            guard let skill = canonicalSkill(connector.skill) else { return false }
             return includedSkillIDs.contains(skill.id)
         }
 
         let includedLocalTools = tools.filter { tool in
-            if let skill = tool.skill {
+            if let skill = canonicalSkill(tool.skill) {
                 return includedSkillIDs.contains(skill.id)
             }
             return Self.matchesLocalTool(tool, taskText: searchableText)
@@ -540,6 +581,12 @@ struct TaskCapabilityResolver {
             .filter { !includedSkillIDs.contains($0.id) }
             .map(\.name)
 
+        // Everything in `inventory` arrived by explicit enablement — a workspace
+        // capability package, an enabled global connector or tool, or a skill
+        // attached to this task. Nothing here is an ambient catalog entry the
+        // user has not opted into, so nothing here is the word match's to
+        // revoke. It narrows what the prompt narrates; reachability is the
+        // inventory itself.
         return makePromptScope(
             skills: includedSkills,
             connectors: includedConnectors,
@@ -550,7 +597,11 @@ struct TaskCapabilityResolver {
                 includedSkills.contains { $0.originPackageID == packageID }
                     || Self.packageID(packageID, matchesTaskText: searchableText)
             },
-            contextText: contextText
+            contextText: contextText,
+            reachableConnectors: connectors,
+            reachableLocalTools: tools,
+            reachablePackageIDs: enabledPackageIDs,
+            reachableBehaviorSkills: skills
         )
     }
 
@@ -635,16 +686,30 @@ struct TaskCapabilityResolver {
         prunedForBrowserTask: Bool,
         excludedSkillNames: [String],
         enabledPackageIDs: [String],
-        contextText: String
+        contextText: String,
+        // The explicitly-enabled superset. Defaults to the narrated sets so an
+        // unpruned scope is trivially its own reachability set; the pruning path
+        // passes the full inventory.
+        reachableConnectors: [Connector]? = nil,
+        reachableLocalTools: [LocalTool]? = nil,
+        reachablePackageIDs: [String]? = nil,
+        reachableBehaviorSkills: [Skill]? = nil
     ) -> TaskCapabilityPromptScope {
+        let effectiveReachableConnectors = reachableConnectors ?? connectors
+        let effectiveReachableLocalTools = reachableLocalTools ?? localTools
         let skillIDs = Set(skills.map(\.id))
         let liveSnapshots = skills.map(SkillSnapshotConfig.init(skill:))
         let liveSnapshotIDs = Set(liveSnapshots.compactMap(\.id))
         let liveSnapshotNames = Set(liveSnapshots.map { $0.name.lowercased() })
         let standaloneTools = localTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
+        // Resolved against the reachable set: these commands are what the
+        // launched process may actually run, and a command the workspace
+        // enabled stays runnable through a turn that does not mention it. When
+        // no reachable set is supplied this is the unfiltered `localTools`,
+        // which is what it has always been.
         let liveCLICommands = Set(
-            localTools
+            effectiveReachableLocalTools
                 .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
                 .map(\.command)
         )
@@ -673,8 +738,13 @@ struct TaskCapabilityResolver {
             }
         }
 
+        // The process environment follows reachability, and aliases are computed
+        // over the same set so `ASTRA_CONNECTORS` and the per-connector keys
+        // agree with the aliases every prompt and broker route quotes.
+        // `connectorCredentialExposurePolicy` is unchanged, so a connector
+        // without an approved grant still contributes config and no secret.
         let connectorEnvVars = ConnectorRuntimeProjection(
-            connectors: connectors,
+            connectors: effectiveReachableConnectors,
             secretStore: secretStore,
             credentialExposurePolicy: connectorCredentialExposurePolicy
         )
@@ -694,6 +764,14 @@ struct TaskCapabilityResolver {
             return skillIDs.contains(skill.id)
         }
 
+        // Every reachable skill's behavior text plus the detached snapshots the
+        // task carries, unfiltered by turn relevance.
+        let reachableBehaviorInstructions = Self.uniqueStrings(
+            ((reachableBehaviorSkills ?? skills).map(\.behaviorInstructions)
+                + detachedSkillSnapshots.map(\.behaviorInstructions))
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+
         return TaskCapabilityPromptScope(
             resolver: resolver,
             behaviorSkills: skills,
@@ -702,7 +780,11 @@ struct TaskCapabilityResolver {
             enabledBrowserAdapters: enabledBrowserAdapters,
             prunedForBrowserTask: prunedForBrowserTask,
             excludedSkillNames: excludedSkillNames,
-            enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs)
+            enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs),
+            reachableConnectors: effectiveReachableConnectors,
+            reachableLocalTools: reachableLocalTools ?? scopedTools,
+            reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs),
+            reachableBehaviorInstructions: reachableBehaviorInstructions
         )
     }
 
@@ -828,6 +910,20 @@ struct TaskCapabilityResolver {
             toolType: "cli",
             command: "astra-browser"
         )
+    }
+
+    /// Connector IDs named by approved credential labels of the form
+    /// `connector:<uuid>:<CREDENTIAL_KEY>`. Labels that are not connector
+    /// scoped (a bare `GCP_PROJECT`, say) carry no connector identity and are
+    /// ignored here.
+    /// Connectors whose credentials the user has already approved for this run,
+    /// read back out of the `connector:<id>:<key>` grant labels.
+    static func approvedCredentialConnectorIDs(in labels: [String]) -> Set<UUID> {
+        Set(labels.compactMap { label -> UUID? in
+            let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == "connector" else { return nil }
+            return UUID(uuidString: String(parts[1]))
+        })
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {
@@ -1180,6 +1276,28 @@ struct TaskCapabilityResolver {
     ]
 }
 
+/// Two different questions get asked of a capability scope, and conflating them
+/// is what makes an enabled capability unusable.
+///
+/// *What should this turn read about?* — `behaviorSkills` / `connectors` /
+/// `localTools`. Turn-relevance narrowing answers this, and it should: a task
+/// summarizing an Outlook thread has no business carrying Jira's instructions.
+///
+/// *What is this task allowed to reach?* — `reachableConnectors` /
+/// `reachableLocalTools` / `reachablePackageIDs`. Only explicit enablement
+/// answers this: the workspace's capability packages, its enabled global
+/// connectors and tools, and the task's own attached skills. Word overlap with
+/// the turn is evidence about attention, never about authorization.
+///
+/// Runtime wiring — host-control routes, connector environment, command
+/// allowlists, broker sessions — reads the reachable sets. Prompt text reads
+/// the narrated ones. A capability the user switched on therefore stays
+/// callable through a turn that never happens to name it, while the prompt
+/// stays focused on what the turn is actually about.
+///
+/// Widening reachability does not widen secret egress: every credential still
+/// passes `ConnectorRuntimeProjection.canExposeCredential`, which is built from
+/// approved grants and knows nothing about any of these sets.
 struct TaskCapabilityPromptScope {
     let resolver: SkillResolver
     let behaviorSkills: [Skill]
@@ -1189,8 +1307,37 @@ struct TaskCapabilityPromptScope {
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
     let enabledPackageIDs: [String]
+    let reachableConnectors: [Connector]
+    let reachableLocalTools: [LocalTool]
+    let reachablePackageIDs: [String]
+    /// Behavior instructions for every reachable skill, not only the narrated
+    /// ones. `resolver.effectiveSnapshots` is the narrated subset by
+    /// construction, so offered-tier derivation has to read this instead: a
+    /// package whose host-control dependency is declared only in a skill's
+    /// behavior text otherwise loses its route on every turn that prunes the
+    /// skill, which is the same reachability-follows-narration bug one layer
+    /// down.
+    let reachableBehaviorInstructions: [String]
 
+    /// The browser bridge is wired for this run. Reachability-wide, because
+    /// attaching a route the turn never named costs nothing.
     var exposesBrowserBridge: Bool {
+        reachableLocalTools.contains { $0.command == "astra-browser" }
+    }
+
+    /// This turn cannot proceed without the browser bridge. Narration-keyed,
+    /// because the answer reroutes the run to a runtime that can carry the
+    /// transport — a consequence an enabled-but-unmentioned local tool must not
+    /// be able to trigger on every turn of the workspace.
+    var requiresBrowserBridge: Bool {
         localTools.contains { $0.command == "astra-browser" }
+    }
+
+    /// Capabilities the task can call but whose instructions this turn's prompt
+    /// leaves out. The agent is told these exist so it does not conclude from a
+    /// silent prompt that it has no access.
+    var reachableButNotNarratedConnectors: [Connector] {
+        let narrated = Set(connectors.map(\.id))
+        return reachableConnectors.filter { !narrated.contains($0.id) }
     }
 }
