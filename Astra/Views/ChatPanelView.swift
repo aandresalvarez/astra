@@ -2175,55 +2175,12 @@ struct ChatPanelView: View {
         }
     }
 
-    private func addAdditionalPath() {
-        guard let ws = workspace else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = true
-        panel.canCreateDirectories = true
-        panel.message = "Select additional folders for \"\(ws.name)\""
-        if panel.runModal() == .OK {
-            for url in panel.urls {
-                if !ws.additionalPaths.contains(url.path) {
-                    ws.additionalPaths.append(url.path)
-                }
-            }
-            ws.updatedAt = Date()
-        }
-    }
-
     private func loadSSHConnections() {
         guard let ws = workspace, !ws.primaryPath.isEmpty else {
             sshConnections = []
             return
         }
         sshConnections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
-    }
-
-    private func removeSSHConnection(_ conn: SSHConnection) {
-        guard let ws = workspace else { return }
-        sshConnections.removeAll { $0.id == conn.id }
-        SSHConnectionManager.save(sshConnections, workspacePath: ws.primaryPath)
-    }
-
-    private func sshStatusColor(_ conn: SSHConnection) -> Color {
-        guard let result = conn.lastTestResult else { return Stanford.coolGrey }
-        return result ? Stanford.paloAltoGreen : Stanford.failed
-    }
-
-    private func sshPillForeground(_ conn: SSHConnection) -> Color {
-        guard let result = conn.lastTestResult else {
-            return Stanford.coolGrey.opacity(0.8)
-        }
-        return result ? Stanford.paloAltoGreen.opacity(0.8) : Stanford.failed.opacity(0.8)
-    }
-
-    private func sshPillBackground(_ conn: SSHConnection) -> Color {
-        guard let result = conn.lastTestResult else {
-            return Stanford.fog
-        }
-        return result ? Stanford.paloAltoGreen.opacity(0.08) : Stanford.failed.opacity(0.08)
     }
 
     // MARK: - Slash Context (provider-assisted resource creation)
