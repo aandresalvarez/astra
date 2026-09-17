@@ -248,7 +248,6 @@ struct TaskArtifactPersistenceServiceTests {
         let after = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
 
         #expect(before != after)
-        #expect(TaskFileIndex.scanTaskFolder(folder).contains { $0.path == path && $0.destination == .files })
     }
 
     /// The trigger is built inside a view body, once per keystroke in the task

@@ -130,7 +130,7 @@ struct RuntimeSettingsSnapshotTests {
         let snapshot = RuntimeSettingsSnapshotStore.runtimeSnapshot(defaults: defaults)
 
         #expect(snapshot.defaultReasoningEffort == "high")
-        // This is what NewTaskView seeds a new task with, so it has to be
+        // This is what the composer seeds a new task with, so it has to be
         // filtered by the model the task will actually run on.
         #expect(snapshot.normalizedDefaultReasoningEffort(
             for: snapshot.normalizedDefaultModel, runtime: snapshot.defaultRuntime

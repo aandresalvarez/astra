@@ -485,28 +485,8 @@ extension View {
         }
     }
 
-    func topDividerShade(height: CGFloat = 18) -> some View {
-        overlay(alignment: .top) {
-            TopDividerShade(height: height)
-        }
-    }
-
     func softHorizontalTransition(height: CGFloat = 10) -> some View {
         SoftHorizontalTransition(height: height)
-    }
-}
-
-struct TopDividerShade: View {
-    let height: CGFloat
-
-    var body: some View {
-        LinearGradient(
-            colors: [Color.primary.opacity(0.06), Color.clear],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .frame(height: height)
-        .allowsHitTesting(false)
     }
 }
 

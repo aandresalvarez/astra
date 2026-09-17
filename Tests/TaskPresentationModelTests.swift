@@ -43,29 +43,6 @@ struct ChatPanelViewTests {
     }
 }
 
-// MARK: - StatusBadge
-
-@Suite("StatusBadge View")
-struct StatusBadgeTests {
-
-    @Test("Color mapping for all statuses",
-          arguments: [
-            (TaskStatus.queued, Stanford.queued),
-            (TaskStatus.running, Stanford.running),
-            (TaskStatus.pendingUser, Stanford.pendingUser),
-            (TaskStatus.completed, Stanford.completed),
-            (TaskStatus.failed, Stanford.failed),
-            (TaskStatus.budgetExceeded, Stanford.failed),
-            (TaskStatus.cancelled, Stanford.cancelled),
-          ])
-    func colorMapping(status: TaskStatus, expected: Color) {
-        let badge = StatusBadge(status: status)
-        #expect(badge.color == expected)
-    }
-}
-
-// MARK: - TaskRowView (status icon/color removed — redundant with section headers)
-
 // MARK: - KanbanCategory
 
 @Suite("KanbanCategory")

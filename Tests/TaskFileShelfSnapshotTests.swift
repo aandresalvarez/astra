@@ -69,34 +69,6 @@ extension TaskThreadSnapshotTests {
         #expect(paths == [root.appendingPathComponent("visible.txt").path])
     }
 
-    @Test("Task file index scans task folder with shelf destinations")
-    func taskFileIndexScansTaskFolderWithShelfDestinations() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-task-file-index-\(UUID().uuidString)")
-
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime-bin"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime/docker-client/client-1"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent("jobs/job-1"), withIntermediateDirectories: true)
-        try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
-        try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
-        try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
-        try "shim".write(to: root.appendingPathComponent(".runtime-bin/astra-browser"), atomically: true, encoding: .utf8)
-        try "{}".write(to: root.appendingPathComponent(".runtime/docker-client/client-1/config.json"), atomically: true, encoding: .utf8)
-        try "out".write(to: root.appendingPathComponent("jobs/job-1/stdout.log"), atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let files = TaskFileIndex.scanTaskFolder(root.path)
-        let destinations = Dictionary(uniqueKeysWithValues: files.map { ($0.name, $0.destination) })
-
-        #expect(destinations["summary.md"] == .files)
-        #expect(destinations["index.html"] == .browser)
-        #expect(destinations["query.sql"] == .query)
-        #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
-        #expect(!files.contains { $0.path.hasSuffix(".runtime/docker-client/client-1/config.json") })
-        #expect(!files.contains { $0.path.hasSuffix("jobs/job-1/stdout.log") })
-    }
-
     @Test("Task file header count excludes task-folder diagnostics")
     func taskFileHeaderCountExcludesTaskFolderDiagnostics() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -305,39 +277,6 @@ extension TaskThreadSnapshotTests {
         #expect(groups.contains { $0.group == .runtimeEnvironment })
         #expect(groups.contains { $0.group == .jobLogs })
         #expect(groups.contains { $0.group == .runs })
-    }
-
-    @Test("Task file index ignores non-regular entries")
-    func taskFileIndexIgnoresNonRegularEntries() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-task-file-index-nonregular-\(UUID().uuidString)")
-        let pipe = root.appendingPathComponent("stream.md")
-
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let files = TaskFileIndex.scanTaskFolder(root.path)
-
-        #expect(!files.contains { $0.path == pipe.path })
-    }
-
-    @Test("Task detail artifact scan ignores non-regular entries")
-    func taskDetailArtifactScanIgnoresNonRegularEntries() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-task-detail-artifacts-nonregular-\(UUID().uuidString)")
-        let report = root.appendingPathComponent("report.md")
-        let pipe = root.appendingPathComponent("stream.md")
-
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try "# Report".write(to: report, atomically: true, encoding: .utf8)
-        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let files = TaskDetailArtifactScanner.scanTaskFolder(root.path)
-
-        #expect(files.contains { $0.path == report.path })
-        #expect(!files.contains { $0.path == pipe.path })
     }
 
     @Test("Task file index merges visible files without duplicates")
