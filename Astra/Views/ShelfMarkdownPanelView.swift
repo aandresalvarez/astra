@@ -1427,124 +1427,6 @@ struct ShelfMarkdownPanelView: View {
         }
     }
 
-    private var selectedFileBreadcrumb: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(Array(selectedBreadcrumbSegments.enumerated()), id: \.offset) { index, segment in
-                    if index > 0 {
-                        Image(systemName: "chevron.right")
-                            .font(Stanford.ui(9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    breadcrumbSegmentButton(segment)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-        }
-        .frame(height: 34)
-        .background(Stanford.cardBackground.opacity(0.28))
-        .help(session.displayPath)
-    }
-
-    private var selectedBreadcrumbSegments: [FileBreadcrumbSegment] {
-        guard let fileURL = session.fileURL else { return [] }
-        let filePath = fileURL.standardizedFileURL.path
-
-        if let root = fileIndex.roots.first(where: { WorkspaceFileIndexService.isPath(filePath, inside: $0) }) {
-            if !root.isDirectory {
-                return [
-                    FileBreadcrumbSegment(
-                        title: URL(fileURLWithPath: root.path).lastPathComponent,
-                        path: root.path,
-                        isFile: true
-                    )
-                ]
-            }
-
-            let relative = relativePath(for: filePath, rootPath: root.path)
-            let rootName = root.title
-            let components = relative
-                .split(separator: "/", omittingEmptySubsequences: true)
-                .map(String.init)
-
-            var path = root.path
-            var segments = [FileBreadcrumbSegment(title: rootName, path: path, isFile: false)]
-            for (index, component) in components.enumerated() {
-                path = (path as NSString).appendingPathComponent(component)
-                segments.append(FileBreadcrumbSegment(
-                    title: component,
-                    path: path,
-                    isFile: index == components.count - 1
-                ))
-            }
-            return segments
-        }
-
-        let pathComponents = fileURL.pathComponents.filter { $0 != "/" }
-        let startIndex = max(0, pathComponents.count - 5)
-        let fallback = Array(pathComponents.suffix(5))
-        var path = fileURL.path.hasPrefix("/") ? "/" : ""
-        for component in pathComponents.prefix(startIndex) {
-            path = (path as NSString).appendingPathComponent(component)
-        }
-        return fallback.enumerated().map { index, title in
-            path = (path as NSString).appendingPathComponent(title)
-            return FileBreadcrumbSegment(title: title, path: path, isFile: index == fallback.count - 1)
-        }
-    }
-
-    private func breadcrumbSegmentButton(_ segment: FileBreadcrumbSegment) -> some View {
-        Button {
-            revealBreadcrumbSegment(segment)
-        } label: {
-            HStack(spacing: 5) {
-                if segment.isFile {
-                    Image(systemName: session.selectedDocumentKind?.systemImage ?? "doc.text")
-                        .font(Stanford.ui(11, weight: .medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-
-                Text(segment.title)
-                    .font(Stanford.caption(12).weight(segment.isFile ? .semibold : .medium))
-                    .foregroundStyle(segment.isFile ? .primary : .secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 3)
-            .padding(.vertical, 2)
-            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .help(segment.path)
-        .contextMenu {
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(segment.path, forType: .string)
-            } label: {
-                Label("Copy Path", systemImage: "doc.on.doc")
-            }
-
-            Button {
-                let url = URL(fileURLWithPath: segment.path)
-                if segment.isFile {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                } else {
-                    NSWorkspace.shared.open(url)
-                }
-            } label: {
-                Label(segment.isFile ? "Reveal in Finder" : "Open in Finder", systemImage: "folder")
-            }
-        }
-    }
-
-    private func revealBreadcrumbSegment(_ segment: FileBreadcrumbSegment) {
-        withAnimation(fileNavigatorAnimation) {
-            isFileNavigatorPresented = true
-        }
-        expandFileNavigator(to: segment.path, isFile: segment.isFile)
-    }
-
     private var fileNavigatorAnimation: Animation? {
         AstraMotion.disclosure(reduceMotion: reduceMotion)
     }
@@ -2067,12 +1949,6 @@ struct ShelfMarkdownPanelView: View {
 private enum ShelfTextViewMode: String, Hashable {
     case preview
     case source
-}
-
-private struct FileBreadcrumbSegment: Hashable {
-    let title: String
-    let path: String
-    let isFile: Bool
 }
 
 enum ShelfSyntaxLanguage: Hashable {

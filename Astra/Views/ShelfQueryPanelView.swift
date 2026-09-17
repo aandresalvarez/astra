@@ -823,26 +823,6 @@ struct ShelfQueryPanelView: View {
         return checkWorkflowSubtitle
     }
 
-    private var checkWorkflowColor: Color {
-        if session.classification.requiresRecovery {
-            return session.hasApprovedSafetyGate(connection: selectedConnection) ? Stanford.statusHealthy : Stanford.poppy
-        }
-        return session.dryRunResult == nil ? Stanford.coolGrey : Stanford.statusHealthy
-    }
-
-    private var runWorkflowSubtitle: String {
-        if !canExecute {
-            return "Write SQL and choose a connection first."
-        }
-        if session.requiresPreparedRecovery {
-            return runHelp
-        }
-        if session.dryRunResult == nil {
-            return "Run a limited preview. Dry run is recommended first."
-        }
-        return "Run a limited preview using the checked SQL."
-    }
-
     private var dryRunButtonTitle: String {
         session.dryRunResult == nil ? "Dry Run" : "Run Again"
     }
@@ -878,22 +858,6 @@ struct ShelfQueryPanelView: View {
         case .ddl, .dml, .script: Stanford.poppy
         case .unknown: Stanford.coolGrey
         }
-    }
-
-    private var safetyMessage: String {
-        if selectedConnection.id == DatabaseConnection.editOnly.id {
-            return "Choose a connection to dry run or execute."
-        }
-        if session.classification.requiresRecovery {
-            if session.hasApprovedSafetyGate(connection: selectedConnection) {
-                return "Safe execution gate approved for this SQL and recovery plan."
-            }
-            if session.hasCurrentPreparedRecovery(connection: selectedConnection) {
-                return "Recovery prepared. Approve the safe execution gate before running."
-            }
-            return "Writes, DDL, scripts, and unknown SQL require prepared recovery before run."
-        }
-        return "Read-only query. Dry run before executing to verify cost and syntax."
     }
 
     @ViewBuilder
@@ -2036,62 +2000,6 @@ private struct QueryFactRow: View {
                     .textSelection(.enabled)
             }
         }
-    }
-}
-
-private struct QueryWorkflowStep<Content: View>: View {
-    let number: Int
-    let title: String
-    let subtitle: String
-    var statusColor: Color = Stanford.lagunita
-    let content: Content
-
-    init(
-        number: Int,
-        title: String,
-        subtitle: String,
-        statusColor: Color = Stanford.lagunita,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.number = number
-        self.title = title
-        self.subtitle = subtitle
-        self.statusColor = statusColor
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                Text("\(number)")
-                    .font(Stanford.ui(11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(statusColor))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(Stanford.ui(12, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
-            content
-                .padding(.leading, 28)
-        }
-    }
-}
-
-private struct QueryWorkflowDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.10))
-            .frame(width: 1, height: 58)
-            .padding(.top, 3)
     }
 }
 

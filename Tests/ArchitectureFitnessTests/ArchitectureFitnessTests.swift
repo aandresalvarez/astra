@@ -1903,7 +1903,7 @@ struct ArchitectureFitnessTests {
             // 6_130 -> 6_150: PR #347 runtime-permission dock, connector-mutation review wiring,
             // reasoning-effort selection and routines, and TaskMainViewDecisionOutcomes extraction.
             // 6_150 -> 6_170: runtimeHealthNow quantised to whole seconds for live pacer metrics.
-            "Astra/Views/TaskMainView.swift": .init(6_170, .owner("Task detail and run surface")),
+            "Astra/Views/TaskMainView.swift": .init(5_200, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             // Budget raised for issues #322/#323: the zero-workspace titlebar
             // command flag plus the portable-package import surface (one
@@ -1942,7 +1942,7 @@ struct ArchitectureFitnessTests {
             // against the runtime/model it is stored beside and re-resolves on a
             // runtime/model switch. An open draft moves with it because
             // runApprovedPlan() submits draftTask without a fresh saveDraft().
-            "Astra/Views/ChatPanelView.swift": .init(3_126, .owner("Composer chat surface")),
+            "Astra/Views/ChatPanelView.swift": .init(3_085, .owner("Composer chat surface")),
             // 2_900 -> 2_909: Claude Code reasoning-effort selection replaces the
             // hardcoded artifact-bootstrap-only "--effort low" with a resolved
             // value that also honors the task's own setting outside bootstrap.
@@ -1958,7 +1958,7 @@ struct ArchitectureFitnessTests {
             // already being run rather than during launch preflight.
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_950, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
-            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
+            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_730, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
             // public struct now needs an explicit `public init` (Swift's
             // synthesized memberwise init is always internal, even for an
@@ -2040,7 +2040,7 @@ struct ArchitectureFitnessTests {
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
             // WorkspaceConfigManager.swift's entry above for why.
             "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),
-            "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
+            "Astra/Views/ShelfQueryPanelView.swift": .init(2_155, .owner("Shelf query panel")),
             // 2_300 -> 2_305: threading that same profile to the connector
             // section, so the prompt stops reading a static table that guesses
             // whether the installed Copilot binary can carry the broker.
