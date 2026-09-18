@@ -222,26 +222,3 @@ enum AgentRuntimeLaunchRuntimeResolver {
         return missing.isEmpty ? resolution.requirements.missingCapabilityNames : missing
     }
 }
-
-private final class RuntimeProfileCache {
-    private let configuration: AgentRuntimeConfiguration
-    private var profiles: [AgentRuntimeID: AgentRuntimeCapabilityProfile] = [:]
-
-    init(configuration: AgentRuntimeConfiguration) {
-        self.configuration = configuration
-    }
-
-    func profile(for runtime: AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
-        if let profile = profiles[runtime] {
-            return profile
-        }
-        let settings = AgentRuntimeAdapterRegistry.adapter(for: runtime)
-            .launchSettings(configuration: configuration)
-        let profile = AgentRuntimeCapabilityProfileService.profile(
-            for: runtime,
-            executablePath: settings.executablePath
-        )
-        profiles[runtime] = profile
-        return profile
-    }
-}

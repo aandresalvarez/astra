@@ -1424,22 +1424,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             || normalized.hasPrefix("bash(")
     }
 
-    private static func canonicalProviderToolName(_ toolName: String) -> String {
-        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "read", "view": return "Read"
-        case "grep": return "Grep"
-        case "glob": return "Glob"
-        case "write": return "Write"
-        case "edit": return "Edit"
-        case "multiedit", "multi_edit": return "MultiEdit"
-        case "bash", "shell": return "Bash"
-        case "webfetch": return "WebFetch"
-        case "websearch": return "WebSearch"
-        case "agent": return "Agent"
-        default: return toolName.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

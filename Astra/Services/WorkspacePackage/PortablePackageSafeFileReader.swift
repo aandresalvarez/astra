@@ -41,47 +41,6 @@ enum PortablePackageSafeFileReader {
         return !components.contains { $0 == ".." || $0 == "." || $0.isEmpty }
     }
 
-    /// Returns the relative path of the first symbolic link found anywhere in
-    /// `rootURL` — including the root itself — or `nil` if the tree contains
-    /// none. Uses `lstat` so links are detected without ever being followed;
-    /// a caller that has just copied an untrusted package into a private
-    /// staging directory can use this to prove the copy is a self-contained
-    /// snapshot (no entry aliases a location the source can still rewrite).
-    /// POSIX-based to match this type's existing no-follow file access — and
-    /// deliberately not routed through a directory-listing broker, whose
-    /// symlink-resolving containment filter would hide the very out-of-root
-    /// links this needs to surface.
-    static func firstSymlink(in rootURL: URL) -> String? {
-        let rootPath = rootURL.path
-        var rootStat = stat()
-        if lstat(rootPath, &rootStat) == 0, (rootStat.st_mode & S_IFMT) == S_IFLNK {
-            return rootURL.lastPathComponent
-        }
-        return firstSymlink(inDirectory: rootPath, relativePrefix: "")
-    }
-
-    private static func firstSymlink(inDirectory dirPath: String, relativePrefix: String) -> String? {
-        guard let dir = opendir(dirPath) else { return nil }
-        defer { closedir(dir) }
-        while let entry = readdir(dir) {
-            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in
-                let bytes = raw.bindMemory(to: CChar.self)
-                return String(cString: Array(bytes))
-            }
-            if name == "." || name == ".." { continue }
-            let childPath = "\(dirPath)/\(name)"
-            let childRelative = relativePrefix.isEmpty ? name : "\(relativePrefix)/\(name)"
-            var childStat = stat()
-            guard lstat(childPath, &childStat) == 0 else { continue }
-            let mode = childStat.st_mode & S_IFMT
-            if mode == S_IFLNK { return childRelative }
-            if mode == S_IFDIR, let found = firstSymlink(inDirectory: childPath, relativePrefix: childRelative) {
-                return found
-            }
-        }
-        return nil
-    }
-
     /// Walks the package tree once (POSIX `lstat`, no follow) to enforce the
     /// review budget *before* any hashing: returns an error if a symlink is
     /// present anywhere, the regular-file count exceeds `maxFileCount`, or the
@@ -174,7 +133,7 @@ enum PortablePackageSafeFileReader {
     /// recursive copy would burn temp disk and block the main actor before the
     /// fingerprint check could reject it, and per-file size limits alone don't
     /// stop a package of many individually-permitted files. POSIX `lstat` walk
-    /// (matches `firstSymlink`), so links are detected without being followed.
+    /// so links are detected without being followed.
     static func stageBoundedCopy(
         from sourceURL: URL,
         to destinationURL: URL,

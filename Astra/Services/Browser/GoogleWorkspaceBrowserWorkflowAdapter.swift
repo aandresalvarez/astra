@@ -247,51 +247,6 @@ struct GoogleWorkspaceBrowserWorkflowAdapter: BrowserSiteWorkflowAdapter {
         }
     }
 
-    /// Dead code carried over verbatim from `ShelfBrowserSession` (it was
-    /// never called there either — confirmed via a repo-wide search before
-    /// this extraction). Kept as-is because this move is a relocation, not a
-    /// cleanup; removing unreachable code is a separate, independently
-    /// reviewable change.
-    func fillGoogleDriveSearch(with name: String) async throws -> [String: Any] {
-        struct SearchTarget {
-            let method: String
-            let selector: String?
-            let label: String?
-            let placeholder: String?
-        }
-
-        let targets = [
-            SearchTarget(method: "label", selector: nil, label: "Search in Drive", placeholder: nil),
-            SearchTarget(method: "placeholder", selector: nil, label: nil, placeholder: "Search in Drive"),
-            SearchTarget(method: "selector", selector: #"input[aria-label="Search in Drive"], input[placeholder="Search in Drive"]"#, label: nil, placeholder: nil)
-        ]
-
-        var lastResult: [String: Any] = [
-            "ok": false,
-            "error": "not_attempted"
-        ]
-
-        for target in targets {
-            let json = try await context.type(
-                target.selector,
-                name,
-                true,
-                target.label,
-                nil,
-                target.placeholder,
-                nil
-            )
-            var result = try ShelfBrowserSession.jsonObject(from: json)
-            result["method"] = target.method
-            lastResult = result
-            if ShelfBrowserSession.boolValue(result["ok"]) {
-                return result
-            }
-        }
-
-        return lastResult
-    }
-
     private func waitForGoogleDriveOpen(
         name: String,
         startURL: String,
