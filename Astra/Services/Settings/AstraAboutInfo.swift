@@ -32,20 +32,4 @@ enum AstraAboutInfo {
         """
     }
 
-    @MainActor
-    static func creditsAttributedString() -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.lineSpacing = 2
-        paragraph.paragraphSpacing = 7
-
-        return NSAttributedString(
-            string: creditsPlainText,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: NSColor.secondaryLabelColor,
-                .paragraphStyle: paragraph
-            ]
-        )
-    }
 }

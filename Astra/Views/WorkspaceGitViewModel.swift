@@ -1209,22 +1209,6 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     // MARK: - Commit
 
-    func commitChanges() {
-        guard let path = workingPath, !commitMessage.isEmpty else { return }
-        AppLogger.audit(.gitCommit, category: "Git")
-        Task {
-            do {
-                try await git.commit(message: commitMessage, at: path)
-                self.commitMessage = ""
-                self.errorMessage = nil
-                await refreshRepoDetails(force: true)
-            } catch {
-                AppLogger.error("Commit failed: \(error.localizedDescription)", category: "Git")
-                self.errorMessage = error.localizedDescription
-            }
-        }
-    }
-
     // MARK: - Commit sheet actions
 
     var hasChanges: Bool {
@@ -1336,59 +1320,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     // MARK: - Sync (pull --rebase + push)
 
-    func sync() {
-        guard let path = workingPath else { return }
-        guard hasUpstream else {
-            self.errorMessage = "No upstream branch. Push the current branch first."
-            return
-        }
-        AppLogger.info("sync: ahead=\(ahead) behind=\(behind)", category: "Git")
-        isSyncing = true
-        Task {
-            do {
-                if behind > 0 {
-                    AppLogger.audit(.gitPull, category: "Git", fields: ["behind": "\(behind)"])
-                    try await git.pullRebase(at: path)
-                }
-                if ahead > 0 || behind == 0 {
-                    AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(ahead)"])
-                    try await git.push(at: path)
-                }
-                self.errorMessage = nil
-                await refreshRepoDetails(force: true)
-            } catch {
-                AppLogger.error("Sync failed: \(error.localizedDescription)", category: "Git")
-                self.errorMessage = error.localizedDescription
-            }
-            isSyncing = false
-        }
-    }
-
     // MARK: - Helper-model assists
-
-    func suggestCommitMessage() async {
-        guard let path = workingPath else { return }
-        let staged = statusFiles.contains(where: { $0.isStaged })
-        guard staged else {
-            self.errorMessage = "Stage some changes before requesting a commit suggestion."
-            return
-        }
-        isSuggestingCommit = true
-        defer { isSuggestingCommit = false }
-        do {
-            let diff = await git.getStagedDiff(at: path)
-            let recent = await git.getRecentCommitSubjects(at: path)
-            let suggestion = try await makeAuthoringService().suggestCommitMessage(
-                repoPath: path,
-                diff: diff,
-                recentSubjects: recent
-            )
-            self.commitMessage = suggestion.formatted
-            self.errorMessage = nil
-        } catch {
-            self.errorMessage = error.localizedDescription
-        }
-    }
 
     func suggestPullRequest() async {
         guard validatePullRequestReadiness() else { return }

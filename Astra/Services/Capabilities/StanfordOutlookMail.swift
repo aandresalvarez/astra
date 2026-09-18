@@ -147,10 +147,6 @@ struct GraphMeResponse: Decodable, Equatable {
     let mail: String?
 }
 
-struct GraphMessageListResponse: Decodable {
-    let value: [GraphMessage]
-}
-
 struct GraphEmailAddress: Decodable {
     let name: String?
     let address: String?
@@ -387,27 +383,6 @@ struct StanfordOutlookMailGraphService {
         }
         StanfordOutlookMailRegistry.upsert(connector: connector)
         return me
-    }
-
-    func searchMessages(connector: Connector, query: String, limit: Int = 10) async throws -> [GraphMessage] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        var items = [
-            URLQueryItem(name: "$top", value: String(min(max(limit, 1), 25))),
-            URLQueryItem(name: "$select", value: "id,subject,from,receivedDateTime,bodyPreview,hasAttachments,webLink")
-        ]
-        if !trimmed.isEmpty {
-            items.append(URLQueryItem(name: "$search", value: "\"\(trimmed)\""))
-        } else {
-            items.append(URLQueryItem(name: "$orderby", value: "receivedDateTime desc"))
-        }
-        let response: GraphMessageListResponse = try await get(
-            connector: connector,
-            path: "/me/messages",
-            queryItems: items,
-            preferTextBody: false,
-            consistencyLevelEventual: !trimmed.isEmpty
-        )
-        return response.value
     }
 
     func message(connector: Connector, id messageID: String) async throws -> GraphMessage {

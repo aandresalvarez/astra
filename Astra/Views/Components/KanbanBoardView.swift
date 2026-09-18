@@ -1495,22 +1495,6 @@ struct KanbanColumnView: View {
     }
 }
 
-private struct KanbanCountBadge: View {
-    let count: Int
-    let tint: Color
-
-    var body: some View {
-        Text("\(count)")
-            .font(Stanford.caption(11).weight(.semibold))
-            .foregroundStyle(count == 0 ? .secondary : tint)
-            .padding(.horizontal, Stanford.sidebarBadgeHorizontalPadding)
-            .frame(minWidth: Stanford.sidebarBadgeMinWidth, minHeight: Stanford.sidebarBadgeHeight)
-        .background(tint.opacity(count == 0 ? 0.06 : 0.12))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.sidebarBadgeCornerRadius, style: .continuous))
-            .accessibilityLabel("\(count) \(count == 1 ? "task" : "tasks")")
-    }
-}
-
 private struct KanbanColumnHeaderChip: View {
     let category: KanbanCategory
     let count: Int
