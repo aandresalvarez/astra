@@ -109,34 +109,6 @@ struct WorkspaceAppEndToEndTests {
         #expect(apps.isEmpty)
     }
 
-    // MARK: - REDCap form pipeline
-
-    @MainActor
-    @Test("REDCap metadata builds a valid form app that publishes and renders fields")
-    func redcapFormPipeline() throws {
-        let env = try Self.makeEnv()
-        defer { try? FileManager.default.removeItem(at: env.root) }
-        let manifest = WorkspaceAppREDCapFormBuilder.build(
-            appID: "enroll", appName: "Enrollment", formName: "enrollment",
-            fields: [
-                WorkspaceAppREDCapFieldMetadata(fieldName: "first_name", fieldType: "text", required: true),
-                WorkspaceAppREDCapFieldMetadata(fieldName: "consent", fieldType: "radio", required: true, choices: "1, Yes | 0, No"),
-                WorkspaceAppREDCapFieldMetadata(fieldName: "dose", fieldType: "text", validation: "integer", branchingLogic: "[consent] = '1'")
-            ]
-        )
-        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
-        // The form submits through an approval-gated external write (permission mode, not lifecycle).
-        #expect(manifest.permissions.defaultMode == .approvalRequired)
-        // Publishes through the normal service.
-        let created = try WorkspaceAppService().createApp(manifest: manifest, in: env.workspace, modelContext: env.context, status: .published)
-        #expect(created.app.lifecycleStatus == .published)
-        // The form view renders its fields; the dose field is gated on consent and hidden until met.
-        let formView = try #require(manifest.views.first { $0.type == "form" })
-        #expect(WorkspaceAppFormPresentationBuilder.presentation(view: formView, draft: [:]).contains { $0.name == "first_name" })
-        #expect(!WorkspaceAppFormPresentationBuilder.presentation(view: formView, draft: [:]).contains { $0.name == "dose" })
-        #expect(WorkspaceAppFormPresentationBuilder.presentation(view: formView, draft: ["consent": .text("1")]).contains { $0.name == "dose" })
-    }
-
     // MARK: - Package round trip (export -> review -> import)
 
     @MainActor

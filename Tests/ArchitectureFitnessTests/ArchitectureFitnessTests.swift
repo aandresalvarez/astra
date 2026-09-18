@@ -1852,7 +1852,6 @@ struct ArchitectureFitnessTests {
             "Astra/Models/TaskRun.swift": ["self"],
             "Astra/Models/TaskSchedule.swift": ["self"],
             "Astra/Models/TaskValidationContract.swift": ["self"],
-            "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
             // `AstraKeychainFailureReport.status` is an OSStatus, not a task's.
             "Astra/Services/Persistence/AstraSecureKeychainStore.swift": ["self"],
             "Astra/Services/Persistence/SessionScanner.swift": ["run"],
@@ -1871,7 +1870,6 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/TaskRunLifecycleService.swift": ["run"],
             "Astra/Services/Validation/TaskCorrectiveWorkService.swift": ["payload"],
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": ["run"],
-            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift": ["state"],
             "Astra/Services/WorkspaceApps/WorkspaceAppAutomationScheduler.swift": ["automation"],
             "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift": ["run"],
             "Astra/Services/WorkspaceApps/WorkspaceAppService.swift": ["automation", "binding", "surviving"],
@@ -1942,7 +1940,7 @@ struct ArchitectureFitnessTests {
             // against the runtime/model it is stored beside and re-resolves on a
             // runtime/model switch. An open draft moves with it because
             // runApprovedPlan() submits draftTask without a fresh saveDraft().
-            "Astra/Views/ChatPanelView.swift": .init(3_085, .owner("Composer chat surface")),
+            "Astra/Views/ChatPanelView.swift": .init(2_610, .owner("Composer chat surface")),
             // 2_900 -> 2_909: Claude Code reasoning-effort selection replaces the
             // hardcoded artifact-bootstrap-only "--effort low" with a resolved
             // value that also honors the task's own setting outside bootstrap.
