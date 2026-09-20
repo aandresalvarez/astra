@@ -1098,22 +1098,6 @@ struct AgentRuntimePolicyGuard: Sendable {
         ProviderToolSemantics.normalizedName(tool)
     }
 
-    private static func canonicalProviderToolName(_ tool: String) -> String {
-        switch normalizedToolName(tool) {
-        case "bash": return "Bash"
-        case "read": return "Read"
-        case "grep": return "Grep"
-        case "glob": return "Glob"
-        case "write": return "Write"
-        case "edit": return "Edit"
-        case "multiedit": return "MultiEdit"
-        case "webfetch": return "WebFetch"
-        case "websearch": return "WebSearch"
-        case "agent": return "Agent"
-        default: return tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
     private static func isWriteAccess(_ access: String) -> Bool {
         let normalized = access.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized == "write" || normalized == "rw" || normalized == "readwrite" || normalized == "read-write"
@@ -1134,22 +1118,6 @@ struct AgentRuntimePolicyGuard: Sendable {
             return root
         }
         return nil
-    }
-
-    private static func shellApprovalRoot(_ root: String) -> String? {
-        var normalizedRoot = root
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'({["))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        normalizedRoot = normalizedRoot.trimmingCharacters(in: CharacterSet(charactersIn: "\"')}]"))
-        guard !normalizedRoot.isEmpty else { return nil }
-        if normalizedRoot.hasPrefix("/") {
-            normalizedRoot = URL(fileURLWithPath: normalizedRoot).lastPathComponent
-        }
-        guard normalizedRoot.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil,
-              !isUnsafeShellGrantRoot(normalizedRoot) else {
-            return nil
-        }
-        return normalizedRoot
     }
 
     private static func normalizedShellText(_ value: String) -> String {

@@ -1600,22 +1600,6 @@ class GitService: GitRepositoryOperating {
         }
     }
 
-    /// Returns the merge-base ref between two refs (typically `origin/main` and HEAD).
-    func getMergeBase(at repoPath: String, refA: String, refB: String) async -> String? {
-        do {
-            let output = try await runGit(
-                at: repoPath,
-                arguments: ["merge-base", refA, refB],
-                // Exit 1 means "no common ancestor", which is a result.
-                failureLogLevel: .debug
-            )
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        } catch {
-            return nil
-        }
-    }
-
     /// Returns the default upstream base branch, e.g. `origin/main`, preferring
     /// the selected/default remote instead of assuming every repository uses
     /// `origin`.
@@ -1889,12 +1873,6 @@ class GitService: GitRepositoryOperating {
             }
             throw error
         }
-    }
-
-    /// Prunes administrative entries for worktrees whose directories were
-    /// removed out from under git, keeping `git worktree list` accurate.
-    func pruneWorktrees(at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["worktree", "prune"])
     }
 
     func getRemoteURL(at repoPath: String, remote: String? = nil) async -> String? {

@@ -786,22 +786,6 @@ enum PermissionBroker {
         return hint.isEmpty ? nil : hint
     }
 
-    private static func shellApprovalRoot(_ root: String) -> String? {
-        var normalizedRoot = root
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'({["))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        normalizedRoot = normalizedRoot.trimmingCharacters(in: CharacterSet(charactersIn: "\"')}]"))
-        guard !normalizedRoot.isEmpty else { return nil }
-        if normalizedRoot.hasPrefix("/") {
-            normalizedRoot = URL(fileURLWithPath: normalizedRoot).lastPathComponent
-        }
-        guard normalizedRoot.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil,
-              !isUnsafeShellGrantRoot(normalizedRoot) else {
-            return nil
-        }
-        return normalizedRoot
-    }
-
     private static func actionableShellSegments(_ command: String) -> [String] {
         let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
         let rawSegments = shellSegmentSeparatorsNormalized(semanticCommand)

@@ -1019,34 +1019,10 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    public static func exportToFile(workspace: Workspace, url: URL) throws {
-        guard let config = export(workspace: workspace) else { return }
-        try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
-        try write(config, to: url)
-    }
-
     public static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
-    }
-
-    @discardableResult
-    public static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
-        guard let config = export(workspace: workspace) else {
-            return exportResult(
-                status: .skippedNoConfig,
-                workspaceID: workspace.id.uuidString,
-                url: url,
-                error: nil
-            )
-        }
-        do {
-            try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
-        } catch {
-            return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
-        }
-        return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
     }
 
     @discardableResult
@@ -1065,28 +1041,6 @@ public enum WorkspaceConfigManager {
             return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
         }
         return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
-    }
-
-    /// Auto-save config to the workspace's primary path for recovery.
-    ///
-    /// The Sendable `WorkspaceConfig` snapshot is built synchronously here (it must
-    /// read SwiftData objects on the current actor), then the JSON encode + atomic
-    /// file write are handed to `WorkspaceAutoExportWriter`, which serializes all
-    /// auto-export writes off the main actor. This removes the synchronous
-    /// `encode(.prettyPrinted)` + `data.write` stall from every `modelContext.save()`
-    /// on a live run. The result-returning `exportToFileResult` path (used by tests,
-    /// explicit user export, and flush-on-disappear) is intentionally left synchronous.
-    public static func autoExport(workspace: Workspace) {
-        let target = autoExportTarget(for: workspace.primaryPath)
-        guard let url = target.url else {
-            logAutoExportSkipped(workspace: workspace, reason: target.reason)
-            return
-        }
-        guard let config = export(workspace: workspace) else { return }
-        let workspaceID = workspace.id.uuidString
-        Task.detached(priority: .utility) {
-            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID)
-        }
     }
 
     public static func autoExport(workspace: Workspace, modelContext: ModelContext) {
