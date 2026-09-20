@@ -111,12 +111,54 @@ struct MainThreadPhaseTests {
     }
 
     @MainActor
+    @Test("A stack that moves after the read is detectable")
+    func generationDetectsMutation() {
+        MainThreadPhase.resetForTesting()
+        defer { MainThreadPhase.resetForTesting() }
+
+        // The race this exists for: the watchdog reads a phase while the main
+        // thread is presumed wedged, but `pop()` never waits on the monitor's
+        // lock, so the scope can unwind before the line is written. Capturing
+        // early narrows that; the generation is what makes it detectable.
+        let reading = MainThreadPhase.tracking("render_task_thread") {
+            MainThreadPhase.reading()
+        }
+        #expect(reading.snapshot == .inside(label: "render_task_thread", depth: 1))
+        // The scope returned — exactly the "already unwound" case.
+        #expect(MainThreadPhase.hasMutated(since: reading.generation))
+
+        let stable = MainThreadPhase.reading()
+        #expect(!MainThreadPhase.hasMutated(since: stable.generation))
+    }
+
+    @MainActor
+    @Test("An unreadable stack counts as mutated, never as trustworthy")
+    func heldLockCountsAsMutated() {
+        MainThreadPhase.resetForTesting()
+        defer { MainThreadPhase.resetForTesting() }
+
+        let current = MainThreadPhase.reading()
+        // The only thread that can hold this lock is one mid-push or mid-pop,
+        // which is the very thing the check asks about — so an unavailable lock
+        // must never read as "nothing changed".
+        let treatedAsMutated = MainThreadPhase.withLockHeldForTesting {
+            MainThreadPhase.hasMutated(since: current.generation)
+        }
+        #expect(treatedAsMutated)
+    }
+
+    @MainActor
     @Test("Every snapshot carries a phase field a log search can filter on")
     func telemetryFieldsAreAlwaysPresent() {
         MainThreadPhase.resetForTesting()
         defer { MainThreadPhase.resetForTesting() }
 
         #expect(MainThreadPhase.Snapshot.idle.telemetryFields == ["phase": "none"])
+        // Distinct from `unavailable`: one means the read failed, the other
+        // that it succeeded and then stopped describing the stall. Collapsing
+        // them would hide which of the two the monitor actually hit.
+        #expect(MainThreadPhase.Snapshot.stale.telemetryFields == ["phase": "stale"])
+        #expect(MainThreadPhase.Snapshot.unavailable.telemetryFields == ["phase": "unavailable"])
         #expect(
             MainThreadPhase.Snapshot.inside(label: "render_task_thread", depth: 2).telemetryFields
                 == ["phase": "render_task_thread", "phase_depth": "2"]

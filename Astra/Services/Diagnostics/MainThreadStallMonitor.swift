@@ -232,12 +232,17 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         // scope that wedged unwinds through its own `defer`, and `beat` stamps
         // a fresh activity. Reading either afterwards would attach `phase=none`
         // — or worse, an unrelated scope entered during the recovery — to a
-        // stall whose duration describes the wedge that just ended, which is
-        // precisely the confidently-wrong report this field exists to avoid.
-        // `MainThreadPhase.snapshot` is a `trylock`, so taking it under this
-        // lock cannot deadlock against the main thread.
+        // stall whose duration describes the wedge that just ended.
+        //
+        // Capturing early narrows that window but cannot close it: `pop()`
+        // takes only the phase lock and never waits on this one, so the main
+        // thread can still unwind while the report is being built. The
+        // generation carried alongside is what closes it — `report` re-checks
+        // it and downgrades the label rather than asserting a scope that has
+        // already returned. Reading the phase here is a `trylock`, so taking it
+        // under this lock cannot deadlock against the main thread.
         let activity = lastActivity
-        let phase = MainThreadPhase.snapshot()
+        let phase = MainThreadPhase.reading()
         lock.unlock()
 
         report(
@@ -263,17 +268,27 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         seconds: Double,
         level: LogLevel,
         activity: CFRunLoopActivity,
-        phase: MainThreadPhase.Snapshot?
+        phase: MainThreadPhase.Reading?
     ) {
+        let memory = Self.memoryFootprint()
+        // Re-checked *after* the memory syscall, which is the longest thing
+        // between detection and this line. A stack that moved in the meantime
+        // means the main thread is running again, so the captured label is no
+        // longer about this stall — report that it cannot be trusted instead of
+        // naming a scope that may already have returned.
+        let validated = phase.map { reading in
+            MainThreadPhase.hasMutated(since: reading.generation) ? .stale : reading.snapshot
+        }
+
         PerformanceTelemetry.log(
             event,
             durationMilliseconds: seconds * 1000,
             level: level,
             fields: Self.reportFields(
                 seconds: seconds,
-                memory: Self.memoryFootprint(),
+                memory: memory,
                 activity: activity,
-                phase: phase
+                phase: validated
             )
         )
     }

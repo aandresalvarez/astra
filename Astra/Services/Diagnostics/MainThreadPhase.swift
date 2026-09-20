@@ -37,6 +37,12 @@ enum MainThreadPhase {
         /// The lock was held when the watchdog tried. Reported rather than
         /// waited on; see `snapshot()`.
         case unavailable
+        /// Read cleanly, but the stack moved before the line was written — so
+        /// the main thread is running again and the label may name a scope that
+        /// has already returned. Its own token rather than the label, because a
+        /// phase that cannot be trusted is the one thing this field must never
+        /// assert. See `MainThreadStallMonitor.report`.
+        case stale
 
         /// Fields for the stall report. The key is `phase` rather than `scope`
         /// to match how the existing reports read (`stalled_s`, `footprint_mb`).
@@ -48,17 +54,41 @@ enum MainThreadPhase {
                 return ["phase": label, "phase_depth": String(depth)]
             case .unavailable:
                 return ["phase": "unavailable"]
+            case .stale:
+                return ["phase": "stale"]
             }
         }
+    }
+
+    /// A phase plus the stack revision it was read at, so a reader that acts on
+    /// it later can tell whether it still describes the same moment.
+    struct Reading: Equatable {
+        let snapshot: Snapshot
+        let generation: UInt64
     }
 
     private struct Storage {
         var labels: [String?]
         var depth: Int
+        /// Bumped by every push and pop.
+        ///
+        /// The watchdog reads the phase from a background queue while the main
+        /// thread is *presumed* wedged, and nothing makes that presumption
+        /// atomic: `pop()` takes only this lock and never waits on the
+        /// monitor's, so a thread that wakes at the wrong moment can unwind the
+        /// stalled scope between the read and the line being written. A counter
+        /// costs one increment on a path that runs per instrumented scope —
+        /// cheaper than reading a clock — and lets that reader detect the
+        /// change instead of silently reporting a scope that already returned.
+        var generation: UInt64
     }
 
     private static let state = OSAllocatedUnfairLock(
-        initialState: Storage(labels: Array(repeating: nil, count: MainThreadPhase.maximumDepth), depth: 0)
+        initialState: Storage(
+            labels: Array(repeating: nil, count: MainThreadPhase.maximumDepth),
+            depth: 0,
+            generation: 0
+        )
     )
 
     /// Records that the main thread has entered `label`. Returns whether a
@@ -75,6 +105,7 @@ enum MainThreadPhase {
             guard storage.depth < maximumDepth else { return false }
             storage.labels[storage.depth] = label
             storage.depth += 1
+            storage.generation &+= 1
             return true
         }
     }
@@ -85,6 +116,7 @@ enum MainThreadPhase {
             guard storage.depth > 0 else { return }
             storage.depth -= 1
             storage.labels[storage.depth] = nil
+            storage.generation &+= 1
         }
     }
 
@@ -96,13 +128,38 @@ enum MainThreadPhase {
     /// failure mode `MainThreadStallMonitor` warns about — so an unavailable
     /// lock is reported as a fact instead.
     static func snapshot() -> Snapshot {
-        let result = state.withLockIfAvailable { storage -> Snapshot in
+        reading().snapshot
+    }
+
+    /// The innermost scope plus the revision it was read at.
+    ///
+    /// A caller that writes the result somewhere later — the stall report does,
+    /// after a `task_info` syscall — should pass the generation back to
+    /// `hasMutated(since:)` first, and treat a change as "the main thread woke
+    /// up, this label is no longer about the stall".
+    static func reading() -> Reading {
+        let result = state.withLockIfAvailable { storage -> Reading in
             guard storage.depth > 0, let label = storage.labels[storage.depth - 1] else {
-                return .idle
+                return Reading(snapshot: .idle, generation: storage.generation)
             }
-            return .inside(label: label, depth: storage.depth)
+            return Reading(
+                snapshot: .inside(label: label, depth: storage.depth),
+                generation: storage.generation
+            )
         }
-        return result ?? .unavailable
+        return result ?? Reading(snapshot: .unavailable, generation: 0)
+    }
+
+    /// Whether the stack has been pushed or popped since `generation`.
+    ///
+    /// An unavailable lock counts as mutated: the only thread that can hold it
+    /// is one actively pushing or popping, which is the very thing this asks
+    /// about.
+    static func hasMutated(since generation: UInt64) -> Bool {
+        let unchanged = state.withLockIfAvailable { storage in
+            storage.generation == generation
+        }
+        return unchanged != true
     }
 
     /// Runs `work` with `label` published as the current phase.
@@ -129,6 +186,7 @@ enum MainThreadPhase {
         state.withLock { storage in
             for index in storage.labels.indices { storage.labels[index] = nil }
             storage.depth = 0
+            storage.generation &+= 1
         }
     }
 }

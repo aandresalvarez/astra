@@ -98,12 +98,12 @@ struct MainThreadStallMonitorTests {
         // afterwards would attach `none` — or an unrelated scope entered during
         // the recovery — to a duration describing the wedge that just ended.
         //
-        // `reportFields` takes the phase rather than reading it, which is what
-        // makes the captured value the one that gets logged. Passing a phase the
-        // marker no longer holds must still report the captured one.
-        MainThreadPhase.resetForTesting()
-        #expect(MainThreadPhase.snapshot() == .idle)
-
+        // Asserted purely on the supplied value. An earlier revision reset the
+        // process-global marker here to prove the point, which was itself a
+        // race: this test is not `@MainActor`, so under a full run it can
+        // execute beside a `@MainActor` test that is inside an instrumented
+        // scope, and clearing the shared stack would strand that scope's `pop`
+        // and break an unrelated suite.
         let fields = MainThreadStallMonitor.reportFields(
             seconds: 3.2,
             memory: (residentMegabytes: 129, footprintMegabytes: 307),
