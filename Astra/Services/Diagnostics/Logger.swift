@@ -42,23 +42,79 @@ enum AppLogger: Sendable {
         return dict
     }()
 
+    /// Set by the ASTRATests load-time bootstrap. `nonisolated(unsafe)` because
+    /// it is written exactly once, from a dyld constructor, while the process is
+    /// still single-threaded — before any test framework has scheduled work.
+    nonisolated(unsafe) private static var explicitlyUnderTests = false
+
+    /// Declares that this process is a test run, regardless of what it looks
+    /// like from the outside.
+    ///
+    /// Must be called before anything logs: `logDir` is resolved once, lazily,
+    /// on the first write, and a run that logs first would cache the production
+    /// directory for the rest of the process. The ASTRATests bootstrap calls
+    /// this from a dyld constructor, which is the one place that ordering is
+    /// guaranteed rather than hoped for.
+    static func markRunningUnderTests() {
+        explicitlyUnderTests = true
+    }
+
+    /// Whether this process is a test run, and so must keep its logs out of the
+    /// user's real diagnostics.
+    ///
+    /// Inferring this from the process was never robust, and in September 2026
+    /// it silently stopped working: Xcode 27 runs SwiftPM suites out of
+    /// `swiftpm-testing-helper`, which exports no `XCTest*` environment, is not
+    /// itself a `.xctest` bundle, loads none as `Bundle.allBundles`, and passes
+    /// the bundle as an interior path component rather than a trailing one. All
+    /// five signals missed at once, so every `swift test` run wrote into
+    /// `~/Library/Logs/Astra/astra.log` — and at ~5 MB per run that rotated the
+    /// production log, discarding a day of real diagnostics each time.
+    ///
+    /// So the answer is now *declared* by the test bundle itself, and the
+    /// inference below is only a fallback for targets that do not link the
+    /// bootstrap.
     static var isRunningTests: Bool {
-        let env = ProcessInfo.processInfo.environment
-        if env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil {
+        if explicitlyUnderTests { return true }
+        return looksLikeTestRunner(
+            processName: ProcessInfo.processInfo.processName,
+            arguments: ProcessInfo.processInfo.arguments,
+            environment: ProcessInfo.processInfo.environment,
+            bundlePaths: [Bundle.main.bundlePath] + Bundle.allBundles.map(\.bundlePath)
+        )
+    }
+
+    /// The inference half of `isRunningTests`, taking its inputs so the runner
+    /// shapes it has to recognize can be pinned by tests — the live process can
+    /// only ever demonstrate the one shape it happens to be running under, which
+    /// is exactly how the Xcode 27 regression went unnoticed until a log was
+    /// found in the wrong place.
+    static func looksLikeTestRunner(
+        processName: String,
+        arguments: [String],
+        environment: [String: String],
+        bundlePaths: [String]
+    ) -> Bool {
+        if environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil {
             return true
         }
-        let processName = ProcessInfo.processInfo.processName.lowercased()
-        if processName.contains("xctest") || processName.contains("packagetests") {
+        let name = processName.lowercased()
+        if name.contains("xctest") || name.contains("packagetests") || name.contains("testing-helper") {
             return true
         }
-        if Bundle.main.bundlePath.hasSuffix(".xctest") {
+        if bundlePaths.contains(where: { $0.hasSuffix(".xctest") }) {
             return true
         }
-        if Bundle.allBundles.contains(where: { $0.bundlePath.hasSuffix(".xctest") }) {
-            return true
-        }
-        return ProcessInfo.processInfo.arguments.contains {
-            $0.hasSuffix(".xctest") || $0.contains("/xctest") || $0.contains("PackageTests")
+        return arguments.contains { argument in
+            // `.xctest` anywhere in the argument, not only as a suffix: SwiftPM
+            // passes the executable *inside* the bundle
+            // (`…/ASTRATests.xctest/Contents/MacOS/ASTRATests`).
+            argument.contains(".xctest")
+                || argument.contains("PackageTests")
+                // Flags only a test harness passes, for a future runner that
+                // stops putting the bundle on the command line at all.
+                || argument == "--test-bundle-path"
+                || argument == "--testing-library"
         }
     }
 
