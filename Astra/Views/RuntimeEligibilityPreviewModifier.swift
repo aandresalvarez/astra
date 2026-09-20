@@ -119,6 +119,13 @@ struct RuntimeEligibilityPreviewRequest {
     /// The runtime the composer would actually launch. Scoring only this one is
     /// what makes the typing path cheap; see `RuntimeEligibilityPreviewModifier`.
     let selectedRuntime: AgentRuntimeID
+
+    /// Stands in for the task identity of a composer that has neither a saved
+    /// draft nor a workspace yet, so even that composer's previews agree with
+    /// each other across edits.
+    static let unanchoredComposerPreviewID = UUID(
+        uuidString: "8F1D4C2E-0000-4000-A000-000000000001"
+    )!
     private let evaluation: @MainActor ([AgentRuntimeID]?) async -> TaskRuntimeEligibilitySnapshot?
 
     /// `candidateRuntimes: nil` scores every registered runtime.
@@ -220,6 +227,16 @@ struct RuntimeEligibilityPreviewRequest {
                 model: defaultModel,
                 runtime: requestedRuntime
             )
+            // This closure runs again on every keystroke, and a fresh AgentTask
+            // mints a fresh UUID. Left alone, no two previews of this composer
+            // would agree on a task identity, `carryingForwardUnscoredCandidates`
+            // would refuse every merge, and the provider menu would drop each
+            // runtime the narrow pass did not score. Anchor the preview to the
+            // draft — or, before one exists, the workspace — so successive
+            // previews are recognisably the same subject.
+            previewTask.id = draftTask?.id
+                ?? workspace?.id
+                ?? Self.unanchoredComposerPreviewID
             previewTask.inputs = attachedFiles
             previewTask.skills = selectedSkills
             previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected

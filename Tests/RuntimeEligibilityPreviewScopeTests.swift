@@ -125,6 +125,53 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(merged.launchBlock?.suggestedRuntime == narrow.launchBlock?.suggestedRuntime)
     }
 
+    /// The new-task composer builds its preview task inside the evaluation
+    /// closure, so every edit used to mint a fresh UUID — no two previews
+    /// agreed on an identity, carry-forward was refused, and the provider menu
+    /// dropped every runtime the narrow pass had not scored. This is that path,
+    /// which the persisted-task cases above cannot reach.
+    @Test("A new-task composer keeps one identity across edits so verdicts carry forward")
+    func newTaskComposerCarriesForwardAcrossEdits() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let readiness = Dictionary(
+            uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }
+        )
+        func composerRequest(acceptedTurn: String) -> RuntimeEligibilityPreviewRequest {
+            .newTask(
+                draftTask: nil,
+                workspace: workspace,
+                selectedSkills: [],
+                attachedFiles: [],
+                acceptedTurn: acceptedTurn,
+                requestedRuntime: .claudeCode,
+                runtimeExplicitlySelected: false,
+                selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                skipPermissions: false,
+                defaultModel: "test-model",
+                defaultBudget: 1_000,
+                providerSettings: .headlessScenario,
+                readinessStates: readiness
+            )
+        }
+
+        // The full pass for one draft of the text, then a narrow pass after an edit.
+        let full = try #require(await composerRequest(acceptedTurn: "Build a thing").evaluate())
+        let edited = composerRequest(acceptedTurn: "Build a thing now")
+        let narrow = try #require(
+            await edited.evaluate(candidateRuntimes: [edited.selectedRuntime])
+        )
+
+        #expect(narrow.taskID == full.taskID, "the composer changed identity between edits")
+        let merged = narrow.carryingForwardUnscoredCandidates(from: full)
+        #expect(merged.candidates.count == full.candidates.count)
+    }
+
     /// Carrying a verdict across tasks would show one task's provider
     /// availability in another's composer.
     @Test("Carrying forward ignores a snapshot from a different task")
