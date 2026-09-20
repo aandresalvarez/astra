@@ -27,6 +27,12 @@ public func astraTestRegisterRuntimeSeams() {
     // Force-links the C archive member that carries the constructor — see
     // astra_test_seam_bootstrap_force_link's doc comment.
     astra_test_seam_bootstrap_force_link()
+    // Declared here for the same reason the seams are: this runs at bundle
+    // load, before anything can log, so the log directory is resolved knowing
+    // it is a test run. Inferring it from the process silently stopped working
+    // under Xcode 27 and sent every suite's output into the user's production
+    // log — see `AppLogger.isRunningTests`.
+    AppLogger.markRunningUnderTests()
     RuntimeSeamRegistration.registerAll()
 }
 

@@ -140,6 +140,82 @@ struct AppLoggerTests {
         #expect(AppLogger.mainLogFile.path.contains("AstraTests"))
     }
 
+    /// The runner this suite happens to run under can only ever demonstrate one
+    /// shape, which is how the Xcode 27 change went unnoticed until production
+    /// logs turned up with test output in them. These pin the shapes themselves.
+    @Test("The Xcode 27 SwiftPM runner is recognized as a test run")
+    func swiftPMTestingHelperIsRecognized() {
+        // Captured from a real `swift test` run: no XCTest environment at all,
+        // a helper binary in the toolchain rather than a bundle, no loaded
+        // `.xctest` bundle, and the bundle path only as an interior component.
+        // Every signal the previous implementation looked for missed.
+        #expect(
+            AppLogger.looksLikeTestRunner(
+                processName: "swiftpm-testing-helper",
+                arguments: [
+                    "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/libexec/swift/pm/swiftpm-testing-helper",
+                    "--test-bundle-path",
+                    "/repo/.build/out/Products/Debug/ASTRATests.xctest/Contents/MacOS/ASTRATests",
+                    "--testing-library",
+                    "swift-testing"
+                ],
+                environment: [:],
+                bundlePaths: [
+                    "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/libexec/swift/pm"
+                ]
+            )
+        )
+    }
+
+    @Test("Older XCTest runner shapes are still recognized")
+    func legacyRunnerShapesAreRecognized() {
+        // The environment-variable shape, as Xcode's own test action provides.
+        #expect(
+            AppLogger.looksLikeTestRunner(
+                processName: "ASTRA",
+                arguments: ["/Applications/ASTRA.app/Contents/MacOS/ASTRA"],
+                environment: ["XCTestConfigurationFilePath": "/tmp/session.xctestconfiguration"],
+                bundlePaths: ["/Applications/ASTRA.app"]
+            )
+        )
+        // The process-name shape, as the standalone `xctest` harness provides.
+        #expect(
+            AppLogger.looksLikeTestRunner(
+                processName: "xctest",
+                arguments: ["/usr/bin/xctest"],
+                environment: [:],
+                bundlePaths: ["/usr/bin"]
+            )
+        )
+        // A loaded test bundle, whatever launched it.
+        #expect(
+            AppLogger.looksLikeTestRunner(
+                processName: "anything",
+                arguments: ["/usr/bin/anything"],
+                environment: [:],
+                bundlePaths: ["/usr/bin", "/repo/.build/debug/ASTRAPackageTests.xctest"]
+            )
+        )
+    }
+
+    @Test("A real app launch is not mistaken for a test run")
+    func productionLaunchIsNotMistakenForTests() {
+        // The other half of the contract: misfiring here would send the user's
+        // own diagnostics to a temporary directory that is cleaned up behind
+        // them, which is the failure this check cannot trade for the first one.
+        #expect(
+            !AppLogger.looksLikeTestRunner(
+                processName: "ASTRA",
+                arguments: ["/Users/someone/Applications/ASTRA.app/Contents/MacOS/ASTRA"],
+                environment: ["HOME": "/Users/someone", "PATH": "/usr/bin"],
+                bundlePaths: [
+                    "/Users/someone/Applications/ASTRA.app",
+                    "/Users/someone/Applications/ASTRA.app/Contents/Resources/ASTRA_ASTRA.bundle"
+                ]
+            )
+        )
+    }
+
     @Test("Browser category is available for logs filtering")
     func browserCategoryIsAvailableForFiltering() {
         #expect(AppLogCategory.all.contains("Browser"))
