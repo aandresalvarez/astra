@@ -130,6 +130,38 @@ struct MainThreadStallMonitorTests {
         #expect(fields["run_loop_activity"] == "before_sources")
     }
 
+    @Test("An unreadable phase stays unavailable rather than becoming stale")
+    func unavailablePhaseSurvivesValidation() {
+        // A revision of this PR validated every reading against the phase
+        // stack's generation, including the unavailable one — whose generation
+        // is a sentinel that matches nothing once any scope has run. That made
+        // `phase=unavailable` unreachable in production: every lock contention
+        // was relabelled `stale`, which claims something different and weaker.
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 3.1,
+            memory: (residentMegabytes: 100, footprintMegabytes: 90),
+            activity: .afterWaiting,
+            phase: .unavailable
+        )
+        #expect(fields["phase"] == "unavailable")
+        #expect(fields["phase"] != "stale")
+    }
+
+    @Test("A phase that stopped describing the stall is reported as stale")
+    func stalePhaseIsDistinctFromBothIdleAndUnavailable() {
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 3.1,
+            memory: (residentMegabytes: 100, footprintMegabytes: 90),
+            activity: .afterWaiting,
+            phase: .stale
+        )
+        // Three distinguishable answers, because they send an investigation to
+        // three different places: a named scope, "not in instrumented code",
+        // and "the monitor could not vouch for what it read".
+        #expect(fields["phase"] == "stale")
+        #expect(fields["phase_depth"] == nil)
+    }
+
     @Test("A stall outside every instrumented scope says so explicitly")
     func stallOutsideInstrumentedScopes() {
         let fields = MainThreadStallMonitor.reportFields(

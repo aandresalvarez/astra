@@ -193,7 +193,10 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             seconds: Self.seconds(from: stalledSince, to: now),
             level: .warning,
             activity: activity,
-            phase: nil
+            phase: nil,
+            // `beat` just stamped this, so it is by definition current: the
+            // recovery line carries no phase to validate anyway.
+            heartbeatAtDetection: now
         )
     }
 
@@ -243,6 +246,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         // under this lock cannot deadlock against the main thread.
         let activity = lastActivity
         let phase = MainThreadPhase.reading()
+        let heartbeatAtDetection = lastHeartbeat
         lock.unlock()
 
         report(
@@ -253,7 +257,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             // wedge does not fill the error channel with one event.
             level: isFirst ? .error : .warning,
             activity: activity,
-            phase: phase
+            phase: phase,
+            heartbeatAtDetection: heartbeatAtDetection
         )
     }
 
@@ -268,16 +273,38 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         seconds: Double,
         level: LogLevel,
         activity: CFRunLoopActivity,
-        phase: MainThreadPhase.Reading?
+        phase: MainThreadPhase.Reading?,
+        heartbeatAtDetection: UInt64
     ) {
         let memory = Self.memoryFootprint()
-        // Re-checked *after* the memory syscall, which is the longest thing
-        // between detection and this line. A stack that moved in the meantime
-        // means the main thread is running again, so the captured label is no
-        // longer about this stall — report that it cannot be trusted instead of
-        // naming a scope that may already have returned.
-        let validated = phase.map { reading in
-            MainThreadPhase.hasMutated(since: reading.generation) ? .stale : reading.snapshot
+        // Two independent signs that the label stopped being about this stall,
+        // checked after the memory syscall because that is the longest thing
+        // between detection and this line.
+        //
+        // The phase stack moving means the main thread is unwinding scopes. The
+        // heartbeat advancing means it reached its run loop again — and that
+        // one also covers the gap *before* the phase was read, which the
+        // generation alone cannot: a pop takes only the phase lock, so a thread
+        // that woke between the elapsed check and the read would have been
+        // sampled already-idle, with a generation that then never changes.
+        // `beat` has to take this lock to stamp, so its progress is visible
+        // here even when the pop was not.
+        //
+        // Closing that first gap outright would mean `pop()` taking the monitor
+        // lock, putting a lock shared with a background watchdog on a path that
+        // runs several times per keystroke — trading main-thread latency for a
+        // diagnostic. Detecting it and saying so is the better side of that.
+        lock.lock()
+        let heartbeatMoved = lastHeartbeat != heartbeatAtDetection
+        lock.unlock()
+
+        let validated = phase.map { reading -> MainThreadPhase.Snapshot in
+            // An unreadable stack is already the weakest claim there is;
+            // validating it would relabel every contention as `stale`, because
+            // its sentinel generation never matches a live one.
+            guard reading.snapshot != .unavailable else { return .unavailable }
+            let moved = heartbeatMoved || MainThreadPhase.hasMutated(since: reading.generation)
+            return moved ? .stale : reading.snapshot
         }
 
         PerformanceTelemetry.log(
