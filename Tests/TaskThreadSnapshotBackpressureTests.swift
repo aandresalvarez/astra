@@ -62,18 +62,22 @@ private final class ManualClock {
 @MainActor
 @Suite("Task thread snapshot back-pressure")
 struct TaskThreadSnapshotBackpressureTests {
-    /// The 30 s budget matches the rest of the thread suites. Every wait here is
-    /// on a condition the pipeline reaches in milliseconds when the machine is
-    /// idle; the budget exists because the full suite runs main-actor tests
-    /// concurrently and can starve a single hop for seconds. A tight bound would
-    /// measure host load, not back-pressure.
+    /// Yields until `condition` holds or the poll budget runs out.
+    ///
+    /// Every wait here is on a condition the pipeline reaches in milliseconds
+    /// when the machine is idle; a budget exists only because the full suite
+    /// runs main-actor tests concurrently and can starve a single hop for
+    /// seconds. That budget counts polls rather than elapsed time on purpose:
+    /// a wall-clock deadline measures how loaded the host is, not how
+    /// back-pressure behaves, and this suite failed on `#expect(converged)`
+    /// with a deadline already raised to 30 seconds. Counting polls gives the
+    /// condition the same number of chances however starved the run is, while
+    /// still bounding a genuinely stuck build.
     private func waitUntil(
-        timeout: Duration = .seconds(30),
+        polls: Int = 600,
         _ condition: () -> Bool
     ) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
+        for _ in 0..<polls {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(5))
         }

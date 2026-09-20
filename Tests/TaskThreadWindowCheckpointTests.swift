@@ -93,21 +93,16 @@ struct TaskThreadViewModelTests {
 
         vm.reset(for: task, responsivenessContext: context)
         // Poll tightly rather than through the shared readiness helper, whose
-        // 100 ms interval is the same order as the wait being measured.
-        // Cold/full-suite load can delay the first build substantially, so the
-        // budget stays generous.
-        let initialDeadline = Date().addingTimeInterval(30)
-        while !vm.appliedSnapshotReadiness.isReady(for: task.id), Date() < initialDeadline {
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        // 100 ms interval is the same order as the wait being measured. The
+        // budget counts polls, not seconds: cold/full-suite load starves the
+        // first build past any wall clock, which is how this assertion failed
+        // with a 30-second deadline.
+        _ = await pollUntil { vm.appliedSnapshotReadiness.isReady(for: task.id) }
         #expect(vm.appliedSnapshotReadiness.isReady(for: task.id))
         run.setOutput("new streaming output")
         vm.refreshSnapshot(for: task)
         let expectedRevision = vm.appliedSnapshotRevision + 1
-        let deadline = Date().addingTimeInterval(30)
-        while vm.appliedSnapshotRevision < expectedRevision, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        _ = await pollUntil { vm.appliedSnapshotRevision >= expectedRevision }
 
         _ = try #require(capture.latest("task_open_snapshot_queue_wait"))
         let queueIndex = try #require(capture.lastIndex(of: "task_open_snapshot_queue_wait"))
@@ -165,14 +160,31 @@ struct TaskThreadViewModelTests {
         #expect(admission >= 100, "time queued behind actor work must remain visible")
     }
 
+    /// Yields until `condition` holds or the poll budget runs out.
+    ///
+    /// Budgeted in polls rather than elapsed time: a wall-clock deadline
+    /// measures how loaded the machine is, not how the code behaves. Under a
+    /// full parallel `swift test` the first snapshot build can be starved well
+    /// past any deadline, which is how these assertions failed with budgets
+    /// already raised to 30 seconds. Counting polls gives the condition the
+    /// same number of chances however starved the run is, and still bounds a
+    /// genuinely stuck build.
+    @MainActor
+    private func pollUntil(polls: Int = 3_000, _ condition: () -> Bool) async -> Bool {
+        for _ in 0..<polls {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
+    }
+
     @MainActor
     private func awaitSnapshot(
         _ vm: TaskThreadViewModel,
         where predicate: @Sendable (TaskThreadSnapshot) -> Bool,
-        timeout: TimeInterval = 30
+        polls: Int = 300
     ) async -> TaskThreadSnapshot? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        for _ in 0..<polls {
             if let snap = vm.snapshot, predicate(snap) {
                 return snap
             }
@@ -185,10 +197,9 @@ struct TaskThreadViewModelTests {
     private func awaitReadiness(
         _ vm: TaskThreadViewModel,
         taskID: UUID,
-        timeout: TimeInterval = 30
+        polls: Int = 300
     ) async -> TaskThreadSnapshotReadiness {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        for _ in 0..<polls {
             let readiness = vm.appliedSnapshotReadiness
             if readiness.isReady(for: taskID) {
                 return readiness
@@ -371,7 +382,7 @@ struct TaskThreadViewModelTests {
         #expect(vm.appliedSnapshotRevision == 0, "nothing may be applied while the first build is parked")
 
         await barrier.releaseFirst()
-        let latest = await awaitSnapshot(vm, where: { $0.latestRun?.output == latestOutput }, timeout: 30)
+        let latest = await awaitSnapshot(vm, where: { $0.latestRun?.output == latestOutput })
 
         #expect(await barrier.startedCount == 2, "the newest request must be built once the worker is free")
         #expect(latest?.latestRun?.output == latestOutput)
@@ -395,7 +406,7 @@ struct TaskThreadViewModelTests {
         while await barrier.startedCount < 1 { await Task.yield() }
         vm.reset(for: second)
 
-        let readiness = await awaitReadiness(vm, taskID: second.id, timeout: 2)
+        let readiness = await awaitReadiness(vm, taskID: second.id, polls: 20)
         #expect(readiness.isReady(for: second.id))
         if case .userMessage(_, let text, _)? = vm.snapshot?.conversationItems.first {
             #expect(text == second.goal)
