@@ -90,6 +90,30 @@ struct MainThreadStallMonitorTests {
         #expect(fields["run_loop_activity"] == "after_waiting")
     }
 
+    @Test("The stall line reports the phase from detection, not from report time")
+    func phaseIsCapturedAtDetection() {
+        // The window this guards: `check` releases the monitor lock, then the
+        // report path samples memory through a `task_info` syscall. A stall that
+        // ends in there has already unwound its scope, so reading the phase
+        // afterwards would attach `none` — or an unrelated scope entered during
+        // the recovery — to a duration describing the wedge that just ended.
+        //
+        // `reportFields` takes the phase rather than reading it, which is what
+        // makes the captured value the one that gets logged. Passing a phase the
+        // marker no longer holds must still report the captured one.
+        MainThreadPhase.resetForTesting()
+        #expect(MainThreadPhase.snapshot() == .idle)
+
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 3.2,
+            memory: (residentMegabytes: 129, footprintMegabytes: 307),
+            activity: .afterWaiting,
+            phase: .inside(label: "build_thread_snapshot", depth: 1)
+        )
+        #expect(fields["phase"] == "build_thread_snapshot")
+        #expect(fields["phase"] != "none")
+    }
+
     @Test("The recovery line claims no phase")
     func recoveryLineOmitsPhase() {
         // It is emitted after the run loop turns again, so the wedged scope has

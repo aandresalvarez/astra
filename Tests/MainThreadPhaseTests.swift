@@ -48,20 +48,24 @@ struct MainThreadPhaseTests {
 
     @Test("Background scopes never publish a phase")
     func backgroundScopesAreIgnored() async {
-        await MainActor.run { MainThreadPhase.resetForTesting() }
+        // Asserted from the pushing thread rather than by reading the global
+        // afterwards. The stack is process-wide, `.serialized` only orders this
+        // suite's own tests, and awaiting below releases the main actor — so a
+        // concurrent `@MainActor` suite could legitimately hold an instrumented
+        // scope open and make a global read non-idle through no fault of this
+        // code. The contract that actually matters is local: an off-main push
+        // is refused.
+        let pushed = await Task.detached { MainThreadPhase.push("persist_provider_event") }.value
+        #expect(!pushed)
 
-        await Task.detached {
-            MainThreadPhase.tracking("persist_provider_event") {
-                // Most instrumented scopes run on both threads. A background one
-                // publishing here would name a phase the main thread was never
-                // in, and a stall report that points at the wrong code is worse
-                // than one that admits it does not know.
-                #expect(MainThreadPhase.snapshot() == .idle)
-            }
+        // Most instrumented scopes run on both threads, so `tracking` must stay
+        // transparent off-main: it runs the work and publishes nothing. A
+        // background scope naming a phase the main thread was never in would be
+        // a stall report pointing confidently at the wrong code.
+        let produced = await Task.detached {
+            MainThreadPhase.tracking("persist_provider_event") { 42 }
         }.value
-
-        let afterward = await MainActor.run { MainThreadPhase.snapshot() }
-        #expect(afterward == .idle)
+        #expect(produced == 42)
     }
 
     @MainActor

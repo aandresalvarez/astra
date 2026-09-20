@@ -192,7 +192,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             event: "main_thread_stall_recovered",
             seconds: Self.seconds(from: stalledSince, to: now),
             level: .warning,
-            includePhase: false
+            activity: activity,
+            phase: nil
         )
     }
 
@@ -226,6 +227,17 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         reportCount += 1
         reportedStallCountForTesting += 1
         let isFirst = reportCount == 1
+        // Both captured here, at detection, rather than inside `report`.
+        // Everything after this unlock races the main thread waking up: the
+        // scope that wedged unwinds through its own `defer`, and `beat` stamps
+        // a fresh activity. Reading either afterwards would attach `phase=none`
+        // — or worse, an unrelated scope entered during the recovery — to a
+        // stall whose duration describes the wedge that just ended, which is
+        // precisely the confidently-wrong report this field exists to avoid.
+        // `MainThreadPhase.snapshot` is a `trylock`, so taking it under this
+        // lock cannot deadlock against the main thread.
+        let activity = lastActivity
+        let phase = MainThreadPhase.snapshot()
         lock.unlock()
 
         report(
@@ -235,15 +247,24 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             // Continuations of the same stall stay at warning so a two-hour
             // wedge does not fill the error channel with one event.
             level: isFirst ? .error : .warning,
-            includePhase: true
+            activity: activity,
+            phase: phase
         )
     }
 
-    private func report(event: String, seconds: Double, level: LogLevel, includePhase: Bool) {
-        lock.lock()
-        let activity = lastActivity
-        lock.unlock()
-
+    /// Emits one line from values its caller captured.
+    ///
+    /// Takes `activity` and `phase` rather than reading them because both
+    /// describe a moment that has already passed by the time this runs: the
+    /// memory sample below is a `task_info` syscall, and a short stall can end
+    /// inside it.
+    private func report(
+        event: String,
+        seconds: Double,
+        level: LogLevel,
+        activity: CFRunLoopActivity,
+        phase: MainThreadPhase.Snapshot?
+    ) {
         PerformanceTelemetry.log(
             event,
             durationMilliseconds: seconds * 1000,
@@ -252,7 +273,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
                 seconds: seconds,
                 memory: Self.memoryFootprint(),
                 activity: activity,
-                phase: includePhase ? MainThreadPhase.snapshot() : nil
+                phase: phase
             )
         )
     }
