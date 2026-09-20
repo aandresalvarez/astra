@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import ASTRAModels
-import ASTRAPersistence
 import ASTRACore
 
 struct ShelfQueryDocument: Identifiable, Equatable {
