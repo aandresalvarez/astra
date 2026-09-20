@@ -69,4 +69,71 @@ struct MainThreadStallMonitorTests {
         #expect(memory.residentMegabytes > 0)
         #expect(memory.footprintMegabytes > 0)
     }
+
+    @Test("A stall line names where the main thread was, not just that it stalled")
+    func stallFieldsCarryLocation() {
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 7.6,
+            memory: (residentMegabytes: 940, footprintMegabytes: 812),
+            activity: .afterWaiting,
+            phase: .inside(label: "render_task_thread", depth: 2)
+        )
+        // Everything the previous format carried, unchanged — existing log
+        // searches and the footprint comparison that separates the two freeze
+        // signatures both keep working.
+        #expect(fields["stalled_s"] == "7.6")
+        #expect(fields["rss_mb"] == "940")
+        #expect(fields["footprint_mb"] == "812")
+        // ...plus the two that turn a report into a starting point.
+        #expect(fields["phase"] == "render_task_thread")
+        #expect(fields["phase_depth"] == "2")
+        #expect(fields["run_loop_activity"] == "after_waiting")
+    }
+
+    @Test("The recovery line claims no phase")
+    func recoveryLineOmitsPhase() {
+        // It is emitted after the run loop turns again, so the wedged scope has
+        // already unwound. Naming whatever is open by then would read as the
+        // culprit and would not be one.
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 7.7,
+            memory: (residentMegabytes: 940, footprintMegabytes: 812),
+            activity: .beforeSources,
+            phase: nil
+        )
+        #expect(fields["phase"] == nil)
+        #expect(fields["phase_depth"] == nil)
+        #expect(fields["run_loop_activity"] == "before_sources")
+    }
+
+    @Test("A stall outside every instrumented scope says so explicitly")
+    func stallOutsideInstrumentedScopes() {
+        let fields = MainThreadStallMonitor.reportFields(
+            seconds: 3.1,
+            memory: (residentMegabytes: 100, footprintMegabytes: 90),
+            activity: .beforeWaiting,
+            phase: .idle
+        )
+        // Not an absent key: "the wedge is somewhere this app does not measure"
+        // is a real answer that sends the search to SwiftUI/AppKit internals,
+        // and it must be distinguishable from a monitor that recorded nothing.
+        #expect(fields["phase"] == "none")
+        #expect(fields["phase_depth"] == nil)
+    }
+
+    @Test("Every run-loop stage reports as a distinct token")
+    func runLoopActivityIsNamed() {
+        // The stage narrows the search on its own: a wedge in `after_waiting`
+        // is a source callback, one in `before_timers` is a timer handler.
+        // Collapsing any pair into one token would lose that.
+        let named: [CFRunLoopActivity] = [
+            .entry, .beforeTimers, .beforeSources, .beforeWaiting, .afterWaiting, .exit
+        ]
+        let tokens = named.map { MainThreadStallMonitor.activityName($0) }
+        #expect(Set(tokens).count == named.count)
+        #expect(!tokens.contains("unknown"))
+        // Reachable: the monitor can report before the run loop has stamped
+        // anything, and an empty option set must not read as a real stage.
+        #expect(MainThreadStallMonitor.activityName([]) == "unknown")
+    }
 }

@@ -27,6 +27,15 @@ import ASTRACore
 /// `sample` and a `vmmap` against a process the user usually just wants to
 /// kill; recording two integers makes the next report answer it by itself.
 ///
+/// **Where it stalled, not just that it did.** The two memory numbers separate
+/// the freeze signatures but name no code, so every stall so far has cost a
+/// `sample` against a stripped binary and a symbolication pass, usually after
+/// the process is gone. The report now also carries `phase` — the innermost
+/// instrumented scope the main thread published on its way in, see
+/// `MainThreadPhase` — and `run_loop_activity`, the loop stage it last reached.
+/// Neither is a backtrace; together they turn "the main thread wedged" into a
+/// starting point a log search can act on.
+///
 /// The monitor is diagnostic only. It never interrupts, kills, or unwinds
 /// anything — a watchdog that acts on its own reading is a second failure mode.
 final class MainThreadStallMonitor: @unchecked Sendable {
@@ -66,6 +75,13 @@ final class MainThreadStallMonitor: @unchecked Sendable {
     /// the opposite: the main thread reached the one point in the loop it can
     /// only reach by being free.
     private var isWaiting = false
+    /// The last run-loop activity the main thread reached before it stopped
+    /// stamping. Already observed for `isWaiting`; recording which phase it was
+    /// costs nothing and narrows the search independently of the app-level
+    /// marker — a wedge in `afterWaiting` is a source callback, one in
+    /// `beforeTimers` is a timer handler, and one in `beforeWaiting` means the
+    /// loop was on its way to park when something stopped it.
+    private var lastActivity: CFRunLoopActivity = []
     /// Set while a stall is being reported, so recovery can log the total.
     private var stallStartedAt: UInt64?
     private var nextReportThreshold: TimeInterval = 0
@@ -160,6 +176,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         let stalledSince = stallStartedAt
         lastHeartbeat = now
         isWaiting = activity == .beforeWaiting
+        lastActivity = activity
         stallStartedAt = nil
         nextReportThreshold = 0
         let count = reportCount
@@ -167,10 +184,15 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         lock.unlock()
 
         guard let stalledSince, count > 0 else { return }
+        // No phase on the recovery line. It is emitted from the main thread
+        // *after* the run loop turned again, by which point the scope that
+        // wedged has returned and unwound — the marker would name whatever is
+        // open now, which reads like a culprit and is not one.
         report(
             event: "main_thread_stall_recovered",
             seconds: Self.seconds(from: stalledSince, to: now),
-            level: .warning
+            level: .warning,
+            includePhase: false
         )
     }
 
@@ -212,22 +234,69 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             // The first line of a stall is the one a log search has to find.
             // Continuations of the same stall stay at warning so a two-hour
             // wedge does not fill the error channel with one event.
-            level: isFirst ? .error : .warning
+            level: isFirst ? .error : .warning,
+            includePhase: true
         )
     }
 
-    private func report(event: String, seconds: Double, level: LogLevel) {
-        let memory = Self.memoryFootprint()
+    private func report(event: String, seconds: Double, level: LogLevel, includePhase: Bool) {
+        lock.lock()
+        let activity = lastActivity
+        lock.unlock()
+
         PerformanceTelemetry.log(
             event,
             durationMilliseconds: seconds * 1000,
             level: level,
-            fields: [
-                "stalled_s": String(format: "%.1f", seconds),
-                "rss_mb": String(memory.residentMegabytes),
-                "footprint_mb": String(memory.footprintMegabytes)
-            ]
+            fields: Self.reportFields(
+                seconds: seconds,
+                memory: Self.memoryFootprint(),
+                activity: activity,
+                phase: includePhase ? MainThreadPhase.snapshot() : nil
+            )
         )
+    }
+
+    /// The fields of one stall line.
+    ///
+    /// Split out from `report` so the contract a log search depends on can be
+    /// asserted directly: the reporting path itself only runs while the main
+    /// thread is wedged, which is not a state a test can hold open while it
+    /// reads back what was emitted.
+    static func reportFields(
+        seconds: Double,
+        memory: (residentMegabytes: Int, footprintMegabytes: Int),
+        activity: CFRunLoopActivity,
+        phase: MainThreadPhase.Snapshot?
+    ) -> [String: String] {
+        var fields = [
+            "stalled_s": String(format: "%.1f", seconds),
+            "rss_mb": String(memory.residentMegabytes),
+            "footprint_mb": String(memory.footprintMegabytes),
+            "run_loop_activity": activityName(activity)
+        ]
+        if let phase {
+            fields.merge(phase.telemetryFields) { _, new in new }
+        }
+        return fields
+    }
+
+    /// The run-loop stage the main thread last reached, as a log token.
+    ///
+    /// `CFRunLoopActivity` is an option set, and the observer is registered for
+    /// every activity, so each callback carries exactly one bit — but it is
+    /// matched rather than switched because an empty value is reachable: the
+    /// monitor can report before the run loop has stamped anything at all.
+    static func activityName(_ activity: CFRunLoopActivity) -> String {
+        switch activity {
+        case .entry: return "entry"
+        case .beforeTimers: return "before_timers"
+        case .beforeSources: return "before_sources"
+        case .beforeWaiting: return "before_waiting"
+        case .afterWaiting: return "after_waiting"
+        case .exit: return "exit"
+        default: return "unknown"
+        }
     }
 
     /// Resident size and phys-footprint in MB, read out of the kernel's task
