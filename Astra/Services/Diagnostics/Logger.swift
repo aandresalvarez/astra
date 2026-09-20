@@ -23,7 +23,25 @@ import ASTRAModels
 enum AppLogger: Sendable {
     static let sensitiveModeKey = "sensitiveMode"
     private static let maxLogFileSize: UInt64 = 5_000_000
-    private static let maxRotatedGenerations = 2
+    /// Enough rotations that the configured retention is the thing that
+    /// actually decides how much history survives.
+    ///
+    /// Two generations capped the on-disk history at 15 MB. At this install's
+    /// roughly 5 MB of log per active day that was about three days, while
+    /// Settings offered a retention of `defaultLogRetentionDays` — so the app
+    /// promised a week, size quietly delivered less than half of it, and a
+    /// stall report routinely aged out before anyone came to read it.
+    ///
+    /// Age-based cleanup still prunes to the configured retention, so this
+    /// raises no upper bound on how long anything is kept; it only stops size
+    /// from binding first.
+    private static let maxRotatedGenerations = 7
+
+    /// History the rotation budget can hold: the live file plus its
+    /// generations. Exposed so the retention promise is testable.
+    static var onDiskBudgetBytes: UInt64 {
+        maxLogFileSize * UInt64(maxRotatedGenerations + 1)
+    }
     static let defaultRetentionDays = LoggingPreferences.defaultLogRetentionDays
 
     static var isSensitiveMode: Bool {

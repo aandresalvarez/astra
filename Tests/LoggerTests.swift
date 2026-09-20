@@ -44,6 +44,23 @@ struct AppLoggerTests {
         #expect(LoggingPreferences.logRetentionDays(in: defaults) == 365)
     }
 
+    /// The retention setting above is a promise, and the rotation budget is
+    /// what has to keep it. Two generations held 15 MB, which at this install's
+    /// roughly 5 MB per active day expired the log in about three days while
+    /// Settings still offered a week — so a stall report aged out before anyone
+    /// read it. Age-based cleanup prunes to the configured retention either
+    /// way; this pins that size no longer decides first.
+    @Test("The rotation budget can hold the default retention")
+    func rotationBudgetCoversDefaultRetention() {
+        let observedBytesPerActiveDay: UInt64 = 5_000_000
+        let needed = observedBytesPerActiveDay * UInt64(LoggingPreferences.defaultLogRetentionDays)
+
+        #expect(
+            AppLogger.onDiskBudgetBytes >= needed,
+            "rotation holds \(AppLogger.onDiskBudgetBytes) B, a \(LoggingPreferences.defaultLogRetentionDays)-day retention needs \(needed) B"
+        )
+    }
+
     @Test("Sanitizer redacts sensitive payloads")
     func sanitizerRedactsSensitivePayloads() {
         let raw = """
