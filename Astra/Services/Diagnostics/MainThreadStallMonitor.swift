@@ -27,6 +27,15 @@ import ASTRACore
 /// `sample` and a `vmmap` against a process the user usually just wants to
 /// kill; recording two integers makes the next report answer it by itself.
 ///
+/// **Where it stalled, not just that it did.** The two memory numbers separate
+/// the freeze signatures but name no code, so every stall so far has cost a
+/// `sample` against a stripped binary and a symbolication pass, usually after
+/// the process is gone. The report now also carries `phase` — the innermost
+/// instrumented scope the main thread published on its way in, see
+/// `MainThreadPhase` — and `run_loop_activity`, the loop stage it last reached.
+/// Neither is a backtrace; together they turn "the main thread wedged" into a
+/// starting point a log search can act on.
+///
 /// The monitor is diagnostic only. It never interrupts, kills, or unwinds
 /// anything — a watchdog that acts on its own reading is a second failure mode.
 final class MainThreadStallMonitor: @unchecked Sendable {
@@ -66,6 +75,13 @@ final class MainThreadStallMonitor: @unchecked Sendable {
     /// the opposite: the main thread reached the one point in the loop it can
     /// only reach by being free.
     private var isWaiting = false
+    /// The last run-loop activity the main thread reached before it stopped
+    /// stamping. Already observed for `isWaiting`; recording which phase it was
+    /// costs nothing and narrows the search independently of the app-level
+    /// marker — a wedge in `afterWaiting` is a source callback, one in
+    /// `beforeTimers` is a timer handler, and one in `beforeWaiting` means the
+    /// loop was on its way to park when something stopped it.
+    private var lastActivity: CFRunLoopActivity = []
     /// Set while a stall is being reported, so recovery can log the total.
     private var stallStartedAt: UInt64?
     private var nextReportThreshold: TimeInterval = 0
@@ -160,6 +176,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         let stalledSince = stallStartedAt
         lastHeartbeat = now
         isWaiting = activity == .beforeWaiting
+        lastActivity = activity
         stallStartedAt = nil
         nextReportThreshold = 0
         let count = reportCount
@@ -167,10 +184,19 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         lock.unlock()
 
         guard let stalledSince, count > 0 else { return }
+        // No phase on the recovery line. It is emitted from the main thread
+        // *after* the run loop turned again, by which point the scope that
+        // wedged has returned and unwound — the marker would name whatever is
+        // open now, which reads like a culprit and is not one.
         report(
             event: "main_thread_stall_recovered",
             seconds: Self.seconds(from: stalledSince, to: now),
-            level: .warning
+            level: .warning,
+            activity: activity,
+            phase: nil,
+            // `beat` just stamped this, so it is by definition current: the
+            // recovery line carries no phase to validate anyway.
+            heartbeatAtDetection: now
         )
     }
 
@@ -204,6 +230,23 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         reportCount += 1
         reportedStallCountForTesting += 1
         let isFirst = reportCount == 1
+        // Both captured here, at detection, rather than inside `report`.
+        // Everything after this unlock races the main thread waking up: the
+        // scope that wedged unwinds through its own `defer`, and `beat` stamps
+        // a fresh activity. Reading either afterwards would attach `phase=none`
+        // — or worse, an unrelated scope entered during the recovery — to a
+        // stall whose duration describes the wedge that just ended.
+        //
+        // Capturing early narrows that window but cannot close it: `pop()`
+        // takes only the phase lock and never waits on this one, so the main
+        // thread can still unwind while the report is being built. The
+        // generation carried alongside is what closes it — `report` re-checks
+        // it and downgrades the label rather than asserting a scope that has
+        // already returned. Reading the phase here is a `trylock`, so taking it
+        // under this lock cannot deadlock against the main thread.
+        let activity = lastActivity
+        let phase = MainThreadPhase.reading()
+        let heartbeatAtDetection = lastHeartbeat
         lock.unlock()
 
         report(
@@ -212,22 +255,111 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             // The first line of a stall is the one a log search has to find.
             // Continuations of the same stall stay at warning so a two-hour
             // wedge does not fill the error channel with one event.
-            level: isFirst ? .error : .warning
+            level: isFirst ? .error : .warning,
+            activity: activity,
+            phase: phase,
+            heartbeatAtDetection: heartbeatAtDetection
         )
     }
 
-    private func report(event: String, seconds: Double, level: LogLevel) {
+    /// Emits one line from values its caller captured.
+    ///
+    /// Takes `activity` and `phase` rather than reading them because both
+    /// describe a moment that has already passed by the time this runs: the
+    /// memory sample below is a `task_info` syscall, and a short stall can end
+    /// inside it.
+    private func report(
+        event: String,
+        seconds: Double,
+        level: LogLevel,
+        activity: CFRunLoopActivity,
+        phase: MainThreadPhase.Reading?,
+        heartbeatAtDetection: UInt64
+    ) {
         let memory = Self.memoryFootprint()
+        // Two independent signs that the label stopped being about this stall,
+        // checked after the memory syscall because that is the longest thing
+        // between detection and this line.
+        //
+        // The phase stack moving means the main thread is unwinding scopes. The
+        // heartbeat advancing means it reached its run loop again — and that
+        // one also covers the gap *before* the phase was read, which the
+        // generation alone cannot: a pop takes only the phase lock, so a thread
+        // that woke between the elapsed check and the read would have been
+        // sampled already-idle, with a generation that then never changes.
+        // `beat` has to take this lock to stamp, so its progress is visible
+        // here even when the pop was not.
+        //
+        // Closing that first gap outright would mean `pop()` taking the monitor
+        // lock, putting a lock shared with a background watchdog on a path that
+        // runs several times per keystroke — trading main-thread latency for a
+        // diagnostic. Detecting it and saying so is the better side of that.
+        lock.lock()
+        let heartbeatMoved = lastHeartbeat != heartbeatAtDetection
+        lock.unlock()
+
+        let validated = phase.map { reading -> MainThreadPhase.Snapshot in
+            // An unreadable stack is already the weakest claim there is;
+            // validating it would relabel every contention as `stale`, because
+            // its sentinel generation never matches a live one.
+            guard reading.snapshot != .unavailable else { return .unavailable }
+            let moved = heartbeatMoved || MainThreadPhase.hasMutated(since: reading.generation)
+            return moved ? .stale : reading.snapshot
+        }
+
         PerformanceTelemetry.log(
             event,
             durationMilliseconds: seconds * 1000,
             level: level,
-            fields: [
-                "stalled_s": String(format: "%.1f", seconds),
-                "rss_mb": String(memory.residentMegabytes),
-                "footprint_mb": String(memory.footprintMegabytes)
-            ]
+            fields: Self.reportFields(
+                seconds: seconds,
+                memory: memory,
+                activity: activity,
+                phase: validated
+            )
         )
+    }
+
+    /// The fields of one stall line.
+    ///
+    /// Split out from `report` so the contract a log search depends on can be
+    /// asserted directly: the reporting path itself only runs while the main
+    /// thread is wedged, which is not a state a test can hold open while it
+    /// reads back what was emitted.
+    static func reportFields(
+        seconds: Double,
+        memory: (residentMegabytes: Int, footprintMegabytes: Int),
+        activity: CFRunLoopActivity,
+        phase: MainThreadPhase.Snapshot?
+    ) -> [String: String] {
+        var fields = [
+            "stalled_s": String(format: "%.1f", seconds),
+            "rss_mb": String(memory.residentMegabytes),
+            "footprint_mb": String(memory.footprintMegabytes),
+            "run_loop_activity": activityName(activity)
+        ]
+        if let phase {
+            fields.merge(phase.telemetryFields) { _, new in new }
+        }
+        return fields
+    }
+
+    /// The run-loop stage the main thread last reached, as a log token.
+    ///
+    /// `CFRunLoopActivity` is an option set, and the observer is registered for
+    /// every activity, so each callback carries exactly one bit — but it is
+    /// matched rather than switched because an empty value is reachable: the
+    /// monitor can report before the run loop has stamped anything at all.
+    static func activityName(_ activity: CFRunLoopActivity) -> String {
+        switch activity {
+        case .entry: return "entry"
+        case .beforeTimers: return "before_timers"
+        case .beforeSources: return "before_sources"
+        case .beforeWaiting: return "before_waiting"
+        case .afterWaiting: return "after_waiting"
+        case .exit: return "exit"
+        default: return "unknown"
+        }
     }
 
     /// Resident size and phys-footprint in MB, read out of the kernel's task

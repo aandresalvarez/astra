@@ -244,7 +244,7 @@ enum PerformanceTelemetry {
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
-        let result = work()
+        let result = MainThreadPhase.tracking(event, work)
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         guard elapsed >= thresholdMilliseconds else {
             noteSuppressed(
@@ -276,7 +276,7 @@ enum PerformanceTelemetry {
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
-        let result = work()
+        let result = MainThreadPhase.tracking(event, work)
         let elapsed = elapsedMilliseconds(since: start)
         guard elapsed >= thresholdMilliseconds else {
             noteSuppressed(
@@ -427,34 +427,48 @@ enum PerformanceSignposts {
 
     @discardableResult
     static func processStreamLine<T>(_ work: () -> T) -> T {
-        interval("process_stream_line", work)
+        interval("process_stream_line", phase: "process_stream_line", work)
     }
 
     @discardableResult
     static func parseProviderStream<T>(_ work: () -> T) -> T {
-        interval("parse_provider_stream", work)
+        interval("parse_provider_stream", phase: "parse_provider_stream", work)
     }
 
     @discardableResult
     static func persistProviderEvent<T>(_ work: () -> T) -> T {
-        interval("persist_provider_event", work)
+        interval("persist_provider_event", phase: "persist_provider_event", work)
     }
 
     @discardableResult
     static func buildThreadSnapshot<T>(_ work: () throws -> T) rethrows -> T {
-        try interval("build_thread_snapshot", work)
+        try interval("build_thread_snapshot", phase: "build_thread_snapshot", work)
     }
 
     @discardableResult
     static func renderTaskThread<T>(_ work: () -> T) -> T {
-        interval("render_task_thread", work)
+        interval("render_task_thread", phase: "render_task_thread", work)
     }
 
+    /// Signposted scopes are also published as the main thread's current phase:
+    /// these are the coarse, known-expensive boundaries (a transcript render, a
+    /// snapshot build), which is exactly what a stall report wants to name.
+    /// `os_signpost` intervals are invisible to a log-only investigation, and
+    /// the wedge that matters never emits an `endInterval` at all.
+    ///
+    /// `phase` repeats `name` because `beginInterval` requires a `StaticString`
+    /// while the phase stack stores `String`. Interpolating the `StaticString`
+    /// instead would build a new `String` on every call, on paths that run per
+    /// render — a literal is constant storage and costs nothing to publish.
     @discardableResult
-    private static func interval<T>(_ name: StaticString, _ work: () throws -> T) rethrows -> T {
+    private static func interval<T>(
+        _ name: StaticString,
+        phase: String,
+        _ work: () throws -> T
+    ) rethrows -> T {
         let id = signposter.makeSignpostID()
         let state = signposter.beginInterval(name, id: id)
         defer { signposter.endInterval(name, state) }
-        return try work()
+        return try MainThreadPhase.tracking(phase, work)
     }
 }
