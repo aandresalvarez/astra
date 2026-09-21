@@ -644,14 +644,7 @@ struct TaskMainView: View {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
                         // Diagnostics rebuild from `.task(id:)`, which carries
                         // the artifact count this fires on and can be cancelled.
-                        // Cancel-then-launch, like the adjacent
-                        // `scheduleVerificationPresentationRefresh`. Each of
-                        // these now walks the whole task folder off the actor,
-                        // and a run emitting updates in a burst would otherwise
-                        // stack concurrent scans where the synchronous version
-                        // was serialised by the actor.
-                        pendingContextStateRefreshTask?.cancel()
-                        pendingContextStateRefreshTask = Task { await refreshTaskContextState() }
+                        _ = startContextStateRefresh()
                         refreshForkSourceAvailabilityWarning()
                     }
                 }
@@ -700,11 +693,6 @@ struct TaskMainView: View {
     @MainActor
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
-        // The generated-files refresh is unstructured, so `.task(id:)` does not
-        // reach it and only another generated-files event would replace it. It
-        // captured the previous task and would apply that task's presentation
-        // state over this one's.
-        pendingContextStateRefreshTask?.cancel()
 
         TaskOpenResponsivenessTelemetry.measurePhase(
             "task_initialization",
@@ -743,12 +731,12 @@ struct TaskMainView: View {
             refreshPlanStateCache(reason: .taskOpen)
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
-        // Awaited rather than launched, so `.task(id:)` cancellation reaches
-        // it: an unstructured Task here outlives the view and can resume
-        // against a task the user has since deleted. It no longer blocks the
-        // main thread either way — the filesystem work runs off the actor —
-        // and everything above has already run.
-        await refreshTaskContextState()
+        // Through the same handle the generated-files callback uses, so the
+        // two coalesce with each other and not just with themselves. Both end
+        // in `applyRefresh`, which scans the task folder on the actor, and a
+        // run emitting a change while this is suspended would otherwise put
+        // two of those back to back inside the selection window.
+        await startContextStateRefresh().value
     }
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
         Task { @MainActor in
@@ -783,6 +771,19 @@ struct TaskMainView: View {
             reason: reason
         ) else { return }
         cachedPlanStateSnapshot = snapshot
+    }
+
+    /// Starts a context-state refresh, replacing any already in flight.
+    ///
+    /// One handle for both entry points: task open awaits it, the
+    /// generated-files callback fires and forgets. Cancelling the previous is
+    /// what keeps a burst from stacking `applyRefresh` passes.
+    @discardableResult
+    private func startContextStateRefresh() -> Task<Void, Never> {
+        pendingContextStateRefreshTask?.cancel()
+        let refresh = Task { await refreshTaskContextState() }
+        pendingContextStateRefreshTask = refresh
+        return refresh
     }
 
     private func refreshTaskContextState() async {

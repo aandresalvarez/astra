@@ -26,16 +26,35 @@ extension TaskContextStateManager {
 
     /// Cheap identity of a file: enough to detect that someone replaced it,
     /// without re-reading and re-decoding the thing we went off-actor to avoid.
+    ///
+    /// The inode is what makes this exact rather than probable. `saveState`
+    /// writes with `.atomic`, which renames a fresh file over the target, so
+    /// every write lands a new one. Modification date and size alone can
+    /// collide: a volume with coarse timestamp resolution buckets two writes
+    /// together, and at the turn cap `recordTurn` drops one turn while
+    /// appending another, which can encode to exactly the same length. Both
+    /// halves of the bracket would then report no change and the older
+    /// snapshot would go back over the newer turn.
+    ///
+    /// Untested: I could not build a case that distinguishes this from the
+    /// previous stamp. Forcing a same-size replacement back to the same
+    /// timestamp still came out correct without the inode, for a reason the
+    /// stamps themselves do not explain, so any test I wrote would have passed
+    /// either way. The inode is kept on the argument above and because it is
+    /// free — the same `attributesOfItem` call already fetches it.
     private struct FileStamp: Equatable, Sendable {
         let modified: Date
         let size: Int
+        let inode: UInt64
 
         init?(atPath path: String) {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
                   let modified = attributes[.modificationDate] as? Date,
-                  let size = attributes[.size] as? Int else { return nil }
+                  let size = attributes[.size] as? Int,
+                  let inode = attributes[.systemFileNumber] as? UInt64 else { return nil }
             self.modified = modified
             self.size = size
+            self.inode = inode
         }
     }
 
