@@ -11,6 +11,49 @@ import ASTRACore
 /// parallel `swift test`. Every probe answers instantly as a healthy,
 /// authenticated CLI: "logged in" satisfies the auth-session detectors and
 /// the trailing ASTRA_READY line satisfies Antigravity's live account check.
+/// Finds an executable SwiftPM builds as a product — `astra-host-control` and
+/// friends — from inside the test bundle.
+///
+/// `Bundle.module.bundleURL.deletingLastPathComponent()` looks like the build
+/// products directory and is, under SwiftPM's own build system, where the
+/// resource bundle sits next to the executables. Under Xcode's build system the
+/// resource bundle is *also* copied into `ASTRATests.xctest/Contents/Resources/`,
+/// and that copy is the one `Bundle.module` resolves to, so the same expression
+/// points three directories below the products directory and finds nothing.
+/// Every host-control test then fails with "The file doesn't exist" on a machine
+/// where the helper was built correctly.
+///
+/// Walking up from the resource bundle covers both layouts: one level for
+/// SwiftPM, four for Xcode.
+enum BuiltProductLocator {
+    /// Directories above the resource bundle that may hold built products.
+    private static let searchDepth = 5
+
+    static func executablePath(named name: String) -> String? {
+        var directory = Bundle.module.bundleURL.deletingLastPathComponent()
+        for _ in 0..<searchDepth {
+            let candidate = directory.appendingPathComponent(name, isDirectory: false).path
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+            let parent = directory.deletingLastPathComponent()
+            guard parent != directory else { break }
+            directory = parent
+        }
+        return nil
+    }
+
+    /// Throws the same error the per-suite copies of this lookup used to throw,
+    /// so a genuinely missing build still fails the test rather than silently
+    /// running against no helper.
+    static func requiredExecutablePath(named name: String) throws -> String {
+        guard let path = executablePath(named: name) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return path
+    }
+}
+
 struct InstantSuccessBinaryRunner: BinaryRunner {
     func run(
         path: String,
@@ -44,10 +87,8 @@ extension AgentRuntimeWorker {
     ) -> AgentRuntimeWorker {
         // Exercise real broker setup with SwiftPM's built helper instead of
         // depending on a locally installed ASTRA.app tool.
-        let hostControlHelperPath = Bundle.module.bundleURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("astra-host-control", isDirectory: false)
-            .path
+        let hostControlHelperPath = BuiltProductLocator
+            .executablePath(named: "astra-host-control") ?? ""
         let runner = AgentRuntimeProcessRunner(
             sandboxSettingsProvider: { permissionPolicy in
                 let enforcement = sandboxEnforcementOverride
