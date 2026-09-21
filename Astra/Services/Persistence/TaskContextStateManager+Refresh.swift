@@ -18,16 +18,6 @@ extension TaskContextStateManager {
         /// The file changed identity *during* the read, so `existing` and
         /// `stamp` may describe different versions and neither can be trusted.
         let readStraddledAWrite: Bool
-        /// The task folder's contents, enumerated here rather than on the main
-        /// actor inside `updateDerivedFields`.
-        let discoveredFiles: [TaskOutputDiscoveredFile]
-        /// Identity, as the scan finished, of every directory the inventory
-        /// came from. The scan used to run at the moment of use; off-actor it
-        /// can go stale in the hop back.
-        let directoryStamps: [String: FileStamp]
-        /// A scanned directory changed identity during the scan, so the
-        /// inventory may describe two different moments.
-        let scanStraddledAChange: Bool
         /// Whether the load came back in a state this path can use. Anything
         /// else has to be handled on the actor, because recovering from it
         /// writes.
@@ -53,64 +43,35 @@ extension TaskContextStateManager {
         URL(fileURLWithPath: folder).appendingPathComponent(jsonFileName).path
     }
 
-    /// Every directory under `folder` the output scan would traverse.
+    /// `refresh(task:)` with its state-file work moved off the main actor.
     ///
-    /// Both of the scan's subtree prunes, not just the broker's. The second
-    /// one is the load-bearing one: an agent that runs `python -m venv` in its
-    /// task folder adds ~15,000 entries, and every directory kept here is
-    /// re-stat'd on the main actor at the apply. Walking a dependency tree
-    /// would therefore put a far worse freeze on task selection than the one
-    /// this change removes.
-    private nonisolated static func scannedDirectories(under folder: String) -> [String] {
-        let root = URL(fileURLWithPath: folder)
-        let broker = HostFileAccessBroker()
-        let intent = HostFileAccessIntent.astraManagedStorage(root: root)
-        var directories = [folder]
-        guard let enumerator = broker.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            intent: intent
-        ) else { return directories }
-        while let url = enumerator.nextObject() as? URL {
-            // Polled inside the walk: inheriting the flag does not interrupt a
-            // synchronous enumerator, so without this a cancelled refresh
-            // still walks the whole tree.
-            if Task.isCancelled { return directories }
-            guard !broker.shouldSkip(url, intent: intent) else {
-                enumerator.skipDescendants()
-                continue
-            }
-            guard !TaskOutputArtifactPathPolicy.isGeneratedDependencyDirectoryName(url.lastPathComponent) else {
-                enumerator.skipDescendants()
-                continue
-            }
-            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
-            directories.append(url.standardizedFileURL.path)
-        }
-        return directories
-    }
-
-    /// Stamps every scanned directory, plus the parent of each discovered file
-    /// in case the walk and the scan disagree. Adding or removing an entry
-    /// moves its directory's identity, so re-stamping these at the apply spots
-    /// an inventory that went stale in the hop back.
+    /// `refresh` resolves the task folder — which runs a legacy-layout
+    /// migration check and creates two directories — and then reads and
+    /// decodes `current_state.json`, before it touches any model state. On
+    /// task open that ran on the main thread: production samples of the
+    /// `context_state_refresh` phase put it at p50 60 ms, p90 178 ms, max
+    /// 706 ms, all attributed to `source=task_selection`.
     ///
-    /// One thing it does not catch, stated rather than implied: a file
-    /// rewritten in place moves no directory. That rides the next refresh, as
-    /// it did before any of this moved off the actor.
-    private nonisolated static func stamps(
-        for directories: [String],
-        files: [TaskOutputDiscoveredFile]
-    ) -> [String: FileStamp] {
-        var paths = Set(directories)
-        for file in files {
-            paths.insert(URL(fileURLWithPath: file.path).deletingLastPathComponent().path)
-        }
-        return paths.reduce(into: [:]) { stamps, path in
-            stamps[path] = FileStamp(atPath: path)
-        }
-    }
-
+    /// Both steps are pure functions of a workspace path and a task id, so
+    /// they move off-actor. Everything that reads the SwiftData model stays on
+    /// the main actor in `applyRefresh`, and so does the save, leaving
+    /// durability ordering untouched — the common task-open case is a no-op
+    /// refresh that never saves at all.
+    ///
+    /// **The output-folder scan deliberately does not move.** It did, and five
+    /// rounds of review went into the consequences. Off the actor its result
+    /// can go stale between the scan and the apply, and every way of closing
+    /// that costs what the scan cost: validating on the actor is one
+    /// `attributesOfItem` per traversed directory, which freezes selection on
+    /// any large output tree exactly as the scan did; validating off the actor
+    /// is itself stale by the hop it takes; and recovering by rescanning under
+    /// the actor restores the freeze for precisely the busy tasks the move was
+    /// meant to help. The scan stays in `updateDerivedFields`, where it runs at
+    /// the moment its result is used and cannot be stale at all.
+    ///
+    /// `refresh(task:)` itself is deliberately left alone. It is the durable
+    /// launch path, where callers depend on the write having happened by the
+    /// time it returns.
     @MainActor
     public static func refreshLoadingOffMainActor(task: AgentTask, followUpMessage: String = "") async {
         // Read off the model before leaving the actor; the load takes only
@@ -118,12 +79,10 @@ extension TaskContextStateManager {
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskID = task.id
 
-        // Retried off the actor rather than repaired on it. An invalidated
-        // load means the folder moved while it was being read, which is most
-        // likely while a run is producing outputs — the case this whole change
-        // exists for. Recovering by rescanning synchronously would put the
-        // freeze back exactly there. Bounded, because a folder under
-        // continuous change would otherwise retry forever.
+        // Retried off the actor rather than repaired on it: recovering by
+        // redoing the refresh under the actor spends exactly what this avoids.
+        // Bounded, because a file under continuous rewriting would otherwise
+        // retry forever.
         for _ in 0..<maxRevalidationAttempts {
             guard let loaded = await loadOffActor(workspacePath: workspacePath, taskID: taskID) else { return }
             #if DEBUG
@@ -148,8 +107,8 @@ extension TaskContextStateManager {
             // window. The task stays attached and its id does not change, so
             // nothing else here notices — but `loaded.folder` then names the
             // old workspace, and applying would write this task's state
-            // somewhere it no longer reads from. Retrying would just re-derive
-            // the same stale path, so this one goes to the actor.
+            // somewhere it no longer reads from. Retrying would re-derive the
+            // same stale path, so this one goes to the actor.
             guard TaskWorkspaceAccess(task: task).effectiveWorkspacePath == workspacePath else {
                 fallBack(task: task, followUpMessage: followUpMessage)
                 return
@@ -163,13 +122,12 @@ extension TaskContextStateManager {
                 return
             }
             // Nothing serialized the load against the main actor, so anything
-            // that writes the state file — `recordTurn` most obviously — or
-            // adds an output may have landed while we were away. Deriving from
-            // a snapshot that predates it would silently drop the newer work.
+            // that writes this file — `recordTurn` most obviously — may have
+            // landed while we were away. Deriving from a snapshot that
+            // predates it would silently drop the newer turn. One stat, on one
+            // file, against the read it validates.
             guard !loaded.readStraddledAWrite,
-                  !loaded.scanStraddledAChange,
-                  FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp,
-                  loaded.directoryStamps.allSatisfy({ FileStamp(atPath: $0.key) == $0.value }) else {
+                  FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp else {
                 #if DEBUG
                 revalidationRetryCountForTesting += 1
                 #endif
@@ -179,8 +137,7 @@ extension TaskContextStateManager {
                 existing: loaded.existing,
                 folder: loaded.folder,
                 task: task,
-                followUpMessage: followUpMessage,
-                discoveredFiles: loaded.discoveredFiles
+                followUpMessage: followUpMessage
             )
             return
         }
@@ -189,12 +146,12 @@ extension TaskContextStateManager {
         fallBack(task: task, followUpMessage: followUpMessage)
     }
 
-    /// How many times a load invalidated by a moving folder is retried off the
-    /// actor before giving up and doing it on the actor.
+    /// How many times a load invalidated by a concurrent write is retried off
+    /// the actor before giving up and doing it on the actor.
     private static let maxRevalidationAttempts = 3
 
-    /// Redoes the whole refresh under the actor, rescan included. Every guard
-    /// above ends here when it cannot trust what the load brought back.
+    /// Redoes the whole refresh under the actor. Every guard above ends here
+    /// when it cannot trust what the load brought back.
     @MainActor
     private static func fallBack(task: AgentTask, followUpMessage: String) {
         #if DEBUG
@@ -203,16 +160,12 @@ extension TaskContextStateManager {
         refresh(task: task, followUpMessage: followUpMessage)
     }
 
-    /// The off-actor half: resolve the folder, read the state, take the
-    /// inventory.
+    /// The off-actor half: resolve the folder and read the state.
     ///
-    /// `nonisolated` rather than `Task.detached`, which is what this used to
-    /// be. A detached task inherits nothing, cancellation included, so
-    /// cancelling the caller left the recursive scan running to completion and
-    /// a burst of generated-file updates still stacked concurrent scans — the
-    /// thing the caller's cancel-then-launch was added to stop. A nonisolated
-    /// async function called from the actor runs off it just the same, and
-    /// does inherit cancellation, so the checks below actually bind.
+    /// `nonisolated` rather than `Task.detached`. A detached task inherits
+    /// nothing, cancellation included, so cancelling the caller left this
+    /// running to completion. A nonisolated async function called from the
+    /// actor runs off it just the same, and does inherit cancellation.
     private nonisolated static func loadOffActor(
         workspacePath: String,
         taskID: UUID
@@ -249,55 +202,11 @@ extension TaskContextStateManager {
         interleaveDuringLoadForTesting?()
         #endif
         let afterRead = FileStamp(atPath: path)
-
-        guard !Task.isCancelled else { return nil }
-        // Every directory the scan traverses, taken before it runs: derived
-        // from the discovered files alone this misses an empty one, and the
-        // first artifact written into a pre-created `outputs/` moves only that
-        // directory, not the root.
-        let before = scannedDirectories(under: folder)
-        guard !Task.isCancelled else { return nil }
-        let beforeScan = stamps(for: before, files: [])
-        let discovered = TaskOutputDiscovery.files(in: folder)
-        guard !Task.isCancelled else { return nil }
-        #if DEBUG
-        interleaveDuringScanForTesting?()
-        #endif
-        // Walked again, and the two unioned, because one walk cannot describe
-        // a directory that did not exist when it ran.
-        //
-        // Deliberately untested. The window is between the first walk and its
-        // stamps: a directory created while the scan runs already moves the
-        // root, which the bracket catches, so every seam this file has reaches
-        // a case that passes either way. Covering the real window needs a
-        // sixth test hook in production code for a sub-millisecond gap, which
-        // costs more than the guard does. A run creating an empty
-        // nested directory between that walk and its stamps leaves the new
-        // directory untracked *and* its parent's baseline already carrying the
-        // creation — so the first file written inside it moves only something
-        // nothing is watching, and the stale inventory passes.
-        let after = scannedDirectories(under: folder)
-        let tracked = Array(Set(before).union(after))
-        // Bracketed like the read, and over every scanned directory rather
-        // than the root alone: a change landing inside the enumeration leaves
-        // the inventory describing one moment and the stamps another. A
-        // directory that appeared during it counts as such a change.
-        let afterScan = stamps(for: tracked, files: discovered)
-        // Sets, not counts: directory churn can remove one path and add
-        // another between the walks, leaving the counts equal while the
-        // removed path has no stamp on either side and the replacement's
-        // baseline is already post-change. Comparing sizes reports no change
-        // and persists an inventory missing whatever lands in the new one.
-        let moved = before.contains { beforeScan[$0] != afterScan[$0] }
-            || Set(after) != Set(before)
         return LoadedContextState(
             folder: folder,
             existing: existing,
             stamp: afterRead,
             readStraddledAWrite: beforeRead != afterRead,
-            discoveredFiles: discovered,
-            directoryStamps: afterScan,
-            scanStraddledAChange: moved,
             loadWasUsable: usable
         )
     }
@@ -305,11 +214,11 @@ extension TaskContextStateManager {
     #if DEBUG
     /// Counts how often the apply gave up and took the synchronous path.
     /// Several of the guards here are only observable as "did it fall back",
-    /// and a fallback costs the main-actor rescan this change exists to avoid.
+    /// and a fallback costs the main-actor work this change exists to avoid.
     @MainActor
     static var fallbackCountForTesting = 0
 
-    /// Counts loads thrown away because the folder moved under them and
+    /// Counts loads thrown away because the state file moved under them and
     /// retried off the actor. Distinguishes "revalidation worked" from
     /// "revalidation never fired".
     @MainActor
@@ -320,15 +229,10 @@ extension TaskContextStateManager {
     @MainActor
     static var interleaveForTesting: (@MainActor () -> Void)?
 
-    /// Test seam that runs *inside* the detached load, after the read and
+    /// Test seam that runs *inside* the off-actor load, after the read and
     /// before the closing stamp — the window where a write leaves `existing`
     /// stale while the stamp describes the writer's file.
     nonisolated(unsafe) static var interleaveDuringLoadForTesting: (@Sendable () -> Void)?
-
-    /// Test seam inside the *scan* bracket — after the inventory is taken and
-    /// before the closing folder stamp — so a test can make the inventory
-    /// stale the way a running task does.
-    nonisolated(unsafe) static var interleaveDuringScanForTesting: (@Sendable () -> Void)?
     #endif
 
     @MainActor

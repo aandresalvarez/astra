@@ -159,28 +159,6 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "written during the read" })
     }
 
-    @Test("An output appearing during the off-actor scan is not applied stale")
-    func folderChangeDuringScanFallsBack() async throws {
-        let fixture = try makeFixture("inventory")
-        defer { fixture.cleanup() }
-        let folder = fixture.folder
-        let created = URL(fileURLWithPath: folder).appendingPathComponent("late-output.md")
-
-        // A run landing an output inside the window the scan opened. The
-        // inventory already taken cannot contain it.
-        TaskContextStateManager.interleaveDuringScanForTesting = {
-            try? "late".write(to: created, atomically: true, encoding: .utf8)
-        }
-        defer { TaskContextStateManager.interleaveDuringScanForTesting = nil }
-
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
-
-        // Applying the stale inventory would leave the new output out of the
-        // derived state entirely; the fallback rescans under the actor.
-        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
-        #expect(state.filesChanged.contains { $0.hasSuffix("late-output.md") })
-    }
-
     @Test("The off-actor load never quarantines; recovery stays on the actor")
     func detachedLoadDoesNotQuarantine() async throws {
         let fixture = try makeFixture("quarantine")
@@ -207,37 +185,6 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(!Self.corruptCopies(in: folder).isEmpty, "the corrupt file must still be quarantined")
     }
 
-    @Test("An output appearing in a subdirectory before the apply is not applied stale")
-    func nestedChangeBeforeApplyFallsBack() async throws {
-        let fixture = try makeFixture("nested")
-        defer { fixture.cleanup() }
-        let folder = fixture.folder
-        let sub = URL(fileURLWithPath: folder).appendingPathComponent("nested", isDirectory: true)
-        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        // An existing file puts `nested/` into the scanned set the stamps come from.
-        try "first".write(to: sub.appendingPathComponent("first.md"), atomically: true, encoding: .utf8)
-        let late = sub.appendingPathComponent("late.md")
-
-        // The window this validation is for: the hop between the off-actor scan
-        // and the apply. The task folder's own identity does not move when a
-        // file lands inside an existing subdirectory, so a root-only stamp
-        // accepts the stale inventory here.
-        TaskContextStateManager.interleaveForTesting = {
-            try? "late".write(to: late, atomically: true, encoding: .utf8)
-        }
-        defer { TaskContextStateManager.interleaveForTesting = nil }
-
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
-
-        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
-        #expect(state.filesChanged.contains { $0.hasSuffix("nested/late.md") })
-    }
-
-    nonisolated private static func corruptCopies(in folder: String) -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
-            .filter { $0.contains(".corrupt-") }
-    }
-
     @Test("A missing state file uses the precomputed inventory, not a rescan")
     func missingStateFileDoesNotRescanOnTheActor() async throws {
         let fixture = try makeFixture("missing-fast")
@@ -256,121 +203,45 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(FileManager.default.fileExists(atPath: path.path))
     }
 
-    @Test("An output written into a previously empty directory is not applied stale")
-    func emptyDirectoryIsStamped() async throws {
-        let fixture = try makeFixture("empty-dir")
-        defer { fixture.cleanup() }
-        let folder = fixture.folder
-        // Empty at scan time, so it contributes no discovered file — the
-        // directory set cannot be derived from the inventory alone.
-        let deliverables = URL(fileURLWithPath: folder)
-            .appendingPathComponent("deliverables", isDirectory: true)
-        try FileManager.default.createDirectory(at: deliverables, withIntermediateDirectories: true)
-        let late = deliverables.appendingPathComponent("late.md")
-        TaskContextStateManager.fallbackCountForTesting = 0
-
-        TaskContextStateManager.interleaveForTesting = {
-            try? "late".write(to: late, atomically: true, encoding: .utf8)
-        }
-        defer { TaskContextStateManager.interleaveForTesting = nil }
-
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
-
-        #expect(TaskContextStateManager.fallbackCountForTesting == 1, "the stale inventory must be rejected")
-        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
-        #expect(state.filesChanged.contains { $0.hasSuffix("deliverables/late.md") })
-    }
-
     @Test("A load invalidated once is retried off the actor, not rescanned on it")
     func invalidatedLoadRetriesOffActor() async throws {
         let fixture = try makeFixture("retry")
         defer { fixture.cleanup() }
         let folder = fixture.folder
-        let late = URL(fileURLWithPath: folder).appendingPathComponent("late.md")
         TaskContextStateManager.fallbackCountForTesting = 0
         TaskContextStateManager.revalidationRetryCountForTesting = 0
 
-        // Perturbs the first attempt only, so the folder is settled by the
-        // second. A folder moving during the scan is most likely while a run
-        // is producing outputs, which is exactly the case this change is for —
-        // recovering by rescanning on the actor would put the freeze back
-        // precisely there.
+        // Replaces the state file on the first attempt only, so it is settled
+        // by the second. Recovering from this by redoing the refresh under the
+        // actor would spend exactly what moving the read off it saved.
         nonisolated(unsafe) var perturbed = false
         TaskContextStateManager.interleaveForTesting = {
             guard !perturbed else { return }
             perturbed = true
-            try? "late".write(to: late, atomically: true, encoding: .utf8)
+            guard var state = TaskContextStateManager.load(taskFolder: folder) else { return }
+            state.turns.append(TaskContextState.Turn(
+                turn: 42,
+                ask: "written between load and apply",
+                summary: "",
+                filesChanged: [],
+                blockers: [],
+                runStatus: "completed"
+            ))
+            _ = TaskContextStateManager.saveState(state, taskFolder: folder)
         }
         defer { TaskContextStateManager.interleaveForTesting = nil }
 
         await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
 
         #expect(TaskContextStateManager.revalidationRetryCountForTesting == 1, "the stale load must be retried")
-        #expect(TaskContextStateManager.fallbackCountForTesting == 0, "the retry must not cost a main-actor rescan")
+        #expect(TaskContextStateManager.fallbackCountForTesting == 0, "the retry must not cost a main-actor redo")
         let state = try #require(TaskContextStateManager.load(taskFolder: folder))
-        #expect(state.filesChanged.contains { $0.hasSuffix("late.md") })
+        #expect(state.turns.contains { $0.ask == "written between load and apply" })
     }
 
-    @Test("A dependency tree is not stamped, so churn inside it costs nothing")
-    func dependencyTreesAreNotStamped() async throws {
-        let fixture = try makeFixture("deps")
-        defer { fixture.cleanup() }
-        let folder = fixture.folder
-        // The shape the output scan prunes: an agent running `python -m venv`
-        // in its task folder adds ~15,000 entries. Every directory stamped
-        // here is re-stat'd on the main actor at the apply, so walking one of
-        // these would put a far worse freeze on task selection than the one
-        // this change removes.
-        let vendored = URL(fileURLWithPath: folder)
-            .appendingPathComponent(".build", isDirectory: true)
-            .appendingPathComponent("pkg", isDirectory: true)
-        try FileManager.default.createDirectory(at: vendored, withIntermediateDirectories: true)
-        TaskContextStateManager.fallbackCountForTesting = 0
-        TaskContextStateManager.revalidationRetryCountForTesting = 0
-
-        TaskContextStateManager.interleaveForTesting = {
-            try? "x".write(
-                to: vendored.appendingPathComponent("artifact.o"),
-                atomically: true,
-                encoding: .utf8
-            )
-        }
-        defer { TaskContextStateManager.interleaveForTesting = nil }
-
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
-
-        // A pruned subtree is not watched, so churn inside it invalidates
-        // nothing. Without the prune this directory is stamped and the write
-        // above moves it, costing a retry or a rescan on every refresh.
-        #expect(TaskContextStateManager.revalidationRetryCountForTesting == 0)
-        #expect(TaskContextStateManager.fallbackCountForTesting == 0)
-    }
-
-    @Test("The precomputed folder scan is used instead of rescanning on the actor")
-    func precomputedScanIsHonoured() async throws {
-        let fixture = try makeFixture("scan")
-        defer { fixture.cleanup() }
-        let path = URL(fileURLWithPath: fixture.folder)
-            .appendingPathComponent("report.md").path
-
-        // The scan `updateDerivedFields` would run on the actor is exactly what
-        // moved off it, so the caller now supplies the result. Feeding a file
-        // the on-actor scan could not have produced proves the parameter is
-        // honoured rather than quietly ignored.
-        TaskContextStateManager.applyRefresh(
-            existing: TaskContextStateManager.load(taskFolder: fixture.folder),
-            folder: fixture.folder,
-            task: fixture.task,
-            followUpMessage: "",
-            discoveredFiles: [TaskOutputDiscoveredFile(
-                path: path,
-                relativePath: "report.md",
-                type: "markdown"
-            )]
-        )
-
-        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
-        #expect(state.filesChanged.contains { $0.hasSuffix("report.md") })
+    nonisolated private static func corruptCopies(in folder: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
+            .filter { $0.contains(".corrupt-") }
     }
 
     private func modificationDate(of url: URL) throws -> Date {
