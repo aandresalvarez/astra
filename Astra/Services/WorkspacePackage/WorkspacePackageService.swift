@@ -1,7 +1,6 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
 
 /// What an embedded capability needs on the recipient machine, surfaced so the
 /// pre-import review can say more than "installs as a draft".

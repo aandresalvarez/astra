@@ -4,7 +4,6 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
 
 private struct CapabilityDetailSection: Identifiable {
     let id: String

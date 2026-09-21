@@ -1,7 +1,6 @@
 import Foundation
 import SwiftData
 import ASTRAModels
-import ASTRAPersistence
 
 enum ReadOnlyBoundaryEvidenceRecorder {
     @MainActor

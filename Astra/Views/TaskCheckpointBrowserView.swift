@@ -1,6 +1,5 @@
 import SwiftUI
 import ASTRAModels
-import ASTRAPersistence
 import ASTRACore
 
 struct TaskCheckpointSummary: Identifiable, Hashable, Sendable {

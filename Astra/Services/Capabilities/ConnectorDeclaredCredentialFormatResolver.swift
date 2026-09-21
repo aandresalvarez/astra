@@ -1,6 +1,5 @@
 import Foundation
 import ASTRACore
-import ASTRAModels
 
 /// Looks a connector's declared credential format back up from the capability
 /// package that installed it.
