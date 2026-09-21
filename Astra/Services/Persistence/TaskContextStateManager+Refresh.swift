@@ -283,7 +283,13 @@ extension TaskContextStateManager {
         // the inventory describing one moment and the stamps another. A
         // directory that appeared during it counts as such a change.
         let afterScan = stamps(for: tracked, files: discovered)
+        // Sets, not counts: directory churn can remove one path and add
+        // another between the walks, leaving the counts equal while the
+        // removed path has no stamp on either side and the replacement's
+        // baseline is already post-change. Comparing sizes reports no change
+        // and persists an inventory missing whatever lands in the new one.
         let moved = before.contains { beforeScan[$0] != afterScan[$0] }
+            || Set(after) != Set(before)
         return LoadedContextState(
             folder: folder,
             existing: existing,
@@ -291,7 +297,7 @@ extension TaskContextStateManager {
             readStraddledAWrite: beforeRead != afterRead,
             discoveredFiles: discovered,
             directoryStamps: afterScan,
-            scanStraddledAChange: moved || after.count != before.count,
+            scanStraddledAChange: moved,
             loadWasUsable: usable
         )
     }
