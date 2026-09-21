@@ -44,6 +44,33 @@ struct TaskRuntimeEligibilitySnapshot {
     var suggestedRuntime: AgentRuntimeID? {
         launchBlock?.suggestedRuntime
     }
+
+    /// Carries forward verdicts for runtimes this evaluation did not score.
+    ///
+    /// The composer's typing path evaluates only the selected runtime, because
+    /// that is the only verdict Send depends on. The provider dropdown still
+    /// lists every runtime, so keeping the previous turn's verdicts for the
+    /// others leaves the menu populated — briefly against older text — instead
+    /// of having entries disappear until the full pass lands. Verdicts this
+    /// snapshot *did* score always win, and a snapshot for a different task is
+    /// ignored outright.
+    func carryingForwardUnscoredCandidates(
+        from previous: TaskRuntimeEligibilitySnapshot?
+    ) -> TaskRuntimeEligibilitySnapshot {
+        guard let previous, previous.taskID == taskID else { return self }
+        var merged = previous.candidates
+        for (runtime, candidate) in candidates {
+            merged[runtime] = candidate
+        }
+        return TaskRuntimeEligibilitySnapshot(
+            taskID: taskID,
+            intent: intent,
+            requestedRuntime: requestedRuntime,
+            selectedRuntime: selectedRuntime,
+            candidates: merged,
+            launchBlock: launchBlock
+        )
+    }
 }
 
 @MainActor

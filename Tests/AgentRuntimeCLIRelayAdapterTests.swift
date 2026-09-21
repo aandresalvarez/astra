@@ -346,14 +346,7 @@ struct AgentRuntimeCLIRelayAdapterTests {
     }
 
     private func builtHostControlHelperPath() throws -> String {
-        let path = Bundle.module.bundleURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("astra-host-control", isDirectory: false)
-            .path
-        guard FileManager.default.isExecutableFile(atPath: path) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        return path
+        try BuiltProductLocator.requiredExecutablePath(named: "astra-host-control")
     }
 }
 
