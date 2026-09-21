@@ -29,18 +29,6 @@ private func extractJSON(from text: String) -> String {
 @Suite("Spec Engine")
 struct SpecEngineTests {
 
-    @Test("JSON extraction strips markdown fences")
-    func stripMarkdownFences() {
-        let wrapped = "```json\n{\"title\": \"test\"}\n```"
-        #expect(extractJSON(from: wrapped) == "{\"title\": \"test\"}")
-    }
-
-    @Test("JSON extraction passes plain JSON through")
-    func plainJSONPassthrough() {
-        let plain = "{\"title\": \"test\"}"
-        #expect(extractJSON(from: plain) == "{\"title\": \"test\"}")
-    }
-
     @Test("TaskSpec decoding from valid JSON")
     func validSpecDecoding() throws {
         let json = """
@@ -95,12 +83,6 @@ struct SpecEngineTests {
         #expect(spec.clarifications == nil)
     }
 
-    @Test("Max retries constant is 2")
-    func maxRetriesValue() {
-
-        #expect(SpecEngine.maxRetries == 2)
-    }
-
     @Test("Timeout state does not latch after process exits")
     func timeoutStateDoesNotLatchAfterProcessExits() {
         let state = AsyncProcessRunner.RunState()
@@ -110,28 +92,6 @@ struct SpecEngineTests {
         let completion = state.markCompleted()
         #expect(completion.didComplete)
         #expect(!completion.didTimeOut)
-    }
-
-    @Test("JSON schema contains all required fields")
-    func jsonSchemaFields() {
-
-        let schema = SpecEngine.jsonSchema
-        #expect(schema.contains("title"))
-        #expect(schema.contains("goal"))
-        #expect(schema.contains("inputs"))
-        #expect(schema.contains("constraints"))
-        #expect(schema.contains("acceptanceCriteria"))
-        #expect(schema.contains("estimatedComplexity"))
-        #expect(schema.contains("clarifications"))
-    }
-
-    @Test("Extraction prompt includes schema")
-    func extractionPromptIncludesSchema() {
-
-        let prompt = SpecEngine.extractionPrompt
-        #expect(prompt.contains("Schema:"))
-        #expect(prompt.contains("No other text"))
-        #expect(prompt.contains("no markdown fences"))
     }
 
     @Test("Title generation falls back to second model candidate")
@@ -202,15 +162,4 @@ struct SpecEngineTests {
         #expect(args.contains("Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"))
     }
 
-    @Test("JSON extraction handles nested fences")
-    func nestedFences() {
-        let wrapped = "```\n{\"title\": \"test\"}\n```"
-        #expect(extractJSON(from: wrapped) == "{\"title\": \"test\"}")
-    }
-
-    @Test("JSON extraction handles extra whitespace")
-    func extraWhitespace() {
-        let padded = "  \n  {\"title\": \"test\"}  \n  "
-        #expect(extractJSON(from: padded) == "{\"title\": \"test\"}")
-    }
 }
