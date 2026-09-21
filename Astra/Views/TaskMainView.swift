@@ -781,21 +781,22 @@ struct TaskMainView: View {
     @discardableResult
     private func startContextStateRefresh() -> Task<Void, Never> {
         pendingContextStateRefreshTask?.cancel()
-        let refresh = Task { await refreshTaskContextState() }
-        pendingContextStateRefreshTask = refresh
-        return refresh
-    }
-
-    private func refreshTaskContextState() async {
-        // Opened before the await and closed after it. `recordPhase` resolves
-        // the trace when the phase *ends*, and transcript readiness clears it —
-        // which would drop exactly the slow refreshes this phase exists to
-        // measure. The phase name is unchanged, so samples stay comparable.
+        // Opened here, not inside the task: transcript readiness can clear the
+        // trace before the closure runs, dropping the sample for a refresh that
+        // did complete. This also measures the wait to start.
         let phase = TaskOpenResponsivenessTelemetry.beginPhase(
             "context_state_refresh",
             task: task,
             scope: taskOpenResponsivenessScope
         )
+        let refresh = Task { await refreshTaskContextState(phase: phase) }
+        pendingContextStateRefreshTask = refresh
+        return refresh
+    }
+
+    /// `phase` is opened by the caller, while the trace is still live. See
+    /// `startContextStateRefresh`.
+    private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
         await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.

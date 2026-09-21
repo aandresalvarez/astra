@@ -14,7 +14,7 @@ extension TaskContextStateManager {
         let existing: TaskContextState?
         /// Identity of `current_state.json` as the read finished, so the main
         /// actor can tell whether anything wrote it since.
-        let stamp: FileStamp?
+        let stamp: StateFileIdentity
         /// The file changed identity *during* the read, so `existing` and
         /// `stamp` may describe different versions and neither can be trusted.
         let readStraddledAWrite: Bool
@@ -24,37 +24,54 @@ extension TaskContextStateManager {
         let loadWasUsable: Bool
     }
 
-    /// Cheap identity of a file: enough to detect that someone replaced it,
-    /// without re-reading and re-decoding the thing we went off-actor to avoid.
+    /// What the state file looked like at one moment, as cheaply as the
+    /// question can be answered — no re-reading and re-decoding the thing the
+    /// load went off-actor to avoid.
     ///
-    /// The inode is what makes this exact rather than probable. `saveState`
-    /// writes with `.atomic`, which renames a fresh file over the target, so
-    /// every write lands a new one. Modification date and size alone can
-    /// collide: a volume with coarse timestamp resolution buckets two writes
-    /// together, and at the turn cap `recordTurn` drops one turn while
-    /// appending another, which can encode to exactly the same length. Both
-    /// halves of the bracket would then report no change and the older
-    /// snapshot would go back over the newer turn.
-    ///
-    /// Untested: I could not build a case that distinguishes this from the
-    /// previous stamp. Forcing a same-size replacement back to the same
-    /// timestamp still came out correct without the inode, for a reason the
-    /// stamps themselves do not explain, so any test I wrote would have passed
-    /// either way. The inode is kept on the argument above and because it is
-    /// free — the same `attributesOfItem` call already fetches it.
-    private struct FileStamp: Equatable, Sendable {
-        let modified: Date
-        let size: Int
-        let inode: UInt64
+    /// Three cases, because two of them are not the same. A file that exists
+    /// but whose identifying attributes the filesystem did not return is not
+    /// an absent file, and collapsing both into "no stamp" made them compare
+    /// equal: a concurrent atomic `recordTurn` would then go undetected and
+    /// the older snapshot would go back over the newer turn. An
+    /// unidentifiable file therefore matches nothing, not even another
+    /// unidentifiable one, which sends the apply to the fallback where the
+    /// read happens under the actor.
+    private enum StateFileIdentity: Sendable {
+        case absent
+        case identified(modified: Date, size: Int, inode: UInt64)
+        case unidentifiable
 
-        init?(atPath path: String) {
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                  let modified = attributes[.modificationDate] as? Date,
+        init(atPath path: String) {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else {
+                self = .absent
+                return
+            }
+            guard let modified = attributes[.modificationDate] as? Date,
                   let size = attributes[.size] as? Int,
-                  let inode = attributes[.systemFileNumber] as? UInt64 else { return nil }
-            self.modified = modified
-            self.size = size
-            self.inode = inode
+                  let inode = attributes[.systemFileNumber] as? UInt64 else {
+                self = .unidentifiable
+                return
+            }
+            self = .identified(modified: modified, size: size, inode: inode)
+        }
+
+        /// Whether these two observations describe the same file, unchanged.
+        /// The inode is what makes that exact rather than probable:
+        /// `saveState` writes with `.atomic`, which renames a fresh file over
+        /// the target, so every write lands a new one. Date and size alone
+        /// collide when a volume buckets two writes into one timestamp and the
+        /// turn cap has `recordTurn` drop one turn while appending another of
+        /// equal encoded length.
+        func matches(_ other: StateFileIdentity) -> Bool {
+            switch (self, other) {
+            case (.absent, .absent):
+                return true
+            case let (.identified(lhsModified, lhsSize, lhsInode),
+                      .identified(rhsModified, rhsSize, rhsInode)):
+                return lhsModified == rhsModified && lhsSize == rhsSize && lhsInode == rhsInode
+            default:
+                return false
+            }
         }
     }
 
@@ -146,7 +163,7 @@ extension TaskContextStateManager {
             // predates it would silently drop the newer turn. One stat, on one
             // file, against the read it validates.
             guard !loaded.readStraddledAWrite,
-                  FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp else {
+                  StateFileIdentity(atPath: statePath(inFolder: loaded.folder)).matches(loaded.stamp) else {
                 #if DEBUG
                 revalidationRetryCountForTesting += 1
                 #endif
@@ -202,7 +219,7 @@ extension TaskContextStateManager {
         // check at the apply matches and puts the stale snapshot straight back
         // over them. Two stamps that disagree mean the read straddled a write
         // and neither describes the other.
-        let beforeRead = FileStamp(atPath: path)
+        let beforeRead = StateFileIdentity(atPath: path)
         // `loadResult` reads and decodes and nothing else. `recoverState`,
         // which used to be called here, is not read-only: on a corrupt file it
         // *moves* it to quarantine. Off the actor that races every writer — it
@@ -220,12 +237,12 @@ extension TaskContextStateManager {
         #if DEBUG
         interleaveDuringLoadForTesting?()
         #endif
-        let afterRead = FileStamp(atPath: path)
+        let afterRead = StateFileIdentity(atPath: path)
         return LoadedContextState(
             folder: folder,
             existing: existing,
             stamp: afterRead,
-            readStraddledAWrite: beforeRead != afterRead,
+            readStraddledAWrite: !beforeRead.matches(afterRead),
             loadWasUsable: usable
         )
     }
