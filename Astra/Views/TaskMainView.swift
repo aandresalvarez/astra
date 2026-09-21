@@ -244,6 +244,7 @@ struct TaskMainView: View {
     @State private var planEventRevision = 0
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
+    @State private var pendingContextStateRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @State var cachedForkSourceAvailabilityWarning: String?
@@ -639,7 +640,14 @@ struct TaskMainView: View {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
                         // Diagnostics rebuild from `.task(id:)`, which carries
                         // the artifact count this fires on and can be cancelled.
-                        Task { await refreshTaskContextState() }
+                        // Cancel-then-launch, like the adjacent
+                        // `scheduleVerificationPresentationRefresh`. Each of
+                        // these now walks the whole task folder off the actor,
+                        // and a run emitting updates in a burst would otherwise
+                        // stack concurrent scans where the synchronous version
+                        // was serialised by the actor.
+                        pendingContextStateRefreshTask?.cancel()
+                        pendingContextStateRefreshTask = Task { await refreshTaskContextState() }
                         refreshForkSourceAvailabilityWarning()
                     }
                 }
@@ -779,11 +787,16 @@ struct TaskMainView: View {
             scope: taskOpenResponsivenessScope
         )
         await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        // Before the sample, not after it: selecting another task cancels this
+        // one's `.task(id:)`, and an abandoned open is not a completed one.
+        // Logging it would put supersessions in the same distribution as the
+        // opens this phase exists to measure — the bias the capture above was
+        // added to prevent, arriving from the other side.
+        guard !Task.isCancelled else { return }
         TaskOpenResponsivenessTelemetry.endPhase(phase)
-        // Selecting another task cancels this one's `.task(id:)`, but awaiting
-        // detached work still resumes here afterwards. Both of the refreshes
-        // below write view state shared with whatever task is now open.
-        guard !Task.isCancelled, !task.isDeleted else { return }
+        // Both refreshes below write view state shared with whatever task is
+        // now open.
+        guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }

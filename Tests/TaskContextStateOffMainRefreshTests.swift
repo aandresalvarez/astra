@@ -159,6 +159,28 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "written during the read" })
     }
 
+    @Test("An output appearing during the off-actor scan is not applied stale")
+    func folderChangeDuringScanFallsBack() async throws {
+        let fixture = try makeFixture("inventory")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        let created = URL(fileURLWithPath: folder).appendingPathComponent("late-output.md")
+
+        // A run landing an output inside the window the scan opened. The
+        // inventory already taken cannot contain it.
+        TaskContextStateManager.interleaveDuringScanForTesting = {
+            try? "late".write(to: created, atomically: true, encoding: .utf8)
+        }
+        defer { TaskContextStateManager.interleaveDuringScanForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        // Applying the stale inventory would leave the new output out of the
+        // derived state entirely; the fallback rescans under the actor.
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.filesChanged.contains { $0.hasSuffix("late-output.md") })
+    }
+
     @Test("The precomputed folder scan is used instead of rescanning on the actor")
     func precomputedScanIsHonoured() async throws {
         let fixture = try makeFixture("scan")

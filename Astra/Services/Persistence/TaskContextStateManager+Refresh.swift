@@ -21,6 +21,12 @@ extension TaskContextStateManager {
         /// The task folder's contents, enumerated here rather than on the main
         /// actor inside `updateDerivedFields`.
         let discoveredFiles: [TaskOutputDiscoveredFile]
+        /// Identity of the task folder as the scan finished. The scan used to
+        /// run at the moment of use; off-actor it can go stale in the hop back.
+        let folderStamp: FileStamp?
+        /// The folder changed identity during the scan, so the inventory may
+        /// describe two different moments.
+        let scanStraddledAChange: Bool
     }
 
     /// Cheap identity of a file: enough to detect that someone replaced it,
@@ -86,12 +92,30 @@ extension TaskContextStateManager {
             interleaveDuringLoadForTesting?()
             #endif
             let afterRead = FileStamp(atPath: path)
+            // Bracketed like the read. `updateDerivedFields` used to run this
+            // scan at the moment it used the result; off the actor there is a
+            // hop between the two, and a running task can add or remove an
+            // output inside it.
+            //
+            // The directory's own identity catches entries appearing and
+            // disappearing at the folder root, which is where a run's outputs
+            // land. It does not catch a change nested in a subdirectory, nor a
+            // file rewritten in place — those still ride on the next refresh,
+            // as they did before this moved.
+            let beforeScan = FileStamp(atPath: folder)
+            let discovered = TaskOutputDiscovery.files(in: folder)
+            #if DEBUG
+            interleaveDuringScanForTesting?()
+            #endif
+            let afterScan = FileStamp(atPath: folder)
             return LoadedContextState(
                 folder: folder,
                 existing: existing,
                 stamp: afterRead,
                 readStraddledAWrite: beforeRead != afterRead,
-                discoveredFiles: TaskOutputDiscovery.files(in: folder)
+                discoveredFiles: discovered,
+                folderStamp: afterScan,
+                scanStraddledAChange: beforeScan != afterScan
             )
         }.value
         guard let loaded else { return }
@@ -119,7 +143,9 @@ extension TaskContextStateManager {
         // microseconds against the read it validates, so re-check identity and
         // fall back to the synchronous path, which re-reads under the actor.
         guard !loaded.readStraddledAWrite,
-              FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp else {
+              FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp,
+              !loaded.scanStraddledAChange,
+              FileStamp(atPath: loaded.folder) == loaded.folderStamp else {
             refresh(task: task, followUpMessage: followUpMessage)
             return
         }
@@ -147,6 +173,11 @@ extension TaskContextStateManager {
     /// before the closing stamp — the window where a write leaves `existing`
     /// stale while the stamp describes the writer's file.
     nonisolated(unsafe) static var interleaveDuringLoadForTesting: (@Sendable () -> Void)?
+
+    /// Test seam inside the *scan* bracket — after the inventory is taken and
+    /// before the closing folder stamp — so a test can make the inventory
+    /// stale the way a running task does.
+    nonisolated(unsafe) static var interleaveDuringScanForTesting: (@Sendable () -> Void)?
     #endif
 
     @MainActor
