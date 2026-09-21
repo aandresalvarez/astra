@@ -1043,6 +1043,13 @@ final class TaskQueue {
         continuation.resume()
     }
 
+    /// Parked `processQueueLoop` iterations. Queue-global rather than keyed by
+    /// task: the dispatch loop waits for *a* worker, lock, or in-flight run to
+    /// free up, never for a particular one. Not `private` only because the
+    /// waiting and waking live in `TaskQueue+DispatchSignal.swift`, which this
+    /// file has no room for.
+    var dispatchWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
     private func wakeTurnAdmissionWaiters(taskID: UUID) {
         guard let waiters = turnAdmissionWaiters.removeValue(forKey: taskID) else { return }
         for continuation in waiters.values { continuation.resume() }
@@ -1360,8 +1367,7 @@ final class TaskQueue {
                     ExecutionRequestQueueSnapshot.logDrained(projection: projection, poolSize: poolSize, activeWorkerCount: activeCount)
                     break
                 }
-                do { try await Task.sleep(for: .milliseconds(200)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(200))
                 continue
             }
 
@@ -1376,8 +1382,7 @@ final class TaskQueue {
                         modelContext: modelContext
                     )
                 }
-                do { try await Task.sleep(for: .milliseconds(250)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(250))
                 continue
             }
 
@@ -1471,8 +1476,7 @@ final class TaskQueue {
                         modelContext: modelContext
                     )
                 }
-                do { try await Task.sleep(for: .milliseconds(500)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(500))
                 continue
             }
 
@@ -1493,6 +1497,8 @@ final class TaskQueue {
                 defer {
                     queue.dispatchedRequestIDs.remove(requestID)
                     queue.requestTaskRegistry.finishDispatch(requestID: requestID)
+                    // A freed worker is precisely what the loop's waits are for.
+                    queue.wakeDispatchWaiters()
                 }
                 await queue.executeQueuedRequest(
                     requestID: requestID,
@@ -1509,8 +1515,7 @@ final class TaskQueue {
 
         // Wait for all remaining workers to finish
         while activeCount > 0 && !Task.isCancelled && isProcessing {
-            do { try await Task.sleep(for: .milliseconds(500)) }
-            catch { break }
+            await waitForDispatchSignal(fallback: .milliseconds(500))
         }
 
         dispatchedRequestIDs.removeAll()
@@ -1804,6 +1809,7 @@ final class TaskQueue {
         // locks this just cleared, then wake every waiter immediately.
         turnAdmissionGeneration += 1
         wakeAllTurnAdmissionWaiters()
+        wakeDispatchWaiters()
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
         ])
@@ -1932,6 +1938,7 @@ final class TaskQueue {
             )
         }
         wakeAllTurnAdmissionWaiters()
+        wakeDispatchWaiters()
     }
 
     @MainActor
