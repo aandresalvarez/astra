@@ -639,7 +639,7 @@ struct TaskMainView: View {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
                         // Diagnostics rebuild from `.task(id:)`, which carries
                         // the artifact count this fires on and can be cancelled.
-                        refreshTaskContextState()
+                        Task { await refreshTaskContextState() }
                         refreshForkSourceAvailabilityWarning()
                     }
                 }
@@ -722,7 +722,10 @@ struct TaskMainView: View {
             initializeTaskPolicySelection()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
-            refreshTaskContextState()
+            // Not awaited: the refresh now does its filesystem work off the
+            // main actor, so task open no longer has any reason to sit behind
+            // it. Its own tail still runs once it lands.
+            Task { await refreshTaskContextState() }
             refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache(reason: .taskOpen)
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
@@ -763,14 +766,18 @@ struct TaskMainView: View {
         cachedPlanStateSnapshot = snapshot
     }
 
-    private func refreshTaskContextState() {
-        TaskOpenResponsivenessTelemetry.measurePhase(
+    private func refreshTaskContextState() async {
+        // Measured around the await, not with `measurePhase`, which takes a
+        // synchronous closure. The phase name is unchanged so the samples stay
+        // comparable with the ones that motivated moving the IO off the actor.
+        let started = DispatchTime.now().uptimeNanoseconds
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        TaskOpenResponsivenessTelemetry.recordPhase(
             "context_state_refresh",
             task: task,
-            scope: taskOpenResponsivenessScope
-        ) {
-            TaskContextStateManager.refresh(task: task)
-        }
+            scope: taskOpenResponsivenessScope,
+            startedAtUptimeNanoseconds: started
+        )
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }
