@@ -574,6 +574,10 @@ struct TaskMainView: View {
         ))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
+            // Here, not in the next task's setup: `ContentView` keys this
+            // view with `.id(task.id)`, so that setup runs against fresh
+            // `@State` and cannot reach the outgoing task's handle.
+            pendingContextStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
         }
