@@ -35,12 +35,36 @@ enum AppLogger: Sendable {
     /// Age-based cleanup still prunes to the configured retention, so this
     /// raises no upper bound on how long anything is kept; it only stops size
     /// from binding first.
-    private static let maxRotatedGenerations = 7
+    private static var maxRotatedGenerations: Int {
+        rotatedGenerations(forRetentionDays: configuredRetentionDays)
+    }
 
-    /// History the rotation budget can hold: the live file plus its
-    /// generations. Exposed so the retention promise is testable.
+    /// One rotated generation per day of retention, which at this install's
+    /// roughly 5 MB per active day matches the 5 MB rotation size.
+    ///
+    /// Derived from the retention rather than fixed, because the picker offers
+    /// `logRetentionDayOptions` up to 90 days: any constant is a second,
+    /// quieter owner of retention for every option above it — the same bug
+    /// this started as, moved to a different threshold. The floor keeps the
+    /// shortest retentions from holding less than the two generations that
+    /// shipped before.
+    ///
+    /// This is a ceiling, not an allocation. Generations only exist once the
+    /// log has filled them, so a quiet install on a 90-day retention keeps
+    /// whatever 90 days actually produced, not 455 MB of it.
+    static func rotatedGenerations(forRetentionDays days: Int) -> Int {
+        max(2, days)
+    }
+
+    /// History the rotation budget can hold at a given retention: the live
+    /// file plus its generations. Exposed so the retention promise is testable
+    /// for every option the picker offers, not just the default.
+    static func onDiskBudgetBytes(forRetentionDays days: Int) -> UInt64 {
+        maxLogFileSize * UInt64(rotatedGenerations(forRetentionDays: days) + 1)
+    }
+
     static var onDiskBudgetBytes: UInt64 {
-        maxLogFileSize * UInt64(maxRotatedGenerations + 1)
+        onDiskBudgetBytes(forRetentionDays: configuredRetentionDays)
     }
     static let defaultRetentionDays = LoggingPreferences.defaultLogRetentionDays
 

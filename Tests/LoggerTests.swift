@@ -50,15 +50,30 @@ struct AppLoggerTests {
     /// Settings still offered a week — so a stall report aged out before anyone
     /// read it. Age-based cleanup prunes to the configured retention either
     /// way; this pins that size no longer decides first.
-    @Test("The rotation budget can hold the default retention")
-    func rotationBudgetCoversDefaultRetention() {
+    ///
+    /// Every offered option, not just the default: a fixed budget sized for the
+    /// default silently reintroduces the same bug for 14, 30 and 90 days.
+    @Test("The rotation budget can hold every retention the picker offers")
+    func rotationBudgetCoversEveryOfferedRetention() {
         let observedBytesPerActiveDay: UInt64 = 5_000_000
-        let needed = observedBytesPerActiveDay * UInt64(LoggingPreferences.defaultLogRetentionDays)
 
-        #expect(
-            AppLogger.onDiskBudgetBytes >= needed,
-            "rotation holds \(AppLogger.onDiskBudgetBytes) B, a \(LoggingPreferences.defaultLogRetentionDays)-day retention needs \(needed) B"
-        )
+        for days in LoggingPreferences.logRetentionDayOptions {
+            let needed = observedBytesPerActiveDay * UInt64(days)
+            let budget = AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+            #expect(
+                budget >= needed,
+                "rotation holds \(budget) B, a \(days)-day retention needs \(needed) B"
+            )
+        }
+    }
+
+    /// The shortest retentions must not hold less than the two generations that
+    /// shipped before this was derived from the setting.
+    @Test("A short retention still keeps the generations that shipped before")
+    func shortRetentionKeepsPreviousFloor() {
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 1) == 2)
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 3) == 3)
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 90) == 90)
     }
 
     @Test("Sanitizer redacts sensitive payloads")
