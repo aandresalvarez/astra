@@ -124,6 +124,41 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "turn recorded mid-refresh" })
     }
 
+    @Test("A write landing inside the off-actor read is not overwritten")
+    func writeDuringReadIsNotClobbered() async throws {
+        let fixture = try makeFixture("straddle")
+        defer { fixture.cleanup() }
+        let run = TaskRun(task: fixture.task)
+        run.status = .completed
+        run.setOutput("answer")
+        run.completedAt = Date()
+        fixture.container.mainContext.insert(run)
+        try fixture.container.mainContext.save()
+        let folder = fixture.folder
+
+        // Straddle the read itself, not the window after it: stamping only
+        // after the read would describe this writer's file, so the check at the
+        // apply would match and put the pre-write snapshot back over it.
+        TaskContextStateManager.interleaveDuringLoadForTesting = {
+            guard var state = TaskContextStateManager.load(taskFolder: folder) else { return }
+            state.turns.append(TaskContextState.Turn(
+                turn: 99,
+                ask: "written during the read",
+                summary: "",
+                filesChanged: [],
+                blockers: [],
+                runStatus: "completed"
+            ))
+            _ = TaskContextStateManager.saveState(state, taskFolder: folder)
+        }
+        defer { TaskContextStateManager.interleaveDuringLoadForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.turns.contains { $0.ask == "written during the read" })
+    }
+
     @Test("The precomputed folder scan is used instead of rescanning on the actor")
     func precomputedScanIsHonoured() async throws {
         let fixture = try makeFixture("scan")

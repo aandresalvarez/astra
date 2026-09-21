@@ -780,7 +780,10 @@ struct TaskMainView: View {
         )
         await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         TaskOpenResponsivenessTelemetry.endPhase(phase)
-        guard !task.isDeleted else { return }
+        // Selecting another task cancels this one's `.task(id:)`, but awaiting
+        // detached work still resumes here afterwards. Both of the refreshes
+        // below write view state shared with whatever task is now open.
+        guard !Task.isCancelled, !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }

@@ -12,9 +12,12 @@ extension TaskContextStateManager {
     private struct LoadedContextState: Sendable {
         let folder: String
         let existing: TaskContextState?
-        /// Identity of `current_state.json` at the moment it was read, so the
-        /// main actor can tell whether anything wrote it since.
+        /// Identity of `current_state.json` as the read finished, so the main
+        /// actor can tell whether anything wrote it since.
         let stamp: FileStamp?
+        /// The file changed identity *during* the read, so `existing` and
+        /// `stamp` may describe different versions and neither can be trusted.
+        let readStraddledAWrite: Bool
         /// The task folder's contents, enumerated here rather than on the main
         /// actor inside `updateDerivedFields`.
         let discoveredFiles: [TaskOutputDiscoveredFile]
@@ -71,14 +74,23 @@ extension TaskContextStateManager {
                 taskID: taskID
             ), !folder.isEmpty else { return nil }
             let path = statePath(inFolder: folder)
+            // Bracketed, because stamping only after the read is worse than
+            // useless: a writer landing inside the read leaves `existing`
+            // holding the old bytes while the stamp describes the writer's
+            // file, so the check at the apply matches and puts the stale
+            // snapshot straight back over them. Two stamps that disagree mean
+            // the read straddled a write and neither describes the other.
+            let beforeRead = FileStamp(atPath: path)
             let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: taskID)
-            // Stamped after the read: a writer that lands between the two makes
-            // the stamp newer than the bytes, which fails the check below and
-            // costs a redo rather than a silent overwrite.
+            #if DEBUG
+            interleaveDuringLoadForTesting?()
+            #endif
+            let afterRead = FileStamp(atPath: path)
             return LoadedContextState(
                 folder: folder,
                 existing: existing,
-                stamp: FileStamp(atPath: path),
+                stamp: afterRead,
+                readStraddledAWrite: beforeRead != afterRead,
                 discoveredFiles: TaskOutputDiscovery.files(in: folder)
             )
         }.value
@@ -106,10 +118,16 @@ extension TaskContextStateManager {
         // snapshot that predates it and silently drop the newer turn. A stat is
         // microseconds against the read it validates, so re-check identity and
         // fall back to the synchronous path, which re-reads under the actor.
-        guard FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp else {
+        guard !loaded.readStraddledAWrite,
+              FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp else {
             refresh(task: task, followUpMessage: followUpMessage)
             return
         }
+        // Awaiting a detached task neither cancels it nor stops a cancelled
+        // caller resuming, so a task switch can land here after the next task
+        // has already initialised. Applying now would write this task's domain
+        // state and then its presentation state over the new one's.
+        guard !Task.isCancelled else { return }
         applyRefresh(
             existing: loaded.existing,
             folder: loaded.folder,
@@ -120,9 +138,15 @@ extension TaskContextStateManager {
     }
 
     #if DEBUG
-    /// Test seam for `refreshLoadingOffMainActor`. See its call site.
+    /// Test seam for `refreshLoadingOffMainActor`, on the main actor after the
+    /// load returns. See its call site.
     @MainActor
     static var interleaveForTesting: (@MainActor () -> Void)?
+
+    /// Test seam that runs *inside* the detached load, after the read and
+    /// before the closing stamp — the window where a write leaves `existing`
+    /// stale while the stamp describes the writer's file.
+    nonisolated(unsafe) static var interleaveDuringLoadForTesting: (@Sendable () -> Void)?
     #endif
 
     @MainActor
