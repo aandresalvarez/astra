@@ -62,26 +62,35 @@ private final class ManualClock {
 @MainActor
 @Suite("Task thread snapshot back-pressure")
 struct TaskThreadSnapshotBackpressureTests {
-    /// Yields until `condition` holds or the poll budget runs out.
+    /// Yields until `condition` holds, or until *both* budgets are spent.
     ///
     /// Every wait here is on a condition the pipeline reaches in milliseconds
-    /// when the machine is idle; a budget exists only because the full suite
-    /// runs main-actor tests concurrently and can starve a single hop for
-    /// seconds. That budget counts polls rather than elapsed time on purpose:
-    /// a wall-clock deadline measures how loaded the host is, not how
-    /// back-pressure behaves, and this suite failed on `#expect(converged)`
-    /// with a deadline already raised to 30 seconds. Counting polls gives the
-    /// condition the same number of chances however starved the run is, while
-    /// still bounding a genuinely stuck build.
+    /// when the machine is idle; the budgets exist only because the full suite
+    /// runs main-actor tests concurrently.
+    ///
+    /// Two bounds, because two different things can starve the wait. Counting
+    /// polls covers a starved main actor, where a wall clock measures host
+    /// load rather than back-pressure — this suite failed on
+    /// `#expect(converged)` with a deadline already raised to 30 seconds. A
+    /// wall clock covers a responsive main actor with a saturated executor
+    /// elsewhere, where the poller runs at full speed and 600 five-millisecond
+    /// polls is three seconds, a tenth of what this used to allow. The wait
+    /// ends only once both are exhausted, so `floor` keeps the original
+    /// tolerance intact.
     private func waitUntil(
         polls: Int = 600,
+        floor: Duration = .seconds(30),
         _ condition: () -> Bool
     ) async -> Bool {
-        for _ in 0..<polls {
+        let clock = ContinuousClock()
+        let deadline = clock.now + floor
+        var remaining = polls
+        while true {
             if condition() { return true }
+            if remaining <= 0, clock.now >= deadline { return condition() }
+            remaining -= 1
             try? await Task.sleep(for: .milliseconds(5))
         }
-        return condition()
     }
 
     private func makeRunningTask(goal: String) -> AgentTask {

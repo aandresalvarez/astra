@@ -97,12 +97,15 @@ struct TaskThreadViewModelTests {
         // budget counts polls, not seconds: cold/full-suite load starves the
         // first build past any wall clock, which is how this assertion failed
         // with a 30-second deadline.
-        _ = await pollUntil { vm.appliedSnapshotReadiness.isReady(for: task.id) }
+        #expect(await pollUntil { vm.appliedSnapshotReadiness.isReady(for: task.id) })
         #expect(vm.appliedSnapshotReadiness.isReady(for: task.id))
         run.setOutput("new streaming output")
         vm.refreshSnapshot(for: task)
         let expectedRevision = vm.appliedSnapshotRevision + 1
-        _ = await pollUntil { vm.appliedSnapshotRevision >= expectedRevision }
+        // Asserted, not discarded: everything below reads the telemetry this
+        // revision produces, and a wait that ran out would leave it reading
+        // what the first snapshot left behind.
+        #expect(await pollUntil { vm.appliedSnapshotRevision >= expectedRevision })
 
         _ = try #require(capture.latest("task_open_snapshot_queue_wait"))
         let queueIndex = try #require(capture.lastIndex(of: "task_open_snapshot_queue_wait"))
@@ -160,31 +163,54 @@ struct TaskThreadViewModelTests {
         #expect(admission >= 100, "time queued behind actor work must remain visible")
     }
 
-    /// Yields until `condition` holds or the poll budget runs out.
+    /// Yields until `condition` holds, or until *both* budgets are spent.
     ///
-    /// Budgeted in polls rather than elapsed time: a wall-clock deadline
-    /// measures how loaded the machine is, not how the code behaves. Under a
-    /// full parallel `swift test` the first snapshot build can be starved well
-    /// past any deadline, which is how these assertions failed with budgets
-    /// already raised to 30 seconds. Counting polls gives the condition the
-    /// same number of chances however starved the run is, and still bounds a
-    /// genuinely stuck build.
+    /// Two different things can starve this wait, and each bound covers the
+    /// one the other misses.
+    ///
+    /// Counting polls covers a starved main actor: under a full parallel
+    /// `swift test` the first snapshot build can be delayed past any wall
+    /// clock, and these assertions failed that way with budgets already raised
+    /// to 30 seconds. A deadline there measures host load, not the code.
+    ///
+    /// A wall clock covers the opposite case — a responsive main actor and a
+    /// saturated off-main snapshot executor. The poller then runs at full
+    /// speed and a poll budget converts straight back into a short timeout:
+    /// 3,000 one-millisecond polls is about three seconds, a tenth of what
+    /// these waits used to allow.
+    ///
+    /// So neither bound alone is enough, and the wait ends only once both are
+    /// exhausted. `floor` is each caller's original timeout, so no tolerance
+    /// is shortened by counting polls.
     @MainActor
-    private func pollUntil(polls: Int = 3_000, _ condition: () -> Bool) async -> Bool {
-        for _ in 0..<polls {
+    private func pollUntil(
+        polls: Int = 3_000,
+        floor: Duration = .seconds(30),
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + floor
+        var remaining = polls
+        while true {
             if condition() { return true }
+            if remaining <= 0, clock.now >= deadline { return condition() }
+            remaining -= 1
             try? await Task.sleep(for: .milliseconds(1))
         }
-        return condition()
     }
 
     @MainActor
     private func awaitSnapshot(
         _ vm: TaskThreadViewModel,
         where predicate: @Sendable (TaskThreadSnapshot) -> Bool,
-        polls: Int = 300
+        polls: Int = 300,
+        floor: Duration = .seconds(30)
     ) async -> TaskThreadSnapshot? {
-        for _ in 0..<polls {
+        let clock = ContinuousClock()
+        let deadline = clock.now + floor
+        var remaining = polls
+        while remaining > 0 || clock.now < deadline {
+            remaining -= 1
             if let snap = vm.snapshot, predicate(snap) {
                 return snap
             }
@@ -197,9 +223,14 @@ struct TaskThreadViewModelTests {
     private func awaitReadiness(
         _ vm: TaskThreadViewModel,
         taskID: UUID,
-        polls: Int = 300
+        polls: Int = 300,
+        floor: Duration = .seconds(30)
     ) async -> TaskThreadSnapshotReadiness {
-        for _ in 0..<polls {
+        let clock = ContinuousClock()
+        let deadline = clock.now + floor
+        var remaining = polls
+        while remaining > 0 || clock.now < deadline {
+            remaining -= 1
             let readiness = vm.appliedSnapshotReadiness
             if readiness.isReady(for: taskID) {
                 return readiness
@@ -406,7 +437,7 @@ struct TaskThreadViewModelTests {
         while await barrier.startedCount < 1 { await Task.yield() }
         vm.reset(for: second)
 
-        let readiness = await awaitReadiness(vm, taskID: second.id, polls: 20)
+        let readiness = await awaitReadiness(vm, taskID: second.id, polls: 20, floor: .seconds(2))
         #expect(readiness.isReady(for: second.id))
         if case .userMessage(_, let text, _)? = vm.snapshot?.conversationItems.first {
             #expect(text == second.goal)
