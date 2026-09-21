@@ -3,7 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
+@testable import ASTRAPersistence
 @testable import ASTRA
 
 /// `refreshLoadingOffMainActor` exists only to keep the task folder resolve and
@@ -89,6 +89,39 @@ struct TaskContextStateOffMainRefreshTests {
         // The no-op guard in `applyRefresh` is what keeps task open off the
         // encode-and-write path; losing it would not fail any assertion above.
         #expect(try modificationDate(of: path) == firstModified)
+    }
+
+    @Test("A write that lands during the off-actor read is not overwritten")
+    func concurrentWriteIsNotClobbered() async throws {
+        let fixture = try makeFixture("clobber")
+        defer { fixture.cleanup() }
+        // Inserted and saved so the refresh's derived fields actually move:
+        // a refresh that finds nothing to change returns before saving, and
+        // then there is no overwrite to catch.
+        let run = TaskRun(task: fixture.task)
+        run.status = .completed
+        run.setOutput("answer")
+        run.completedAt = Date()
+        fixture.container.mainContext.insert(run)
+        try fixture.container.mainContext.save()
+
+        // Land a durable write in the window between the off-actor read and
+        // the apply — the interleaving that made this revalidation necessary.
+        TaskContextStateManager.interleaveForTesting = {
+            TaskContextStateManager.recordTurn(
+                task: fixture.task,
+                run: run,
+                message: "turn recorded mid-refresh"
+            )
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        // Without the stamp check the refresh derives from the snapshot it read
+        // before that write and saves over it, silently dropping the turn.
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.turns.contains { $0.ask == "turn recorded mid-refresh" })
     }
 
     private func modificationDate(of url: URL) throws -> Date {

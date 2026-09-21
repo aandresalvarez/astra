@@ -722,14 +722,16 @@ struct TaskMainView: View {
             initializeTaskPolicySelection()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
-            // Not awaited: the refresh now does its filesystem work off the
-            // main actor, so task open no longer has any reason to sit behind
-            // it. Its own tail still runs once it lands.
-            Task { await refreshTaskContextState() }
             refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache(reason: .taskOpen)
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
+        // Awaited rather than launched, so `.task(id:)` cancellation reaches
+        // it: an unstructured Task here outlives the view and can resume
+        // against a task the user has since deleted. It no longer blocks the
+        // main thread either way — the filesystem work runs off the actor —
+        // and everything above has already run.
+        await refreshTaskContextState()
     }
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
         Task { @MainActor in
@@ -767,17 +769,18 @@ struct TaskMainView: View {
     }
 
     private func refreshTaskContextState() async {
-        // Measured around the await, not with `measurePhase`, which takes a
-        // synchronous closure. The phase name is unchanged so the samples stay
-        // comparable with the ones that motivated moving the IO off the actor.
-        let started = DispatchTime.now().uptimeNanoseconds
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
-        TaskOpenResponsivenessTelemetry.recordPhase(
+        // Opened before the await and closed after it. `recordPhase` resolves
+        // the trace when the phase *ends*, and transcript readiness clears it —
+        // which would drop exactly the slow refreshes this phase exists to
+        // measure. The phase name is unchanged, so samples stay comparable.
+        let phase = TaskOpenResponsivenessTelemetry.beginPhase(
             "context_state_refresh",
             task: task,
-            scope: taskOpenResponsivenessScope,
-            startedAtUptimeNanoseconds: started
+            scope: taskOpenResponsivenessScope
         )
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        TaskOpenResponsivenessTelemetry.endPhase(phase)
+        guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }
