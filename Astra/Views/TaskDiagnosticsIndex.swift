@@ -1,7 +1,6 @@
 import Foundation
 import ASTRAPersistence
 import ASTRACore
-import ASTRAModels
 
 struct TaskDiagnosticFileItem: Identifiable, Hashable {
     enum Group: String, CaseIterable {

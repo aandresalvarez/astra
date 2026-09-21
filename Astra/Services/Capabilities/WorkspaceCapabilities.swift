@@ -1,7 +1,6 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
 
 struct WorkspaceCapabilities {
     let workspace: Workspace

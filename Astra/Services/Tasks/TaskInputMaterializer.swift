@@ -1,6 +1,5 @@
 import Foundation
 import ASTRAModels
-import ASTRAPersistence
 
 /// Moves composer temp attachments out of `$TMPDIR` before a task launches.
 ///
