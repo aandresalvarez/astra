@@ -121,11 +121,17 @@ enum TaskDeliverableExpectation {
         scanEntryLimit: Int = artifactScanEntryLimit,
         scanDepthLimit: Int = artifactScanDepthLimit
     ) -> Bool {
-        if run.fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
+        // Both roots are the same for every path this call classifies, and
+        // resolving them costs a task-folder lookup plus a symlink resolution
+        // each. Inside the loop that was charged per artifact, against a
+        // relationship that reached 13,295 rows in production.
+        let roots = ArtifactPathRoots(task: task)
+
+        if run.fileChanges.contains(where: { isUserArtifactPath($0.path, roots: roots) }) {
             return true
         }
 
-        if task.artifacts.contains(where: { !$0.isStale && isUserArtifactPath($0.path, task: task) }) {
+        if task.artifacts.contains(where: { !$0.isStale && isUserArtifactPath($0.path, roots: roots) }) {
             return true
         }
 
@@ -160,7 +166,8 @@ enum TaskDeliverableExpectation {
         scanEntryLimit: Int = artifactScanEntryLimit,
         scanDepthLimit: Int = artifactScanDepthLimit
     ) -> Bool {
-        if fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
+        let roots = ArtifactPathRoots(task: task)
+        if fileChanges.contains(where: { isUserArtifactPath($0.path, roots: roots) }) {
             return true
         }
 
@@ -600,45 +607,69 @@ enum TaskDeliverableExpectation {
         }
     }
 
-    private static func isUserArtifactPath(_ path: String, task: AgentTask) -> Bool {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !taskFolder.isEmpty else { return true }
+    /// The task-folder and workspace roots every artifact path in one call is
+    /// classified against, resolved once.
+    ///
+    /// Each root costs a `TaskWorkspaceAccess` lookup and a
+    /// `resolvingSymlinksInPath` — a `getattrlist` per path component. Building
+    /// them per path made run finalize O(artifacts) in symlink resolutions on
+    /// the main actor.
+    struct ArtifactPathRoots {
+        let taskFolder: URL?
+        let workspace: URL?
+
+        init(task: AgentTask) {
+            let access = TaskWorkspaceAccess(task: task)
+            let folder = access.taskFolder
+            taskFolder = folder.isEmpty
+                ? nil
+                : URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL
+            let workspacePath = access.effectiveWorkspacePath
+            workspace = workspacePath.isEmpty
+                ? nil
+                : URL(fileURLWithPath: workspacePath).resolvingSymlinksInPath().standardizedFileURL
+        }
+    }
+
+    private static func isUserArtifactPath(_ path: String, roots: ArtifactPathRoots) -> Bool {
+        guard let root = roots.taskFolder else { return true }
         let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
         if !normalizedPath.hasPrefix("/"),
            TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(normalizedPath, context: .taskFolder) {
             return false
         }
-        let root = URL(fileURLWithPath: taskFolder)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
         let url = normalizedPath.hasPrefix("/")
             ? URL(fileURLWithPath: normalizedPath)
             : root.appendingPathComponent(normalizedPath)
-        if let relative = relativePath(of: url, taskFolder: root) {
+        if let relative = relativePath(of: url, resolvedRoot: root) {
             return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
                 relative,
                 context: .taskFolder
             ) != nil
         }
 
-        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
-        if !workspacePath.isEmpty {
-            let workspaceRoot = URL(fileURLWithPath: workspacePath)
-                .resolvingSymlinksInPath()
-                .standardizedFileURL
-            if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
-                return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
-                    workspaceRelative,
-                    context: .workspace
-                ) != nil
-            }
+        if let workspaceRoot = roots.workspace,
+           let workspaceRelative = relativePath(of: url, resolvedRoot: workspaceRoot) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                workspaceRelative,
+                context: .workspace
+            ) != nil
         }
 
         return true
     }
 
     private static func relativePath(of fileURL: URL, taskFolder: URL) -> String? {
-        let prefix = taskFolder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        relativePath(
+            of: fileURL,
+            resolvedRoot: taskFolder.resolvingSymlinksInPath().standardizedFileURL
+        )
+    }
+
+    /// `resolvedRoot` has already been through `resolvingSymlinksInPath`, so
+    /// the only filesystem work left is resolving the path being classified.
+    private static func relativePath(of fileURL: URL, resolvedRoot: URL) -> String? {
+        let prefix = resolvedRoot.path + "/"
         let path = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
         guard path.hasPrefix(prefix) else { return nil }
         return String(path.dropFirst(prefix.count))
