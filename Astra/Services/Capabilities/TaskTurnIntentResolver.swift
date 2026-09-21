@@ -82,10 +82,18 @@ enum TaskTurnIntentResolver {
             ? latestPriorUserTurn(for: task, excluding: nil)
                 .map { bounded($0, limit: maxTurnCharacters) }
             : nil
-        let activeObjective = bounded(
-            TaskContextStateManager.activeObjectiveText(for: task),
-            limit: maxObjectiveCharacters
-        )
+        // Resolving the objective reconstructs the plan from the task's events,
+        // and this runs after every pause in typing. `activationText` — the only
+        // reader of `activeObjective` — consults it just for a referential turn
+        // with nothing to inherit, so resolving it for an ordinary turn costs an
+        // event walk whose answer is then discarded.
+        let needsActiveObjective = referential && inheritedTurn == nil
+        let activeObjective = needsActiveObjective
+            ? bounded(
+                TaskContextStateManager.activeObjectiveText(for: task),
+                limit: maxObjectiveCharacters
+            )
+            : ""
         return TaskTurnIntentSnapshot(
             taskID: task.id,
             sourceEventID: nil,
