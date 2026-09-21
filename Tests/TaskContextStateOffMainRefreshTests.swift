@@ -281,6 +281,71 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.filesChanged.contains { $0.hasSuffix("deliverables/late.md") })
     }
 
+    @Test("A load invalidated once is retried off the actor, not rescanned on it")
+    func invalidatedLoadRetriesOffActor() async throws {
+        let fixture = try makeFixture("retry")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        let late = URL(fileURLWithPath: folder).appendingPathComponent("late.md")
+        TaskContextStateManager.fallbackCountForTesting = 0
+        TaskContextStateManager.revalidationRetryCountForTesting = 0
+
+        // Perturbs the first attempt only, so the folder is settled by the
+        // second. A folder moving during the scan is most likely while a run
+        // is producing outputs, which is exactly the case this change is for —
+        // recovering by rescanning on the actor would put the freeze back
+        // precisely there.
+        nonisolated(unsafe) var perturbed = false
+        TaskContextStateManager.interleaveForTesting = {
+            guard !perturbed else { return }
+            perturbed = true
+            try? "late".write(to: late, atomically: true, encoding: .utf8)
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        #expect(TaskContextStateManager.revalidationRetryCountForTesting == 1, "the stale load must be retried")
+        #expect(TaskContextStateManager.fallbackCountForTesting == 0, "the retry must not cost a main-actor rescan")
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.filesChanged.contains { $0.hasSuffix("late.md") })
+    }
+
+    @Test("A dependency tree is not stamped, so churn inside it costs nothing")
+    func dependencyTreesAreNotStamped() async throws {
+        let fixture = try makeFixture("deps")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        // The shape the output scan prunes: an agent running `python -m venv`
+        // in its task folder adds ~15,000 entries. Every directory stamped
+        // here is re-stat'd on the main actor at the apply, so walking one of
+        // these would put a far worse freeze on task selection than the one
+        // this change removes.
+        let vendored = URL(fileURLWithPath: folder)
+            .appendingPathComponent(".build", isDirectory: true)
+            .appendingPathComponent("pkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: vendored, withIntermediateDirectories: true)
+        TaskContextStateManager.fallbackCountForTesting = 0
+        TaskContextStateManager.revalidationRetryCountForTesting = 0
+
+        TaskContextStateManager.interleaveForTesting = {
+            try? "x".write(
+                to: vendored.appendingPathComponent("artifact.o"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        // A pruned subtree is not watched, so churn inside it invalidates
+        // nothing. Without the prune this directory is stamped and the write
+        // above moves it, costing a retry or a rescan on every refresh.
+        #expect(TaskContextStateManager.revalidationRetryCountForTesting == 0)
+        #expect(TaskContextStateManager.fallbackCountForTesting == 0)
+    }
+
     @Test("The precomputed folder scan is used instead of rescanning on the actor")
     func precomputedScanIsHonoured() async throws {
         let fixture = try makeFixture("scan")
