@@ -62,22 +62,35 @@ private final class ManualClock {
 @MainActor
 @Suite("Task thread snapshot back-pressure")
 struct TaskThreadSnapshotBackpressureTests {
-    /// The 30 s budget matches the rest of the thread suites. Every wait here is
-    /// on a condition the pipeline reaches in milliseconds when the machine is
-    /// idle; the budget exists because the full suite runs main-actor tests
-    /// concurrently and can starve a single hop for seconds. A tight bound would
-    /// measure host load, not back-pressure.
+    /// Yields until `condition` holds, or until *both* budgets are spent.
+    ///
+    /// Every wait here is on a condition the pipeline reaches in milliseconds
+    /// when the machine is idle; the budgets exist only because the full suite
+    /// runs main-actor tests concurrently.
+    ///
+    /// Two bounds, because two different things can starve the wait. Counting
+    /// polls covers a starved main actor, where a wall clock measures host
+    /// load rather than back-pressure — this suite failed on
+    /// `#expect(converged)` with a deadline already raised to 30 seconds. A
+    /// wall clock covers a responsive main actor with a saturated executor
+    /// elsewhere, where the poller runs at full speed and 600 five-millisecond
+    /// polls is three seconds, a tenth of what this used to allow. The wait
+    /// ends only once both are exhausted, so `floor` keeps the original
+    /// tolerance intact.
     private func waitUntil(
-        timeout: Duration = .seconds(30),
+        polls: Int = 600,
+        floor: Duration = .seconds(30),
         _ condition: () -> Bool
     ) async -> Bool {
         let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
+        let deadline = clock.now + floor
+        var remaining = polls
+        while true {
             if condition() { return true }
+            if remaining <= 0, clock.now >= deadline { return condition() }
+            remaining -= 1
             try? await Task.sleep(for: .milliseconds(5))
         }
-        return condition()
     }
 
     private func makeRunningTask(goal: String) -> AgentTask {
@@ -125,7 +138,10 @@ struct TaskThreadSnapshotBackpressureTests {
             )
         )
         viewModel.reset(for: task)
-        _ = await waitUntil { viewModel.appliedSnapshotRevision > 0 }
+        // Asserted rather than discarded: everything below is measured against
+        // the state this priming wait establishes, so a wait that ran out
+        // would fail somewhere further down instead of here.
+        #expect(await waitUntil { viewModel.appliedSnapshotRevision > 0 })
         let baseline = viewModel.snapshotBuildCountForTesting
 
         // Stand in for the layout pass the apply just triggered: one 700 ms
@@ -180,7 +196,10 @@ struct TaskThreadSnapshotBackpressureTests {
             )
         )
         viewModel.reset(for: task)
-        _ = await waitUntil { viewModel.appliedSnapshotRevision > 0 }
+        // Asserted rather than discarded: everything below is measured against
+        // the state this priming wait establishes, so a wait that ran out
+        // would fail somewhere further down instead of here.
+        #expect(await waitUntil { viewModel.appliedSnapshotRevision > 0 })
 
         viewModel.mainActorStallSamplerForTesting.record(wakeGapNanoseconds: 1_050_000_000)
         clock.advance(milliseconds: 1_000)
