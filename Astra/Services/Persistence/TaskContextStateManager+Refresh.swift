@@ -21,12 +21,16 @@ extension TaskContextStateManager {
         /// The task folder's contents, enumerated here rather than on the main
         /// actor inside `updateDerivedFields`.
         let discoveredFiles: [TaskOutputDiscoveredFile]
-        /// Identity of the task folder as the scan finished. The scan used to
-        /// run at the moment of use; off-actor it can go stale in the hop back.
-        let folderStamp: FileStamp?
-        /// The folder changed identity during the scan, so the inventory may
+        /// Identity, as the scan finished, of every directory the inventory
+        /// came from. The scan used to run at the moment of use; off-actor it
+        /// can go stale in the hop back.
+        let directoryStamps: [String: FileStamp]
+        /// A directory changed identity during the scan, so the inventory may
         /// describe two different moments.
         let scanStraddledAChange: Bool
+        /// Whether the load came back healthy. Anything else has to be handled
+        /// on the actor, because recovering from it writes.
+        let loadWasHealthy: Bool
     }
 
     /// Cheap identity of a file: enough to detect that someone replaced it,
@@ -46,6 +50,30 @@ extension TaskContextStateManager {
 
     private static func statePath(inFolder folder: String) -> String {
         URL(fileURLWithPath: folder).appendingPathComponent(jsonFileName).path
+    }
+
+    /// Stamps the folder plus each directory holding a discovered file. Adding
+    /// or removing an entry moves its directory's identity, so re-stamping
+    /// these at the apply spots an inventory that went stale in the hop back —
+    /// including inside a subdirectory, which the folder's own identity does
+    /// not reflect.
+    ///
+    /// Two things it does not catch, stated rather than implied: a file
+    /// rewritten in place, which moves no directory, and a change landing
+    /// *inside* the enumeration itself, since the set of directories to stamp
+    /// is only known once the enumeration has produced it. Both ride the next
+    /// refresh, as they did before any of this moved off the actor.
+    private static func directoryStamps(
+        forFolder folder: String,
+        files: [TaskOutputDiscoveredFile]
+    ) -> [String: FileStamp] {
+        var paths = Set([folder])
+        for file in files {
+            paths.insert(URL(fileURLWithPath: file.path).deletingLastPathComponent().path)
+        }
+        return paths.reduce(into: [:]) { stamps, path in
+            stamps[path] = FileStamp(atPath: path)
+        }
     }
 
     /// `refresh(task:)` with its filesystem work moved off the main actor.
@@ -87,7 +115,16 @@ extension TaskContextStateManager {
             // snapshot straight back over them. Two stamps that disagree mean
             // the read straddled a write and neither describes the other.
             let beforeRead = FileStamp(atPath: path)
-            let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: taskID)
+            // `loadResult` reads and decodes and nothing else. `recoverState`,
+            // which used to be called here, is not read-only: on a corrupt file
+            // it *moves* it to quarantine. Off the actor that races every
+            // writer — it could observe a decode failure, let `recordTurn`
+            // replace the file with good state, and then quarantine that new
+            // file, losing the turn. Every unhealthy status is handed back for
+            // the actor to recover under the same serialization as the writers.
+            let loaded = loadResult(taskFolder: folder)
+            let healthy = loaded.status == .loadedCurrent || loaded.status == .migratedLegacy
+            let existing = healthy ? loaded.state : nil
             #if DEBUG
             interleaveDuringLoadForTesting?()
             #endif
@@ -102,20 +139,27 @@ extension TaskContextStateManager {
             // land. It does not catch a change nested in a subdirectory, nor a
             // file rewritten in place — those still ride on the next refresh,
             // as they did before this moved.
-            let beforeScan = FileStamp(atPath: folder)
+            let beforeScan = directoryStamps(forFolder: folder, files: [])
             let discovered = TaskOutputDiscovery.files(in: folder)
             #if DEBUG
             interleaveDuringScanForTesting?()
             #endif
-            let afterScan = FileStamp(atPath: folder)
+            // Every directory the inventory actually came from, not just the
+            // root: `TaskOutputDiscovery` recurses, so a file appearing inside
+            // an existing subdirectory leaves the root's own identity alone.
+            // Taking the set from the discovered files rides the scan's own
+            // pruning instead of re-deriving it.
+            let afterScan = directoryStamps(forFolder: folder, files: discovered)
+            let rootMoved = beforeScan[folder] != afterScan[folder]
             return LoadedContextState(
                 folder: folder,
                 existing: existing,
                 stamp: afterRead,
                 readStraddledAWrite: beforeRead != afterRead,
                 discoveredFiles: discovered,
-                folderStamp: afterScan,
-                scanStraddledAChange: beforeScan != afterScan
+                directoryStamps: afterScan,
+                scanStraddledAChange: rootMoved,
+                loadWasHealthy: healthy
             )
         }.value
         guard let loaded else { return }
@@ -142,18 +186,19 @@ extension TaskContextStateManager {
         // snapshot that predates it and silently drop the newer turn. A stat is
         // microseconds against the read it validates, so re-check identity and
         // fall back to the synchronous path, which re-reads under the actor.
-        guard !loaded.readStraddledAWrite,
+        // Before the fallback, not after it: awaiting a detached task neither
+        // cancels it nor stops a cancelled caller resuming, and the fallback
+        // rescans the whole folder on the actor. A superseded refresh taking
+        // that branch would block the task the user actually switched to.
+        guard !Task.isCancelled else { return }
+        guard loaded.loadWasHealthy,
+              !loaded.readStraddledAWrite,
               FileStamp(atPath: statePath(inFolder: loaded.folder)) == loaded.stamp,
               !loaded.scanStraddledAChange,
-              FileStamp(atPath: loaded.folder) == loaded.folderStamp else {
+              loaded.directoryStamps.allSatisfy({ FileStamp(atPath: $0.key) == $0.value }) else {
             refresh(task: task, followUpMessage: followUpMessage)
             return
         }
-        // Awaiting a detached task neither cancels it nor stops a cancelled
-        // caller resuming, so a task switch can land here after the next task
-        // has already initialised. Applying now would write this task's domain
-        // state and then its presentation state over the new one's.
-        guard !Task.isCancelled else { return }
         applyRefresh(
             existing: loaded.existing,
             folder: loaded.folder,

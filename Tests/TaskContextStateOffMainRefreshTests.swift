@@ -181,6 +181,63 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.filesChanged.contains { $0.hasSuffix("late-output.md") })
     }
 
+    @Test("The off-actor load never quarantines; recovery stays on the actor")
+    func detachedLoadDoesNotQuarantine() async throws {
+        let fixture = try makeFixture("quarantine")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        let path = URL(fileURLWithPath: folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try "{ not json".write(to: path, atomically: true, encoding: .utf8)
+
+        // Sampled off the actor, immediately after the load: quarantining
+        // *moves* the file, and doing that here races every writer — it can
+        // observe the corruption, let `recordTurn` replace the file with good
+        // state, then quarantine that new file and lose the turn.
+        nonisolated(unsafe) var quarantinedDuringLoad = true
+        TaskContextStateManager.interleaveDuringLoadForTesting = {
+            quarantinedDuringLoad = !Self.corruptCopies(in: folder).isEmpty
+        }
+        defer { TaskContextStateManager.interleaveDuringLoadForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        #expect(quarantinedDuringLoad == false, "the detached half must not write")
+        // The recovery itself still has to happen — just under the actor.
+        #expect(!Self.corruptCopies(in: folder).isEmpty, "the corrupt file must still be quarantined")
+    }
+
+    @Test("An output appearing in a subdirectory before the apply is not applied stale")
+    func nestedChangeBeforeApplyFallsBack() async throws {
+        let fixture = try makeFixture("nested")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        let sub = URL(fileURLWithPath: folder).appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        // An existing file puts `nested/` into the scanned set the stamps come from.
+        try "first".write(to: sub.appendingPathComponent("first.md"), atomically: true, encoding: .utf8)
+        let late = sub.appendingPathComponent("late.md")
+
+        // The window this validation is for: the hop between the off-actor scan
+        // and the apply. The task folder's own identity does not move when a
+        // file lands inside an existing subdirectory, so a root-only stamp
+        // accepts the stale inventory here.
+        TaskContextStateManager.interleaveForTesting = {
+            try? "late".write(to: late, atomically: true, encoding: .utf8)
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.filesChanged.contains { $0.hasSuffix("nested/late.md") })
+    }
+
+    nonisolated private static func corruptCopies(in folder: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
+            .filter { $0.contains(".corrupt-") }
+    }
+
     @Test("The precomputed folder scan is used instead of rescanning on the actor")
     func precomputedScanIsHonoured() async throws {
         let fixture = try makeFixture("scan")

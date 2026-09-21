@@ -696,6 +696,11 @@ struct TaskMainView: View {
     @MainActor
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
+        // The generated-files refresh is unstructured, so `.task(id:)` does not
+        // reach it and only another generated-files event would replace it. It
+        // captured the previous task and would apply that task's presentation
+        // state over this one's.
+        pendingContextStateRefreshTask?.cancel()
 
         TaskOpenResponsivenessTelemetry.measurePhase(
             "task_initialization",
