@@ -1,6 +1,5 @@
 import Foundation
 import ASTRACore
-import ASTRAPersistence
 import ASTRAModels
 
 enum AgentRuntimeFailureCategory: String, CaseIterable, Sendable {

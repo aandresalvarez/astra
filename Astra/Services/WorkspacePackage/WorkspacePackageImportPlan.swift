@@ -1,5 +1,4 @@
 import Foundation
-import ASTRAPersistence
 
 enum WorkspacePackageImportItemStatus: String, Sendable, Equatable {
     case ready

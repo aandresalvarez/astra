@@ -1,6 +1,5 @@
 import Foundation
 import ASTRACore
-import ASTRAModels
 
 struct FeedbackReportStatusPresentation: Equatable, Sendable {
     let title: String

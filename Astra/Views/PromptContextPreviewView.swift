@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import ASTRAModels
-import ASTRAPersistence
 import ASTRACore
 
 struct PromptContextPreviewSummary: Equatable {
