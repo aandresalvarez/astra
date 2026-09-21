@@ -138,7 +138,10 @@ struct TaskThreadSnapshotBackpressureTests {
             )
         )
         viewModel.reset(for: task)
-        _ = await waitUntil { viewModel.appliedSnapshotRevision > 0 }
+        // Asserted rather than discarded: everything below is measured against
+        // the state this priming wait establishes, so a wait that ran out
+        // would fail somewhere further down instead of here.
+        #expect(await waitUntil { viewModel.appliedSnapshotRevision > 0 })
         let baseline = viewModel.snapshotBuildCountForTesting
 
         // Stand in for the layout pass the apply just triggered: one 700 ms
@@ -193,7 +196,10 @@ struct TaskThreadSnapshotBackpressureTests {
             )
         )
         viewModel.reset(for: task)
-        _ = await waitUntil { viewModel.appliedSnapshotRevision > 0 }
+        // Asserted rather than discarded: everything below is measured against
+        // the state this priming wait establishes, so a wait that ran out
+        // would fail somewhere further down instead of here.
+        #expect(await waitUntil { viewModel.appliedSnapshotRevision > 0 })
 
         viewModel.mainActorStallSamplerForTesting.record(wakeGapNanoseconds: 1_050_000_000)
         clock.advance(milliseconds: 1_000)
