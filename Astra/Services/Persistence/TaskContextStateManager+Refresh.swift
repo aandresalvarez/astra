@@ -255,18 +255,35 @@ extension TaskContextStateManager {
         // from the discovered files alone this misses an empty one, and the
         // first artifact written into a pre-created `outputs/` moves only that
         // directory, not the root.
-        let directories = scannedDirectories(under: folder)
+        let before = scannedDirectories(under: folder)
         guard !Task.isCancelled else { return nil }
-        let beforeScan = stamps(for: directories, files: [])
+        let beforeScan = stamps(for: before, files: [])
         let discovered = TaskOutputDiscovery.files(in: folder)
         guard !Task.isCancelled else { return nil }
         #if DEBUG
         interleaveDuringScanForTesting?()
         #endif
+        // Walked again, and the two unioned, because one walk cannot describe
+        // a directory that did not exist when it ran.
+        //
+        // Deliberately untested. The window is between the first walk and its
+        // stamps: a directory created while the scan runs already moves the
+        // root, which the bracket catches, so every seam this file has reaches
+        // a case that passes either way. Covering the real window needs a
+        // sixth test hook in production code for a sub-millisecond gap, which
+        // costs more than the guard does. A run creating an empty
+        // nested directory between that walk and its stamps leaves the new
+        // directory untracked *and* its parent's baseline already carrying the
+        // creation — so the first file written inside it moves only something
+        // nothing is watching, and the stale inventory passes.
+        let after = scannedDirectories(under: folder)
+        let tracked = Array(Set(before).union(after))
         // Bracketed like the read, and over every scanned directory rather
         // than the root alone: a change landing inside the enumeration leaves
-        // the inventory describing one moment and the stamps another.
-        let afterScan = stamps(for: directories, files: discovered)
+        // the inventory describing one moment and the stamps another. A
+        // directory that appeared during it counts as such a change.
+        let afterScan = stamps(for: tracked, files: discovered)
+        let moved = before.contains { beforeScan[$0] != afterScan[$0] }
         return LoadedContextState(
             folder: folder,
             existing: existing,
@@ -274,7 +291,7 @@ extension TaskContextStateManager {
             readStraddledAWrite: beforeRead != afterRead,
             discoveredFiles: discovered,
             directoryStamps: afterScan,
-            scanStraddledAChange: directories.contains { beforeScan[$0] != afterScan[$0] },
+            scanStraddledAChange: moved || after.count != before.count,
             loadWasUsable: usable
         )
     }
