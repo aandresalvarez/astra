@@ -53,19 +53,44 @@ struct AppLoggerTests {
     ///
     /// Every offered option, not just the default: a fixed budget sized for the
     /// default silently reintroduces the same bug for 14, 30 and 90 days.
-    @Test("The rotation budget can hold every retention the picker offers")
-    func rotationBudgetCoversEveryOfferedRetention() {
-        // Sized to the throughput the budget claims to absorb, not to this
-        // install's quiet average: a budget that only covers the average puts
-        // size back in charge the first busy week.
+    @Test("The rotation budget holds every retention the ceiling does not bind")
+    func rotationBudgetCoversEveryRetentionBelowTheCeiling() {
         for days in LoggingPreferences.logRetentionDayOptions {
-            let needed = AppLogger.assumedPeakBytesPerDay * UInt64(days)
-            let budget = AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+            let generations = AppLogger.rotatedGenerations(forRetentionDays: days)
+            guard generations < AppLogger.maxRotatedGenerationsCeiling else { continue }
             #expect(
-                budget >= needed,
-                "rotation holds \(budget) B, a \(days)-day retention needs \(needed) B"
+                AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+                    >= AppLogger.assumedPeakBytesPerDay * UInt64(days),
+                "a \(days)-day retention is below the ceiling, so size must not decide it"
             )
         }
+    }
+
+    /// The point of the ceiling is that it is the *only* thing allowed to cut a
+    /// retention short, and that it does not cut the default short.
+    @Test("Only the longest retention is bounded by the ceiling")
+    func onlyTheLongestRetentionIsCapped() {
+        // Cut short, not merely touching the ceiling: a retention whose budget
+        // still covers it at the assumed peak is honoured either way.
+        let cutShort = LoggingPreferences.logRetentionDayOptions.filter { days in
+            AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+                < AppLogger.assumedPeakBytesPerDay * UInt64(days)
+        }
+
+        #expect(cutShort == [90], "only the 90-day option should be bounded by size, got \(cutShort)")
+        #expect(
+            AppLogger.rotatedGenerations(forRetentionDays: LoggingPreferences.defaultLogRetentionDays)
+                < AppLogger.maxRotatedGenerationsCeiling,
+            "the default retention must not be the one the ceiling binds"
+        )
+    }
+
+    /// Every retained generation is a file the diagnostics readers may open in
+    /// full, and an archive takes at most `maxArchiveLogFiles` across app, task
+    /// and browser logs together. The app's share has to leave room for both.
+    @Test("The rotation ceiling leaves room in a diagnostics archive")
+    func rotationCeilingLeavesArchiveRoom() {
+        #expect(AppLogger.maxRotatedGenerationsCeiling < LogDiagnosticsService.maxArchiveLogFiles)
     }
 
     /// The shortest retentions must not hold less than the two generations that
@@ -75,25 +100,10 @@ struct AppLoggerTests {
         #expect(AppLogger.rotatedGenerations(forRetentionDays: 0) == 2)
         #expect(AppLogger.rotatedGenerations(forRetentionDays: 1) >= 2)
         #expect(
-            AppLogger.rotatedGenerations(forRetentionDays: 90)
-                > AppLogger.rotatedGenerations(forRetentionDays: 30),
+            AppLogger.rotatedGenerations(forRetentionDays: 30)
+                > AppLogger.rotatedGenerations(forRetentionDays: 7),
             "a longer retention must hold more, or it is not the thing deciding"
         )
-    }
-
-    /// The bug the budget exists to prevent, stated as throughput rather than
-    /// as a day count: a busy install must still reach its configured
-    /// retention before rotation deletes anything.
-    @Test("A day busier than the average does not put size back in charge")
-    func aBusyDayDoesNotReintroduceTheSizeCap() {
-        let busyDay: UInt64 = 10_000_000  // twice this install's measured peak
-
-        for days in LoggingPreferences.logRetentionDayOptions {
-            #expect(
-                AppLogger.onDiskBudgetBytes(forRetentionDays: days) >= busyDay * UInt64(days),
-                "a \(days)-day retention at \(busyDay) B/day needs more than the budget holds"
-            )
-        }
     }
 
     @Test("Sanitizer redacts sensitive payloads")

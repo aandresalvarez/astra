@@ -43,14 +43,38 @@ enum AppLogger: Sendable {
     ///
     /// Measured rather than assumed: the busiest day in this install's retained
     /// logs produced 4.89 MB (2026-09-18), and the quiet days 0.02-3.5 MB. The
-    /// constant carries roughly 4x headroom over that peak so a burst — several
+    /// constant carries 2x headroom over that peak so an ordinary burst — a few
     /// runs streaming at once — does not put size back in charge.
     ///
-    /// It is still an assumption, and the honest failure mode is worth stating:
-    /// an install that sustains more than this per day will see rotation bind
-    /// before the retention does, exactly as a fixed generation count did. Age
-    /// cleanup remains the real owner of how long anything is kept.
-    static let assumedPeakBytesPerDay: UInt64 = 20_000_000
+    /// It was 4x, which is the more comfortable number in isolation. Paired
+    /// with the 90-day option it also implied 360 generations, and the
+    /// diagnostics readers are not built for that: `tailLines` reads a whole
+    /// file before taking its suffix, and retained-log collection is uncapped,
+    /// so preparing a feedback report would have scanned ~1.8 GB. The headroom
+    /// here is bounded by what the rest of the system can consume, not by what
+    /// rotation alone could hold.
+    static let assumedPeakBytesPerDay: UInt64 = 10_000_000
+
+    /// Hard ceiling on rotated generations, whatever the retention asks for.
+    ///
+    /// Every retained generation is a file the diagnostics tooling may read in
+    /// full and may try to put in an archive, and that archive takes at most
+    /// `LogDiagnosticsService.maxArchiveLogFiles` files across app, task and
+    /// browser logs together. Sixty-four caps the app's share at roughly
+    /// 325 MB and leaves room in an archive for the other two. It is not 60
+    /// because a 30-day retention needs exactly 60, and a limit sitting on a
+    /// supported option is one rounding away from silently cutting it.
+    ///
+    /// The honest consequence, since this whole change is about size no longer
+    /// deciding: past this ceiling it decides again. At the headroom above,
+    /// that point is a 30-day retention, so the default and every option up to
+    /// it are reachable and only the 90-day one is bounded by size. What 90
+    /// days actually gets is ~30 days of sustained heavy logging, ~60 at this
+    /// install's busiest observed day (4.89 MB), and the full 90 only at
+    /// something near its observed mean (2.39 MB/day). Reaching further needs
+    /// the retained-log reads bounded first, which is a change to the readers
+    /// rather than to rotation.
+    static let maxRotatedGenerationsCeiling = 64
 
     /// Generations sized from the retention and that throughput, rather than
     /// equated with days.
@@ -68,7 +92,7 @@ enum AppLogger: Sendable {
     static func rotatedGenerations(forRetentionDays days: Int) -> Int {
         guard days > 0 else { return 2 }
         let needed = (assumedPeakBytesPerDay * UInt64(days) + maxLogFileSize - 1) / maxLogFileSize
-        return max(2, Int(needed))
+        return min(maxRotatedGenerationsCeiling, max(2, Int(needed)))
     }
 
     /// History the rotation budget can hold at a given retention: the live
