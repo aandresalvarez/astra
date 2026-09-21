@@ -39,8 +39,21 @@ enum AppLogger: Sendable {
         rotatedGenerations(forRetentionDays: configuredRetentionDays)
     }
 
-    /// One rotated generation per day of retention, which at this install's
-    /// roughly 5 MB per active day matches the 5 MB rotation size.
+    /// Daily log volume the rotation budget is sized to absorb.
+    ///
+    /// Measured rather than assumed: the busiest day in this install's retained
+    /// logs produced 4.89 MB (2026-09-18), and the quiet days 0.02-3.5 MB. The
+    /// constant carries roughly 4x headroom over that peak so a burst — several
+    /// runs streaming at once — does not put size back in charge.
+    ///
+    /// It is still an assumption, and the honest failure mode is worth stating:
+    /// an install that sustains more than this per day will see rotation bind
+    /// before the retention does, exactly as a fixed generation count did. Age
+    /// cleanup remains the real owner of how long anything is kept.
+    static let assumedPeakBytesPerDay: UInt64 = 20_000_000
+
+    /// Generations sized from the retention and that throughput, rather than
+    /// equated with days.
     ///
     /// Derived from the retention rather than fixed, because the picker offers
     /// `logRetentionDayOptions` up to 90 days: any constant is a second,
@@ -51,9 +64,11 @@ enum AppLogger: Sendable {
     ///
     /// This is a ceiling, not an allocation. Generations only exist once the
     /// log has filled them, so a quiet install on a 90-day retention keeps
-    /// whatever 90 days actually produced, not 455 MB of it.
+    /// whatever 90 days actually produced, not the ceiling's worth.
     static func rotatedGenerations(forRetentionDays days: Int) -> Int {
-        max(2, days)
+        guard days > 0 else { return 2 }
+        let needed = (assumedPeakBytesPerDay * UInt64(days) + maxLogFileSize - 1) / maxLogFileSize
+        return max(2, Int(needed))
     }
 
     /// History the rotation budget can hold at a given retention: the live
@@ -467,10 +482,16 @@ enum AppLogger: Sendable {
               let size = attrs[.size] as? UInt64,
               size > maxLogFileSize else { return }
 
-        for index in stride(from: maxRotatedGenerations, through: 1, by: -1) {
+        // Read once: this became a computed property over a user preference, so
+        // a retention change landing mid-loop would otherwise let the stride
+        // bound and the delete test disagree — shifting old generations past
+        // the old cap while deleting at the new one, which discards newer
+        // history and keeps older.
+        let generations = maxRotatedGenerations
+        for index in stride(from: generations, through: 1, by: -1) {
             let source = rotatedURL(for: url, generation: index)
             let destination = rotatedURL(for: url, generation: index + 1)
-            if index == maxRotatedGenerations {
+            if index == generations {
                 try? FileManager.default.removeItem(at: source)
             } else if FileManager.default.fileExists(atPath: source.path) {
                 try? FileManager.default.removeItem(at: destination)

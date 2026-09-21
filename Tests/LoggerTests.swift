@@ -55,10 +55,11 @@ struct AppLoggerTests {
     /// default silently reintroduces the same bug for 14, 30 and 90 days.
     @Test("The rotation budget can hold every retention the picker offers")
     func rotationBudgetCoversEveryOfferedRetention() {
-        let observedBytesPerActiveDay: UInt64 = 5_000_000
-
+        // Sized to the throughput the budget claims to absorb, not to this
+        // install's quiet average: a budget that only covers the average puts
+        // size back in charge the first busy week.
         for days in LoggingPreferences.logRetentionDayOptions {
-            let needed = observedBytesPerActiveDay * UInt64(days)
+            let needed = AppLogger.assumedPeakBytesPerDay * UInt64(days)
             let budget = AppLogger.onDiskBudgetBytes(forRetentionDays: days)
             #expect(
                 budget >= needed,
@@ -71,9 +72,28 @@ struct AppLoggerTests {
     /// shipped before this was derived from the setting.
     @Test("A short retention still keeps the generations that shipped before")
     func shortRetentionKeepsPreviousFloor() {
-        #expect(AppLogger.rotatedGenerations(forRetentionDays: 1) == 2)
-        #expect(AppLogger.rotatedGenerations(forRetentionDays: 3) == 3)
-        #expect(AppLogger.rotatedGenerations(forRetentionDays: 90) == 90)
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 0) == 2)
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 1) >= 2)
+        #expect(
+            AppLogger.rotatedGenerations(forRetentionDays: 90)
+                > AppLogger.rotatedGenerations(forRetentionDays: 30),
+            "a longer retention must hold more, or it is not the thing deciding"
+        )
+    }
+
+    /// The bug the budget exists to prevent, stated as throughput rather than
+    /// as a day count: a busy install must still reach its configured
+    /// retention before rotation deletes anything.
+    @Test("A day busier than the average does not put size back in charge")
+    func aBusyDayDoesNotReintroduceTheSizeCap() {
+        let busyDay: UInt64 = 10_000_000  // twice this install's measured peak
+
+        for days in LoggingPreferences.logRetentionDayOptions {
+            #expect(
+                AppLogger.onDiskBudgetBytes(forRetentionDays: days) >= busyDay * UInt64(days),
+                "a \(days)-day retention at \(busyDay) B/day needs more than the budget holds"
+            )
+        }
     }
 
     @Test("Sanitizer redacts sensitive payloads")
