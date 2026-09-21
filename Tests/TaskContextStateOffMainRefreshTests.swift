@@ -124,6 +124,33 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "turn recorded mid-refresh" })
     }
 
+    @Test("The precomputed folder scan is used instead of rescanning on the actor")
+    func precomputedScanIsHonoured() async throws {
+        let fixture = try makeFixture("scan")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent("report.md").path
+
+        // The scan `updateDerivedFields` would run on the actor is exactly what
+        // moved off it, so the caller now supplies the result. Feeding a file
+        // the on-actor scan could not have produced proves the parameter is
+        // honoured rather than quietly ignored.
+        TaskContextStateManager.applyRefresh(
+            existing: TaskContextStateManager.load(taskFolder: fixture.folder),
+            folder: fixture.folder,
+            task: fixture.task,
+            followUpMessage: "",
+            discoveredFiles: [TaskOutputDiscoveredFile(
+                path: path,
+                relativePath: "report.md",
+                type: "markdown"
+            )]
+        )
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.filesChanged.contains { $0.hasSuffix("report.md") })
+    }
+
     private func modificationDate(of url: URL) throws -> Date {
         let values = try url.resourceValues(forKeys: [.contentModificationDateKey])
         return try #require(values.contentModificationDate)

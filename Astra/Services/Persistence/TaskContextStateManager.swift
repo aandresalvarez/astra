@@ -483,10 +483,10 @@ public enum TaskContextStateManager {
 
     /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
     @MainActor
-    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String) {
+    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String, discoveredFiles: [TaskOutputDiscoveredFile]? = nil) {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task), discoveredFiles: discoveredFiles)
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return }
@@ -828,9 +828,11 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
+    private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?, discoveredFiles: [TaskOutputDiscoveredFile]? = nil) {
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
-        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
+        // Enumerates the task folder and resolves every file in it. A caller
+        // that already did that off the main actor passes the result in.
+        let discoveredTaskOutputFiles = discoveredFiles ?? TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),

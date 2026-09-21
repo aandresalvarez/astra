@@ -15,6 +15,9 @@ extension TaskContextStateManager {
         /// Identity of `current_state.json` at the moment it was read, so the
         /// main actor can tell whether anything wrote it since.
         let stamp: FileStamp?
+        /// The task folder's contents, enumerated here rather than on the main
+        /// actor inside `updateDerivedFields`.
+        let discoveredFiles: [TaskOutputDiscoveredFile]
     }
 
     /// Cheap identity of a file: enough to detect that someone replaced it,
@@ -39,8 +42,10 @@ extension TaskContextStateManager {
     /// `refresh(task:)` with its filesystem work moved off the main actor.
     ///
     /// `refresh` resolves the task folder — which runs a legacy-layout
-    /// migration check and creates two directories — and then reads and
-    /// decodes `current_state.json`, all before it touches any model state. On
+    /// migration check and creates two directories — then reads and decodes
+    /// `current_state.json`, and then, inside `updateDerivedFields`, enumerates
+    /// the whole task folder and resolves every file in it. All of that ran
+    /// before it touched any model state. On
     /// task open that whole sequence runs on the main thread, and production
     /// samples of the `context_state_refresh` phase put it at p50 60 ms, p90
     /// 178 ms, max 706 ms — a freeze the user feels when selecting a task.
@@ -70,7 +75,12 @@ extension TaskContextStateManager {
             // Stamped after the read: a writer that lands between the two makes
             // the stamp newer than the bytes, which fails the check below and
             // costs a redo rather than a silent overwrite.
-            return LoadedContextState(folder: folder, existing: existing, stamp: FileStamp(atPath: path))
+            return LoadedContextState(
+                folder: folder,
+                existing: existing,
+                stamp: FileStamp(atPath: path),
+                discoveredFiles: TaskOutputDiscovery.files(in: folder)
+            )
         }.value
         guard let loaded else { return }
         #if DEBUG
@@ -104,7 +114,8 @@ extension TaskContextStateManager {
             existing: loaded.existing,
             folder: loaded.folder,
             task: task,
-            followUpMessage: followUpMessage
+            followUpMessage: followUpMessage,
+            discoveredFiles: loaded.discoveredFiles
         )
     }
 
