@@ -116,10 +116,23 @@ struct RuntimeEligibilityPreviewRequest {
     let hasAcceptedTurn: Bool
     let taskID: UUID?
     let acceptedTurnCharacterCount: Int
-    private let evaluation: @MainActor () async -> TaskRuntimeEligibilitySnapshot?
+    /// The runtime the composer would actually launch. Scoring only this one is
+    /// what makes the typing path cheap; see `RuntimeEligibilityPreviewModifier`.
+    let selectedRuntime: AgentRuntimeID
 
-    func evaluate() async -> TaskRuntimeEligibilitySnapshot? {
-        await evaluation()
+    /// Stands in for the task identity of a composer that has neither a saved
+    /// draft nor a workspace yet, so even that composer's previews agree with
+    /// each other across edits.
+    static let unanchoredComposerPreviewID = UUID(
+        uuidString: "8F1D4C2E-0000-4000-A000-000000000001"
+    )!
+    private let evaluation: @MainActor ([AgentRuntimeID]?) async -> TaskRuntimeEligibilitySnapshot?
+
+    /// `candidateRuntimes: nil` scores every registered runtime.
+    func evaluate(
+        candidateRuntimes: [AgentRuntimeID]? = nil
+    ) async -> TaskRuntimeEligibilitySnapshot? {
+        await evaluation(candidateRuntimes)
     }
 
     static func existingTask(
@@ -147,8 +160,9 @@ struct RuntimeEligibilityPreviewRequest {
             signature: signature,
             hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             taskID: task.id,
-            acceptedTurnCharacterCount: acceptedTurn.count
-        ) {
+            acceptedTurnCharacterCount: acceptedTurn.count,
+            selectedRuntime: task.resolvedRuntimeID
+        ) { candidateRuntimes in
             let intent = TaskTurnIntentResolver.preview(for: task, acceptedTurn: acceptedTurn)
             return evaluate(
                 task: task,
@@ -157,7 +171,8 @@ struct RuntimeEligibilityPreviewRequest {
                 selectedPolicyLevelRaw: selectedPolicyLevelRaw,
                 skipPermissions: skipPermissions,
                 providerSettings: providerSettings,
-                readinessStates: readinessStates
+                readinessStates: readinessStates,
+                candidateRuntimes: candidateRuntimes
             )
         }
     }
@@ -195,8 +210,9 @@ struct RuntimeEligibilityPreviewRequest {
             signature: signature,
             hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             taskID: draftTask?.id,
-            acceptedTurnCharacterCount: acceptedTurn.count
-        ) {
+            acceptedTurnCharacterCount: acceptedTurn.count,
+            selectedRuntime: requestedRuntime
+        ) { candidateRuntimes in
             let goal = acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines)
             // Preview the task the composer will actually submit, never the managed
             // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the
@@ -211,6 +227,16 @@ struct RuntimeEligibilityPreviewRequest {
                 model: defaultModel,
                 runtime: requestedRuntime
             )
+            // This closure runs again on every keystroke, and a fresh AgentTask
+            // mints a fresh UUID. Left alone, no two previews of this composer
+            // would agree on a task identity, `carryingForwardUnscoredCandidates`
+            // would refuse every merge, and the provider menu would drop each
+            // runtime the narrow pass did not score. Anchor the preview to the
+            // draft — or, before one exists, the workspace — so successive
+            // previews are recognisably the same subject.
+            previewTask.id = draftTask?.id
+                ?? workspace?.id
+                ?? Self.unanchoredComposerPreviewID
             previewTask.inputs = attachedFiles
             previewTask.skills = selectedSkills
             previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected
@@ -240,7 +266,8 @@ struct RuntimeEligibilityPreviewRequest {
                 selectedPolicyLevelRaw: selectedPolicyLevelRaw,
                 skipPermissions: skipPermissions,
                 providerSettings: providerSettings,
-                readinessStates: readinessStates
+                readinessStates: readinessStates,
+                candidateRuntimes: candidateRuntimes
             )
         }
     }
@@ -252,7 +279,8 @@ struct RuntimeEligibilityPreviewRequest {
         selectedPolicyLevelRaw: String,
         skipPermissions: Bool,
         providerSettings: ProviderSettingsSnapshot,
-        readinessStates: [AgentRuntimeID: RuntimeReadinessState]
+        readinessStates: [AgentRuntimeID: RuntimeReadinessState],
+        candidateRuntimes: [AgentRuntimeID]?
     ) -> TaskRuntimeEligibilitySnapshot? {
         guard !Task.isCancelled else { return nil }
         let executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
@@ -268,6 +296,7 @@ struct RuntimeEligibilityPreviewRequest {
             fallbackPermissionPolicy: skipPermissions ? .autonomous : .interactive,
             defaultPolicyLevelRaw: selectedPolicyLevelRaw,
             phase: .run,
+            candidateRuntimes: candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs,
             isRuntimeUsable: { runtime, _ in
                 readinessStates[runtime] == .ready
             }
@@ -291,6 +320,12 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
     /// Send.
     static let debounce: Duration = .milliseconds(350)
 
+    /// How long the composer must stay quiet before the other providers are
+    /// scored. Scoring costs about the same per runtime, so doing all of them
+    /// on the typing path made the pause cost six times what Send needs; see
+    /// the scope split in `body`.
+    static let fullSetIdle: Duration = .milliseconds(600)
+
     let request: RuntimeEligibilityPreviewRequest
     @Binding var state: RuntimeEligibilityPreviewState
 
@@ -305,23 +340,63 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             // therefore no extra body pass of the 6,000-line composer view.
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled else { return }
-            state = .pending(signature: request.signature, previous: state.lastResolvedSnapshot)
-            let startedAt = DispatchTime.now().uptimeNanoseconds
-            let snapshot = await request.evaluate()
+            let previous = state.lastResolvedSnapshot
+            state = .pending(signature: request.signature, previous: previous)
+
+            // Score the selected runtime alone first. Send only consults that
+            // one verdict, and admission costs roughly the same for each
+            // runtime it scores, so this is the whole pause cost minus the
+            // providers nobody asked about.
+            let selectedStartedAt = DispatchTime.now().uptimeNanoseconds
+            let selected = await request.evaluate(candidateRuntimes: [request.selectedRuntime])
             guard !Task.isCancelled else { return }
-            PerformanceTelemetry.logIfNeeded(
-                "runtime_eligibility_preview",
-                start: startedAt,
-                thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-                fields: [
-                    "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
-                    "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
-                    "result": snapshot == nil ? "unavailable" : "resolved"
-                ],
-                taskID: request.taskID
+
+            // An ineligible selection is the one case that still needs the rest
+            // immediately: the launch block names a runtime to switch to, and
+            // that suggestion can only come from scoring the others.
+            let selectionIsEligible = selected?.selectedCandidate.isEligible == true
+            logEvaluation(
+                scope: selectionIsEligible ? "selected" : "selected_blocked",
+                start: selectedStartedAt,
+                snapshot: selected
             )
-            state = .evaluated(signature: request.signature, snapshot: snapshot)
+
+            if let selected, selectionIsEligible {
+                state = .evaluated(
+                    signature: request.signature,
+                    snapshot: selected.carryingForwardUnscoredCandidates(from: previous)
+                )
+                // The provider dropdown is the only surface that reads the other
+                // verdicts, and reaching it means the composer went quiet.
+                try? await Task.sleep(for: Self.fullSetIdle)
+                guard !Task.isCancelled else { return }
+            }
+
+            let fullStartedAt = DispatchTime.now().uptimeNanoseconds
+            let full = await request.evaluate()
+            guard !Task.isCancelled else { return }
+            logEvaluation(scope: "full", start: fullStartedAt, snapshot: full)
+            state = .evaluated(signature: request.signature, snapshot: full)
         }
+    }
+
+    private func logEvaluation(
+        scope: String,
+        start: UInt64,
+        snapshot: TaskRuntimeEligibilitySnapshot?
+    ) {
+        PerformanceTelemetry.logIfNeeded(
+            "runtime_eligibility_preview",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
+                "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
+                "scope": scope,
+                "result": snapshot == nil ? "unavailable" : "resolved"
+            ],
+            taskID: request.taskID
+        )
     }
 }
 
