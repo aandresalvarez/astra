@@ -77,7 +77,7 @@ struct AppLoggerTests {
                 < AppLogger.assumedPeakBytesPerDay * UInt64(days)
         }
 
-        #expect(cutShort == [90], "only the 90-day option should be bounded by size, got \(cutShort)")
+        #expect(cutShort == [30, 90], "only the longest retentions should be bounded by size, got \(cutShort)")
         #expect(
             AppLogger.rotatedGenerations(forRetentionDays: LoggingPreferences.defaultLogRetentionDays)
                 < AppLogger.maxRotatedGenerationsCeiling,
@@ -90,7 +90,26 @@ struct AppLoggerTests {
     /// and browser logs together. The app's share has to leave room for both.
     @Test("The rotation ceiling leaves room in a diagnostics archive")
     func rotationCeilingLeavesArchiveRoom() {
-        #expect(AppLogger.maxRotatedGenerationsCeiling < LogDiagnosticsService.maxArchiveLogFiles)
+        // Not merely "under the limit": the limit is global across app, task
+        // and browser logs, so the main log has to leave most of it for them.
+        #expect(
+            AppLogger.maxMainLogArchiveFiles * 2 <= LogDiagnosticsService.maxArchiveLogFiles,
+            "the main log takes \(AppLogger.maxMainLogArchiveFiles) of \(LogDiagnosticsService.maxArchiveLogFiles) archive slots"
+        )
+    }
+
+    /// The expanded budget is for the main log alone. There is one of those and
+    /// arbitrarily many per-task and browser logs, all rotating through the
+    /// same code — giving each of them the expanded count put a single busy
+    /// task over the archive's entire file budget by itself.
+    @Test("Per-task logs keep the generation count that shipped before")
+    func perTaskLogsKeepTheShippedGenerationCount() {
+        #expect(AppLogger.perTaskRotatedGenerations == 2)
+        #expect(
+            AppLogger.perTaskRotatedGenerations
+                < AppLogger.rotatedGenerations(forRetentionDays: LoggingPreferences.defaultLogRetentionDays),
+            "the main log is the one the retention setting expands"
+        )
     }
 
     /// The shortest retentions must not hold less than the two generations that

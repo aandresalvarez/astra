@@ -35,9 +35,21 @@ enum AppLogger: Sendable {
     /// Age-based cleanup still prunes to the configured retention, so this
     /// raises no upper bound on how long anything is kept; it only stops size
     /// from binding first.
-    private static var maxRotatedGenerations: Int {
+    /// Generations kept for the main log, which is the one the retention
+    /// setting is about and the one every diagnostic is read from.
+    private static var mainLogRotatedGenerations: Int {
         rotatedGenerations(forRetentionDays: configuredRetentionDays)
     }
+
+    /// Generations kept for per-task and browser-flight logs: unchanged from
+    /// what shipped before this.
+    ///
+    /// The expanded budget is deliberately not theirs. There is one main log
+    /// and arbitrarily many of these, and they all rotate through the same
+    /// code — giving each of them 60 generations put a single busy task over
+    /// the diagnostics archive's whole file budget by itself, which is the
+    /// opposite of preserving history.
+    static let perTaskRotatedGenerations = 2
 
     /// Daily log volume the rotation budget is sized to absorb.
     ///
@@ -55,26 +67,25 @@ enum AppLogger: Sendable {
     /// rotation alone could hold.
     static let assumedPeakBytesPerDay: UInt64 = 10_000_000
 
-    /// Hard ceiling on rotated generations, whatever the retention asks for.
+    /// Hard ceiling on the main log's rotated generations, whatever the
+    /// retention asks for.
     ///
-    /// Every retained generation is a file the diagnostics tooling may read in
-    /// full and may try to put in an archive, and that archive takes at most
-    /// `LogDiagnosticsService.maxArchiveLogFiles` files across app, task and
-    /// browser logs together. Sixty-four caps the app's share at roughly
-    /// 325 MB and leaves room in an archive for the other two. It is not 60
-    /// because a 30-day retention needs exactly 60, and a limit sitting on a
-    /// supported option is one rounding away from silently cutting it.
+    /// Two limits bind, and the smaller one is the archive. Every generation is
+    /// a file the diagnostics readers may open in full, and an "All retained
+    /// logs" archive takes at most `LogDiagnosticsService.maxArchiveLogFiles`
+    /// across app, task and browser logs *together*. Thirty-nine keeps the
+    /// main log to 40 of that budget — exactly half — so per-task and browser
+    /// logs still fit beside it, and caps the app's share of disk at 200 MB.
     ///
     /// The honest consequence, since this whole change is about size no longer
-    /// deciding: past this ceiling it decides again. At the headroom above,
-    /// that point is a 30-day retention, so the default and every option up to
-    /// it are reachable and only the 90-day one is bounded by size. What 90
-    /// days actually gets is ~30 days of sustained heavy logging, ~60 at this
-    /// install's busiest observed day (4.89 MB), and the full 90 only at
-    /// something near its observed mean (2.39 MB/day). Reaching further needs
-    /// the retained-log reads bounded first, which is a change to the readers
-    /// rather than to rotation.
-    static let maxRotatedGenerationsCeiling = 64
+    /// deciding: past this ceiling it decides again, and at the headroom above
+    /// that point is a 14-day retention. So the default and the options either
+    /// side of it are reachable, while 30 and 90 days are bounded by size —
+    /// getting 20 days of sustained heavy logging, or ~41 at this install's
+    /// busiest observed day (4.89 MB). Carrying the longest retentions needs
+    /// the retained-log reads bounded and the archive budget reworked first,
+    /// both of which are changes to the readers rather than to rotation.
+    static let maxRotatedGenerationsCeiling = 39
 
     /// Generations sized from the retention and that throughput, rather than
     /// equated with days.
@@ -98,6 +109,10 @@ enum AppLogger: Sendable {
     /// History the rotation budget can hold at a given retention: the live
     /// file plus its generations. Exposed so the retention promise is testable
     /// for every option the picker offers, not just the default.
+    /// Files one main log can contribute to a diagnostics archive: its
+    /// generations plus the live file.
+    static var maxMainLogArchiveFiles: Int { maxRotatedGenerationsCeiling + 1 }
+
     static func onDiskBudgetBytes(forRetentionDays days: Int) -> UInt64 {
         maxLogFileSize * UInt64(rotatedGenerations(forRetentionDays: days) + 1)
     }
@@ -321,7 +336,7 @@ enum AppLogger: Sendable {
     static func appendBrowserFlightEntry(_ entry: [String: Any], taskID: UUID?) {
         fileQueue.async {
             let url = browserFlightLogFile(taskID: taskID)
-            rotateFileIfNeeded(url)
+            rotateFileIfNeeded(url, generations: perTaskRotatedGenerations)
             guard JSONSerialization.isValidJSONObject(entry),
                   let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
                   let line = String(data: data, encoding: .utf8)
@@ -351,7 +366,7 @@ enum AppLogger: Sendable {
     // MARK: - Log Rotation
 
     static func rotateIfNeeded() {
-        rotateFileIfNeeded(mainLogFile)
+        rotateFileIfNeeded(mainLogFile, generations: mainLogRotatedGenerations)
         cleanupOldLogs()
     }
 
@@ -398,11 +413,11 @@ enum AppLogger: Sendable {
         // File logging — serialized to prevent interleaved writes
         let line = entry.persistedFormatted + "\n"
         fileQueue.async {
-            rotateFileIfNeeded(mainLogFile)
+            rotateFileIfNeeded(mainLogFile, generations: mainLogRotatedGenerations)
             appendToFile(line, at: mainLogFile)
             if let tid = taskID {
                 let taskLog = taskLogFile(taskID: tid)
-                rotateFileIfNeeded(taskLog)
+                rotateFileIfNeeded(taskLog, generations: perTaskRotatedGenerations)
                 appendToFile(line, at: taskLog)
             }
             cleanupOldLogsThrottledOnFileQueue()
@@ -501,17 +516,15 @@ enum AppLogger: Sendable {
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
     }
 
-    private static func rotateFileIfNeeded(_ url: URL) {
+    private static func rotateFileIfNeeded(_ url: URL, generations: Int) {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? UInt64,
               size > maxLogFileSize else { return }
 
-        // Read once: this became a computed property over a user preference, so
-        // a retention change landing mid-loop would otherwise let the stride
-        // bound and the delete test disagree — shifting old generations past
-        // the old cap while deleting at the new one, which discards newer
-        // history and keeps older.
-        let generations = maxRotatedGenerations
+        // Taken as a parameter rather than read twice from a computed
+        // property: a retention change landing mid-loop would otherwise let
+        // the stride bound and the delete test disagree, shifting old
+        // generations past the old cap while deleting at the new one.
         for index in stride(from: generations, through: 1, by: -1) {
             let source = rotatedURL(for: url, generation: index)
             let destination = rotatedURL(for: url, generation: index + 1)
