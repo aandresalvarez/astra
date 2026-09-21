@@ -135,19 +135,19 @@ struct SidebarTaskIndex {
         anyTaskWorkspaceIDs = workspaceIDs
         runningTaskCountByWorkspaceID = runningCounts
         waitingTaskCountByWorkspaceID = waitingCounts
-        pinnedTasks = pinned.sorted { $0.updatedAt > $1.updatedAt }
-        unreadTasks = unread.sorted {
-            ($0.unreadAt ?? $0.updatedAt) > ($1.unreadAt ?? $1.updatedAt)
+        pinnedTasks = Self.sortedByNewest(pinned) { $0.updatedAt }
+        unreadTasks = Self.sortedByNewest(unread) { $0.unreadAt ?? $0.updatedAt }
+        activeTasks = Self.sortedByPriorityThenNewest(active) { task in
+            (Self.activityPriority(for: taskActivities[task.id]), task.updatedAt)
         }
-        activeTasks = active.sorted {
-            Self.taskSortsBefore($0, $1, taskActivities: taskActivities)
-        }
-        allTasks = all.sorted {
-            Self.flatTaskSortsBefore(
-                $0,
-                $1,
-                taskActivities: taskActivities,
-                stickyUnreadTaskID: stickyUnreadTaskID
+        allTasks = Self.sortedByPriorityThenNewest(all) { task in
+            (
+                Self.flatPriority(
+                    for: task,
+                    activity: taskActivities[task.id],
+                    stickyUnreadTaskID: stickyUnreadTaskID
+                ),
+                task.updatedAt
             )
         }
         unreadRankedTaskIDs = Set(
@@ -227,32 +227,49 @@ struct SidebarTaskIndex {
         return lhs.updatedAt > rhs.updatedAt
     }
 
+    /// Sorts newest-first on a key read once per task.
+    ///
+    /// Sorting `AgentTask` through a comparator re-reads SwiftData stored
+    /// properties on both sides of every comparison, so ordering n tasks cost
+    /// roughly 2·n·log n property reads where n would do. Deriving each key
+    /// once and sorting the decorated pairs keeps the exact same order — the
+    /// tie-breaks below are the ones the comparators used — for far fewer
+    /// reads.
+    ///
+    /// This is a scaling fix, and it scales with the flat list rather than the
+    /// store: measured over 1,646 tasks, it is 206 ms -> 62 ms when 960 of
+    /// them reach that list, and only 11.6 ms -> 11.2 ms at the 181 a current
+    /// store produces. It matters because Tasks mode renders the flat list
+    /// uncapped, so that count is the one free to grow.
+    private static func sortedByNewest(
+        _ tasks: [AgentTask],
+        key: (AgentTask) -> Date
+    ) -> [AgentTask] {
+        tasks.map { (key($0), $0) }
+            .sorted { $0.0 > $1.0 }
+            .map(\.1)
+    }
+
+    /// As `sortedByNewest`, for the lists ordered by activity priority first
+    /// (ascending) and recency second (descending).
+    private static func sortedByPriorityThenNewest(
+        _ tasks: [AgentTask],
+        key: (AgentTask) -> (Int, Date)
+    ) -> [AgentTask] {
+        tasks.map { (key($0), $0) }
+            .sorted { lhs, rhs in
+                if lhs.0.0 != rhs.0.0 { return lhs.0.0 < rhs.0.0 }
+                return lhs.0.1 > rhs.0.1
+            }
+            .map(\.1)
+    }
+
     /// Flat-list order: the shared tiers first, then unread results ahead of
     /// everything already seen. Tasks mode hides the Unreads dock because the
     /// flat list repeats it — but the dock also *lifted* unread work, so
     /// without this tier a result left unread for three days would sink below
     /// every thread touched since. Workspace drawers keep `taskSortsBefore`:
     /// a drawer is already scoped, and the dock still sits above it.
-    private static func flatTaskSortsBefore(
-        _ lhs: AgentTask,
-        _ rhs: AgentTask,
-        taskActivities: [UUID: TaskActivityPresentation],
-        stickyUnreadTaskID: UUID?
-    ) -> Bool {
-        let leftPriority = flatPriority(
-            for: lhs,
-            activity: taskActivities[lhs.id],
-            stickyUnreadTaskID: stickyUnreadTaskID
-        )
-        let rightPriority = flatPriority(
-            for: rhs,
-            activity: taskActivities[rhs.id],
-            stickyUnreadTaskID: stickyUnreadTaskID
-        )
-        if leftPriority != rightPriority { return leftPriority < rightPriority }
-        return lhs.updatedAt > rhs.updatedAt
-    }
-
     private static func flatPriority(
         for task: AgentTask,
         activity: TaskActivityPresentation?,
