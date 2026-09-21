@@ -1,6 +1,5 @@
 import Foundation
 import SwiftData
-import ASTRAModels
 
 /// Runs `TaskThreadHistoryReader` off the main actor.
 ///

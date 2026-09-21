@@ -1,8 +1,6 @@
 import AppKit
 import Foundation
-import ASTRAPersistence
 import ASTRACore
-import ASTRAModels
 
 enum ShelfTextDocumentKind: String, Equatable {
     case markdown

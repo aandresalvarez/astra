@@ -2,7 +2,6 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
 
 struct CodexCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     let providerID = "codex-cli"

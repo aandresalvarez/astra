@@ -1,6 +1,5 @@
 import Foundation
 import ASTRACore
-import ASTRAPersistence
 import ASTRAModels
 
 enum RuntimeModelAvailabilityAuthority: String, Codable, Equatable, Sendable {

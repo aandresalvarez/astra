@@ -1,7 +1,6 @@
 import Foundation
 import SwiftData
 import ASTRAModels
-import ASTRAPersistence
 
 /// Atomic Send-boundary persistence for task conversations.
 ///

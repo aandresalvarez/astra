@@ -1,6 +1,5 @@
 import SwiftUI
 import ASTRACore
-import ASTRAPersistence
 import ASTRAModels
 
 struct OnboardingCapabilityOption: Identifiable, Equatable {
