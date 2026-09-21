@@ -238,6 +238,49 @@ struct TaskContextStateOffMainRefreshTests {
             .filter { $0.contains(".corrupt-") }
     }
 
+    @Test("A missing state file uses the precomputed inventory, not a rescan")
+    func missingStateFileDoesNotRescanOnTheActor() async throws {
+        let fixture = try makeFixture("missing-fast")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try FileManager.default.removeItem(at: path)
+        TaskContextStateManager.fallbackCountForTesting = 0
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        // A missing file is the ordinary case for a new or imported task and
+        // needs no recovery, so it must not cost the main-actor rescan that
+        // every unhealthy status does.
+        #expect(TaskContextStateManager.fallbackCountForTesting == 0)
+        #expect(FileManager.default.fileExists(atPath: path.path))
+    }
+
+    @Test("An output written into a previously empty directory is not applied stale")
+    func emptyDirectoryIsStamped() async throws {
+        let fixture = try makeFixture("empty-dir")
+        defer { fixture.cleanup() }
+        let folder = fixture.folder
+        // Empty at scan time, so it contributes no discovered file — the
+        // directory set cannot be derived from the inventory alone.
+        let deliverables = URL(fileURLWithPath: folder)
+            .appendingPathComponent("deliverables", isDirectory: true)
+        try FileManager.default.createDirectory(at: deliverables, withIntermediateDirectories: true)
+        let late = deliverables.appendingPathComponent("late.md")
+        TaskContextStateManager.fallbackCountForTesting = 0
+
+        TaskContextStateManager.interleaveForTesting = {
+            try? "late".write(to: late, atomically: true, encoding: .utf8)
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        #expect(TaskContextStateManager.fallbackCountForTesting == 1, "the stale inventory must be rejected")
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.filesChanged.contains { $0.hasSuffix("deliverables/late.md") })
+    }
+
     @Test("The precomputed folder scan is used instead of rescanning on the actor")
     func precomputedScanIsHonoured() async throws {
         let fixture = try makeFixture("scan")
