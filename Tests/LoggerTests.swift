@@ -44,6 +44,87 @@ struct AppLoggerTests {
         #expect(LoggingPreferences.logRetentionDays(in: defaults) == 365)
     }
 
+    /// The retention setting above is a promise, and the rotation budget is
+    /// what has to keep it. Two generations held 15 MB, which at this install's
+    /// roughly 5 MB per active day expired the log in about three days while
+    /// Settings still offered a week — so a stall report aged out before anyone
+    /// read it. Age-based cleanup prunes to the configured retention either
+    /// way; this pins that size no longer decides first.
+    ///
+    /// Every offered option, not just the default: a fixed budget sized for the
+    /// default silently reintroduces the same bug for 14, 30 and 90 days.
+    @Test("The rotation budget holds every retention the ceiling does not bind")
+    func rotationBudgetCoversEveryRetentionBelowTheCeiling() {
+        for days in LoggingPreferences.logRetentionDayOptions {
+            let generations = AppLogger.rotatedGenerations(forRetentionDays: days)
+            guard generations < AppLogger.maxRotatedGenerationsCeiling else { continue }
+            #expect(
+                AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+                    >= AppLogger.assumedPeakBytesPerDay * UInt64(days),
+                "a \(days)-day retention is below the ceiling, so size must not decide it"
+            )
+        }
+    }
+
+    /// The point of the ceiling is that it is the *only* thing allowed to cut a
+    /// retention short, and that it does not cut the default short.
+    @Test("Only the longest retention is bounded by the ceiling")
+    func onlyTheLongestRetentionIsCapped() {
+        // Cut short, not merely touching the ceiling: a retention whose budget
+        // still covers it at the assumed peak is honoured either way.
+        let cutShort = LoggingPreferences.logRetentionDayOptions.filter { days in
+            AppLogger.onDiskBudgetBytes(forRetentionDays: days)
+                < AppLogger.assumedPeakBytesPerDay * UInt64(days)
+        }
+
+        #expect(cutShort == [30, 90], "only the longest retentions should be bounded by size, got \(cutShort)")
+        #expect(
+            AppLogger.rotatedGenerations(forRetentionDays: LoggingPreferences.defaultLogRetentionDays)
+                < AppLogger.maxRotatedGenerationsCeiling,
+            "the default retention must not be the one the ceiling binds"
+        )
+    }
+
+    /// Every retained generation is a file the diagnostics readers may open in
+    /// full, and an archive takes at most `maxArchiveLogFiles` across app, task
+    /// and browser logs together. The app's share has to leave room for both.
+    @Test("The rotation ceiling leaves room in a diagnostics archive")
+    func rotationCeilingLeavesArchiveRoom() {
+        // Not merely "under the limit": the limit is global across app, task
+        // and browser logs, so the main log has to leave most of it for them.
+        #expect(
+            AppLogger.maxMainLogArchiveFiles * 2 <= LogDiagnosticsService.maxArchiveLogFiles,
+            "the main log takes \(AppLogger.maxMainLogArchiveFiles) of \(LogDiagnosticsService.maxArchiveLogFiles) archive slots"
+        )
+    }
+
+    /// The expanded budget is for the main log alone. There is one of those and
+    /// arbitrarily many per-task and browser logs, all rotating through the
+    /// same code — giving each of them the expanded count put a single busy
+    /// task over the archive's entire file budget by itself.
+    @Test("Per-task logs keep the generation count that shipped before")
+    func perTaskLogsKeepTheShippedGenerationCount() {
+        #expect(AppLogger.perTaskRotatedGenerations == 2)
+        #expect(
+            AppLogger.perTaskRotatedGenerations
+                < AppLogger.rotatedGenerations(forRetentionDays: LoggingPreferences.defaultLogRetentionDays),
+            "the main log is the one the retention setting expands"
+        )
+    }
+
+    /// The shortest retentions must not hold less than the two generations that
+    /// shipped before this was derived from the setting.
+    @Test("A short retention still keeps the generations that shipped before")
+    func shortRetentionKeepsPreviousFloor() {
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 0) == 2)
+        #expect(AppLogger.rotatedGenerations(forRetentionDays: 1) >= 2)
+        #expect(
+            AppLogger.rotatedGenerations(forRetentionDays: 30)
+                > AppLogger.rotatedGenerations(forRetentionDays: 7),
+            "a longer retention must hold more, or it is not the thing deciding"
+        )
+    }
+
     @Test("Sanitizer redacts sensitive payloads")
     func sanitizerRedactsSensitivePayloads() {
         let raw = """

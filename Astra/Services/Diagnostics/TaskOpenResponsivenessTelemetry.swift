@@ -359,6 +359,51 @@ enum TaskOpenResponsivenessTelemetry {
         previousTaskID != nextTaskID
     }
 
+    /// A phase whose work spans an `await`, captured while its trace is live.
+    ///
+    /// `recordPhase` reads `activeTraces` when the phase *ends*, and
+    /// `transcriptBecameReady` clears that entry. A phase that outlives
+    /// transcript readiness therefore emits nothing — and the slowest phases
+    /// are exactly the ones most likely to outlive it, so what survives is
+    /// biased toward the fast ones rather than merely thinner. Capturing the
+    /// trace up front keeps the sample whatever the trace does afterwards.
+    struct PendingPhase {
+        let name: String
+        let trace: TaskOpenResponsivenessTrace
+        let taskID: UUID
+        let start: UInt64
+    }
+
+    /// Opens a phase against the live trace. Returns nil when there is none,
+    /// which is the same "not part of a measured open" case `recordPhase`
+    /// already drops.
+    static func beginPhase(_ name: String, task: AgentTask, scope: UUID) -> PendingPhase? {
+        guard let activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id else { return nil }
+        return PendingPhase(
+            name: name,
+            trace: activeTrace.trace,
+            taskID: task.id,
+            start: DispatchTime.now().uptimeNanoseconds
+        )
+    }
+
+    /// Closes a phase opened by `beginPhase`, whether or not its trace is
+    /// still active. Same threshold and level policy as `recordPhase`, so the
+    /// samples stay comparable.
+    static func endPhase(_ pending: PendingPhase?) {
+        guard let pending else { return }
+        let elapsed = PerformanceTelemetry.elapsedMilliseconds(since: pending.start)
+        guard elapsed >= PerformanceTelemetry.uiFrameThresholdMilliseconds else { return }
+
+        PerformanceTelemetry.log(
+            "task_open_phase",
+            durationMilliseconds: elapsed,
+            level: elapsed >= slowPhaseThresholdMilliseconds ? .warning : .debug,
+            fields: pending.trace.phaseFields(name: pending.name),
+            taskID: pending.taskID
+        )
+    }
+
     private static func recordPhase(_ name: String, task: AgentTask, scope: UUID, start: UInt64) {
         let elapsed = PerformanceTelemetry.elapsedMilliseconds(since: start)
         guard let activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,

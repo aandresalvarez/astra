@@ -1,7 +1,5 @@
 import SwiftUI
-import ASTRAPersistence
 import ASTRACore
-import ASTRAModels
 
 struct SidebarTaskTitleText: View {
     let presentation: Formatters.SidebarTaskTitlePresentation

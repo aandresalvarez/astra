@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import ASTRAPersistence
 import ASTRACore
-import ASTRAModels
 
 enum MacOSPermissionKind: String {
     case appManagement = "app_management"
