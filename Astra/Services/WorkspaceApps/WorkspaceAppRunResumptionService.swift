@@ -21,8 +21,15 @@ struct WorkspaceAppRunResumptionService {
         workspace: Workspace,
         modelContext: ModelContext
     ) async -> [WorkspaceAppActionExecutionResult] {
-        let waitingRuns = ((try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>())) ?? [])
-            .filter { $0.status == .waiting && $0.linkedTaskID == taskID && $0.workspaceID == workspace.id }
+        let workspaceID = workspace.id
+        let waitingRaw = WorkspaceAppRunStatus.waiting.rawValue
+        let waitingRuns = (try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>(
+            predicate: #Predicate {
+                $0.statusRaw == waitingRaw
+                    && $0.linkedTaskID == taskID
+                    && $0.workspaceID == workspaceID
+            }
+        ))) ?? []
 
         var results: [WorkspaceAppActionExecutionResult] = []
         for run in waitingRuns {
@@ -52,8 +59,13 @@ struct WorkspaceAppRunResumptionService {
     @MainActor
     @discardableResult
     func resumeCompletedRuns(modelContext: ModelContext) async -> [WorkspaceAppActionExecutionResult] {
-        let waitingRuns = ((try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>())) ?? [])
-            .filter { $0.status == .waiting }
+        // Status is stored as `statusRaw`, so SQLite can do this filtering. This
+        // used to read every `WorkspaceAppRun` ever recorded and drop all but
+        // the waiting ones in memory.
+        let waitingRaw = WorkspaceAppRunStatus.waiting.rawValue
+        let waitingRuns = (try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>(
+            predicate: #Predicate { $0.statusRaw == waitingRaw }
+        ))) ?? []
 
         var results: [WorkspaceAppActionExecutionResult] = []
         for run in waitingRuns {
@@ -130,7 +142,7 @@ struct WorkspaceAppRunResumptionService {
 
     @MainActor
     private func workspace(id: UUID, modelContext: ModelContext) -> Workspace? {
-        ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).first { $0.id == id }
+        Self.row(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id }), in: modelContext)
     }
 
     private func taskOutputRow(for task: AgentTask) -> [String: WorkspaceAppStorageValue] {
@@ -150,15 +162,31 @@ struct WorkspaceAppRunResumptionService {
 
     @MainActor
     private func agentTask(id: UUID, modelContext: ModelContext) -> AgentTask? {
-        ((try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []).first { $0.id == id }
+        Self.row(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }), in: modelContext)
     }
 
     @MainActor
     private func workspaceApp(id: UUID, modelContext: ModelContext) -> WorkspaceApp? {
-        ((try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? []).first { $0.id == id }
+        Self.row(FetchDescriptor<WorkspaceApp>(predicate: #Predicate { $0.id == id }), in: modelContext)
     }
 
     private func manifest(for app: WorkspaceApp, workspace: Workspace) -> WorkspaceAppManifest? {
         try? manifestStore.loadManifest(app: app, workspace: workspace).manifest
+    }
+
+    /// The single row a descriptor selects, as a `LIMIT 1` read.
+    ///
+    /// These lookups resolve one row by primary id and were doing it by fetching
+    /// the whole table and scanning the result in memory — once per awaited task
+    /// in a fan-out barrier, on a path that runs after every queue pass and on
+    /// every workspace open.
+    @MainActor
+    private static func row<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T>,
+        in modelContext: ModelContext
+    ) -> T? {
+        var descriptor = descriptor
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
     }
 }
