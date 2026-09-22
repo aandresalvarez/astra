@@ -244,6 +244,7 @@ struct TaskMainView: View {
     @State private var planEventRevision = 0
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
+    @State private var pendingContextStateRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @State var cachedForkSourceAvailabilityWarning: String?
@@ -573,6 +574,10 @@ struct TaskMainView: View {
         ))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
+            // Here, not in the next task's setup: `ContentView` keys this
+            // view with `.id(task.id)`, so that setup runs against fresh
+            // `@State` and cannot reach the outgoing task's handle.
+            pendingContextStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
         }
@@ -639,7 +644,7 @@ struct TaskMainView: View {
                         threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
                         // Diagnostics rebuild from `.task(id:)`, which carries
                         // the artifact count this fires on and can be cancelled.
-                        refreshTaskContextState()
+                        _ = startContextStateRefresh()
                         refreshForkSourceAvailabilityWarning()
                     }
                 }
@@ -722,11 +727,16 @@ struct TaskMainView: View {
             initializeTaskPolicySelection()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
-            refreshTaskContextState()
             refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache(reason: .taskOpen)
             logRuntimeHealthIfNeeded(reason: "task_lifecycle")
         }
+        // Through the same handle the generated-files callback uses, so the
+        // two coalesce with each other and not just with themselves. Both end
+        // in `applyRefresh`, which scans the task folder on the actor, and a
+        // run emitting a change while this is suspended would otherwise put
+        // two of those back to back inside the selection window.
+        await startContextStateRefresh().value
     }
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
         Task { @MainActor in
@@ -763,14 +773,41 @@ struct TaskMainView: View {
         cachedPlanStateSnapshot = snapshot
     }
 
-    private func refreshTaskContextState() {
-        TaskOpenResponsivenessTelemetry.measurePhase(
+    /// Starts a context-state refresh, replacing any already in flight.
+    ///
+    /// One handle for both entry points: task open awaits it, the
+    /// generated-files callback fires and forgets. Cancelling the previous is
+    /// what keeps a burst from stacking `applyRefresh` passes.
+    @discardableResult
+    private func startContextStateRefresh() -> Task<Void, Never> {
+        pendingContextStateRefreshTask?.cancel()
+        // Opened here, not inside the task: transcript readiness can clear the
+        // trace before the closure runs, dropping the sample for a refresh that
+        // did complete. This also measures the wait to start.
+        let phase = TaskOpenResponsivenessTelemetry.beginPhase(
             "context_state_refresh",
             task: task,
             scope: taskOpenResponsivenessScope
-        ) {
-            TaskContextStateManager.refresh(task: task)
-        }
+        )
+        let refresh = Task { await refreshTaskContextState(phase: phase) }
+        pendingContextStateRefreshTask = refresh
+        return refresh
+    }
+
+    /// `phase` is opened by the caller, while the trace is still live. See
+    /// `startContextStateRefresh`.
+    private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        // Before the sample, not after it: selecting another task cancels this
+        // one's `.task(id:)`, and an abandoned open is not a completed one.
+        // Logging it would put supersessions in the same distribution as the
+        // opens this phase exists to measure — the bias the capture above was
+        // added to prevent, arriving from the other side.
+        guard !Task.isCancelled else { return }
+        TaskOpenResponsivenessTelemetry.endPhase(phase)
+        // Both refreshes below write view state shared with whatever task is
+        // now open.
+        guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }
