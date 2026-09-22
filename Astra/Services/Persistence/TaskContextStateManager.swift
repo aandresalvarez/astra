@@ -478,6 +478,12 @@ public enum TaskContextStateManager {
     public static func refresh(task: AgentTask, followUpMessage: String = "") {
         guard let folder = ensureTaskFolder(for: task) else { return }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
+        applyRefresh(existing: existing, folder: folder, task: task, followUpMessage: followUpMessage)
+    }
+
+    /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
+    @MainActor
+    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String) {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
@@ -502,12 +508,6 @@ public enum TaskContextStateManager {
                 reason: "tier1_objective_reconciliation"
             )
         }
-    }
-
-    @MainActor
-    public static func refreshedPromptContext(for task: AgentTask, followUpMessage: String = "") -> String? {
-        refresh(task: task, followUpMessage: followUpMessage)
-        return promptContext(for: task)
     }
 
     public static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
@@ -830,6 +830,11 @@ public enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
+        // Enumerates the task folder and resolves every file in it, here at
+        // the moment the result is used. Hoisting this off the actor was tried
+        // and reverted: validating the hoisted result costs a stat per
+        // traversed directory on the actor, which is the same freeze. See
+        // `refreshLoadingOffMainActor`.
         let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
