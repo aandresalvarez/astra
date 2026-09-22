@@ -230,6 +230,14 @@ final class TaskQueue {
         }
 
         _ = processQueueIfIdle(modelContext: storeSession.modelContext)
+        // `processQueueIfIdle` starts a loop only when none is running. A loop
+        // that *is* running may be parked on one of its waits, and it parks
+        // because nothing already queued could be dispatched — which says
+        // nothing about the request just persisted. Without this, a newly
+        // submitted request that a free worker could take immediately waits
+        // out the fallback, which is the latency this whole change removes.
+        // Harmless when a loop has just started: it has no parked waiters yet.
+        wakeDispatchWaiters()
         // A signal is not a reservation; durable work stays queued when busy.
         return requestTaskRegistry.completionHandle(requestID: request.id)
     }
@@ -1043,6 +1051,13 @@ final class TaskQueue {
         continuation.resume()
     }
 
+    /// Parked `processQueueLoop` iterations. Queue-global rather than keyed by
+    /// task: the dispatch loop waits for *a* worker, lock, or in-flight run to
+    /// free up, never for a particular one. Not `private` only because the
+    /// waiting and waking live in `TaskQueue+DispatchSignal.swift`, which this
+    /// file has no room for.
+    var dispatchWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
     private func wakeTurnAdmissionWaiters(taskID: UUID) {
         guard let waiters = turnAdmissionWaiters.removeValue(forKey: taskID) else { return }
         for continuation in waiters.values { continuation.resume() }
@@ -1360,8 +1375,7 @@ final class TaskQueue {
                     ExecutionRequestQueueSnapshot.logDrained(projection: projection, poolSize: poolSize, activeWorkerCount: activeCount)
                     break
                 }
-                do { try await Task.sleep(for: .milliseconds(200)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(200))
                 continue
             }
 
@@ -1376,8 +1390,7 @@ final class TaskQueue {
                         modelContext: modelContext
                     )
                 }
-                do { try await Task.sleep(for: .milliseconds(250)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(250))
                 continue
             }
 
@@ -1471,8 +1484,7 @@ final class TaskQueue {
                         modelContext: modelContext
                     )
                 }
-                do { try await Task.sleep(for: .milliseconds(500)) }
-                catch { break }
+                await waitForDispatchSignal(fallback: .milliseconds(500))
                 continue
             }
 
@@ -1493,6 +1505,8 @@ final class TaskQueue {
                 defer {
                     queue.dispatchedRequestIDs.remove(requestID)
                     queue.requestTaskRegistry.finishDispatch(requestID: requestID)
+                    // A freed worker is precisely what the loop's waits are for.
+                    queue.wakeDispatchWaiters()
                 }
                 await queue.executeQueuedRequest(
                     requestID: requestID,
@@ -1509,8 +1523,7 @@ final class TaskQueue {
 
         // Wait for all remaining workers to finish
         while activeCount > 0 && !Task.isCancelled && isProcessing {
-            do { try await Task.sleep(for: .milliseconds(500)) }
-            catch { break }
+            await waitForDispatchSignal(fallback: .milliseconds(500))
         }
 
         dispatchedRequestIDs.removeAll()
@@ -1666,6 +1679,7 @@ final class TaskQueue {
             )
         }
         wakeTurnAdmissionWaiters(taskID: task.id)
+        wakeDispatchWaiters()
     }
 
     /// Retract one saved-but-not-yet-admitted turn without touching the rest
@@ -1713,6 +1727,12 @@ final class TaskQueue {
             return
         }
         requestTaskRegistry.complete(requestID: request.id)
+        // Retracting an undispatched request can make another one admissible
+        // at once — dropping a blocked exclusive claim lets a later shared one
+        // run, and dropping a task's blocked head exposes its next turn. A
+        // parked loop would otherwise leave a free worker idle until the
+        // fallback expires.
+        wakeDispatchWaiters()
         AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
             "scope": "turn_request",
             "request_id": request.id.uuidString
@@ -1732,6 +1752,7 @@ final class TaskQueue {
             modelContext: modelContext
         ) else { return false }
         requestIDs.forEach { requestTaskRegistry.complete(requestID: $0) }
+        wakeDispatchWaiters()
         return true
     }
 
@@ -1804,6 +1825,7 @@ final class TaskQueue {
         // locks this just cleared, then wake every waiter immediately.
         turnAdmissionGeneration += 1
         wakeAllTurnAdmissionWaiters()
+        wakeDispatchWaiters()
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
         ])
@@ -1932,6 +1954,7 @@ final class TaskQueue {
             )
         }
         wakeAllTurnAdmissionWaiters()
+        wakeDispatchWaiters()
     }
 
     @MainActor
