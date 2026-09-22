@@ -120,6 +120,13 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
+    /// Runtimes whose native read grant is a directory allowlist (`--add-dir`),
+    /// so an exact input file outside every granted root cannot be handed to
+    /// them at all. Outside autonomous mode — where both CLIs take a blanket
+    /// allow-all and read the file ambiently — the run has to fail closed
+    /// rather than start without context the user attached.
+    static let directoryOnlyNativeGrantRuntimes: Set<AgentRuntimeID> = [.codexCLI, .copilotCLI]
+
     func unsupportedProviderNativeReadOnlyFileBlock(
         permissionPolicy: PermissionPolicy,
         workspaceCommandsRunInsideManagedExecutor: Bool
@@ -127,13 +134,14 @@ extension AgentRuntimeProcessLaunchPlan {
         let count = Int(commandPlannedFields["provider_native_unreachable_read_only_file_count"] ?? "0") ?? 0
         guard count > 0,
               permissionPolicy != .autonomous,
-              runtime == .codexCLI,
+              Self.directoryOnlyNativeGrantRuntimes.contains(runtime),
               !workspaceCommandsRunInsideManagedExecutor else {
             return nil
         }
 
+        let provider = runtime.displayName
         let message = """
-        ASTRA blocked this Codex run because it needs an exact external file, but Codex restricted mode accepts only directory-level native grants. Granting the parent directory would expose sibling files that were never authorized. Attach the containing folder if every file in it is intended to be readable, use a Docker execution environment with the advertised container path, or switch to a runtime that supports exact-file reads.
+        ASTRA blocked this \(provider) run because it needs an exact external file, but \(provider) restricted mode accepts only directory-level native grants. Granting the parent directory would expose sibling files that were never authorized. Attach the containing folder if every file in it is intended to be readable, use a Docker execution environment with the advertised container path, or switch to a runtime that supports exact-file reads.
         """
         return AgentProcessResult(
             exitCode: -1,
