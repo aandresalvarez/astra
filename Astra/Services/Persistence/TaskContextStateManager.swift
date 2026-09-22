@@ -471,7 +471,7 @@ public enum TaskContextStateManager {
         state.turns.append(turn)
         state.turns = Array(state.turns.suffix(maxTurns))
         state.updatedAt = timestamp(Date())
-        save(state, taskFolder: folder, taskID: task.id)
+        saveState(state, taskFolder: folder, taskID: task.id)
     }
 
     @MainActor
@@ -491,7 +491,7 @@ public enum TaskContextStateManager {
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return }
         state.updatedAt = timestamp(Date())
-        save(state, taskFolder: folder, taskID: task.id)
+        saveState(state, taskFolder: folder, taskID: task.id)
     }
 
     @MainActor
@@ -923,11 +923,8 @@ public enum TaskContextStateManager {
     public static func saveState(_ state: TaskContextState, taskFolder: String, taskID: UUID? = nil) -> TaskContextStateSaveResult {
         let result = saveStateWithoutAudit(state, taskFolder: taskFolder)
         auditSaveResult(result, state: state, taskID: taskID)
+        TaskContextStateSaveNotifier.post(result, taskID: taskID)
         return result
-    }
-
-    private static func save(_ state: TaskContextState, taskFolder: String, taskID: UUID?) {
-        _ = saveState(state, taskFolder: taskFolder, taskID: taskID)
     }
 
     private static func saveStateWithoutAudit(_ state: TaskContextState, taskFolder: String) -> TaskContextStateSaveResult {

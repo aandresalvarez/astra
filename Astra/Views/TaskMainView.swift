@@ -221,6 +221,9 @@ struct TaskMainView: View {
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
+    @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
+    @State var missionControlStateRevision = 0
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -320,7 +323,7 @@ struct TaskMainView: View {
         )
     }
 
-    private var currentPlanState: TaskPlanState {
+    var currentPlanState: TaskPlanState {
         cachedPlanStateSnapshot.state
     }
 
@@ -559,6 +562,9 @@ struct TaskMainView: View {
         .task(id: decisionOutcomeInputSignature) {
             recomputeDecisionOutcomes()
         }
+        .task(id: missionControlSnapshotInputs) {
+            await recomputeMissionControlSnapshot()
+        }
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
@@ -609,6 +615,11 @@ struct TaskMainView: View {
         .background {
             TaskPlanEventObserver(task: task) {
                 planEventRevision &+= 1
+            }
+        }
+        .background {
+            TaskContextStateSaveObserver(taskID: task.id) {
+                missionControlStateRevision &+= 1
             }
         }
         .background {
@@ -810,6 +821,9 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
+        // Even when nothing was saved: resolving the folder can move it off
+        // the legacy layout, and the mission-control cache holds its path.
+        missionControlStateRevision &+= 1
     }
 
     private func scheduleVerificationPresentationRefresh() {
@@ -1495,22 +1509,6 @@ struct TaskMainView: View {
     private var currentVerificationPresentation: TaskVerificationPresentation? {
         guard cachedVerificationRequest == verificationLoadRequest else { return nil }
         return cachedVerificationPresentation
-    }
-
-    private var missionControlSnapshot: TaskMissionControlSnapshot {
-        TaskMissionControlSnapshot.build(
-            task: task,
-            planState: currentPlanState,
-            isFinished: isFinished
-        )
-    }
-
-    private var missionControlPresentation: MissionControlPresentation? {
-        missionControlSnapshot.presentation
-    }
-
-    private var verificationLoadRequest: TaskVerificationLoadRequest? {
-        missionControlSnapshot.verificationLoadRequest
     }
 
     @MainActor
@@ -3688,7 +3686,7 @@ struct TaskMainView: View {
         }
     }
 
-    private var isFinished: Bool {
+    var isFinished: Bool {
         [.completed, .pendingUser, .failed, .budgetExceeded, .cancelled].contains(task.status)
     }
 
