@@ -101,6 +101,40 @@ struct TaskQueueDispatchSignalTests {
         #expect(TaskQueue.dispatchWakeCountForTesting > 0, "a submission must reach the parked loop")
     }
 
+    @Test("Cancelling a waiting request wakes the loop instead of leaving it parked")
+    func cancellingAWaitingRequestWakesTheLoop() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        defer { _ = container }
+        let context = container.mainContext
+        let workspace = Workspace(name: "Cancel wake", primaryPath: "/tmp")
+        let task = AgentTask(title: "Queued", goal: "Retract me", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submission = try #require(
+            try? ExecutionRequestSubmissionService.submitInitial(for: task, into: context).get()
+        )
+        let request = try #require(
+            try? TaskTurnRequestRepository.request(id: submission.requestID, in: context)
+        )
+        // `cancelTurnRequest` only retracts a request that has not been
+        // dispatched, which is exactly the case that can free capacity.
+        request.state = .waitingForResource
+        let queue = TaskQueue(poolSize: 0)
+        TaskQueue.dispatchWakeCountForTesting = 0
+
+        queue.cancelTurnRequest(id: submission.requestID, workspace: workspace, modelContext: context)
+
+        // Retracting it can make another request admissible at once — a
+        // blocked exclusive claim dropped lets a later shared one run — so a
+        // parked loop must not sit out the fallback with a worker free.
+        #expect(TaskQueue.dispatchWakeCountForTesting > 0, "cancellation must reach the parked loop")
+    }
+
     @Test("Waking an idle queue is a no-op rather than a crash")
     func wakingAnIdleQueueIsHarmless() {
         let queue = TaskQueue(poolSize: 1)

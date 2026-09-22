@@ -1679,6 +1679,7 @@ final class TaskQueue {
             )
         }
         wakeTurnAdmissionWaiters(taskID: task.id)
+        wakeDispatchWaiters()
     }
 
     /// Retract one saved-but-not-yet-admitted turn without touching the rest
@@ -1726,6 +1727,12 @@ final class TaskQueue {
             return
         }
         requestTaskRegistry.complete(requestID: request.id)
+        // Retracting an undispatched request can make another one admissible
+        // at once — dropping a blocked exclusive claim lets a later shared one
+        // run, and dropping a task's blocked head exposes its next turn. A
+        // parked loop would otherwise leave a free worker idle until the
+        // fallback expires.
+        wakeDispatchWaiters()
         AppLogger.audit(.taskCancelled, category: "Queue", taskID: request.taskID, fields: [
             "scope": "turn_request",
             "request_id": request.id.uuidString
@@ -1745,6 +1752,7 @@ final class TaskQueue {
             modelContext: modelContext
         ) else { return false }
         requestIDs.forEach { requestTaskRegistry.complete(requestID: $0) }
+        wakeDispatchWaiters()
         return true
     }
 
