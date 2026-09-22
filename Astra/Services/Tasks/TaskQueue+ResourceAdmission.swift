@@ -1,6 +1,5 @@
 import Foundation
 import ASTRAModels
-import ASTRAPersistence
 
 extension TaskQueue {
     @MainActor
