@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
+import SwiftData
 @testable import ASTRA
 
 /// The dispatch loop used to sleep a fixed backoff between projections. It now
@@ -67,6 +69,36 @@ struct TaskQueueDispatchSignalTests {
 
         #expect(queue.parkedDispatchWaiterCount == 0)
         #expect(await pollUntil { resumptions.allSatisfy(\.happened) })
+    }
+
+    @Test("Submitting a request wakes the loop instead of leaving it parked")
+    func submittingARequestWakesTheLoop() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        defer { _ = container }
+        let context = container.mainContext
+        let workspace = Workspace(name: "Submission wake", primaryPath: "/tmp")
+        let task = AgentTask(title: "Queued", goal: "Dispatch me", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+        let submission = try #require(
+            try? ExecutionRequestSubmissionService.submitInitial(for: task, into: context).get()
+        )
+        // No workers, so nothing here dispatches; the question is only whether
+        // the submission reaches a loop that may already be parked.
+        let queue = TaskQueue(poolSize: 0)
+        TaskQueue.dispatchWakeCountForTesting = 0
+
+        _ = queue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: context)
+
+        // The loop parks because nothing *already* queued could be dispatched,
+        // which says nothing about the request just persisted. Without a wake
+        // it waits out the fallback, which is the latency this change removes.
+        #expect(TaskQueue.dispatchWakeCountForTesting > 0, "a submission must reach the parked loop")
     }
 
     @Test("Waking an idle queue is a no-op rather than a crash")

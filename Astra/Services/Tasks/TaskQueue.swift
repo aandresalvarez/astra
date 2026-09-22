@@ -230,6 +230,14 @@ final class TaskQueue {
         }
 
         _ = processQueueIfIdle(modelContext: storeSession.modelContext)
+        // `processQueueIfIdle` starts a loop only when none is running. A loop
+        // that *is* running may be parked on one of its waits, and it parks
+        // because nothing already queued could be dispatched — which says
+        // nothing about the request just persisted. Without this, a newly
+        // submitted request that a free worker could take immediately waits
+        // out the fallback, which is the latency this whole change removes.
+        // Harmless when a loop has just started: it has no parked waiters yet.
+        wakeDispatchWaiters()
         // A signal is not a reservation; durable work stays queued when busy.
         return requestTaskRegistry.completionHandle(requestID: request.id)
     }

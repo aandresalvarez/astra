@@ -43,8 +43,18 @@ extension TaskQueue {
     /// Wakes every parked loop. Worker and lock availability are queue-global,
     /// so a release concerns all of them, not one.
     func wakeDispatchWaiters() {
+        #if DEBUG
+        TaskQueue.dispatchWakeCountForTesting += 1
+        #endif
         let parked = dispatchWaiters
         dispatchWaiters.removeAll()
         for continuation in parked.values { continuation.resume() }
     }
+
+    #if DEBUG
+    /// Counts wakes. Whether a given event reaches the loop at all is not
+    /// otherwise observable — a wake with nothing parked leaves no trace.
+    @MainActor
+    static var dispatchWakeCountForTesting = 0
+    #endif
 }
