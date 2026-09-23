@@ -137,6 +137,7 @@ struct AppSemanticFitnessTests {
             "tool.result": .tool,
             "tool.result.failed": .tool,
             "tool.use": .tool,
+            "user.attachments": .conversation,
             "user.message": .conversation,
             "agent.response": .conversation,
             "agent.thinking": .conversation,

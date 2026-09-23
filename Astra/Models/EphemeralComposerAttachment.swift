@@ -8,9 +8,10 @@ import Foundation
 /// for three days disappear, and APFS does not refresh access time on reads,
 /// so in practice a paste vanishes three days after it was made. Such a path
 /// is therefore never safe to keep in a task for life. `TaskInputMaterializer`
-/// copies these into the task folder at first launch, and everything
-/// downstream treats one that is already gone as a recoverable gap rather
-/// than a launch-blocking contract violation.
+/// copies these into the task folder, at first launch for a new task's inputs
+/// and at send time for a follow-up's attachments, and everything downstream
+/// treats one that is already gone as a recoverable gap rather than a
+/// launch-blocking contract violation.
 public enum EphemeralComposerAttachment {
     public static let pastePrefix = "astra_paste_"
     public static let dropPrefix = "astra_drop_"
