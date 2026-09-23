@@ -1445,6 +1445,7 @@ struct ChatPanelView: View {
     private func approvePendingPlan() {
         guard var plan = pendingPlan else { return }
         guard let task = draftTask ?? saveDraft() else { return }
+        task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
 
         if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
             plan.planID = existingPlan.planID
@@ -1488,6 +1489,7 @@ struct ChatPanelView: View {
             return
         }
 
+        task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
         let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
         let runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(existing: task.runtimeExplicitlySelected,
                                                                                           composerFlagged: composerRuntimeExplicitlySelected)
@@ -1625,7 +1627,7 @@ struct ChatPanelView: View {
             Image(systemName: Formatters.fileIcon(for: file))
                 .font(Stanford.ui(11))
                 .foregroundStyle(Stanford.lagunita)
-            Text(URL(fileURLWithPath: file).lastPathComponent)
+            Text(ComposerAttachments.displayName(for: file))
                 .font(Stanford.caption(12))
                 .foregroundStyle(Stanford.black)
                 .lineLimit(1)
@@ -2066,7 +2068,7 @@ struct ChatPanelView: View {
                 existing: draft.runtimeExplicitlySelected,
                 composerFlagged: composerRuntimeExplicitlySelected
             )
-            draft.inputs = attachedFiles
+            draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
@@ -2192,9 +2194,10 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        // Reflect this draft's own already-persisted pick rather than whatever
-        // this view instance's flag happened to hold before loading it.
+        // Reflect this draft's own persisted runtime pick and attachments rather than
+        // whatever this view held before; saveDraft() writes the chips back to inputs.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
+        attachedFiles = ComposerAttachments.paths(in: task.inputs)
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),

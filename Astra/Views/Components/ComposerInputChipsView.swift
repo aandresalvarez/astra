@@ -13,7 +13,8 @@ import ASTRAPersistence
 /// warning colour and says so; its remove button edits `task.inputs` and
 /// saves, which also refreshes the header file list through the existing
 /// inputs signature. Prose inputs (chained-task output, context snippets) are
-/// not paths and are not shown.
+/// not paths and are not shown; `ComposerAttachments` draws that line for the
+/// new-task composer's draft chips too.
 struct ComposerInputChipsView: View {
     let task: AgentTask
 
@@ -24,7 +25,7 @@ struct ComposerInputChipsView: View {
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "heic"]
 
     private var fileInputs: [String] {
-        task.inputs.filter { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
+        ComposerAttachments.paths(in: task.inputs)
     }
 
     var body: some View {
@@ -70,7 +71,7 @@ struct ComposerInputChipsView: View {
     }
 
     private func chip(_ path: String, isMissing: Bool) -> some View {
-        let name = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespacesAndNewlines)).lastPathComponent
+        let name = ComposerAttachments.displayName(for: path)
 
         return HStack(spacing: 6) {
             if isMissing {
