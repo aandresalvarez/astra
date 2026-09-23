@@ -216,11 +216,14 @@ final class WorktreeReclaimService: ObservableObject {
         }
         var seen = Set<String>()
         for repository in repositories {
-            automaticallyEvaluatedRepositories.insert(WorktreePath.canonical(repository))
             // Two configured paths can be checkouts of one repository; each
             // worktree is evaluated once.
-            let worktrees = await git.listWorktrees(at: repository)
-                .filter { seen.insert(WorktreePath.canonical($0.path)).inserted }
+            let listed = await git.listWorktrees(at: repository)
+            // An empty list means git failed: leave the repository uncovered so
+            // the panel's next look schedules another try.
+            guard !listed.isEmpty else { continue }
+            automaticallyEvaluatedRepositories.insert(WorktreePath.canonical(repository))
+            let worktrees = listed.filter { seen.insert(WorktreePath.canonical($0.path)).inserted }
             guard !worktrees.isEmpty else { continue }
             _ = await evaluate(repoPath: repository, worktrees: worktrees, mode: .automatic)
         }
@@ -239,7 +242,11 @@ final class WorktreeReclaimService: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.repositoryPasses[key] = nil
             let worktrees = await self.git.listWorktrees(at: repoPath)
-            guard !worktrees.isEmpty else { return }
+            guard !worktrees.isEmpty else {
+                // Git failed; let a later look try again.
+                self.automaticallyEvaluatedRepositories.remove(key)
+                return
+            }
             _ = await self.evaluate(repoPath: repoPath, worktrees: worktrees, mode: .automatic)
         }
     }
@@ -266,13 +273,22 @@ final class WorktreeReclaimService: ObservableObject {
     }
 
     func handleTaskReachedTerminalState(_ change: TaskTerminalStateChange) {
-        guard let path = change.workingPath,
-              WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) else { return }
+        guard WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) else { return }
         let reclaimAfter = WorktreeStorageSettings.thresholds(in: defaults).reclaimAfter
-        // A task can run in a subfolder; the recheck needs the checkout git
-        // lists. `git worktree list` works from any checkout of the repository.
-        let root = WorktreePath.containingCheckoutRoot(of: path) ?? path
-        scheduleRecheck(repoPath: root, worktreePath: root, at: clock().addingTimeInterval(reclaimAfter))
+        // A task can run in a subfolder and write elsewhere; each recheck needs
+        // the checkout git lists. `git worktree list` works from any checkout.
+        var roots: [String] = []
+        if let path = change.workingPath {
+            roots.append(WorktreePath.containingCheckoutRoot(of: path) ?? path)
+        }
+        for path in change.writablePaths {
+            if let root = WorktreePath.containingCheckoutRoot(of: path), !roots.contains(root) {
+                roots.append(root)
+            }
+        }
+        for root in roots {
+            scheduleRecheck(repoPath: root, worktreePath: root, at: clock().addingTimeInterval(reclaimAfter))
+        }
     }
 
     // MARK: - Panel
@@ -510,56 +526,69 @@ final class WorktreeReclaimService: ObservableObject {
             }
         }
 
-        // Last look before anything is deleted: the pass awaited git and
+        // Last look before anything is renamed: the pass awaited git and
         // possibly GitHub. Meanwhile a task may have started, the user may
-        // have selected one of these worktrees, or turned automatic reclaim off.
+        // have selected one of these worktrees, changed the idle threshold, or
+        // turned automatic reclaim off. The check and the renames happen in
+        // this one main-actor turn, and every task status change happens on the
+        // main actor too, so no task can start in between. Only the slow
+        // deletes run on the file-system queue afterwards.
         var jobs: [ReclaimJob] = []
+        var prepared: [WorktreeReclaimer.Prepared] = []
+        var outcome = WorktreeReclaimOutcome()
         if !candidates.isEmpty {
+            let checkedAt = clock()
             let current = currentTaskHolds()
             let currentRoots = mode == .automatic ? currentWorkspaceRoots() : []
+            let currentThresholds = WorktreeStorageSettings.thresholds(in: defaults)
             let stillEnabled = mode == .manual || WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
             for job in candidates {
                 guard var input = inputs[job.worktree] else { continue }
-                if !stillEnabled {
+                guard stillEnabled else {
                     kept.append(.init(worktreeName: job.name, reason: "Automatic reclaim turned off"))
                     continue
                 }
                 if let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) {
                     input.inUse = reason
-                } else if mode == .automatic, Self.isProtected(job.worktree, roots: currentRoots) {
-                    input.isWorkspaceRoot = true
-                    if currentRoots == nil { input.inUse = Self.unreadableWorkspaceStateReason }
-                } else {
-                    jobs.append(job)
+                }
+                if mode == .automatic {
+                    input.thresholds = currentThresholds
+                    if Self.isProtected(job.worktree, roots: currentRoots) {
+                        input.isWorkspaceRoot = true
+                        if currentRoots == nil, input.inUse == nil { input.inUse = Self.unreadableWorkspaceStateReason }
+                    }
+                }
+                input.now = checkedAt
+                inputs[job.worktree] = input
+                let decision = WorktreeReclaimPolicy.decide(input)
+                guard decision.reclaimArtifacts else {
+                    kept.append(.init(worktreeName: job.name, reason: decision.reason))
+                    if let status = statuses[job.worktree] {
+                        publishStatus(status.worktree, report: status.report, input: input)
+                    }
+                    if mode == .automatic, let recheckAt = decision.recheckAt {
+                        scheduleRecheck(repoPath: repoPath, worktreePath: job.worktree, at: recheckAt)
+                    }
                     continue
                 }
-                inputs[job.worktree] = input
-                kept.append(.init(worktreeName: job.name, reason: WorktreeReclaimPolicy.decide(input).reason))
-                if let status = statuses[job.worktree] {
-                    publishStatus(status.worktree, report: status.report, input: input)
-                }
+                jobs.append(job)
+                let step = reclaimer.prepare(artifactPaths: job.artifacts, inWorktree: job.worktree, now: checkedAt)
+                prepared += step.prepared
+                outcome.merge(step.outcome)
             }
         }
 
         let reclaimer = self.reclaimer
-        let reclaimJobs = jobs
+        let renamedAside = prepared
         let sweeps = mode == .automatic || act ? leftovers : []
-        let outcome = await WorktreeStorageWork.run { () -> WorktreeReclaimOutcome in
-            var outcome = WorktreeReclaimOutcome()
+        outcome.merge(await WorktreeStorageWork.run { () -> WorktreeReclaimOutcome in
+            var deleted = WorktreeReclaimOutcome()
             for sweep in sweeps {
-                outcome.merge(reclaimer.sweepLeftovers(sweep.paths, inWorktree: sweep.worktree))
+                deleted.merge(reclaimer.sweepLeftovers(sweep.paths, inWorktree: sweep.worktree))
             }
-            // Rename every artifact aside first, then delete: the slow part
-            // never widens the gap between the check above and a rename.
-            var prepared: [WorktreeReclaimer.Prepared] = []
-            for job in reclaimJobs {
-                let step = reclaimer.prepare(artifactPaths: job.artifacts, inWorktree: job.worktree, now: now)
-                prepared += step.prepared
-                outcome.merge(step.outcome)
-            }
-            outcome.merge(reclaimer.finish(prepared))
-            return outcome
-        }
+            deleted.merge(reclaimer.finish(renamedAside))
+            return deleted
+        })
 
         // Decide again from fresh facts for what changed, so a skipped or
         // failed artifact stays reclaimable and automatic mode retries it.

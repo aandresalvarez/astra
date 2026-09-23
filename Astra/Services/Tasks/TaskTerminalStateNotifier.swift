@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
 
 extension Notification.Name {
     /// Posted on the main actor when a task's status changes into a terminal
@@ -16,6 +17,8 @@ struct TaskTerminalStateChange: Equatable, Sendable {
     /// The task's pinned checkout, or its workspace's active worktree when the
     /// task wasn't pinned. Nil when it ran in the workspace's primary path.
     let workingPath: String?
+    /// Folders the runtime let the task write besides `workingPath`.
+    var writablePaths: [String] = []
 }
 
 @MainActor
@@ -28,7 +31,8 @@ enum TaskTerminalStateNotifier {
             object: TaskTerminalStateChange(
                 taskID: task.id,
                 status: task.status,
-                workingPath: pinned ?? workspaceWorktree
+                workingPath: pinned ?? workspaceWorktree,
+                writablePaths: TaskWorkspaceAccess(task: task).runtimeWritablePaths
             )
         )
     }

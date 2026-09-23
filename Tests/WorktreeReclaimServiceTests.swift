@@ -225,7 +225,7 @@ struct WorktreeReclaimServiceTests {
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
         let context = container.mainContext
-        let workspace = Workspace(name: "Repo", primaryPath: "/repos/app")
+        let workspace = Workspace(name: "Repo", primaryPath: "/repos/app", additionalPaths: ["/worktrees/app/shared"])
         context.insert(workspace)
         let task = AgentTask(title: "Fix login", goal: "Fix it", workspace: workspace)
         task.executionRootPath = "/worktrees/app/feature"
@@ -242,7 +242,12 @@ struct WorktreeReclaimServiceTests {
         let result = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
 
         #expect(result.changed)
-        #expect(recorder.changes == [TaskTerminalStateChange(taskID: task.id, status: .cancelled, workingPath: "/worktrees/app/feature")])
+        #expect(recorder.changes == [TaskTerminalStateChange(
+            taskID: task.id,
+            status: .cancelled,
+            workingPath: "/worktrees/app/feature",
+            writablePaths: ["/worktrees/app/shared"]
+        )])
         // A repeated terminal write is not a new event.
         _ = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
         #expect(recorder.changes.count == 1)
@@ -601,6 +606,55 @@ struct WorktreeReclaimServiceTests {
 
         #expect(!setup.service.hasScheduledLaunchPass)
         #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild), "the pass evaluated the workspace it read")
+    }
+
+    @Test("Raising the idle threshold mid-pass keeps a worktree that is no longer idle enough")
+    func thresholdRaisedMidPass() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let calls = CallCounter()
+        let defaults = setup.defaults
+        setup.service.attach(
+            taskHolds: {
+                if calls.increment() == 2 { WorktreeStorageSettings.setIdleThresholdHours(168, in: defaults) }
+                return []
+            },
+            workspaceRoots: { [] }
+        )
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains { $0.worktreeName == "feature" && $0.reason.hasPrefix("Active") })
+    }
+
+    @Test("A repository whose listing failed at launch is tried again later")
+    func failedListingIsRetried() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.git.worktrees = []
+        await setup.service.runLaunchPass(workspaces: [
+            WorktreeStorageWorkspacePaths(primaryPath: setup.primary.path, additionalPaths: [])
+        ])
+
+        setup.git.worktrees = setup.worktrees
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(setup.service.hasScheduledRepositoryPass(setup.primary.path))
+    }
+
+    @Test("A finished task rechecks the worktrees its writable folders are in")
+    func terminalTaskRechecksWritableWorktrees() throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try "gitdir: /repos/app/.git/worktrees/feature\n".write(toFile: setup.linked.path + "/.git", atomically: true, encoding: .utf8)
+        let writable = try setup.fixture.directory("worktrees/feature/packages/api")
+
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: nil, writablePaths: [writable, "/not/a/checkout"])
+        )
+
+        #expect(setup.service.pendingRecheckDates.keys.sorted() == [setup.linked.path])
     }
 
     @Test("No worktree is ever removed, whatever the pass decides")

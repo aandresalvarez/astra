@@ -247,6 +247,10 @@ For each artifact:
 3. Atomically rename it to `<name>.astra-reclaiming-<uuid>` in the same parent
    directory. After this, a concurrent build sees a clean tree, not a
    half-deleted one.
+   The service re-reads task claims, workspace protection, the setting and
+   the threshold, then renames, all in one main-actor turn. Every task
+   status change also happens on the main actor, so no task can start in
+   between, for Cargo and npm too, which have no lock to hold.
 4. Delete the renamed directory off the main actor. Delete permanently; don't
    move to Trash, because Trash doesn't free space.
 5. On launch, sweep leftover `*.astra-reclaiming-*` directories inside known
