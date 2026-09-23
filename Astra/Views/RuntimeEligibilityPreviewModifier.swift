@@ -137,13 +137,21 @@ struct RuntimeEligibilityPreviewRequest {
 
     static func existingTask(
         task: AgentTask,
-        acceptedTurn: String,
+        messageText: String,
+        attachedFiles: [String],
         selectedPolicyLevelRaw: String,
         skipPermissions: Bool,
         providerSettings: ProviderSettingsSnapshot,
         readinessStates: [AgentRuntimeID: RuntimeReadinessState],
         eventRevision: Int
     ) -> RuntimeEligibilityPreviewRequest {
+        // Preview the turn Send will persist: the typed text plus its
+        // attachment block. An attachment-only follow-up is then a turn like
+        // any other, and attaching a file re-runs the preview.
+        let acceptedTurn = TaskComposerCoordinator.composedMessage(
+            messageText: messageText,
+            attachedFiles: attachedFiles
+        )
         let readiness = readinessSignature(readinessStates)
         let signature = ([
             task.id.uuidString,
@@ -444,7 +452,8 @@ extension TaskMainView {
     var runtimeEligibilityPreviewRequest: RuntimeEligibilityPreviewRequest {
         .existingTask(
             task: task,
-            acceptedTurn: messageText,
+            messageText: messageText,
+            attachedFiles: attachedFiles,
             selectedPolicyLevelRaw: taskPolicyLevelRaw,
             skipPermissions: taskSkipPermissions,
             providerSettings: providerSettingsSnapshot,

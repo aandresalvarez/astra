@@ -1053,6 +1053,39 @@ struct TaskTurnIntentAdmissionTests {
             != request(attachedFiles: ["/tmp/b.txt"]).signature)
     }
 
+    @Test("Follow-up preview counts an attachment-only turn and tracks the attachment list")
+    func followUpPreviewCountsAttachments() throws {
+        let container = try makeContainer()
+        let workspace = Workspace(name: "Follow-up attachments", primaryPath: "/tmp")
+        let task = AgentTask(title: "Existing", goal: "Review files", workspace: workspace, runtime: .claudeCode)
+        container.mainContext.insert(workspace)
+        container.mainContext.insert(task)
+        try container.mainContext.save()
+
+        func request(messageText: String, attachedFiles: [String]) -> RuntimeEligibilityPreviewRequest {
+            .existingTask(
+                task: task,
+                messageText: messageText,
+                attachedFiles: attachedFiles,
+                selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                skipPermissions: false,
+                providerSettings: .headlessScenario,
+                readinessStates: [.claudeCode: .ready],
+                eventRevision: 0
+            )
+        }
+
+        // Send accepts a follow-up that is only attachments, so the preview it
+        // waits on must evaluate one instead of idling and blocking Send.
+        #expect(request(messageText: "  ", attachedFiles: ["/tmp/screenshot.png"]).hasAcceptedTurn)
+        #expect(!request(messageText: "  ", attachedFiles: []).hasAcceptedTurn)
+        // Attaching a file changes the turn Send will persist.
+        #expect(request(messageText: "Review", attachedFiles: []).signature
+            != request(messageText: "Review", attachedFiles: ["/tmp/a.txt"]).signature)
+        #expect(request(messageText: "Review", attachedFiles: ["/tmp/a.txt"]).signature
+            != request(messageText: "Review", attachedFiles: ["/tmp/b.txt"]).signature)
+    }
+
     @Test("Composer preview rejects a missing attachment before the task is enqueued")
     func previewRejectsMissingComposerAttachment() async throws {
         let container = try makeContainer()

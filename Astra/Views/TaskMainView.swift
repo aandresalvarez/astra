@@ -201,7 +201,8 @@ struct TaskMainView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.taskChatUnobscuredWidth) private var taskChatUnobscuredWidth
     @State var messageText = ""
-    @State private var attachedFiles: [String] = []
+    // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
+    @State var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
@@ -4766,8 +4767,10 @@ struct TaskMainView: View {
         case .mcpInstallFailure(let message):
             recordMCPInstallCommand(messageText, assistantMessage: message)
             return
-        case .message(let msg):
-            sendConversationMessage(msg)
+        case .message:
+            // Recomposed once the send is certain, naming durable copies of pastes and image drops.
+            let attachments = TaskInputMaterializer.durableAttachmentPaths(attachedFiles, for: task)
+            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments))
         }
     }
 
