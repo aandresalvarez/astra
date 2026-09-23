@@ -22,12 +22,14 @@ enum TaskTurnSubmissionService {
 
     static func submit(
         message: String,
+        attachmentPaths: [String] = [],
         for task: AgentTask,
         into modelContext: ModelContext,
         at date: Date = Date()
     ) -> Result<Submission, SubmissionError> {
         switch ExecutionRequestSubmissionService.submitFollowUp(
             message: message,
+            attachmentPaths: attachmentPaths,
             for: task,
             into: modelContext,
             at: date

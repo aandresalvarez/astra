@@ -325,7 +325,7 @@ enum TaskLaunchResourceResolver {
             )
         }
 
-        for path in AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: contextText) {
+        for path in TaskAttachmentBlock.paths(in: contextText) {
             appendInputPathGrant(
                 rawPath: path,
                 source: .userAttachment,
@@ -345,7 +345,7 @@ enum TaskLaunchResourceResolver {
         grants: inout [RuntimePathGrant],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        let stripped = AgentRuntimeAttachmentProjection.stripPathDecoratorsForLaunchResources(rawPath)
+        let stripped = TaskAttachmentBlock.stripPathDecorators(rawPath)
         guard !stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let normalized = existingPath(stripped, fileManager: fileManager) else {
             // A pasted or dropped attachment lives in $TMPDIR, which macOS
