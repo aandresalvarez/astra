@@ -922,7 +922,7 @@ public struct ASTRAApp: App {
     private static func startWorktreeStorageHygiene(modelContext: ModelContext) {
         let service = WorktreeReclaimService.shared
         service.attach(
-            taskHolds: { WorktreeTaskUsage.allHolds(in: modelContext) },
+            taskHolds: { try WorktreeTaskUsage.allHolds(in: modelContext) },
             workspaceRoots: {
                 WorktreeTaskUsage.protectedWorkspacePaths(
                     of: (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []

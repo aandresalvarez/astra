@@ -138,7 +138,7 @@ struct WorktreeTaskUsageScopeTests {
         task.executionRootPath = "/worktrees/app/second"
         try context.save()
 
-        let holds = WorktreeTaskUsage.allHolds(in: context)
+        let holds = try WorktreeTaskUsage.allHolds(in: context)
 
         #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/first", holds: holds)
             == "Follow-up queued for task “Fix login”")

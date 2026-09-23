@@ -95,16 +95,15 @@ struct WorktreeReclaimer: Sendable {
     }
 
     /// Deletes `<artifact>.astra-reclaiming-<uuid>` directories an interrupted
-    /// pass left behind. Only exact leftover names of a known rule, strictly
-    /// inside the worktree and never through a symlink, are touched.
+    /// pass left behind. Only exact leftover names of a known rule, still next
+    /// to that rule's manifest, strictly inside the worktree and never through
+    /// a symlink, are touched.
     func sweepLeftovers(_ leftoverPaths: [String], inWorktree worktreePath: String) -> WorktreeReclaimOutcome {
         var outcome = WorktreeReclaimOutcome()
         guard let root = WorktreePath.realPath(worktreePath) else { return outcome }
-        let artifactNames = Set(rules.map(\.directoryName))
         for path in leftoverPaths {
-            let name = (path as NSString).lastPathComponent
-            guard let base = WorktreeFileSystem.reclaimLeftoverBaseName(name), artifactNames.contains(base),
-                  WorktreeFileSystem.isRealDirectory(path),
+            guard !WorktreeFileSystem.isSymbolicLink(path),
+                  WorktreeArtifactRule.rule(matchingLeftoverAtPath: path, in: rules) != nil,
                   let canonical = WorktreePath.realPath(path),
                   WorktreePath.isStrictlyInside(canonical, root: root) else {
                 outcome.merge(skip(path, worktreePath: worktreePath, "not a reclaim leftover inside the worktree"))

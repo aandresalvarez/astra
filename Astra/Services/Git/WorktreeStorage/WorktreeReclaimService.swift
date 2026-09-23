@@ -96,7 +96,8 @@ final class WorktreeReclaimService: ObservableObject {
     private let reclaimer: WorktreeReclaimer
     private let resolver: WorktreeMergeStateResolver
     private let clock: () -> Date
-    private var taskHolds: @MainActor () -> [WorktreeTaskHold] = { [] }
+    /// Throws when task state can't be read; a pass then keeps everything.
+    private var taskHolds: @MainActor () throws -> [WorktreeTaskHold] = { [] }
     private var workspaceRoots: @MainActor () -> [String] = { [] }
     private var repoWorktreePaths: [String: Set<String>] = [:]
     private var passChain: Task<Void, Never>?
@@ -121,7 +122,7 @@ final class WorktreeReclaimService: ObservableObject {
     /// Connects the service to the app's tasks and workspaces. The app calls
     /// this once at launch with providers backed by its main model context.
     func attach(
-        taskHolds: @escaping @MainActor () -> [WorktreeTaskHold],
+        taskHolds: @escaping @MainActor () throws -> [WorktreeTaskHold],
         workspaceRoots: @escaping @MainActor () -> [String]
     ) {
         self.taskHolds = taskHolds
@@ -351,7 +352,9 @@ final class WorktreeReclaimService: ObservableObject {
             paths.map { Self.fileFacts(worktreePath: $0, inspector: inspector, probe: probe, now: now) }
         }
 
-        let holds = taskHolds()
+        // Fail closed: if task state can't be read, every worktree counts as
+        // in use for this pass.
+        let holds = currentTaskHolds()
         let roots = Set(workspaceRoots().map(WorktreePath.canonical))
         let thresholds = WorktreeStorageSettings.thresholds(in: defaults)
         let defaultBranch = await git.getDefaultBaseBranch(at: repoPath, remote: nil)
@@ -366,9 +369,9 @@ final class WorktreeReclaimService: ObservableObject {
                 worktree: worktree,
                 isWorkspaceRoot: roots.contains(WorktreePath.canonical(worktree.path)),
                 artifactBytes: fact.report.artifactBytes,
-                lastActivity: await lastActivity(of: worktree, facts: fact, holds: holds, otherWorktreePaths: allPaths),
+                lastActivity: await lastActivity(of: worktree, facts: fact, holds: holds ?? [], otherWorktreePaths: allPaths),
                 buildSignal: fact.buildSignal,
-                inUse: WorktreeTaskUsage.inUseReason(forWorktreePath: worktree.path, holds: holds, otherWorktreePaths: allPaths),
+                inUse: inUseReason(worktree.path, holds: holds, otherWorktreePaths: allPaths),
                 mode: mode,
                 thresholds: thresholds,
                 now: now
@@ -404,13 +407,9 @@ final class WorktreeReclaimService: ObservableObject {
         // possibly GitHub, and a task may have started using a worktree since.
         var jobs: [ReclaimJob] = []
         if !candidates.isEmpty {
-            let current = taskHolds()
+            let current = currentTaskHolds()
             for job in candidates {
-                guard let reason = WorktreeTaskUsage.inUseReason(
-                    forWorktreePath: job.worktree,
-                    holds: current,
-                    otherWorktreePaths: allPaths
-                ) else {
+                guard let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) else {
                     jobs.append(job)
                     continue
                 }
@@ -492,6 +491,22 @@ final class WorktreeReclaimService: ObservableObject {
             kept: kept,
             reclaimedWorktreeCount: reclaimedWorktrees.count
         )
+    }
+
+    /// Task claims, or nil when the store can't be read.
+    private func currentTaskHolds() -> [WorktreeTaskHold]? {
+        do {
+            return try taskHolds()
+        } catch {
+            AppLogger.error("Worktree reclaim kept everything: task state unreadable: \(error.localizedDescription)", category: "Git")
+            return nil
+        }
+    }
+
+    /// Unreadable task state holds every worktree.
+    private func inUseReason(_ path: String, holds: [WorktreeTaskHold]?, otherWorktreePaths: [String]) -> String? {
+        guard let holds else { return WorktreeTaskUsage.unreadableTaskStateReason }
+        return WorktreeTaskUsage.inUseReason(forWorktreePath: path, holds: holds, otherWorktreePaths: otherWorktreePaths)
     }
 
     /// Publishes what the Reclaim button would do right now (manual mode).

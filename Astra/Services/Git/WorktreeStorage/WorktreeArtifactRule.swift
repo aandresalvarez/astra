@@ -56,6 +56,22 @@ struct WorktreeArtifactRule: Hashable, Sendable {
     ) -> WorktreeArtifactRule? {
         rules.first { $0.matches(directoryAtPath: path) }
     }
+
+    /// The rule whose interrupted reclaim left `path` behind
+    /// (`<directoryName>.astra-reclaiming-<uuid>`): a real directory that is
+    /// still next to that rule's manifest. A look-alike without the manifest
+    /// is somebody's data, never swept.
+    static func rule(
+        matchingLeftoverAtPath path: String,
+        in rules: [WorktreeArtifactRule]
+    ) -> WorktreeArtifactRule? {
+        let url = URL(fileURLWithPath: path)
+        guard let base = WorktreeFileSystem.reclaimLeftoverBaseName(url.lastPathComponent),
+              let rule = rules.first(where: { $0.directoryName == base }),
+              WorktreeFileSystem.isRealDirectory(path) else { return nil }
+        let manifest = url.deletingLastPathComponent().appendingPathComponent(rule.manifestName).path
+        return WorktreeFileSystem.isFile(manifest) ? rule : nil
+    }
 }
 
 /// `lstat`-based checks shared by the worktree storage services. None of them

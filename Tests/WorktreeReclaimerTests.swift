@@ -135,6 +135,20 @@ struct WorktreeReclaimerTests {
         #expect(FileManager.default.fileExists(atPath: lookalike))
     }
 
+    @Test("Sweeping refuses a leftover name that isn't next to its manifest")
+    func sweepRequiresManifest() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        // No Cargo.toml next to it: this is somebody's data, not a leftover.
+        let userData = try setup.fixture.directory("wt-feature/data/target\(WorktreeFileSystem.reclaimingMarker)\(UUID().uuidString)")
+        try "keep".write(toFile: "\(userData)/notes.txt", atomically: true, encoding: .utf8)
+
+        let outcome = setup.reclaimer.sweepLeftovers([userData], inWorktree: setup.worktree)
+
+        #expect(outcome.reclaimed.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: "\(userData)/notes.txt"))
+    }
+
     @Test("An artifact written in the last 15 minutes is skipped as a build in progress")
     func recentArtifactSkipped() throws {
         let setup = try makeSetup()

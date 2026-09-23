@@ -19,7 +19,10 @@ final class WorktreeMergeStateResolver {
     private let git: WorktreeStorageGitReading
     private let ghPathOverride: String?
     private var breakers: [String: GitPullRequestLookupBreaker] = [:]
-    /// Confirmed merges by repo, branch and HEAD. Unknown is never cached.
+    /// Merges GitHub confirmed, by repo, branch and HEAD: a merged pull
+    /// request stays merged. Ancestry is never cached, because the base
+    /// branch can be retargeted or force-pushed; it is a cheap local check.
+    /// Unknown is never cached.
     private var mergedKeys: Set<String> = []
     /// Repositories whose lookup failed during the current pass. One failure
     /// is enough; each lookup can take minutes to time out.
@@ -46,10 +49,7 @@ final class WorktreeMergeStateResolver {
         if mergedKeys.contains(key) { return .merged }
 
         let ancestry = await git.isAncestor(head, of: defaultBranch, at: repoPath)
-        if ancestry == .ancestor {
-            mergedKeys.insert(key)
-            return .merged
-        }
+        if ancestry == .ancestor { return .merged }
         guard let branch = worktree.branch, !branch.isEmpty else {
             return ancestry == .notAncestor ? .notMerged : .unknown("Detached HEAD")
         }

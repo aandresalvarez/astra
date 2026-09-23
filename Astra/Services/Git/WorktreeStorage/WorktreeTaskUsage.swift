@@ -58,13 +58,18 @@ enum WorktreeTaskUsage {
         }
     }
 
+    /// Reason reported when task state can't be read. Callers fail closed on
+    /// it: nothing is reclaimed or removed until the store answers.
+    static let unreadableTaskStateReason = "Task state couldn't be read"
+
     /// Claims from every task in the store plus every waiting, admitted or
-    /// running follow-up turn.
+    /// running follow-up turn. Throws when the store can't be read, so no
+    /// caller mistakes a failed read for "nothing is running".
     @MainActor
-    static func allHolds(in modelContext: ModelContext) -> [WorktreeTaskHold] {
-        let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
+    static func allHolds(in modelContext: ModelContext) throws -> [WorktreeTaskHold] {
+        let tasks = try modelContext.fetch(FetchDescriptor<AgentTask>())
         let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let requests = (try? TaskTurnRequestRepository.allActiveRequests(in: modelContext)) ?? []
+        let requests = try TaskTurnRequestRepository.allActiveRequests(in: modelContext)
         var canonical = CanonicalPathMemo()
         let requestHolds: [WorktreeTaskHold] = requests.compactMap { request in
             let task = tasksByID[request.taskID]

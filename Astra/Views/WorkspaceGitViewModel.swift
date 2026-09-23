@@ -930,11 +930,21 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     /// The removal guard looks wider than the row: every task in the store,
-    /// including a finished one with a follow-up turn still queued.
+    /// including a finished one with a follow-up turn still queued. A store
+    /// that can't be read blocks the removal.
     private func worktreeInUseReasonForRemoval(_ worktree: GitWorktreeInfo) -> String? {
         guard let workspace else { return nil }
-        let holds = workspace.modelContext.map { WorktreeTaskUsage.allHolds(in: $0) }
-            ?? WorktreeTaskUsage.holds(from: workspace.tasks)
+        let holds: [WorktreeTaskHold]
+        if let modelContext = workspace.modelContext {
+            do {
+                holds = try WorktreeTaskUsage.allHolds(in: modelContext)
+            } catch {
+                AppLogger.error("Worktree removal blocked: task state unreadable: \(error.localizedDescription)", category: "Git")
+                return WorktreeTaskUsage.unreadableTaskStateReason
+            }
+        } else {
+            holds = WorktreeTaskUsage.holds(from: workspace.tasks)
+        }
         return WorktreeTaskUsage.inUseReason(
             forWorktreePath: worktree.path,
             holds: holds,

@@ -85,7 +85,7 @@ struct WorktreeStorageInspector: Sendable {
             let name = url.lastPathComponent
             if name == ".git" || Self.isNestedCheckout(path) {
                 enumerator.skipDescendants()
-            } else if WorktreeFileSystem.reclaimLeftoverBaseName(name) != nil {
+            } else if WorktreeArtifactRule.rule(matchingLeftoverAtPath: path, in: rules) != nil {
                 leftovers.append(path)
                 leftoverBytes += Self.allocatedBytes(under: path)
                 enumerator.skipDescendants()

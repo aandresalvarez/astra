@@ -394,6 +394,21 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.statuses[setup.linked.path]?.worktree == moved)
     }
 
+    @Test("Unreadable task state keeps every worktree, even for the Reclaim button")
+    func unreadableTaskStateFailsClosed() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.service.attach(taskHolds: { throw CocoaError(.coderReadCorrupt) }, workspaceRoots: { [] })
+
+        let summary = await setup.service.reclaimNow(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(summary.freedBytes == 0)
+        #expect(FileManager.default.fileExists(atPath: setup.primaryBuild))
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.allSatisfy { $0.reason == WorktreeTaskUsage.unreadableTaskStateReason })
+        #expect(summary.kept.count == 2)
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)

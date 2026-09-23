@@ -117,6 +117,17 @@ struct WorktreeMergeStateResolverTests {
         #expect(git.lookupCalls.isEmpty)
     }
 
+    @Test("An ancestry merge is rechecked, so a rewritten base is noticed")
+    func ancestryIsNotCached() async {
+        let git = StubWorktreeGit()
+        git.ancestry["\(head)>origin/main"] = .ancestor
+        let resolver = WorktreeMergeStateResolver(git: git)
+        #expect(await resolver.resolve(worktree: worktree(), repoPath: repo, defaultBranch: "origin/main") == .merged)
+
+        git.ancestry["\(head)>origin/main"] = .notAncestor
+        #expect(await resolver.resolve(worktree: worktree(), repoPath: repo, defaultBranch: "origin/main") == .notMerged)
+    }
+
     @Test("A confirmed merge is remembered for the same HEAD")
     func mergedIsCached() async {
         let git = StubWorktreeGit()

@@ -115,6 +115,16 @@ struct WorktreeStorageInspectorTests {
         #expect(report.interruptedReclaims == [((leftover as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent])
     }
 
+    @Test("A leftover-looking folder without its manifest is ordinary data")
+    func leftoverLookalikeWithoutManifest() throws {
+        let fixture = try WorktreeStorageFixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("node_modules\(WorktreeFileSystem.reclaimingMarker)\(UUID().uuidString)/keep.txt", bytes: 4096)
+        let report = inspector.inspect(worktreePath: fixture.root.path)
+        #expect(report.interruptedReclaims.isEmpty)
+        #expect(report.totalBytes >= 4096)
+    }
+
     @Test("A missing worktree reports as missing")
     func missingWorktree() {
         let report = inspector.inspect(worktreePath: "/nonexistent/\(UUID().uuidString)")
