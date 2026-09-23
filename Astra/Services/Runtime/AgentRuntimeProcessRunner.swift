@@ -1352,15 +1352,19 @@ final class AgentRuntimeProcessRunner {
         }
     }
 
-    static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
-        // CopilotCLIRuntime.buildCommand renders these as --add-dir grants,
-        // which is also the only way an external read-only task input (a
-        // folder selected outside the workspace) stays visible to Copilot's
-        // own directory allowlist. Writable-only roots would leave that input
-        // out of scope even though the launch-resource/Seatbelt plan already
-        // grants it read-only — matching the same writable+read-only
-        // projection CodexCLIRuntimeAdapter uses for its --add-dir grants.
-        runtimeWritablePaths(for: task) + TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths
+    /// Directories for Copilot's `--add-dir`, plus any attached input file no
+    /// granted root covers. Copilot rejects a non-directory `--add-dir` value,
+    /// and `runtimeReadOnlyInputPaths` carries files — every paste is one.
+    static func copilotNativeDirectoryProjection(for task: AgentTask) -> ProviderNativeDirectoryProjection.Result {
+        let writable = runtimeWritablePaths(for: task)
+        let inputs = ProviderNativeDirectoryProjection.project(
+            resourcePaths: TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths,
+            alreadyReachableDirectories: writable
+        )
+        return .init(
+            additionalDirectories: writable + inputs.additionalDirectories,
+            unreachableFiles: inputs.unreachableFiles
+        )
     }
 
     static func runtimeWritablePaths(
