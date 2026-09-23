@@ -104,4 +104,13 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
             ) != nil
         }.count
     }
+
+    /// `counted` with the folder resolved here, off the main actor and
+    /// cancelled with the caller: nil if the rebuild that asked was superseded
+    /// before counting began. A `Task.detached` would finish every superseded
+    /// count; see `TaskMissionControlSnapshot.Source.loaded`.
+    nonisolated static func counted(_ pending: [Pending], workspacePath: String, taskID: UUID) async -> [UUID: Entry]? {
+        guard !Task.isCancelled else { return nil }
+        return counted(pending, taskFolder: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+    }
 }

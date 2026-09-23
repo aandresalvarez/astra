@@ -393,21 +393,33 @@ struct TaskThreadArchitectureFitnessTests {
             #expect(!countsKey.contains(forbidden), "The changed-file count key must not read \(forbidden)")
         }
 
-        // The folder is found inside the detached work, never before it.
-        for (from, to) in [
-            ("func recomputeDiagnosticFileGroups() async {", "var runFileChangeCountInputs:"),
-            ("func recomputeRunFileChangeCounts() async {", nil as String?)
+        // The folder is found and read off the main actor, in loaders that are
+        // cancelled with the `.task(id:)` — a detached task would finish every
+        // superseded walk — and neither recompute resolves it on the actor.
+        let diagnostics = try source("Astra/Views/TaskDiagnosticsIndex.swift", root: root)
+        for (from, to, loader) in [
+            ("func recomputeDiagnosticFileGroups() async {", "var runFileChangeCountInputs:" as String?,
+             "await TaskDiagnosticsIndex.groups(workspacePath:"),
+            ("func recomputeRunFileChangeCounts() async {", nil, "await TaskRunVisibleFileChangeCounts.counted(")
         ] {
             let recompute = try code(in: caches, from: from, to: to)
-            let detached = try #require(recompute.range(of: "Task.detached("))
-            let folder = try #require(recompute.range(of: "TaskFolderResolvingAdapter.taskFolder("))
-            #expect(detached.lowerBound < folder.lowerBound)
-            #expect(!recompute.contains("TaskWorkspaceAccess(task: task).taskFolder"))
+            #expect(recompute.contains(loader))
+            #expect(!recompute.contains("Task.detached("))
+            #expect(!recompute.contains(".taskFolder"))
+        }
+        for (text, from) in [
+            (diagnostics, "nonisolated static func groups(workspacePath:"),
+            (counts, "nonisolated static func counted(")
+        ] {
+            let loader = try code(in: text, from: from, to: "\n    }\n")
+            let cancellation = try #require(loader.range(of: "guard !Task.isCancelled"))
+            let folder = try #require(loader.range(of: "TaskFolderResolvingAdapter.taskFolder("))
+            #expect(cancellation.lowerBound < folder.lowerBound)
         }
 
         // One root resolution per rebuild; the per-path loop only uses it.
         let counted = try code(in: counts, from: "static func counted(", to: "static func visibleCount(")
-        let perPath = try code(in: counts, from: "static func visibleCount(", to: nil)
+        let perPath = try code(in: counts, from: "static func visibleCount(", to: "nonisolated static func counted(")
         #expect(counted.contains("ResolvedRoot(taskFolder)"))
         #expect(!perPath.contains("ResolvedRoot("))
         #expect(perPath.contains("relativePath(path, under: root)"))

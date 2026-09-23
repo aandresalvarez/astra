@@ -40,6 +40,15 @@ struct TaskDiagnosticFileGroup: Identifiable, Hashable {
 }
 
 enum TaskDiagnosticsIndex {
+    /// `groups(in:)` with the folder resolved here, off the main actor and
+    /// cancelled with the caller: nil if the refresh that asked was superseded
+    /// before the walk began. A `Task.detached` would finish every superseded
+    /// walk; see `TaskMissionControlSnapshot.Source.loaded`.
+    nonisolated static func groups(workspacePath: String, taskID: UUID) async -> [TaskDiagnosticFileGroup]? {
+        guard !Task.isCancelled else { return nil }
+        return groups(in: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+    }
+
     static func groups(in taskFolder: String, fileManager: FileManager = .default) -> [TaskDiagnosticFileGroup] {
         items(in: taskFolder, fileManager: fileManager)
             .reduce(into: [TaskDiagnosticFileItem.Group: [TaskDiagnosticFileItem]]()) { grouped, item in

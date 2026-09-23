@@ -103,6 +103,24 @@ struct TaskRunVisibleFileChangeCountsTests {
         #expect(cache.runsNeedingCount(moved) == [steady, growing])
     }
 
+    /// The count runs off the main actor but stays attached to the
+    /// `.task(id:)` that asked for it, so a rebuild superseded before counting
+    /// began touches no path. A detached task would have finished every one.
+    @Test("A superseded count skips the work")
+    func supersededCountSkipsTheWork() async {
+        let id = UUID()
+        let pending = [run(id, length: 10, paths: ["/elsewhere/a"])]
+
+        let live = await TaskRunVisibleFileChangeCounts.counted(pending, workspacePath: "/workspace", taskID: UUID())
+        #expect(live?[id]?.count == 1)
+
+        let superseded = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await TaskRunVisibleFileChangeCounts.counted(pending, workspacePath: "/workspace", taskID: UUID())
+        }.value
+        #expect(superseded == nil)
+    }
+
     @Test("A run's last count stands until its recount lands, and gone runs drop out")
     func lastCountStandsUntilReplaced() {
         let taskID = UUID()

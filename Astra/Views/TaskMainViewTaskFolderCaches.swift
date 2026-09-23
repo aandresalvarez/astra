@@ -11,7 +11,7 @@ import ASTRAPersistence
 /// relationship fault), and every run bubble classified its changed paths
 /// with symlink walks. Same shape as `recomputeHeaderFileItems`: a key of
 /// values the view already holds gates a `.task(id:)`, and the folder is
-/// resolved and read in a detached task.
+/// resolved and read off the main actor, in loaders cancelled with it.
 extension TaskMainView {
     // MARK: Diagnostics
 
@@ -38,12 +38,9 @@ extension TaskMainView {
     func recomputeDiagnosticFileGroups() async {
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskID = task.id
-        let groups = await Task.detached(priority: .utility) {
-            TaskDiagnosticsIndex.groups(
-                in: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID)
-            )
-        }.value
-        guard !Task.isCancelled else { return }
+        // Off the main actor, and cancelled with this `.task(id:)`.
+        let groups = await TaskDiagnosticsIndex.groups(workspacePath: workspacePath, taskID: taskID)
+        guard let groups, !Task.isCancelled else { return }
         diagnosticFileGroupsCache = groups
     }
 
@@ -69,7 +66,7 @@ extension TaskMainView {
         let needed = runFileChangeCountsCache.runsNeedingCount(inputs)
         guard !needed.isEmpty else { return }
         // The paths are already decoded in the snapshot; take them here, where
-        // it is safe to read, and hand the detached task plain strings.
+        // it is safe to read, and hand the loader plain strings.
         let pending = (threadViewModel.snapshot?.sortedRuns ?? []).filter { needed.contains($0.id) }.map {
             TaskRunVisibleFileChangeCounts.Pending(
                 id: $0.id,
@@ -77,14 +74,14 @@ extension TaskMainView {
                 paths: $0.fileChanges.map(\.path)
             )
         }
-        let counted = await Task.detached(priority: .userInitiated) {
-            TaskRunVisibleFileChangeCounts.counted(
-                pending,
-                taskFolder: TaskFolderResolvingAdapter.taskFolder(workspacePath: inputs.workspacePath, taskID: inputs.taskID)
-            )
-        }.value
+        // Off the main actor, and cancelled with this `.task(id:)`.
+        let counted = await TaskRunVisibleFileChangeCounts.counted(
+            pending,
+            workspacePath: inputs.workspacePath,
+            taskID: inputs.taskID
+        )
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
-        guard !Task.isCancelled else { return }
+        guard let counted, !Task.isCancelled else { return }
         runFileChangeCountsCache = runFileChangeCountsCache.merging(counted, for: inputs)
     }
 }
