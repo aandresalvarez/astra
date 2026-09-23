@@ -232,32 +232,61 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(task.artifacts.contains { $0.path == reportPath && $0.type == "markdown" })
     }
 
-    @Test("generated file trigger observes artifact row changes")
-    func generatedFileTriggerObservesArtifactRowChanges() throws {
+    /// The generated-files trigger no longer counts `task.artifacts` from a view
+    /// body; it hears about new rows from this announcement instead. So every
+    /// way the service adds a row must announce it, once per call, and a
+    /// reconcile that adds nothing must stay quiet.
+    @Test("adding artifact rows announces the change for that task")
+    func addingArtifactRowsAnnouncesTheChange() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeTaskArtifactPersistenceContainer()
         let context = ModelContext(container)
         let task = makeTask(root: root, context: context, title: "Refresh Shelf")
+        let taskID = task.id
+        var announced = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: .taskArtifactsDidChange,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard (notification.object as? TaskArtifactsChange)?.taskID == taskID else { return }
+            announced += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
 
-        let before = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
         let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
-        let path = (folder as NSString).appendingPathComponent("notes.md")
-        try "# Notes".write(toFile: path, atomically: true, encoding: .utf8)
+        for name in ["notes.md", "summary.md"] {
+            try "# \(name)".write(toFile: (folder as NSString).appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
         TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
-        let after = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
+        #expect(task.artifacts.count == 2)
+        #expect(announced == 1)
 
-        #expect(before != after)
+        TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
+        #expect(announced == 1)
+
+        // The live path: a file change recorded while the run is going.
+        let report = StoredFileChange(from: FileChange(
+            path: (folder as NSString).appendingPathComponent("report.md"),
+            changeType: .write,
+            content: "report",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+        #expect(TaskArtifactPersistenceService.persistFileChangeArtifact(report, for: task, modelContext: context) != nil)
+        #expect(announced == 2)
     }
 
     /// The trigger is built inside a view body, once per keystroke in the task
-    /// composer, so it may not read the artifact rows: each one faults through
-    /// Core Data separately, and the old `isStale` field was a `fileExists` on
-    /// top of that. This pins the consequence — a file deleted behind the app's
-    /// back no longer moves the trigger — so the trade is deliberate rather
-    /// than something a later change restores by accident.
-    @Test("generated file trigger does not stat the filesystem per artifact")
-    func generatedFileTriggerIgnoresOnDiskStaleness() throws {
+    /// composer, so it may read neither the artifact rows nor the filesystem:
+    /// each row faults through Core Data separately, and the old `isStale`
+    /// field was a `fileExists` on top of that. This pins the consequence — a
+    /// file deleted behind the app's back moves nothing — so the trade is
+    /// deliberate rather than something a later change restores by accident.
+    @Test("generated file trigger reads neither artifact rows nor the filesystem")
+    func generatedFileTriggerIgnoresRowsAndDisk() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeTaskArtifactPersistenceContainer()
@@ -269,19 +298,16 @@ struct TaskArtifactPersistenceServiceTests {
         try "# Notes".write(toFile: path, atomically: true, encoding: .utf8)
         TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
 
-        let withFile = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
+        let withFile = TaskGeneratedFilesTrigger(task: task, latestRun: nil, artifactsRevision: 1)
         #expect(task.artifacts.contains { $0.path == path })
         try FileManager.default.removeItem(atPath: path)
-        let withoutFile = TaskGeneratedFilesTrigger(task: task, latestRun: nil)
-
-        #expect(withFile == withoutFile)
-        // Reconciliation keeps the row for a file that vanished, so nothing
-        // downstream re-derives staleness from the count either. A row arriving
-        // is the change the trigger does still have to catch.
-        let second = (folder as NSString).appendingPathComponent("summary.md")
-        try "# Summary".write(toFile: second, atomically: true, encoding: .utf8)
+        // Reconciliation keeps the row for a file that vanished, so nothing is
+        // announced and the revision the observer holds stays where it was.
         TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
-        #expect(TaskGeneratedFilesTrigger(task: task, latestRun: nil) != withFile)
+        #expect(TaskGeneratedFilesTrigger(task: task, latestRun: nil, artifactsRevision: 1) == withFile)
+        // A row arriving is the change the trigger still has to catch, and it
+        // arrives as a revision.
+        #expect(TaskGeneratedFilesTrigger(task: task, latestRun: nil, artifactsRevision: 2) != withFile)
     }
 
     private func makeTask(

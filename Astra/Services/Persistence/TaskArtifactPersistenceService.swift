@@ -169,6 +169,10 @@ public enum TaskArtifactPersistenceService {
             fields: summary.auditFields,
             level: summary.status == .unchanged ? .debug : .info
         )
+        // Once per reconcile, not per row: the view recomputes on this.
+        if summary.didChangeArtifactRows {
+            TaskArtifactChangeNotifier.post(taskID: task.id)
+        }
         return summary
     }
 
@@ -207,6 +211,7 @@ public enum TaskArtifactPersistenceService {
             version: nextVersion(for: path, task: task)
         )
         insertArtifact(artifact, into: task, modelContext: modelContext)
+        TaskArtifactChangeNotifier.post(taskID: task.id)
         return artifact
     }
 
