@@ -827,9 +827,7 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-        // Even when nothing was saved: resolving the folder can move it off
-        // the legacy layout, and the mission-control cache holds its path.
-        missionControlStateRevision &+= 1
+        noteContextRefreshForMissionControl()
     }
 
     private func scheduleVerificationPresentationRefresh() {

@@ -315,17 +315,22 @@ struct TaskThreadArchitectureFitnessTests {
         }
         #expect(key.contains("stateRevision: missionControlStateRevision"))
 
-        // The load runs detached, and the model is read only once it returns.
+        // The load runs off the main actor in a loader cancelled with the
+        // `.task(id:)` — not a detached task, which would finish every
+        // superseded read — and the model is read only once it returns.
         let recompute = try code(
             in: missionControl,
             from: "func recomputeMissionControlSnapshot() async {",
-            to: "struct TaskMissionControlSnapshotRefresh"
+            to: "func noteContextRefreshForMissionControl()"
         )
-        let detached = try #require(recompute.range(of: "Task.detached("))
-        let load = try #require(recompute.range(of: "TaskMissionControlSnapshot.Source.load("))
+        #expect(!recompute.contains("Task.detached("))
+        let load = try #require(recompute.range(of: "await TaskMissionControlSnapshot.Source.loaded("))
         let build = try #require(recompute.range(of: "TaskMissionControlSnapshot.build("))
-        #expect(detached.lowerBound < load.lowerBound)
         #expect(load.lowerBound < build.lowerBound)
+        let loader = try code(in: snapshot, from: "nonisolated static func loaded(", to: "struct Inputs: Equatable {")
+        let cancellation = try #require(loader.range(of: "guard !Task.isCancelled"))
+        let read = try #require(loader.range(of: "load(workspacePath:"))
+        #expect(cancellation.lowerBound < read.lowerBound)
 
         // Invalidation: the only write of the file announces itself, and the
         // view turns that announcement into the key's revision.
@@ -336,7 +341,16 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(refresh.contains("TaskContextStateSaveObserver(taskID: inputs.taskID)"))
         #expect(refresh.contains("stateRevision &+= 1"))
         #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
-        #expect(taskMainView.contains("missionControlStateRevision &+= 1"))
+        // The view's own refresh adds a bump only for a folder that moved
+        // without a save; bumping on every refresh read a saved file twice.
+        #expect(taskMainView.contains("noteContextRefreshForMissionControl()"))
+        #expect(!taskMainView.contains("missionControlStateRevision &+= 1"))
+        let afterRefresh = try code(
+            in: missionControl,
+            from: "func noteContextRefreshForMissionControl() {",
+            to: "struct TaskMissionControlSnapshotRefresh"
+        )
+        #expect(afterRefresh.contains("!= missionControlSnapshotCache.taskFolder"))
     }
 
     @Test("Waiting-turn dock never preempts a live permission decision")

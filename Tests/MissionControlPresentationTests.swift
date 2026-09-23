@@ -109,6 +109,30 @@ struct MissionControlPresentationTests {
         #expect(saves == settled + 1)
     }
 
+    /// The rebuild's read runs off the main actor but stays attached to the
+    /// `.task(id:)` that asked for it, so a rebuild superseded before its read
+    /// began does no I/O. A detached task would have finished every one.
+    @Test("a superseded mission-control load skips the read")
+    func supersededMissionControlLoadSkipsTheRead() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        TaskContextStateManager.refresh(task: task)
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let taskID = task.id
+
+        let live = await TaskMissionControlSnapshot.Source.loaded(workspacePath: workspacePath, taskID: taskID)
+        #expect(live?.state != nil)
+
+        let superseded = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await TaskMissionControlSnapshot.Source.loaded(workspacePath: workspacePath, taskID: taskID)
+        }.value
+        #expect(superseded == nil)
+    }
+
     /// The presentation asks only whether a task has events, when it has no
     /// state file to go on. Keying the exact count rebuilt the snapshot, and
     /// reread the file, on every event a streaming run records.
