@@ -115,6 +115,20 @@ struct TaskMissionControlSnapshot: Equatable {
         )
     }
 
+    /// Whether the view's own context refresh left the snapshot stale without
+    /// saying so. A save announced itself, and the rebuild it triggers
+    /// resolves the folder afresh, so that is never a reason to reload again.
+    /// What is: the refresh moving the folder off the legacy layout with no
+    /// save, judged by the folder before and after the refresh rather than by
+    /// the cache, which on a task just opened may not have been filled yet.
+    static func contextRefreshLeftSnapshotStale(
+        announcedSave: Bool,
+        folderBefore: String,
+        folderAfter: String
+    ) -> Bool {
+        !announcedSave && folderBefore != folderAfter
+    }
+
     /// Not part of the cached snapshot: it carries `task.updatedAt`, and the
     /// verification reload is keyed on exactly that. Only the folder comes
     /// from the cache, which is what spares `body` the `stat`.
