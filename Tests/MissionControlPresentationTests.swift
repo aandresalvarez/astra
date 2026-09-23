@@ -133,6 +133,35 @@ struct MissionControlPresentationTests {
         #expect(superseded == nil)
     }
 
+    /// After the view's own context refresh the snapshot reloads through the
+    /// save announcement, or not at all, except when the refresh moved the
+    /// folder without saving. Whether it moved is judged by the folder before
+    /// and after the refresh: the cache is not a witness, since on a task just
+    /// opened it may still be empty, and an empty folder read as a migration
+    /// restarted the first load for nothing.
+    @Test("only a migration without a save leaves the snapshot stale after a refresh")
+    func onlyAnUnannouncedMigrationLeavesTheSnapshotStale() {
+        let canonical = "/workspace/.astra/tasks/T1"
+        let legacy = "/workspace/tasks/T1"
+
+        // An ordinary open: nothing moved, whatever the cache holds by now.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, folderBefore: canonical, folderAfter: canonical
+        ))
+        // A legacy folder migrated and nothing was saved: only a reload
+        // brings the cache's folder along.
+        #expect(TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, folderBefore: legacy, folderAfter: canonical
+        ))
+        // Migrated and saved: the announcement already reloads it.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: true, folderBefore: legacy, folderAfter: canonical
+        ))
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: true, folderBefore: canonical, folderAfter: canonical
+        ))
+    }
+
     /// The presentation asks only whether a task has events, when it has no
     /// state file to go on. Keying the exact count rebuilt the snapshot, and
     /// reread the file, on every event a streaming run records.

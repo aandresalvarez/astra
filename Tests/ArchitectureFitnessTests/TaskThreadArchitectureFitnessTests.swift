@@ -343,16 +343,21 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
         // The view's own refresh adds a bump only for a folder that moved
         // without a save; bumping on every refresh read a saved file twice.
-        #expect(taskMainView.contains("let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
-        #expect(taskMainView.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave)"))
+        // Whether the folder moved is judged against the folder from before
+        // the refresh, never the cache: on a task just opened the cache may not
+        // be filled yet, and an empty folder would read as a migration.
+        let beforeRefresh = try #require(taskMainView.range(of: "let folderBefore = TaskWorkspaceAccess(task: task).taskFolder"))
+        let refreshCall = try #require(taskMainView.range(of: "let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
+        #expect(beforeRefresh.lowerBound < refreshCall.lowerBound)
+        #expect(taskMainView.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)"))
         #expect(!taskMainView.contains("missionControlStateRevision &+= 1"))
         let afterRefresh = try code(
             in: missionControl,
-            from: "func noteContextRefreshForMissionControl(announcedSave: Bool) {",
+            from: "func noteContextRefreshForMissionControl(announcedSave: Bool, folderBefore: String) {",
             to: "struct TaskMissionControlSnapshotRefresh"
         )
-        #expect(afterRefresh.contains("guard !announcedSave"))
-        #expect(afterRefresh.contains("!= missionControlSnapshotCache.taskFolder"))
+        #expect(afterRefresh.contains("contextRefreshLeftSnapshotStale("))
+        #expect(!afterRefresh.contains("missionControlSnapshotCache"))
     }
 
     @Test("Waiting-turn dock never preempts a live permission decision")
