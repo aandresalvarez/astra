@@ -339,6 +339,66 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(taskMainView.contains("missionControlStateRevision &+= 1"))
     }
 
+    /// Two more places `body` reached into the task folder on every keystroke.
+    /// The diagnostics key named the folder, which is a `stat` to resolve, and
+    /// counted `task.artifacts`. Every run bubble counted its changed files by
+    /// finding the folder again and symlink-walking it and each path. Both are
+    /// now caches keyed on scalars, read and walked in detached tasks.
+    @Test("Task-folder caches key on scalars and read the folder off the main actor")
+    func taskFolderCachesDoNotTouchTheFolderPerBodyPass() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let caches = try source("Astra/Views/TaskMainViewTaskFolderCaches.swift", root: root)
+        let counts = try source("Astra/Services/Tasks/TaskRunVisibleFileChangeCounts.swift", root: root)
+
+        // The bubble reads a cached count; nothing on the body path classifies
+        // paths, and both caches refresh under `.task(id:)`.
+        #expect(!taskMainView.contains("userFacingFileChangeCount("))
+        #expect(!taskMainView.contains("TaskOutputArtifactPathPolicy."))
+        #expect(taskMainView.contains("self.visibleFileChangeCount(for: run)"))
+        #expect(taskMainView.contains(".task(id: diagnosticFileGroupsInputSignature)"))
+        #expect(taskMainView.contains(".task(id: runFileChangeCountInputs)"))
+
+        // Both keys are values the view already holds.
+        let diagnosticsKey = try code(
+            in: caches,
+            from: "var diagnosticFileGroupsInputSignature: String {",
+            to: "func recomputeDiagnosticFileGroups()"
+        )
+        let countsKey = try code(
+            in: caches,
+            from: "var runFileChangeCountInputs:",
+            to: "func visibleFileChangeCount("
+        )
+        for forbidden in ["messageText", "task.artifacts", "task.events", "task.runs", ".taskFolder",
+                          "FileManager", "ResolvedRoot", "relativePath("] {
+            #expect(!diagnosticsKey.contains(forbidden), "The diagnostics key must not read \(forbidden)")
+            #expect(!countsKey.contains(forbidden), "The changed-file count key must not read \(forbidden)")
+        }
+
+        // The folder is found inside the detached work, never before it.
+        for (from, to) in [
+            ("func recomputeDiagnosticFileGroups() async {", "var runFileChangeCountInputs:"),
+            ("func recomputeRunFileChangeCounts() async {", nil as String?)
+        ] {
+            let recompute = try code(in: caches, from: from, to: to)
+            let detached = try #require(recompute.range(of: "Task.detached("))
+            let folder = try #require(recompute.range(of: "TaskFolderResolvingAdapter.taskFolder("))
+            #expect(detached.lowerBound < folder.lowerBound)
+            #expect(!recompute.contains("TaskWorkspaceAccess(task: task).taskFolder"))
+        }
+
+        // One root resolution per rebuild; the per-path loop only uses it.
+        let counted = try code(in: counts, from: "static func counted(", to: "static func visibleCount(")
+        let perPath = try code(in: counts, from: "static func visibleCount(", to: nil)
+        #expect(counted.contains("ResolvedRoot(taskFolder)"))
+        #expect(!perPath.contains("ResolvedRoot("))
+        #expect(perPath.contains("relativePath(path, under: root)"))
+    }
+
     @Test("Waiting-turn dock never preempts a live permission decision")
     func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
         let root = URL(fileURLWithPath: #filePath)
