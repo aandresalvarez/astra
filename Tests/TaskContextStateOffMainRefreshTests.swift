@@ -91,6 +91,39 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(try modificationDate(of: path) == firstModified)
     }
 
+    /// The task view reloads its mission-control cache on the save
+    /// announcement, and reloads on its own after a refresh only when that
+    /// refresh announced nothing. So the report has to match the announcement
+    /// exactly: a false "saved" leaves a migrated folder unread, and a missed
+    /// one reads the file twice.
+    @Test("A refresh reports exactly the saves it announced")
+    func refreshReportsTheSavesItAnnounced() async throws {
+        let fixture = try makeFixture("reported")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try? FileManager.default.removeItem(at: path)
+        let taskID = fixture.task.id
+        var announced = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: .taskContextStateDidSave,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard (notification.object as? TaskContextStateSave)?.taskID == taskID else { return }
+            announced += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        // No state yet: the refresh writes it, and says so.
+        #expect(await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task))
+        #expect(announced == 1)
+        // Nothing moved: no write, no announcement, and it says that too.
+        #expect(await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task) == false)
+        #expect(TaskContextStateManager.refresh(task: fixture.task) == false)
+        #expect(announced == 1)
+    }
+
     @Test("A write that lands during the off-actor read is not overwritten")
     func concurrentWriteIsNotClobbered() async throws {
         let fixture = try makeFixture("clobber")

@@ -1,5 +1,6 @@
 import SwiftUI
 import ASTRAModels
+import ASTRAPersistence
 
 /// Invalidation observers for `TaskMainView`. Each renders `Color.clear` and
 /// exists only to translate a durable change signal into a view-side refresh,
@@ -41,6 +42,23 @@ struct TaskPlanEventObserver: View {
                       insertion.taskID == task.id,
                       TaskPlanEventRelevance.affectsPlanState(eventType: insertion.type) else { return }
                 onPlanEvent()
+            }
+    }
+}
+
+/// Bumps a counter when this task's `current_state.json` is written. Drives
+/// `missionControlSnapshotInputs`, whose other inputs cannot see the file; see
+/// `TaskContextStateSave` for why nothing else moves with it. Received on the
+/// main run loop because `saveState` is not actor-isolated.
+struct TaskContextStateSaveObserver: View {
+    let taskID: UUID
+    let onSave: () -> Void
+    var body: some View {
+        Color.clear
+            .onReceive(NotificationCenter.default.publisher(for: .taskContextStateDidSave).receive(on: RunLoop.main)) { notification in
+                guard let save = notification.object as? TaskContextStateSave,
+                      save.taskID == taskID else { return }
+                onSave()
             }
     }
 }

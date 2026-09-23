@@ -222,6 +222,9 @@ struct TaskMainView: View {
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
+    @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
+    @State var missionControlStateRevision = 0
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -321,7 +324,7 @@ struct TaskMainView: View {
         )
     }
 
-    private var currentPlanState: TaskPlanState {
+    var currentPlanState: TaskPlanState {
         cachedPlanStateSnapshot.state
     }
 
@@ -519,18 +522,12 @@ struct TaskMainView: View {
             modelContext: modelContext,
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
-        .alert("Couldn’t Fork Conversation", isPresented: Binding(
-            get: { forkCreationError != nil },
-            set: { if !$0 { forkCreationError = nil } }
-        )) {
+        .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
             Text(forkCreationError ?? "The conversation fork could not be created.")
         }
-        .alert("Couldn’t Prepare Pull Request", isPresented: Binding(
-            get: { gitPublishPreparationError != nil },
-            set: { if !$0 { gitPublishPreparationError = nil } }
-        )) {
+        .alert("Couldn’t Prepare Pull Request", isPresented: isGitPublishPreparationErrorPresented) {
             Button("OK", role: .cancel) { gitPublishPreparationError = nil }
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
@@ -560,6 +557,11 @@ struct TaskMainView: View {
         .task(id: decisionOutcomeInputSignature) {
             recomputeDecisionOutcomes()
         }
+        .modifier(TaskMissionControlSnapshotRefresh(
+            inputs: missionControlSnapshotInputs,
+            stateRevision: $missionControlStateRevision,
+            recompute: recomputeMissionControlSnapshot
+        ))
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
@@ -616,39 +618,8 @@ struct TaskMainView: View {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
-                onSnapshotChange: {
-                    deferTaskViewMutation {
-                        threadViewModel.requestSnapshotRefresh(for: task)
-                        schedulePlanStateCacheRefreshForRecoveredProgress()
-                        // `runtimeHealthNow` reaches `body` through
-                        // `runtimeHealth`, and this closure runs at the raw
-                        // stream rate: a fresh `Date()` each time invalidated
-                        // the whole body outside every debounce, paying two
-                        // SwiftData fetches, the O(events) filter+sort in
-                        // `TaskRuntimeHealth.evaluate`, and the O(output)
-                        // grapheme walk in `threadScrollSignature` per pass.
-                        // Its only consumer compares against a five-minute
-                        // `TaskRuntimeHealth.quietThreshold`, so whole seconds
-                        // is enough, and leaving it uncoalesced would make
-                        // `TaskThreadLiveSnapshotPacer` -- which sizes its
-                        // interval from measured main-actor occupancy --
-                        // throttle the transcript for this body's cost.
-                        let second = Date().timeIntervalSinceReferenceDate.rounded(.down)
-                        if runtimeHealthNow.timeIntervalSinceReferenceDate != second {
-                            runtimeHealthNow = Date(timeIntervalSinceReferenceDate: second)
-                        }
-                        logRuntimeHealthIfNeeded(reason: "snapshot")
-                    }
-                },
-                onGeneratedFilesChange: {
-                    deferTaskViewMutation {
-                        threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-                        // Diagnostics rebuild from `.task(id:)`, which carries
-                        // the artifact count this fires on and can be cancelled.
-                        _ = startContextStateRefresh()
-                        refreshForkSourceAvailabilityWarning()
-                    }
-                }
+                onSnapshotChange: { noteThreadSnapshotChange() },
+                onGeneratedFilesChange: { noteGeneratedFilesChange() }
             )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
@@ -667,6 +638,51 @@ struct TaskMainView: View {
             }
             runtimeHealthNow = now
             logRuntimeHealthIfNeeded(reason: "timer")
+        }
+    }
+
+    // These bindings and the `TaskThreadChangeObserver` callbacks live out
+    // here: written inline, their closures were solved as part of `body`'s one
+    // modifier-chain expression, and that is where CI's compiler ran out of
+    // budget.
+    private var isForkCreationErrorPresented: Binding<Bool> {
+        Binding(get: { forkCreationError != nil }, set: { if !$0 { forkCreationError = nil } })
+    }
+
+    private var isGitPublishPreparationErrorPresented: Binding<Bool> {
+        Binding(get: { gitPublishPreparationError != nil }, set: { if !$0 { gitPublishPreparationError = nil } })
+    }
+
+    private func noteThreadSnapshotChange() {
+        deferTaskViewMutation {
+            threadViewModel.requestSnapshotRefresh(for: task)
+            schedulePlanStateCacheRefreshForRecoveredProgress()
+            // `runtimeHealthNow` reaches `body` through `runtimeHealth`, and
+            // this closure runs at the raw stream rate: a fresh `Date()` each
+            // time invalidated the whole body outside every debounce, paying
+            // two SwiftData fetches, the O(events) filter+sort in
+            // `TaskRuntimeHealth.evaluate`, and the O(output) grapheme walk in
+            // `threadScrollSignature` per pass. Its only consumer compares
+            // against a five-minute `TaskRuntimeHealth.quietThreshold`, so whole
+            // seconds is enough, and leaving it uncoalesced would make
+            // `TaskThreadLiveSnapshotPacer` -- which sizes its interval from
+            // measured main-actor occupancy -- throttle the transcript for this
+            // body's cost.
+            let second = Date().timeIntervalSinceReferenceDate.rounded(.down)
+            if runtimeHealthNow.timeIntervalSinceReferenceDate != second {
+                runtimeHealthNow = Date(timeIntervalSinceReferenceDate: second)
+            }
+            logRuntimeHealthIfNeeded(reason: "snapshot")
+        }
+    }
+
+    private func noteGeneratedFilesChange() {
+        deferTaskViewMutation {
+            threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+            // Diagnostics rebuild from `.task(id:)`, which carries the artifact
+            // count this fires on and can be cancelled.
+            _ = startContextStateRefresh()
+            refreshForkSourceAvailabilityWarning()
         }
     }
 
@@ -798,7 +814,8 @@ struct TaskMainView: View {
     /// `phase` is opened by the caller, while the trace is still live. See
     /// `startContextStateRefresh`.
     private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        let folderBefore = TaskWorkspaceAccess(task: task).taskFolder // the refresh may migrate it
+        let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.
         // Logging it would put supersessions in the same distribution as the
@@ -811,6 +828,7 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
+        noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)
     }
 
     private func scheduleVerificationPresentationRefresh() {
@@ -1496,22 +1514,6 @@ struct TaskMainView: View {
     private var currentVerificationPresentation: TaskVerificationPresentation? {
         guard cachedVerificationRequest == verificationLoadRequest else { return nil }
         return cachedVerificationPresentation
-    }
-
-    private var missionControlSnapshot: TaskMissionControlSnapshot {
-        TaskMissionControlSnapshot.build(
-            task: task,
-            planState: currentPlanState,
-            isFinished: isFinished
-        )
-    }
-
-    private var missionControlPresentation: MissionControlPresentation? {
-        missionControlSnapshot.presentation
-    }
-
-    private var verificationLoadRequest: TaskVerificationLoadRequest? {
-        missionControlSnapshot.verificationLoadRequest
     }
 
     @MainActor
@@ -3689,7 +3691,7 @@ struct TaskMainView: View {
         }
     }
 
-    private var isFinished: Bool {
+    var isFinished: Bool {
         [.completed, .pendingUser, .failed, .budgetExceeded, .cancelled].contains(task.status)
     }
 
