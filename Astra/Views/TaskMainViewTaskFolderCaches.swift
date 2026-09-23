@@ -65,7 +65,14 @@ extension TaskMainView {
     func recomputeRunFileChangeCounts() async {
         let inputs = runFileChangeCountInputs
         let needed = runFileChangeCountsCache.runsNeedingCount(inputs)
-        guard !needed.isEmpty else { return }
+        guard !needed.isEmpty else {
+            // Nothing to count, but runs may have left the snapshot; drop
+            // their entries. Compared first so an unchanged cache is not
+            // written back, which would redraw `body` for nothing.
+            let pruned = runFileChangeCountsCache.merging([:], for: inputs)
+            if pruned != runFileChangeCountsCache { runFileChangeCountsCache = pruned }
+            return
+        }
         // The paths are already decoded in the snapshot; take them here, where
         // it is safe to read, and hand the loader plain strings.
         let pending = (threadViewModel.snapshot?.sortedRuns ?? []).filter { needed.contains($0.id) }.map {

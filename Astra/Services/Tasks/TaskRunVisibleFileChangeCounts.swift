@@ -95,6 +95,9 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder)
         var counts: [UUID: Entry] = [:]
         for run in pending {
+            // A superseded rebuild stops between runs. Outside a task this is
+            // always false, so a synchronous caller counts everything.
+            if Task.isCancelled { break }
             counts[run.id] = Entry(
                 fileChangesJSONLength: run.fileChangesJSONLength,
                 count: visibleCount(of: run.paths, under: root)
@@ -123,6 +126,8 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
     /// count; see `TaskMissionControlSnapshot.Source.loaded`.
     nonisolated static func counted(_ pending: [Pending], workspacePath: String, taskID: UUID) async -> [UUID: Entry]? {
         guard !Task.isCancelled else { return nil }
-        return counted(pending, taskFolder: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+        let counts = counted(pending, taskFolder: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+        // Counting stops early once cancelled, so what it returned then is partial.
+        return Task.isCancelled ? nil : counts
     }
 }

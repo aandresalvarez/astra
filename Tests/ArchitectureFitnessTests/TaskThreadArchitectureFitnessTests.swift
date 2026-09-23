@@ -429,6 +429,12 @@ struct TaskThreadArchitectureFitnessTests {
             #expect(cancellation.lowerBound < folder.lowerBound)
         }
 
+        // With nothing to count, the rebuild still prunes runs that left the
+        // snapshot, writing only when that changed something.
+        let countsRecompute = try code(in: caches, from: "func recomputeRunFileChangeCounts() async {", to: nil)
+        #expect(countsRecompute.contains("merging([:], for: inputs)"))
+        #expect(countsRecompute.contains("if pruned != runFileChangeCountsCache"))
+
         // One root resolution per rebuild; the per-path loop only uses it.
         let counted = try code(in: counts, from: "static func counted(", to: "static func visibleCount(")
         let perPath = try code(in: counts, from: "static func visibleCount(", to: "nonisolated static func counted(")

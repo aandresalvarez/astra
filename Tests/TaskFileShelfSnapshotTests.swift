@@ -279,6 +279,34 @@ extension TaskThreadSnapshotTests {
         #expect(groups.contains { $0.group == .runs })
     }
 
+    /// The task view walks this folder in a `.task(id:)` that is cancelled
+    /// when its key moves; a superseded walk stops instead of finishing.
+    /// Outside a task nothing is ever cancelled, so synchronous callers, like
+    /// the test above, still get every file.
+    @Test("A cancelled diagnostics walk stops, and its loader reports nothing")
+    func cancelledDiagnosticsWalkStops() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostics-cancel-\(UUID().uuidString)")
+        let stdout = root.appendingPathComponent("jobs/job-1/stdout.log")
+        try FileManager.default.createDirectory(at: stdout.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "log".write(to: stdout, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.path
+
+        #expect(!TaskDiagnosticsIndex.items(in: folder).isEmpty)
+        let cancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TaskDiagnosticsIndex.items(in: folder)
+        }.value
+        #expect(cancelled.isEmpty)
+
+        let superseded = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await TaskDiagnosticsIndex.groups(workspacePath: "/workspace", taskID: UUID())
+        }.value
+        #expect(superseded == nil)
+    }
+
     @Test("Task file index merges visible files without duplicates")
     func taskFileIndexMergesVisibleFilesWithoutDuplicates() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

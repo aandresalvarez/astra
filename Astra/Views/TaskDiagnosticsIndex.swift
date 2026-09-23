@@ -46,7 +46,9 @@ enum TaskDiagnosticsIndex {
     /// walk; see `TaskMissionControlSnapshot.Source.loaded`.
     nonisolated static func groups(workspacePath: String, taskID: UUID) async -> [TaskDiagnosticFileGroup]? {
         guard !Task.isCancelled else { return nil }
-        return groups(in: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+        let groups = groups(in: TaskFolderResolvingAdapter.taskFolder(workspacePath: workspacePath, taskID: taskID))
+        // The walk stops early once cancelled, so what it returned then is partial.
+        return Task.isCancelled ? nil : groups
     }
 
     static func groups(in taskFolder: String, fileManager: FileManager = .default) -> [TaskDiagnosticFileGroup] {
@@ -89,6 +91,9 @@ enum TaskDiagnosticsIndex {
 
         var items: [TaskDiagnosticFileItem] = []
         while let url = enumerator.nextObject() as? URL {
+            // A superseded refresh stops walking. Outside a task this is always
+            // false, so a synchronous caller still gets the whole list.
+            if Task.isCancelled { return [] }
             // Prune generated dependency trees before resolving anything. Every
             // surviving entry below costs a `resolvingSymlinksInPath` (a
             // `getattrlist` per component) plus a `resourceValues` fetch, and a

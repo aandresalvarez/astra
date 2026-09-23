@@ -138,6 +138,13 @@ struct TaskRunVisibleFileChangeCountsTests {
             return await TaskRunVisibleFileChangeCounts.counted(pending, workspacePath: "/workspace", taskID: UUID())
         }.value
         #expect(superseded == nil)
+
+        // Once started, it stops between runs rather than finishing them.
+        let stopped = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TaskRunVisibleFileChangeCounts.counted(pending, taskFolder: "/workspace/.astra/tasks/T1")
+        }.value
+        #expect(stopped.isEmpty)
     }
 
     @Test("A run's last count stands until its recount lands, and gone runs drop out")
@@ -179,5 +186,15 @@ struct TaskRunVisibleFileChangeCountsTests {
         #expect(recounted.count(for: kept) == 3)
         #expect(recounted.count(for: dropped) == nil)
         #expect(recounted.runsNeedingCount(second).isEmpty)
+
+        // A run can leave the snapshot with nothing new to count. Merging
+        // nothing still drops it, which is how the view prunes then.
+        let onlyKept = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID, workspacePath: "/workspace", folderRevision: 0, runs: [.init(id: kept, fileChangesJSONLength: 10)]
+        )
+        #expect(cache.runsNeedingCount(onlyKept).isEmpty)
+        let pruned = cache.merging([:], for: onlyKept)
+        #expect(pruned.count(for: kept) == 2)
+        #expect(pruned.count(for: dropped) == nil)
     }
 }
