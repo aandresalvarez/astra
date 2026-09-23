@@ -14,8 +14,8 @@ import ASTRAPersistence
 /// `.task(id:)`, and the disk read happens off the main actor, here in a
 /// cancellable `nonisolated async` loader. What is different is the
 /// invalidation. The key cannot see the file, so `missionControlStateRevision`
-/// stands in for it, bumped by `TaskContextStateSaveObserver` on each save and
-/// by `noteContextRefreshForMissionControl()` when the folder moved without one.
+/// stands in for it, bumped by `TaskContextStateSaveObserver` on each save, and
+/// when the folder a snapshot was read from turns out to have moved.
 extension TaskMainView {
     var missionControlSnapshotInputs: TaskMissionControlSnapshot.Inputs {
         TaskMissionControlSnapshot.Inputs(
@@ -51,6 +51,14 @@ extension TaskMainView {
         // left alone too — and a persisted deletion can leave the model
         // detached with `isDeleted` still false, hence the context check.
         guard let source, !Task.isCancelled, !task.isDeleted, task.modelContext != nil else { return }
+        // A legacy folder can migrate while this loaded, and a snapshot of the
+        // old one would then stand until something else moved the key. One
+        // `stat` per rebuild, not per keystroke; loading again converges,
+        // since both sides resolve the folder the same way.
+        guard source.taskFolder == TaskWorkspaceAccess(task: task).taskFolder else {
+            missionControlStateRevision &+= 1
+            return
+        }
         missionControlSnapshotCache = TaskMissionControlSnapshot.build(
             task: task,
             planState: currentPlanState,
@@ -58,14 +66,13 @@ extension TaskMainView {
         )
     }
 
-    /// After the view's own context refresh; `folderBefore` is the folder as
-    /// it resolved just before it. See
-    /// `TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale`.
-    func noteContextRefreshForMissionControl(announcedSave: Bool, folderBefore: String) {
+    /// After the view's own context refresh; `folder` is the task folder as it
+    /// resolves now. See `TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale`.
+    func noteContextRefreshForMissionControl(announcedSave: Bool, folder: String) {
         guard TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
             announcedSave: announcedSave,
-            folderBefore: folderBefore,
-            folderAfter: TaskWorkspaceAccess(task: task).taskFolder
+            cachedFolder: missionControlSnapshotCache.taskFolder,
+            currentFolder: folder
         ) else { return }
         missionControlStateRevision &+= 1
     }
