@@ -93,8 +93,11 @@ enum ExecutionRequestSubmissionService {
         case persistenceFailed(String)
     }
 
+    /// `attachmentPaths` are the files the message's `Attached files:` block
+    /// lists; they are also saved as its typed `user.attachments` record.
     static func submitFollowUp(
         message: String,
+        attachmentPaths: [String] = [],
         for task: AgentTask,
         into modelContext: ModelContext,
         at date: Date = Date()
@@ -106,6 +109,7 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: TaskEventTypes.Conversation.userMessage.rawValue,
             sourcePayload: trimmed,
             acceptedTurn: trimmed,
+            attachmentPaths: attachmentPaths,
             task: task,
             modelContext: modelContext,
             at: date
@@ -363,6 +367,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
+        attachmentPaths: [String] = [],
         task: AgentTask,
         modelContext: ModelContext,
         at date: Date,
@@ -380,6 +385,7 @@ enum ExecutionRequestSubmissionService {
         prepare()
         let event = TaskEvent(task: task, type: sourceEventType, payload: sourcePayload)
         event.timestamp = date
+        let attachmentsEvent = TaskEvent.attachmentsEvent(for: event, paths: attachmentPaths)
         let turnIntentSnapshot = TaskTurnIntentResolver.capture(
             for: task,
             sourceEventID: event.id,
@@ -401,6 +407,7 @@ enum ExecutionRequestSubmissionService {
         )
         modelContext.insert(event)
         modelContext.insert(request)
+        if let attachmentsEvent { modelContext.insert(attachmentsEvent) }
 
         let auditFields = [
             "operation": "execution_request_submission",
@@ -428,11 +435,13 @@ enum ExecutionRequestSubmissionService {
         } catch {
             modelContext.delete(request)
             modelContext.delete(event)
+            if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
             rollback()
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }
 
         TaskEventInsertionService.publishInsertion(for: event)
+        if let attachmentsEvent { TaskEventInsertionService.publishInsertion(for: attachmentsEvent) }
         TaskThreadChangeNotifier.post(taskID: task.id, source: "execution_request_submitted")
         return .success(Submission(requestID: request.id, eventID: event.id, sequence: nextSequence))
     }
