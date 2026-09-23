@@ -175,6 +175,31 @@ struct ThemeTests {
         }
     }
 
+    @Test("Composer surface is a translucent white lift in both modes")
+    func composerSurfaceLiftsAboveTheCanvas() {
+        // An opaque `cardBackground` fill was a white slab on the light canvas
+        // and a dark hole on the dark one. The composer must stay a white wash
+        // (lighter than whatever canvas sits behind it) that never goes opaque.
+        let expected: [(Color, NSAppearance.Name, CGFloat)] = [
+            (Stanford.composerSurface, .aqua, 0.5),
+            (Stanford.composerSurface, .darkAqua, 0.05),
+            (Stanford.composerSurfaceFocused, .aqua, 0.7),
+            (Stanford.composerSurfaceFocused, .darkAqua, 0.07)
+        ]
+        for (color, appearance, alpha) in expected {
+            var resolved: NSColor?
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                resolved = NSColor(color).usingColorSpace(.sRGB)
+            }
+            guard let resolved else {
+                Issue.record("Could not resolve composer surface in \(appearance)")
+                continue
+            }
+            #expect(approximatelyEqual((resolved.redComponent, resolved.greenComponent, resolved.blueComponent), (1, 1, 1)))
+            #expect(abs(resolved.alphaComponent - alpha) < 0.01, "composer alpha in \(appearance) is \(resolved.alphaComponent)")
+        }
+    }
+
     @Test("Bundled Stanford typography fonts are packaged")
     func bundledTypographyFontsArePackaged() {
         let filenames = Set(StanfordFontRegistrar.bundledFontURLs().map(\.lastPathComponent))

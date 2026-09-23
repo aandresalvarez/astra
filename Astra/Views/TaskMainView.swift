@@ -4037,7 +4037,7 @@ struct TaskMainView: View {
     }
 
     private var composerFill: Color {
-        isComposerFocused ? Stanford.cardBackground.opacity(0.98) : Stanford.cardBackground.opacity(0.90)
+        isComposerFocused ? Stanford.composerSurfaceFocused : Stanford.composerSurface
     }
 
     private var composerStrokeColor: Color {
@@ -4047,7 +4047,7 @@ struct TaskMainView: View {
         if isComposerFocused {
             return Stanford.lagunita.opacity(0.30)
         }
-        return Color.primary.opacity(0.10)
+        return Color.primary.opacity(0.08)
     }
 
     private var composerStrokeWidth: CGFloat {
@@ -4301,7 +4301,6 @@ struct TaskMainView: View {
                 composerShape
                     .stroke(composerStrokeColor, lineWidth: composerStrokeWidth)
             )
-            .shadow(color: Color.black.opacity(isComposerFocused ? 0.08 : 0.045), radius: isComposerFocused ? 12 : 8, y: 3)
             .overlay(alignment: .topLeading) {
                 slashCommandMenuOverlay
             }

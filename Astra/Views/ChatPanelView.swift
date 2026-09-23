@@ -1036,7 +1036,7 @@ struct ChatPanelView: View {
                     sshConnections: sshConnections
                 )
             }
-            .background(Stanford.cardBackground)
+            .background(Stanford.composerSurface)
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
