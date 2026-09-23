@@ -53,17 +53,36 @@ Four display rules are shared by every provider:
 
 ## Where the IDs already are
 
-| Provider | Delta frame | Final frame | Identity | Parsed today? |
-| --- | --- | --- | --- | --- |
-| Claude Code | `stream_event` `content_block_delta` (after `message_start`) | `assistant` envelope, one per content block | `message.id` plus the ordinal of the text block within that message | No. `StreamMessage` has no `id`, and `StreamPartialEvent` has no `index` ([StreamEventParser.swift:42](../../ASTRACore/StreamEventParser.swift#L42)). |
-| Copilot | `assistant.message_delta` `data.messageId` | `assistant.message` `data.messageId` | `messageId` | No |
-| Codex | none today (`item.updated`, if it ever streams) | `item.completed` with `agent_message` | `item.id` | No |
-| Antigravity | `step_update` `agent_response` (ACTIVE) | the same step at `state: DONE` | `step_index` | No |
-| OpenCode | `text` part updates | `text` part | `part.id` (+ `messageID`) | No |
-| Cursor | none (no partial output flag) | `assistant` | none known; synthesize one per frame | n/a |
+| Provider | Delta frame | Final frame | Identity | Parsed today? | Verified |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | `stream_event` `content_block_delta` (after `message_start`) | `assistant` envelope, one per content block | `message.id` plus the ordinal of the text block within that message | No. `StreamMessage` has no `id`, and `StreamPartialEvent` has no `index` ([StreamEventParser.swift:42](../../ASTRACore/StreamEventParser.swift#L42)). | Yes, CLI 2.1.270 |
+| Copilot | `assistant.message_delta` `data.messageId` | `assistant.message` `data.messageId` | `messageId` | No | Yes, CLI 1.0.86 |
+| Codex | none (`item.updated`, if it ever streams) | `item.completed` with `agent_message` | `item.id` (`item_N`) | No | Yes, CLI 0.153.4 |
+| Antigravity | `step_update` `agent_response` (ACTIVE) | the same step at `state: DONE` | `step_index` | No | Yes, agy 1.2.9 |
+| OpenCode | `text` part updates | `text` part | `part.id` (+ `messageID`) | No | Not installed |
+| Cursor | none (no partial output flag) | `assistant` | none known; synthesize one per frame | n/a | Not signed in |
 
-Phase 0 verifies every row of this table against real captured streams before
-any parser changes.
+Phase 0 captured real streams from 2026-09-23 into
+`Tests/Fixtures/ProviderStreams`. They also showed the following:
+
+- **Claude subagents.** A subagent's frames arrive as whole `assistant` and
+  `user` envelopes tagged with a non-null `parent_tool_use_id`, with no deltas,
+  interleaved with the main agent's stream. Key subagent messages separately and
+  keep them out of the main answer.
+- **Copilot phase labels.** Copilot labels a message's `phase` on
+  `assistant.message_start`, but in the capture the real 1,048-character answer
+  was `commentary`, and only the one-line closing marker message was
+  `final_answer`. Provider phase labels must not pick the answer.
+- **Result frames repeat text.** Claude's `result.result`, Copilot's `result`
+  and Antigravity's `result.response` repeat text that already streamed. They
+  may only seed output when the ledger is empty, which the plan already requires.
+- **Codex warning items.** Codex emits `item.completed` items of `type: error`
+  for non-fatal config warnings, such as enterprise-managed requirements that
+  override `approval_policy`. ASTRA parses them as `.failed`
+  ([CodexStreamEventParser.swift:134](../../ASTRACore/CodexStreamEventParser.swift#L134)),
+  which fails the whole run as `agent_reported_error`. Prod runs 5113 and 5114
+  (2026-09-10) produced answers and were still marked failed this way. Only
+  `turn.failed` is fatal.
 
 ## Decisions
 
@@ -193,16 +212,26 @@ Each phase is one PR, merged in order. Phases 1 and 2 are the ID-based tracking.
 
 ### Phase 0: capture real streams and write failing conformance tests
 
-- Add `script/capture_provider_stream.sh`. It runs each installed CLI with
-  ASTRA's real flags on fixed prompts in a scratch dev workspace, then redacts
-  session IDs, paths and tokens. It is run by the owner, never in CI.
-- Scenarios:
-  1. Answer, then `Write`, then a short sign-off.
-  2. A multi-line answer with short lines, a quote block and a table.
-  3. Narration before several tool calls.
-  4. An `ASTRA_EVENT complete` marker at the start of the final message.
-  5. A Claude subagent (`Task`).
-  6. A long answer (over 4,096 characters).
+Status: landed with this plan, except the Cursor and OpenCode captures.
+
+- `script/capture_provider_stream.sh` runs one installed CLI with ASTRA's
+  stream-format flags, in the provider's most restrictive mode that still allows
+  writes, in a scratch workspace. `script/redact_provider_stream.py` then strips
+  the machine: paths, user, email, host, init-frame tool/MCP/plugin inventory,
+  rate-limit details, opaque signatures and managed-policy names. It is run by
+  the owner, never in CI; set `ASTRA_CAPTURE_MODEL` to keep captures cheap. A
+  Claude capture on Sonnet 5 cost $0.10.
+- Captured scenarios:
+  - `answer-write-signoff` for Claude, Copilot, Codex and Antigravity. It covers
+    planned scenarios 1–4: narration, a tool read, a multi-line answer with
+    short lines, a quote block and a table, a file write, and a final message
+    that opens with an `ASTRA_EVENT complete` marker. Antigravity's model
+    answered after its tools rather than before the write, so its capture
+    exercises the shape but not the trailing sign-off.
+  - `subagent` for Claude.
+  - Still to capture: Cursor (`cursor-agent login` first), OpenCode (not
+    installed). A long answer over 4,096 characters stays a synthetic Phase 1
+    test.
 - Store the captures under `Tests/Fixtures/ProviderStreams/<provider>/<scenario>.jsonl`
   and add them to the test target's `resources`.
 - Add a `ProviderTranscriptConformanceTests` suite that replays every fixture
@@ -213,10 +242,17 @@ Each phase is one PR, merged in order. Phases 1 and 2 are the ID-based tracking.
   - there are no duplicated lines beyond what the provider sent;
   - no raw provider JSON appears in the text;
   - tool calls are recorded;
-  - once Phase 3 lands, the answer bubble contains the final answer.
-- Land the suite with failing cases marked known-issue, so each later phase
-  turns cases green.
-- Update the identity table above from what the captures actually show.
+  - once Phase 3 lands, the answer bubble contains the final answer;
+  - a successful turn completes and records no error events.
+- The suite landed with 21 known issues, all matching production symptoms:
+  - Claude: short closing message doubled, hollow echo lines, answer not shown.
+  - Copilot: answer not shown.
+  - Codex: run failed by warning items, earlier messages lost, spurious errors,
+    answer not shown.
+  - Antigravity and the Claude subagent capture: fully green.
+- Copilot's narration doubling is not exercised: the capture's only narration
+  with `toolRequests` is the run's first message, which today's whole-output
+  echo check already drops.
 
 ### Phase 1: core types, ledger and Claude
 
@@ -240,6 +276,8 @@ Each phase is one PR, merged in order. Phases 1 and 2 are the ID-based tracking.
 - Copilot keyed by `messageId`. Codex keeps every `agent_message`. Antigravity
   keyed by `step_index`. OpenCode keyed by `part.id`. Cursor gets synthesized
   keys.
+- Codex `item.completed` items of `type: error` become a warning or diagnostic
+  event, not `.failed`. Only `turn.failed` fails the turn.
 - **Behavior change:** Codex `run.output` becomes every message in order, like
   the other providers, instead of the last one only. Update
   `codexMultipleCompletedMessagesKeepFinalAnswer` to assert the answer
@@ -261,6 +299,8 @@ Each phase is one PR, merged in order. Phases 1 and 2 are the ID-based tracking.
   - A trailing message that is shorter than a third of the message it follows,
     after only bookkeeping, is shown **with** that message, never instead of it.
   - Permission events are no longer answer boundaries.
+  - Provider phase labels (Copilot's `commentary` / `final_answer`) are ignored,
+    because the capture shows them tagging the real answer `commentary`.
 - Summary cut: remove it for runs with commit events. For legacy runs, apply it
   only when the marker is a heading line *and* its section has substantive text;
   it must never land inside a trailing duplicate.
