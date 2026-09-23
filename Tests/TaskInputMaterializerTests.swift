@@ -5,8 +5,9 @@ import ASTRAPersistence
 @testable import ASTRA
 
 /// Covers keeping pasted attachments alive: recognising a composer temp file,
-/// copying a new task's into the task folder before launch, and swapping a
-/// follow-up's for a durable copy before the message is sent.
+/// copying a new task's pasted inputs into the task folder before launch, and
+/// swapping a follow-up's pasted attachments for durable copies before the
+/// message is sent.
 @Suite("Task input materializer")
 @MainActor
 struct TaskInputMaterializerTests {

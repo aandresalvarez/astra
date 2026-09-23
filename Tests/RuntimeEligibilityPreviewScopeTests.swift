@@ -50,7 +50,8 @@ struct RuntimeEligibilityPreviewScopeTests {
         )
         return .existingTask(
             task: task,
-            acceptedTurn: "Summarize what you found",
+            messageText: "Summarize what you found",
+            attachedFiles: [],
             selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
             skipPermissions: false,
             providerSettings: .headlessScenario,
