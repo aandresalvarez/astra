@@ -34,6 +34,24 @@ enum WorktreePath {
         return left == right || canonical(left) == canonical(right)
     }
 
+    /// The checkout containing `path`: the nearest directory at or above it
+    /// that holds a `.git` entry (a directory for a primary checkout, a file
+    /// for a linked worktree). Nil when there is none. Spelled like `path`.
+    static func containingCheckoutRoot(of path: String) -> String? {
+        // Not `standardizedPath`: it rewrites `/private/var` as `/var`, and
+        // the result must keep git's spelling to match its worktree list.
+        var directory = (path as NSString).expandingTildeInPath
+        while directory.count > 1, directory.hasSuffix("/") { directory.removeLast() }
+        while !directory.isEmpty, directory != "/" {
+            let dotGit = (directory as NSString).appendingPathComponent(".git")
+            if WorktreeFileSystem.isRealDirectory(dotGit) || WorktreeFileSystem.isFile(dotGit) {
+                return directory
+            }
+            directory = (directory as NSString).deletingLastPathComponent
+        }
+        return nil
+    }
+
     /// True when `path` is strictly inside `root`. Both must already be
     /// canonical.
     static func isStrictlyInside(_ path: String, root: String) -> Bool {

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// Runs synchronous file-system work on one serial utility queue, so
 /// measuring and deleting multi-gigabyte trees never contend with each other
@@ -42,6 +43,9 @@ struct WorktreeStorageStatus: Equatable, Sendable {
     /// The worktree as git reported it when this was computed. When HEAD,
     /// branch, lock or prune state moves, the decision no longer applies.
     let worktree: GitWorktreeInfo
+    /// Whether it counted as a workspace's root or selected worktree. When
+    /// that changes, the decision no longer applies either.
+    let isWorkspaceRoot: Bool
     let report: WorktreeStorageReport
     /// What "Reclaim" would do right now (manual mode), including the removal
     /// suggestion.
@@ -198,8 +202,10 @@ final class WorktreeReclaimService: ObservableObject {
         guard let path = change.workingPath,
               WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) else { return }
         let reclaimAfter = WorktreeStorageSettings.thresholds(in: defaults).reclaimAfter
-        // `git worktree list` works from any checkout of the repository.
-        scheduleRecheck(repoPath: path, worktreePath: path, at: clock().addingTimeInterval(reclaimAfter))
+        // A task can run in a subfolder; the recheck needs the checkout git
+        // lists. `git worktree list` works from any checkout of the repository.
+        let root = WorktreePath.containingCheckoutRoot(of: path) ?? path
+        scheduleRecheck(repoPath: root, worktreePath: root, at: clock().addingTimeInterval(reclaimAfter))
     }
 
     // MARK: - Panel
@@ -214,19 +220,22 @@ final class WorktreeReclaimService: ObservableObject {
             statuses[removed] = nil
         }
         repoWorktreePaths[repoPath] = paths
+        let roots = Set(workspaceRoots().map(WorktreePath.canonical))
         var stale: [GitWorktreeInfo] = []
         for worktree in worktrees where !measuringPaths.contains(worktree.path) {
             guard let status = statuses[worktree.path] else {
                 stale.append(worktree)
                 continue
             }
-            guard status.worktree != worktree else { continue }
-            // Withdraw a "Merged · Remove" suggestion at once: it described
-            // a HEAD that is gone. The refresh below decides afresh.
+            let isWorkspaceRoot = roots.contains(WorktreePath.canonical(worktree.path))
+            guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
+            // Withdraw a "Merged · Remove" suggestion at once: it described a
+            // HEAD, or a selection, that has changed. The refresh decides afresh.
             var decision = status.decision
             decision.suggestRemoval = false
             statuses[worktree.path] = WorktreeStorageStatus(
                 worktree: worktree,
+                isWorkspaceRoot: isWorkspaceRoot,
                 report: status.report,
                 decision: decision,
                 idle: status.idle
@@ -369,7 +378,10 @@ final class WorktreeReclaimService: ObservableObject {
                 worktree: worktree,
                 isWorkspaceRoot: roots.contains(WorktreePath.canonical(worktree.path)),
                 artifactBytes: fact.report.artifactBytes,
-                lastActivity: await lastActivity(of: worktree, facts: fact, holds: holds ?? [], otherWorktreePaths: allPaths),
+                lastActivity: preservedActivity(
+                    worktree.path,
+                    observed: await lastActivity(of: worktree, facts: fact, holds: holds ?? [], otherWorktreePaths: allPaths)
+                ),
                 buildSignal: fact.buildSignal,
                 inUse: inUseReason(worktree.path, holds: holds, otherWorktreePaths: allPaths),
                 mode: mode,
@@ -455,7 +467,10 @@ final class WorktreeReclaimService: ObservableObject {
                 guard var input = inputs[path], let status = statuses[path] else { continue }
                 input.artifactBytes = fact.report.artifactBytes
                 input.buildSignal = fact.buildSignal
-                input.lastActivity = [input.lastActivity, fact.newestArtifactWrite, fact.indexModified].compactMap { $0 }.max()
+                input.lastActivity = preservedActivity(
+                    path,
+                    observed: [input.lastActivity, fact.newestArtifactWrite, fact.indexModified].compactMap { $0 }.max()
+                )
                 input.now = later
                 publishStatus(status.worktree, report: fact.report, input: input)
                 guard mode == .automatic, act, fact.report.artifactBytes > 0 else { continue }
@@ -493,6 +508,21 @@ final class WorktreeReclaimService: ObservableObject {
         )
     }
 
+    /// The newer of `observed` and the newest activity ever recorded for the
+    /// worktree, recording `observed` when it is newer. Reclaiming deletes
+    /// artifacts whose timestamps were activity signals; without this, a
+    /// worktree could look idle for longer right after its cleanup. Entries
+    /// for worktrees that no longer exist are dropped on each write.
+    private func preservedActivity(_ path: String, observed: Date?) -> Date? {
+        var recorded = defaults.dictionary(forKey: AppStorageKeys.worktreeObservedActivity) as? [String: Double] ?? [:]
+        let previous = recorded[path].map { Date(timeIntervalSince1970: $0) }
+        guard let observed, observed > (previous ?? .distantPast) else { return previous ?? observed }
+        recorded[path] = observed.timeIntervalSince1970
+        recorded = recorded.filter { WorktreeFileSystem.isRealDirectory($0.key) }
+        defaults.set(recorded, forKey: AppStorageKeys.worktreeObservedActivity)
+        return observed
+    }
+
     /// Task claims, or nil when the store can't be read.
     private func currentTaskHolds() -> [WorktreeTaskHold]? {
         do {
@@ -515,6 +545,7 @@ final class WorktreeReclaimService: ObservableObject {
         display.mode = .manual
         statuses[worktree.path] = WorktreeStorageStatus(
             worktree: worktree,
+            isWorkspaceRoot: input.isWorkspaceRoot,
             report: report,
             decision: WorktreeReclaimPolicy.decide(display),
             idle: input.lastActivity.map { input.now.timeIntervalSince($0) }

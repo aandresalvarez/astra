@@ -409,6 +409,56 @@ struct WorktreeReclaimServiceTests {
         #expect(summary.kept.count == 2)
     }
 
+    @Test("A task that ran in a subfolder schedules the recheck for its checkout")
+    func subfolderTaskRechecksCheckout() throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try "gitdir: /repos/app/.git/worktrees/feature\n".write(toFile: setup.linked.path + "/.git", atomically: true, encoding: .utf8)
+        let subfolder = try setup.fixture.directory("worktrees/feature/packages/api")
+
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: subfolder)
+        )
+
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] != nil)
+        #expect(setup.service.pendingRecheckDates[subfolder] == nil)
+    }
+
+    @Test("Selecting a worktree withdraws its removal suggestion at once")
+    func selectionWithdrawsSuggestion() async throws {
+        let setup = try makeSetup(idle: 9 * Self.day)
+        defer { finish(setup) }
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == true)
+
+        let linkedPath = setup.linked.path
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { [linkedPath] })
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == false)
+        #expect(setup.service.statuses[setup.linked.path]?.isWorkspaceRoot == true)
+    }
+
+    @Test("Reclaiming the newest activity signal doesn't make a worktree look older")
+    func reclaimKeepsObservedActivity() async throws {
+        // Artifacts touched 3 days ago, HEAD from 9 days ago: automatic mode
+        // reclaims, and the removal suggestion must not appear afterwards.
+        let setup = try makeSetup(idle: 3 * Self.day)
+        defer { finish(setup) }
+        setup.git.commitDates["f1"] = Date().addingTimeInterval(-9 * Self.day)
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild))
+
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        let status = try #require(setup.service.statuses[setup.linked.path])
+        #expect(status.decision.suggestRemoval == false)
+        #expect(abs((status.idle ?? 0) - 3 * Self.day) < 60 * 60)
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)

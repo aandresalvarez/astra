@@ -114,6 +114,10 @@ known manifest**. The manifest anchor is what makes deleting it safe.
   - the HEAD commit date;
   - the mtime of the worktree's git `index` file;
   - the shallow mtime (depth ≤ 3) of each artifact directory.
+  - the newest activity previously observed for the worktree, kept in
+    `UserDefaults` (`astra.worktreeStorage.observedActivity.v1`). Reclaiming
+    deletes the artifacts that supplied a timestamp, and without this a
+    worktree could look idle for longer right after its cleanup.
 - **Compare canonical paths.** Git reports resolved paths (`/private/var/…`).
   `executionRootPath` is only tilde-expanded and `standardizedFileURL`-normalized,
   and imported or copied values aren't normalized at all. Resolve both sides

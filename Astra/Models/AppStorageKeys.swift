@@ -78,6 +78,9 @@ public enum AppStorageKeys {
     // WorktreeStorageSettings and docs/specs/2026-09-23-worktree-storage-hygiene.md.
     public static let worktreeAutoReclaimEnabled = "astra.worktreeStorage.autoReclaimEnabled.v1"
     public static let worktreeIdleThresholdHours = "astra.worktreeStorage.idleThresholdHours.v1"
+    // Newest activity ever observed per worktree path, so reclaiming the
+    // artifacts that supplied it can't make a worktree look idle for longer.
+    public static let worktreeObservedActivity = "astra.worktreeStorage.observedActivity.v1"
     public static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     // Opt-in Tier 2 (utility-model) objective drift detection. Default OFF --
     // this is new/unproven; see ObjectiveAssessmentService.
