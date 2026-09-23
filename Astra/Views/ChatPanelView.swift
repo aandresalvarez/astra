@@ -717,7 +717,7 @@ struct ChatPanelView: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
             .help(help)
             .accessibilityLabel(title)
@@ -1040,7 +1040,7 @@ struct ChatPanelView: View {
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
-                    .stroke(isDragOver ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.3), lineWidth: isDragOver ? 2 : 1)
+                    .stroke(isDragOver ? Stanford.lagunita.opacity(Stanford.strokeFocus) : Stanford.borderRest, lineWidth: isDragOver ? Stanford.strokeFocusWidth : 1)
             )
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !slashOptions.isEmpty {
@@ -1645,7 +1645,7 @@ struct ChatPanelView: View {
         .padding(.vertical, 4)
         .background(Stanford.fog)
         .clipShape(Capsule())
-        .overlay(Capsule().stroke(Stanford.sandstone.opacity(0.4), lineWidth: 0.5))
+        .overlay(Capsule().stroke(Stanford.borderSubtle, lineWidth: 1))
     }
 
     @discardableResult
@@ -2326,7 +2326,7 @@ private struct ApprovedPlanReadyCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
         )
     }
 }
@@ -2423,7 +2423,7 @@ private struct DraftPlanPreviewCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
         )
     }
 }
@@ -2526,7 +2526,7 @@ struct SpecCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(Stanford.cardinalRed.opacity(0.3), lineWidth: 1)
+                    .stroke(Stanford.cardinalRed.opacity(Stanford.strokeActive), lineWidth: 1)
             )
         }
     }

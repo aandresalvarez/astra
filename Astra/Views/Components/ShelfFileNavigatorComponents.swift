@@ -205,7 +205,7 @@ struct BrowseFilesToolbarButtonStyle: ButtonStyle {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(isActive ? 0.28 : 0.18), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(isActive ? Stanford.strokeActive : Stanford.strokeRest), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }

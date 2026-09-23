@@ -443,19 +443,16 @@ struct MarkdownTextView: View, Equatable {
                                     .padding(.vertical, 8)
 
                                 if colIdx < table.columnCount - 1 {
-                                    Divider()
-                                        .opacity(0.25)
+                                    SubtleDivider(axis: .vertical)
                                 }
                             }
                         }
                         .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
 
                         if rowIdx == 0 {
-                            Divider()
-                                .opacity(0.35)
+                            SubtleDivider()
                         } else if table.rows.count >= 5 && rowIdx < table.rows.count - 1 {
-                            Divider()
-                                .opacity(0.16)
+                            SubtleDivider()
                         }
                     }
                 }
@@ -479,7 +476,7 @@ struct MarkdownTextView: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -1185,7 +1182,7 @@ private struct SuggestedNextStepControls: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
             .help("Move this suggestion into the composer")
 
@@ -1262,7 +1259,7 @@ private struct SuggestedNextActionChips: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .help("Move \"\(action.title)\" into the composer")
         .accessibilityLabel("Pursue suggestion: \(action.title)")

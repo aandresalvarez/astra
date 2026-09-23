@@ -238,11 +238,11 @@ enum KanbanBoardPresentation {
     static let taskCardsExposeOutcomeMetadata = true
     static let columnBaseFillOpacity: Double = 0.012
     static let persistentColumnFillOpacity: Double = 0.016
-    static let columnStrokeOpacity: Double = 0.045
+    static let columnStrokeOpacity: Double = Stanford.strokeSubtle
     static let cardBaseFillOpacity: Double = 0.018
     static let cardHoverFillOpacity: Double = 0.032
-    static let cardStrokeOpacity: Double = 0.045
-    static let cardHoverStrokeOpacity: Double = 0.10
+    static let cardStrokeOpacity: Double = Stanford.strokeSubtle
+    static let cardHoverStrokeOpacity: Double = Stanford.strokeRest
 
     static func cardThreadMessageFallbackCount(goal: String) -> Int {
         AgentTask.fallbackThreadMessageCount(forGoal: goal)
@@ -1026,7 +1026,7 @@ struct KanbanBoardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 28)
         .padding(.horizontal, 18)
-        .liquidSurface(cornerRadius: 12, fallbackFill: Color.primary.opacity(0.025), fallbackStrokeOpacity: 0.055)
+        .liquidSurface(cornerRadius: 12, fallbackFill: Color.primary.opacity(0.025), fallbackStrokeOpacity: Stanford.strokeSubtle)
     }
 }
 
@@ -1079,7 +1079,7 @@ struct KanbanColumnView: View {
             .overlay {
                 shape.stroke(
                     Color.primary.opacity(
-                        isActiveDropTarget ? 0.14 : KanbanBoardPresentation.columnStrokeOpacity
+                        isActiveDropTarget ? Stanford.strokeActive : KanbanBoardPresentation.columnStrokeOpacity
                     ),
                     lineWidth: 1
                 )
@@ -1207,7 +1207,7 @@ struct KanbanColumnView: View {
                                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                                                    .stroke(Stanford.borderRest, lineWidth: 1)
                                             )
                                     }
                                     .menuStyle(.borderlessButton)
@@ -1257,7 +1257,7 @@ struct KanbanColumnView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(isActiveDropTarget ? category.color.opacity(0.28) : .clear, lineWidth: 1.2)
+                .stroke(isActiveDropTarget ? category.color.opacity(Stanford.strokeFocus) : .clear, lineWidth: Stanford.strokeFocusWidth)
                 .allowsHitTesting(false)
         }
         .overlay(alignment: .top) {
@@ -1446,7 +1446,7 @@ struct KanbanColumnView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(category.color.opacity(0.24), lineWidth: 1)
+                .stroke(category.color.opacity(Stanford.strokeActive), lineWidth: 1)
         )
     }
 
@@ -1483,9 +1483,9 @@ struct KanbanColumnView: View {
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(
                     isActiveDropTarget
-                        ? category.color.opacity(0.36)
-                        : Color.primary.opacity(isPersistentDropColumn ? 0.045 : 0.052),
-                    style: StrokeStyle(lineWidth: isActiveDropTarget ? 1.5 : 1, dash: isPersistentDropColumn ? [] : [5, 4])
+                        ? category.color.opacity(Stanford.strokeFocus)
+                        : Stanford.borderSubtle,
+                    style: StrokeStyle(lineWidth: isActiveDropTarget ? Stanford.strokeFocusWidth : 1, dash: isPersistentDropColumn ? [] : [5, 4])
                 )
         )
         .padding(isPersistentDropColumn ? 10 : 8)
@@ -1551,7 +1551,7 @@ struct KanbanDiscardToolbarTarget: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(
-                        isActiveDropTarget ? Stanford.cardinalRed.opacity(0.55) : Color.primary.opacity(0.08),
+                        isActiveDropTarget ? Stanford.cardinalRed.opacity(Stanford.strokeFocus) : Stanford.borderRest,
                         style: StrokeStyle(
                             lineWidth: 1,
                             dash: isActiveDropTarget ? [] : [3, 3]
@@ -1644,7 +1644,7 @@ struct CollapsedKanbanLanesView: View {
                     )
                     .overlay(
                         Capsule(style: .continuous)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            .stroke(Stanford.borderRest, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -1851,7 +1851,7 @@ struct KanbanTaskCardView: View {
             shape
                 .fill(Color.primary.opacity(0.04))
                 .overlay {
-                    shape.stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                    shape.stroke(Stanford.borderRest, lineWidth: 1)
                 }
         } else {
             shape

@@ -106,7 +106,6 @@ struct ShelfBrowserPanelView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-                .opacity(0.65)
             browserBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -382,7 +381,7 @@ struct ShelfBrowserPanelView: View {
                     .padding(.vertical, 2)
                     .overlay(
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                            .stroke(Stanford.borderRest, lineWidth: 1)
                     )
             }
 
@@ -406,7 +405,7 @@ struct ShelfBrowserPanelView: View {
         .padding(.vertical, 7)
         .frame(minHeight: 30)
         .background(shape.fill(addressFieldFill))
-        .overlay(shape.stroke(addressFieldStroke, lineWidth: isAddressFocused ? 1.5 : 1))
+        .overlay(shape.stroke(addressFieldStroke, lineWidth: isAddressFocused ? Stanford.strokeFocusWidth : 1))
         .contentShape(shape)
         .onHover { isAddressHovered = $0 }
         .onTapGesture { isAddressFocused = true }
@@ -455,7 +454,7 @@ struct ShelfBrowserPanelView: View {
     private var addressFieldStroke: Color {
         if isAddressFocused { return Stanford.lagunita.opacity(Stanford.strokeFocus) }
         if isAddressHovered { return Color.primary.opacity(Stanford.strokeActive) }
-        return Color.primary.opacity(Stanford.strokeRest)
+        return Stanford.borderRest
     }
 
     // A quiet icon button, not a filled accent one — Return already submits
@@ -787,7 +786,7 @@ struct ShelfBrowserPanelView: View {
             // hero card above (which legitimately gets a tinted border to
             // signal the overall connection state).
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -976,7 +975,7 @@ struct ShelfBrowserPanelView: View {
                 .padding(.vertical, 10)
                 .overlay(
                     RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .stroke(Stanford.failed.opacity(0.5), lineWidth: 1)
+                        .stroke(Stanford.failed.opacity(Stanford.strokeFocus), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -1021,7 +1020,7 @@ struct ShelfBrowserPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -1114,7 +1113,7 @@ struct ShelfBrowserPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -1163,7 +1162,7 @@ struct ShelfBrowserPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -1207,7 +1206,7 @@ struct ShelfBrowserPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .help(isControlledTechnicalDetailsExpanded ? "Hide technical details" : "Show technical details")
@@ -1828,7 +1827,7 @@ private struct BrowserEngineMenuButtonStyle: ButtonStyle {
             .padding(.horizontal, 9)
             .frame(minHeight: 30)
             .background(shape.fill(backgroundFill(isPressed: configuration.isPressed)))
-            .overlay(shape.stroke(tint.opacity(0.16), lineWidth: 1))
+            .overlay(shape.stroke(tint.opacity(Stanford.strokeActive), lineWidth: 1))
             .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.55)
             .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
@@ -1886,7 +1885,7 @@ private struct BrowserQuickLinkContent: View {
     }
 
     private var strokeColor: Color {
-        if configuration.isPressed || isHovered { return tint.opacity(0.36) }
-        return Color.primary.opacity(Stanford.strokeRest)
+        if configuration.isPressed || isHovered { return tint.opacity(Stanford.strokeActive) }
+        return Stanford.borderRest
     }
 }

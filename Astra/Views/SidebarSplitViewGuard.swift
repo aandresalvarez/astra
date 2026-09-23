@@ -94,6 +94,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
             }
 
             applyHoldingPriorityIfNeeded()
+            fadeSystemDivider()
             enforceReadableSidebarWidth()
         }
 
@@ -112,6 +113,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
                     object: splitView,
                     queue: .main
                 ) { [weak self] _ in
+                    self?.fadeSystemDivider()
                     self?.enforceReadableSidebarWidth()
                 },
                 center.addObserver(
@@ -161,6 +163,17 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
             observedSplitView = nil
             observedSidebarSubview = nil
             didApplyHoldingPriority = false
+        }
+
+        /// AppKit can rebuild its divider views during column transitions, so
+        /// this runs on every configure and frame change; it is a no-op once
+        /// the current divider views are faded.
+        private func fadeSystemDivider() {
+            guard let splitView = observedSplitView else { return }
+            let faded = SidebarSplitDivider.fadeSystemDividers(in: splitView)
+            if faded > 0 {
+                AppLogger.info("sidebar_system_divider_faded count=\(faded)", category: "UI")
+            }
         }
 
         private func enforceReadableSidebarWidth() {

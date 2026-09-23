@@ -200,6 +200,56 @@ struct ThemeTests {
         }
     }
 
+    @Test("Borders, dividers, and hairlines stay on the stroke scale")
+    func bordersStayOnTheStrokeScale() throws {
+        // Borders drifted to 12 neutral strengths, a warm sandstone family,
+        // and 0.5–3pt widths. Every stroke, restyled divider, and 1pt hairline
+        // must now use a Stanford stroke token. Data marks (charts, diagram
+        // edges) and the onboarding guidance glow are not borders; knockout
+        // rings stroke with `cardBackground` and are skipped by color.
+        let exempt: Set<String> = ["StanfordTheme.swift", "WorkspaceAppChartViews.swift", "WorkspaceAppDiagramGraph.swift", "OnboardingWizardChrome.swift"]
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let views = root.appendingPathComponent("Astra")
+        let rawOpacity = try NSRegularExpression(pattern: #"\.opacity\([^)]*\b0?\.\d*[1-9]"#)
+        let offScaleColor = try NSRegularExpression(pattern: #"sandstone|Color\.secondary|coolGrey"#)
+        let literalWidth = try NSRegularExpression(pattern: #"lineWidth: (?!1\b)[0-9.]+|\? [0-9.]+ : 1\b"#)
+        var violations: [String] = []
+        let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" && !exempt.contains($0.lastPathComponent) } ?? []
+        for file in files {
+            let lines = try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                let window = lines[index..<min(index + 4, lines.count)].joined(separator: " ")
+                var checked = ""
+                if line.range(of: #"\.stroke(Border)?\("#, options: .regularExpression) != nil,
+                   let range = window.range(of: #"\.stroke(Border)?\("#, options: .regularExpression),
+                   !window[range.upperBound...].hasPrefix("Stanford.cardBackground") {
+                    var depth = 0
+                    for character in window[range.lowerBound...] {
+                        checked.append(character)
+                        if character == "(" { depth += 1 }
+                        if character == ")" { depth -= 1; if depth == 0 { break } }
+                    }
+                } else if line.contains("Divider()"), index + 1 < lines.count,
+                          case let next = lines[index + 1].trimmingCharacters(in: .whitespaces),
+                          next.hasPrefix(".opacity(") || next.hasPrefix(".overlay(") {
+                    checked = "restyled Divider(): \(next)"
+                } else if line.contains(".fill("),
+                          window.range(of: #"\.fill\([^\n]*\)\s*\.frame\((width|height): 1\)"#, options: .regularExpression) != nil {
+                    checked = line
+                }
+                let range = NSRange(checked.startIndex..., in: checked)
+                if checked.hasPrefix("restyled")
+                    || rawOpacity.firstMatch(in: checked, range: range) != nil
+                    || offScaleColor.firstMatch(in: checked, range: range) != nil
+                    || literalWidth.firstMatch(in: checked, range: range) != nil {
+                    violations.append("\(file.lastPathComponent):\(index + 1)  \(checked.trimmingCharacters(in: .whitespaces).prefix(120))")
+                }
+            }
+        }
+        #expect(violations.isEmpty, "Off-scale borders:\n\(violations.joined(separator: "\n"))")
+    }
+
     @Test("Bundled Stanford typography fonts are packaged")
     func bundledTypographyFontsArePackaged() {
         let filenames = Set(StanfordFontRegistrar.bundledFontURLs().map(\.lastPathComponent))

@@ -63,7 +63,7 @@ struct OnboardingRuntimeChooserView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
-                .stroke(Stanford.sandstone.opacity(0.34), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         }
     }
 
@@ -127,7 +127,7 @@ struct OnboardingRuntimeChooserView: View {
             ZStack {
                 Circle()
                     .stroke(
-                        presentation.isSelected ? Stanford.interactive : Stanford.sandstone.opacity(0.72),
+                        presentation.isSelected ? Stanford.interactive : Stanford.textTertiary,
                         lineWidth: 1.5
                     )
                 if presentation.isSelected {

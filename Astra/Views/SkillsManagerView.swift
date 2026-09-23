@@ -462,7 +462,7 @@ struct SkillEditorView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Stanford.sandstone.opacity(0.4), lineWidth: 1)
+                                    .stroke(Stanford.borderRest, lineWidth: 1)
                             )
 
                         // Written here rather than discovered at run time: a

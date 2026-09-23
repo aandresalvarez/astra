@@ -375,7 +375,7 @@ struct LogViewerView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -482,7 +482,7 @@ struct LogViewerView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
         .padding(.horizontal, 18)
         .padding(.bottom, 18)

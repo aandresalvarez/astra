@@ -275,10 +275,25 @@ enum Stanford {
     }
 
     // MARK: - Stroke Scale
-    // Rest (0.12) → resting borders; Active (0.22) → state-tinted; Focus (0.36) → keyboard ring. Pair with Color.primary or a status tint.
-    static let strokeRest: Double = 0.12
+    //
+    // Every border snaps to one of five steps. The strength steps are
+    // opacities, so they pair with `Color.primary` (neutral) or a tint:
+    // Subtle (0.06) → rows, chips, and dividers nested inside a card;
+    // Rest (0.08) → cards, inputs, pills; Separator → `Divider()` and every
+    // line between window regions; Active (0.22) → selected or state-tinted;
+    // Focus (0.36 at 1.5pt) → text-entry focus, drop targets, and errors.
+    // Keyboard focus rings keep `focusRing` at full strength for
+    // accessibility. ThemeTests scans the views for raw stroke opacities.
+    static let strokeSubtle: Double = 0.06
+    static let strokeRest: Double = 0.08
     static let strokeActive: Double = 0.22
     static let strokeFocus: Double = 0.36
+    static let strokeFocusWidth: CGFloat = 1.5
+    static let borderSubtle = Color.primary.opacity(strokeSubtle)
+    static let borderRest = Color.primary.opacity(strokeRest)
+    /// The system separator (10% in both appearances): the line `Divider()`
+    /// draws, for hand-drawn region edges and the sidebar's split divider.
+    static let separator = Color(nsColor: .separatorColor)
 
     // MARK: - Density Tokens
 
@@ -406,7 +421,7 @@ struct StanfordCardStyle: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium))
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusMedium)
-                    .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                    .stroke(Stanford.borderRest, lineWidth: 1)
             )
     }
 }
@@ -451,9 +466,21 @@ struct StanfordButtonStyle: ButtonStyle {
 
     private var strokeColor: Color {
         if !isEnabled {
-            return Color.secondary.opacity(0.12)
+            return Stanford.borderSubtle
         }
-        return isPrimary ? color.opacity(0.0) : Color.secondary.opacity(0.25)
+        return isPrimary ? color.opacity(0) : Stanford.borderRest
+    }
+}
+
+/// The Subtle stroke step as a divider, for rows and columns inside a card,
+/// table, or menu. Breaks between regions use the system `Divider()`.
+struct SubtleDivider: View {
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        Rectangle()
+            .fill(Stanford.borderSubtle)
+            .frame(width: axis == .vertical ? 1 : nil, height: axis == .horizontal ? 1 : nil)
     }
 }
 
@@ -467,7 +494,7 @@ extension View {
         cornerRadius: CGFloat = 10,
         interactive: Bool = false,
         fallbackFill: Color = Color(nsColor: .windowBackgroundColor),
-        fallbackStrokeOpacity: Double = 0.06
+        fallbackStrokeOpacity: Double = Stanford.strokeSubtle
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 

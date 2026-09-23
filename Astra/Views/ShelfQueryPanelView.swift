@@ -1588,7 +1588,7 @@ private struct QueryResultGrid: View {
                         .clipShape(RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous)
-                                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                                .stroke(Stanford.borderRest, lineWidth: 1)
                         }
                         .shadow(color: .black.opacity(0.025), radius: 6, x: 0, y: 2)
                     }
@@ -1747,11 +1747,11 @@ private struct QueryResultHeader: View {
         .font(Stanford.caption(11))
         .background(.thinMaterial)
         .overlay(alignment: .leading) {
-            QueryResultColumnDividers(widths: widths, opacity: 0.08)
+            QueryResultColumnDividers(widths: widths, opacity: Stanford.strokeRest)
         }
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.primary.opacity(0.12))
+                .fill(Stanford.separator)
                 .frame(height: 1)
         }
     }
@@ -1780,11 +1780,11 @@ private struct QueryResultRow: View {
         }
         .background(isAlternate ? Stanford.fog.opacity(0.34) : Stanford.cardBackground)
         .overlay(alignment: .leading) {
-            QueryResultColumnDividers(widths: widths, opacity: 0.055)
+            QueryResultColumnDividers(widths: widths, opacity: Stanford.strokeSubtle)
         }
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.primary.opacity(0.06))
+                .fill(Stanford.borderSubtle)
                 .frame(height: 1)
         }
     }

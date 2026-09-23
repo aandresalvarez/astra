@@ -294,7 +294,7 @@ struct WorkspaceAppDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -639,7 +639,7 @@ struct WorkspaceAppMarkdownCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -689,7 +689,7 @@ struct WorkspaceAppDiagramCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 }
@@ -721,7 +721,7 @@ struct WorkspaceAppMetricCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
         .help("Storage-backed metric: \(metric.detail)")
     }
@@ -761,7 +761,7 @@ struct WorkspaceAppChartCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 }
@@ -832,7 +832,7 @@ struct WorkspaceAppRunHistoryRow: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -963,7 +963,7 @@ struct WorkspaceAppStorageRecordForm: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -1004,7 +1004,7 @@ struct WorkspaceAppActionButton: View {
             .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(action.isEnabled ? 0.08 : 0.04), lineWidth: 1)
+                    .stroke(action.isEnabled ? Stanford.borderRest : Stanford.borderSubtle, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1107,7 +1107,7 @@ struct WorkspaceAppDependencyBindingCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
         .help("\(binding.contract): \(targetLabel)")
     }
@@ -1214,7 +1214,7 @@ struct WorkspaceAppAutomationStateCard: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
         .help("\(automation.automationType): \(statusLabel)")
     }
@@ -1362,7 +1362,7 @@ struct WorkspaceAppStorageTableView: View {
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -1461,7 +1461,7 @@ struct WorkspaceAppStorageRecordRow: View {
         .padding(.vertical, 5)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(Color.primary.opacity(0.05))
+                .fill(Stanford.borderSubtle)
                 .frame(height: 1)
         }
     }

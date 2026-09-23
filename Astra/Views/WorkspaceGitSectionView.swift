@@ -300,8 +300,7 @@ struct WorkspaceGitSectionView: View {
     /// sibling rail panels (`checklistDivider`): start after the leading icon
     /// frame, low opacity, no table-like trailing rule.
     private var rowDivider: some View {
-        Divider()
-            .opacity(0.22)
+        SubtleDivider()
             .padding(.leading, Self.rowIconFrame)
     }
 
@@ -1080,7 +1079,7 @@ struct WorkspaceGitSectionView: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+                        .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
                 )
 
                 if newCount > 0 {

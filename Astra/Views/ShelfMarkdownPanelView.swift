@@ -2317,7 +2317,7 @@ private struct TextShelfToolbarButtonStyle: ButtonStyle {
     }
 
     private var strokeColor: Color {
-        isActive ? Stanford.lagunita.opacity(0.24) : Color.clear
+        isActive ? Stanford.lagunita.opacity(Stanford.strokeActive) : Color.clear
     }
 }
 
@@ -2331,7 +2331,7 @@ private struct FileNavigatorResizeHandle: View {
     var body: some View {
         ZStack {
             Rectangle()
-                .fill(Color.primary.opacity(0.09))
+                .fill(Stanford.separator)
                 .frame(width: 1)
                 .allowsHitTesting(false)
 

@@ -521,8 +521,7 @@ struct WorkspaceCanvasPanelView: View {
                 )
 
                 if PlanShelfPresentation.showsRowDivider(rowIndex: rowIndex, groupCount: group.steps.count) {
-                    Divider()
-                        .overlay(Color.primary.opacity(0.055))
+                    SubtleDivider()
                         .padding(.leading, 42)
                 }
             }
@@ -919,7 +918,7 @@ struct WorkspaceCanvasPanelView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(fieldShape.fill(Color.primary.opacity(0.035)))
-            .overlay(fieldShape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
+            .overlay(fieldShape.strokeBorder(Stanford.borderSubtle, lineWidth: 1))
         }
     }
 
@@ -933,7 +932,7 @@ struct WorkspaceCanvasPanelView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 7)
                 .background(fieldShape.fill(Color.primary.opacity(0.035)))
-                .overlay(fieldShape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
+                .overlay(fieldShape.strokeBorder(Stanford.borderSubtle, lineWidth: 1))
         }
     }
 
@@ -958,7 +957,7 @@ struct WorkspaceCanvasPanelView: View {
         }
         .padding(8)
         .background(fieldShape.fill(Color.primary.opacity(0.035)))
-        .overlay(fieldShape.strokeBorder(Stanford.poppy.opacity(0.20), lineWidth: 1))
+        .overlay(fieldShape.strokeBorder(Stanford.poppy.opacity(Stanford.strokeActive), lineWidth: 1))
     }
 
     private func stepReadOnlyText(_ text: String, systemImage: String, tint: Color) -> some View {

@@ -6,7 +6,9 @@ import SwiftUI
 /// never drift back into "two panel styles."
 ///
 /// - `.docked`: the `NavigationSplitView` column already supplies the system
-///   source-list vibrancy, so the surface only carries the content.
+///   source-list vibrancy, so the surface carries the content plus the
+///   `Stanford.separator` hairline that replaces the system divider (see
+///   `SidebarSplitDivider`).
 /// - `.floating`: an explicit `NSVisualEffectView(.sidebar, .behindWindow)`
 ///   reproduces that *same* source-list material — instead of the old
 ///   `.ultraThickMaterial`, which read as a denser, different slab over the
@@ -34,6 +36,12 @@ struct SidebarSurface<Content: View>: View {
         switch style {
         case .docked:
             content
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(Stanford.separator)
+                        .frame(width: 1)
+                        .ignoresSafeArea()
+                }
         case .floating:
             content
                 .frame(width: width)
@@ -43,7 +51,7 @@ struct SidebarSurface<Content: View>: View {
                     // Hairline so the drawer reads as a distinct edge over the
                     // detail content, complementing the elevation shadow.
                     Rectangle()
-                        .fill(Color.primary.opacity(0.08))
+                        .fill(Stanford.separator)
                         .frame(width: 1)
                 }
                 .shadow(color: .black.opacity(0.18), radius: 14, x: 5, y: 0)

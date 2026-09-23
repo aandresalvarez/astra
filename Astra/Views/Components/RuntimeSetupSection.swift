@@ -108,7 +108,7 @@ struct RuntimeSetupSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(tint.opacity(0.24), lineWidth: 1)
+                .stroke(tint.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(presentation.title), \(chipLabel(for: presentation.state))")
@@ -513,7 +513,7 @@ struct RuntimeSetupSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 

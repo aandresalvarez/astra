@@ -722,7 +722,6 @@ struct TaskSidebarView: View {
     private var appAccessFooter: some View {
         VStack(spacing: 0) {
             Divider()
-                .opacity(0.35)
             AppAccessMenu(appUpdateController: appUpdateController)
         }
         .accessibilityIdentifier("AppAccessSidebarFooter")
@@ -872,8 +871,8 @@ struct TaskSidebarView: View {
         .overlay(
             shape.strokeBorder(
                 isPinnedDropTargeted
-                    ? Stanford.poppy.opacity(0.55)
-                    : Color.primary.opacity(Stanford.strokeRest),
+                    ? Stanford.poppy.opacity(Stanford.strokeFocus)
+                    : Stanford.borderRest,
                 style: dashStyle
             )
         )
@@ -1810,8 +1809,8 @@ struct TaskSidebarView: View {
     }
 
     private func workspaceRowStroke(isSelected: Bool, isHovered: Bool) -> Color {
-        if isSelected { return Color.primary.opacity(0.14) }
-        if isHovered { return Color.primary.opacity(0.12) }
+        if isSelected { return Stanford.borderRest }
+        if isHovered { return Stanford.borderSubtle }
         return .clear
     }
 
@@ -1945,7 +1944,7 @@ struct TaskSidebarView: View {
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
@@ -2382,14 +2381,14 @@ private struct NewTaskButton: View {
     }
 
     private var strokeColor: Color {
-        Stanford.lagunita.opacity(isHovered ? 0.18 : 0.10)
+        Stanford.lagunita.opacity(isHovered ? Stanford.strokeActive : Stanford.strokeRest)
     }
 
     @ViewBuilder
     private func nudgeRing(shape: RoundedRectangle) -> some View {
         if isShowingNudge {
             shape
-                .stroke(Stanford.lagunita.opacity(0.36), lineWidth: 2)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeFocus), lineWidth: Stanford.strokeFocusWidth)
                 .scaleEffect(isNudgePulsing ? 1.05 : 1.0)
                 .opacity(isNudgePulsing ? 0.15 : 0.70)
                 .animation(

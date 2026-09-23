@@ -2134,7 +2134,7 @@ struct TaskMainView: View {
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
+                    .stroke(Stanford.borderSubtle, lineWidth: 1)
             )
             .overlay(alignment: .leading) {
                 Capsule()
@@ -2170,7 +2170,7 @@ struct TaskMainView: View {
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
+                    .stroke(Stanford.borderSubtle, lineWidth: 1)
             )
             .overlay(alignment: .leading) {
                 Capsule()
@@ -2618,7 +2618,6 @@ struct TaskMainView: View {
                 .padding(.top, 2)
 
                 Divider()
-                    .overlay(Stanford.sandstone.opacity(0.18))
 
                 runActivitySelectedTab(
                     selectedTab,
@@ -2665,7 +2664,6 @@ struct TaskMainView: View {
                     }
                     if !presentation.technicalOutputs.isEmpty, !presentation.stats.isEmpty {
                         Divider()
-                            .overlay(Stanford.sandstone.opacity(0.18))
                     }
                     if !presentation.stats.isEmpty {
                         Label("Run stats", systemImage: "chart.bar")
@@ -2746,7 +2744,7 @@ struct TaskMainView: View {
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
     }
 
@@ -3031,7 +3029,7 @@ struct TaskMainView: View {
         let isCollapsible = prominence == .actionable && !TaskRunNoticePresentationRules.rendersFixedExpanded(notice)
         let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
         let rawDetail = isExpanded ? issue.rawPayload : nil
-        let strokeOpacity = prominence == .actionable ? 0.12 : 0.08
+        let strokeOpacity = prominence == .actionable ? Stanford.strokeActive : Stanford.strokeRest
 
         return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
             if isCollapsible {
@@ -3217,7 +3215,7 @@ struct TaskMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.statusInfo.opacity(0.24), lineWidth: 1)
+                .stroke(Stanford.statusInfo.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Network access needed. Connect to VPN, then retry.")
@@ -3398,7 +3396,7 @@ struct TaskMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Stanford.coolGrey.opacity(0.18), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
         .transition(chatStatusBlockTransition)
     }
@@ -3449,7 +3447,7 @@ struct TaskMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Stanford.paloAltoGreen.opacity(0.24), lineWidth: 1)
+                .stroke(Stanford.paloAltoGreen.opacity(Stanford.strokeActive), lineWidth: 1)
         )
     }
 
@@ -4041,17 +4039,14 @@ struct TaskMainView: View {
     }
 
     private var composerStrokeColor: Color {
-        if isDragOver {
-            return Stanford.cardinalRed.opacity(0.68)
+        if isDragOver || isComposerFocused {
+            return Stanford.lagunita.opacity(Stanford.strokeFocus)
         }
-        if isComposerFocused {
-            return Stanford.lagunita.opacity(0.30)
-        }
-        return Color.primary.opacity(0.08)
+        return Stanford.borderRest
     }
 
     private var composerStrokeWidth: CGFloat {
-        isDragOver || isComposerFocused ? 1.5 : 1
+        isDragOver || isComposerFocused ? Stanford.strokeFocusWidth : 1
     }
 
     @ViewBuilder
@@ -4106,8 +4101,7 @@ struct TaskMainView: View {
                     .buttonStyle(.plain)
 
                     if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
-                        Divider()
-                            .opacity(SlashCommandMenuPresentation.dividerOpacity)
+                        SubtleDivider()
                             .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
                             .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
                     }
@@ -4119,7 +4113,7 @@ struct TaskMainView: View {
             .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
+                    .stroke(Stanford.borderRest, lineWidth: 1)
             )
             .shadow(
                 color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
@@ -4144,8 +4138,7 @@ struct TaskMainView: View {
                         .padding(.top, TaskComposerPresentation.decisionDockTopPadding)
                         .padding(.bottom, TaskComposerPresentation.decisionDockBottomPadding)
 
-                    Divider()
-                        .overlay(Color.primary.opacity(0.06))
+                    SubtleDivider()
                 }
                 ComposerInputChipsView(task: task)
                 if !attachedFiles.isEmpty {
@@ -5144,7 +5137,7 @@ struct TaskMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
