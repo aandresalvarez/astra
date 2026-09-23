@@ -924,8 +924,9 @@ public struct ASTRAApp: App {
         service.attach(
             taskHolds: { WorktreeTaskUsage.allHolds(in: modelContext) },
             workspaceRoots: {
-                ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [])
-                    .flatMap { [$0.primaryPath] + $0.additionalPaths }
+                WorktreeTaskUsage.protectedWorkspacePaths(
+                    of: (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
+                )
             }
         )
         service.startObservingTaskCompletion()

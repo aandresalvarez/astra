@@ -39,6 +39,9 @@ struct WorktreeReclaimSummary: Equatable, Sendable {
 
 /// What the panel shows for one worktree.
 struct WorktreeStorageStatus: Equatable, Sendable {
+    /// The worktree as git reported it when this was computed. When HEAD,
+    /// branch, lock or prune state moves, the decision no longer applies.
+    let worktree: GitWorktreeInfo
     let report: WorktreeStorageReport
     /// What "Reclaim" would do right now (manual mode), including the removal
     /// suggestion.
@@ -201,7 +204,8 @@ final class WorktreeReclaimService: ObservableObject {
     // MARK: - Panel
 
     /// Called on every panel refresh: measures worktrees the cache hasn't
-    /// seen and forgets removed ones. Cheap when nothing changed.
+    /// seen, re-evaluates any whose HEAD, branch, lock or prune state moved,
+    /// and forgets removed ones. Cheap when nothing changed.
     func reconcile(repoPath: String, worktrees: [GitWorktreeInfo]) {
         guard !worktrees.isEmpty else { return }
         let paths = Set(worktrees.map(\.path))
@@ -209,21 +213,47 @@ final class WorktreeReclaimService: ObservableObject {
             statuses[removed] = nil
         }
         repoWorktreePaths[repoPath] = paths
-        let unmeasured = worktrees.filter { statuses[$0.path] == nil && !measuringPaths.contains($0.path) }
-        guard !unmeasured.isEmpty else { return }
-        Task { await self.refresh(repoPath: repoPath, worktrees: unmeasured, maxAge: nil) }
+        var stale: [GitWorktreeInfo] = []
+        for worktree in worktrees where !measuringPaths.contains(worktree.path) {
+            guard let status = statuses[worktree.path] else {
+                stale.append(worktree)
+                continue
+            }
+            guard status.worktree != worktree else { continue }
+            // Withdraw a "Merged · Remove" suggestion at once: it described
+            // a HEAD that is gone. The refresh below decides afresh.
+            var decision = status.decision
+            decision.suggestRemoval = false
+            statuses[worktree.path] = WorktreeStorageStatus(
+                worktree: worktree,
+                report: status.report,
+                decision: decision,
+                idle: status.idle
+            )
+            stale.append(worktree)
+        }
+        guard !stale.isEmpty else { return }
+        Task { await self.refresh(repoPath: repoPath, worktrees: stale, maxAge: nil, context: worktrees) }
     }
 
     /// Re-measures worktrees whose entry is older than `maxAge`, or all of
-    /// them when `maxAge` is nil. Changes nothing on disk.
-    func refresh(repoPath: String, worktrees: [GitWorktreeInfo], maxAge: TimeInterval?) async {
+    /// them when `maxAge` is nil. Changes nothing on disk. `context` is every
+    /// worktree of the repository, so nested ones scope task claims.
+    func refresh(
+        repoPath: String,
+        worktrees: [GitWorktreeInfo],
+        maxAge: TimeInterval?,
+        context: [GitWorktreeInfo]? = nil
+    ) async {
         let now = clock()
         let stale = worktrees.filter { worktree in
             guard let maxAge, let status = statuses[worktree.path] else { return true }
             return now.timeIntervalSince(status.report.measuredAt) >= maxAge
         }
         guard !stale.isEmpty else { return }
-        _ = await enqueue { await self.runPass(repoPath: repoPath, worktrees: stale, mode: .manual, act: false) }
+        _ = await enqueue {
+            await self.runPass(repoPath: repoPath, worktrees: stale, context: context ?? worktrees, mode: .manual, act: false)
+        }
     }
 
     /// The Reclaim button: manual mode on every worktree of the repository.
@@ -245,10 +275,15 @@ final class WorktreeReclaimService: ObservableObject {
 
     /// One serialized pass that may act: manual mode always reclaims what the
     /// policy allows; automatic mode only when the setting is on.
-    func evaluate(repoPath: String, worktrees: [GitWorktreeInfo], mode: WorktreeReclaimMode) async -> WorktreeReclaimSummary {
+    func evaluate(
+        repoPath: String,
+        worktrees: [GitWorktreeInfo],
+        mode: WorktreeReclaimMode,
+        context: [GitWorktreeInfo]? = nil
+    ) async -> WorktreeReclaimSummary {
         let act = mode == .manual || WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
         let summary = await enqueue {
-            await self.runPass(repoPath: repoPath, worktrees: worktrees, mode: mode, act: act)
+            await self.runPass(repoPath: repoPath, worktrees: worktrees, context: context ?? worktrees, mode: mode, act: act)
         }
         if mode == .automatic, summary.freedBytes > 0 {
             lastAutomaticReclaim = summary
@@ -266,9 +301,10 @@ final class WorktreeReclaimService: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.rechecks[worktreePath] = nil
             self.pendingRecheckDates[worktreePath] = nil
-            let worktrees = await self.git.listWorktrees(at: repoPath).filter { WorktreePath.same($0.path, worktreePath) }
+            let all = await self.git.listWorktrees(at: repoPath)
+            let worktrees = all.filter { WorktreePath.same($0.path, worktreePath) }
             guard !worktrees.isEmpty else { return }
-            _ = await self.evaluate(repoPath: repoPath, worktrees: worktrees, mode: .automatic)
+            _ = await self.evaluate(repoPath: repoPath, worktrees: worktrees, mode: .automatic, context: all)
         }
     }
 
@@ -290,14 +326,22 @@ final class WorktreeReclaimService: ObservableObject {
         let indexModified: Date?
     }
 
+    private struct ReclaimJob: Sendable {
+        let worktree: String
+        let name: String
+        let artifacts: [String]
+    }
+
     private func runPass(
         repoPath: String,
         worktrees: [GitWorktreeInfo],
+        context: [GitWorktreeInfo],
         mode: WorktreeReclaimMode,
         act: Bool
     ) async -> WorktreeReclaimSummary {
         let now = clock()
         let paths = worktrees.map(\.path)
+        let allPaths = Array(Set(context.map(\.path) + paths))
         measuringPaths.formUnion(paths)
         defer { measuringPaths.subtract(paths) }
 
@@ -313,7 +357,8 @@ final class WorktreeReclaimService: ObservableObject {
         let defaultBranch = await git.getDefaultBaseBranch(at: repoPath, remote: nil)
         resolver.beginPass()
 
-        var toReclaim: [(worktree: String, artifacts: [String])] = []
+        var inputs: [String: WorktreeReclaimInput] = [:]
+        var candidates: [ReclaimJob] = []
         var leftovers: [(worktree: String, paths: [String])] = []
         var kept: [WorktreeReclaimSummary.Kept] = []
         for (worktree, fact) in zip(worktrees, facts) {
@@ -321,9 +366,9 @@ final class WorktreeReclaimService: ObservableObject {
                 worktree: worktree,
                 isWorkspaceRoot: roots.contains(WorktreePath.canonical(worktree.path)),
                 artifactBytes: fact.report.artifactBytes,
-                lastActivity: await lastActivity(of: worktree, facts: fact, holds: holds),
+                lastActivity: await lastActivity(of: worktree, facts: fact, holds: holds, otherWorktreePaths: allPaths),
                 buildSignal: fact.buildSignal,
-                inUse: WorktreeTaskUsage.inUseReason(forWorktreePath: worktree.path, holds: holds),
+                inUse: WorktreeTaskUsage.inUseReason(forWorktreePath: worktree.path, holds: holds, otherWorktreePaths: allPaths),
                 mode: mode,
                 thresholds: thresholds,
                 now: now
@@ -334,20 +379,19 @@ final class WorktreeReclaimService: ObservableObject {
                     input.mergeState = await resolver.resolve(worktree: worktree, repoPath: repoPath, defaultBranch: defaultBranch, now: now)
                 }
             }
+            inputs[worktree.path] = input
+            publishStatus(worktree, report: fact.report, input: input)
 
             let decision = WorktreeReclaimPolicy.decide(input)
-            var display = input
-            display.mode = .manual
-            statuses[worktree.path] = WorktreeStorageStatus(
-                report: fact.report,
-                decision: WorktreeReclaimPolicy.decide(display),
-                idle: input.lastActivity.map { now.timeIntervalSince($0) }
-            )
             if !fact.report.interruptedReclaims.isEmpty {
                 leftovers.append((worktree.path, fact.report.interruptedReclaims))
             }
             if act, decision.reclaimArtifacts {
-                toReclaim.append((worktree.path, fact.report.artifacts.map(\.path)))
+                candidates.append(ReclaimJob(
+                    worktree: worktree.path,
+                    name: worktree.displayName,
+                    artifacts: fact.report.artifacts.map(\.path)
+                ))
             } else if fact.report.artifactBytes > 0 {
                 kept.append(.init(worktreeName: worktree.displayName, reason: decision.reason))
             }
@@ -356,36 +400,71 @@ final class WorktreeReclaimService: ObservableObject {
             }
         }
 
+        // Last look before anything is deleted: the pass awaited git and
+        // possibly GitHub, and a task may have started using a worktree since.
+        var jobs: [ReclaimJob] = []
+        if !candidates.isEmpty {
+            let current = taskHolds()
+            for job in candidates {
+                guard let reason = WorktreeTaskUsage.inUseReason(
+                    forWorktreePath: job.worktree,
+                    holds: current,
+                    otherWorktreePaths: allPaths
+                ) else {
+                    jobs.append(job)
+                    continue
+                }
+                kept.append(.init(worktreeName: job.name, reason: reason))
+                if var input = inputs[job.worktree], let status = statuses[job.worktree] {
+                    input.inUse = reason
+                    inputs[job.worktree] = input
+                    publishStatus(status.worktree, report: status.report, input: input)
+                }
+            }
+        }
+
         let reclaimer = self.reclaimer
-        let jobs = toReclaim
+        let reclaimJobs = jobs
         let sweeps = mode == .automatic || act ? leftovers : []
         let outcome = await WorktreeStorageWork.run { () -> WorktreeReclaimOutcome in
             var outcome = WorktreeReclaimOutcome()
             for sweep in sweeps {
                 outcome.merge(reclaimer.sweepLeftovers(sweep.paths, inWorktree: sweep.worktree))
             }
-            for job in jobs {
-                outcome.merge(reclaimer.reclaim(artifactPaths: job.artifacts, inWorktree: job.worktree, now: now))
+            // Rename every artifact aside first, then delete: the slow part
+            // never widens the gap between the check above and a rename.
+            var prepared: [WorktreeReclaimer.Prepared] = []
+            for job in reclaimJobs {
+                let step = reclaimer.prepare(artifactPaths: job.artifacts, inWorktree: job.worktree, now: now)
+                prepared += step.prepared
+                outcome.merge(step.outcome)
             }
+            outcome.merge(reclaimer.finish(prepared))
             return outcome
         }
 
-        // Re-measure what changed so the panel shows the freed space.
-        let changed = Set(jobs.map(\.worktree) + sweeps.map(\.worktree))
+        // Decide again from fresh facts for what changed, so a skipped or
+        // failed artifact stays reclaimable and automatic mode retries it.
+        let changed = Array(Set(jobs.map(\.worktree) + sweeps.map(\.worktree)))
         if !changed.isEmpty {
-            let refreshed = await WorktreeStorageWork.run { changed.map { inspector.inspect(worktreePath: $0, now: now) } }
-            for report in refreshed {
-                guard let status = statuses[report.worktreePath] else { continue }
-                statuses[report.worktreePath] = WorktreeStorageStatus(
-                    report: report,
-                    decision: WorktreeReclaimDecision(
-                        reclaimArtifacts: false,
-                        suggestRemoval: status.decision.suggestRemoval,
-                        reason: report.artifactBytes > 0 ? status.decision.reason : "No build artifacts",
-                        recheckAt: nil
-                    ),
-                    idle: status.idle
-                )
+            let later = clock()
+            let fresh = await WorktreeStorageWork.run {
+                changed.map { Self.fileFacts(worktreePath: $0, inspector: inspector, probe: probe, now: later) }
+            }
+            for fact in fresh {
+                let path = fact.report.worktreePath
+                guard var input = inputs[path], let status = statuses[path] else { continue }
+                input.artifactBytes = fact.report.artifactBytes
+                input.buildSignal = fact.buildSignal
+                input.lastActivity = [input.lastActivity, fact.newestArtifactWrite, fact.indexModified].compactMap { $0 }.max()
+                input.now = later
+                publishStatus(status.worktree, report: fact.report, input: input)
+                guard mode == .automatic, act, fact.report.artifactBytes > 0 else { continue }
+                let retry = WorktreeReclaimPolicy.decide(input)
+                if let recheckAt = retry.recheckAt ?? (retry.reclaimArtifacts
+                    ? later.addingTimeInterval(WorktreeActivityProbe.recentWriteWindow) : nil) {
+                    scheduleRecheck(repoPath: repoPath, worktreePath: path, at: recheckAt)
+                }
             }
         }
 
@@ -415,11 +494,28 @@ final class WorktreeReclaimService: ObservableObject {
         )
     }
 
+    /// Publishes what the Reclaim button would do right now (manual mode).
+    private func publishStatus(_ worktree: GitWorktreeInfo, report: WorktreeStorageReport, input: WorktreeReclaimInput) {
+        var display = input
+        display.mode = .manual
+        statuses[worktree.path] = WorktreeStorageStatus(
+            worktree: worktree,
+            report: report,
+            decision: WorktreeReclaimPolicy.decide(display),
+            idle: input.lastActivity.map { input.now.timeIntervalSince($0) }
+        )
+    }
+
     /// Newest of: the tasks that worked there, the HEAD commit, the git index
     /// and a shallow scan of each artifact.
-    private func lastActivity(of worktree: GitWorktreeInfo, facts: FileFacts, holds: [WorktreeTaskHold]) async -> Date? {
+    private func lastActivity(
+        of worktree: GitWorktreeInfo,
+        facts: FileFacts,
+        holds: [WorktreeTaskHold],
+        otherWorktreePaths: [String]
+    ) async -> Date? {
         var candidates = [
-            WorktreeTaskUsage.latestActivity(forWorktreePath: worktree.path, holds: holds),
+            WorktreeTaskUsage.latestActivity(forWorktreePath: worktree.path, holds: holds, otherWorktreePaths: otherWorktreePaths),
             facts.indexModified,
             facts.newestArtifactWrite
         ]

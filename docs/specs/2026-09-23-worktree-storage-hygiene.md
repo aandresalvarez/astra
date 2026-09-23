@@ -203,11 +203,19 @@ and no test covers it. When moving it:
   status list.
 - Compare canonical paths (see §3), and check tasks in every workspace, not
   just the panel's.
+- A claim anywhere inside the worktree counts (a task can be rooted in a
+  subfolder), except inside another worktree nested in it (the primary
+  contains `.claude/worktrees/*`).
 - Also count as in use:
-  - a worktree that is some workspace's `activeWorkingPath`, because unpinned
-    tasks run in `resolvedWorkingPath`;
-  - an active `TaskTurnRequest` for the path, because queuing a follow-up
-    doesn't change a finished task's status.
+  - a worktree an unpinned task is running or queued in, via its workspace's
+    `activeWorkingPath`;
+  - an active `TaskTurnRequest`, at the path its execution-policy snapshot
+    captured, because queuing a follow-up doesn't change a finished task's
+    status and the turn runs where it was captured.
+- Automatic mode also keeps each workspace's selected worktree
+  (`activeWorkingPath`), like its configured roots.
+- Read task claims again immediately before deleting: a pass can spend
+  minutes on git and GitHub, and a task may start meanwhile.
 - Take a path string, not `GitWorktreeInfo`, and get tasks from a main-actor
   `ModelContext` fetch or a task array passed in. The view model's private
   `workspace` reference is what it reads today.

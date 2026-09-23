@@ -924,7 +924,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard let workspace else { return false }
         return WorktreeTaskUsage.inUseReason(
             forWorktreePath: worktree.path,
-            holds: WorktreeTaskUsage.holds(from: workspace.tasks)
+            holds: WorktreeTaskUsage.holds(from: workspace.tasks),
+            otherWorktreePaths: worktrees.map(\.path)
         ) != nil
     }
 
@@ -934,7 +935,11 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard let workspace else { return nil }
         let holds = workspace.modelContext.map { WorktreeTaskUsage.allHolds(in: $0) }
             ?? WorktreeTaskUsage.holds(from: workspace.tasks)
-        return WorktreeTaskUsage.inUseReason(forWorktreePath: worktree.path, holds: holds)
+        return WorktreeTaskUsage.inUseReason(
+            forWorktreePath: worktree.path,
+            holds: holds,
+            otherWorktreePaths: worktrees.map(\.path)
+        )
     }
 
     /// Re-measures the worktrees' disk use; entries younger than `maxAge`

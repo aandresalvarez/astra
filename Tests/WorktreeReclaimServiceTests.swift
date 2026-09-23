@@ -321,6 +321,79 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == false)
     }
 
+    @Test("A task that starts using a worktree mid-pass keeps its artifacts")
+    func taskStartingMidPassIsKept() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let calls = CallCounter()
+        let linkedPath = setup.linked.path
+        setup.service.attach(
+            taskHolds: {
+                // The first read is the pass's snapshot; the second is the
+                // last look before deleting.
+                calls.increment() == 1 ? [] : [WorktreeTaskHold(
+                    taskTitle: "Late start", rootPath: linkedPath, isTerminal: false,
+                    hasActiveTurnRequest: false, updatedAt: Date()
+                )]
+            },
+            workspaceRoots: { [] }
+        )
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains(.init(worktreeName: "feature", reason: "In use by task “Late start”")))
+        #expect(setup.service.statuses[setup.linked.path]?.decision.reason == "In use by task “Late start”")
+    }
+
+    @Test("An artifact skipped mid-pass stays measured and is retried")
+    func skippedArtifactIsRetried() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let lockFile = SwiftPMWorkspaceLock.lockFileURL(
+            forScratchPath: setup.linkedBuild,
+            temporaryDirectory: URL(fileURLWithPath: setup.fixture.path("tmp"), isDirectory: true)
+        )
+        let lockBox = LockBox()
+        let calls = CallCounter()
+        setup.service.attach(
+            taskHolds: {
+                // A build takes SwiftPM's lock after the policy said "reclaim".
+                if calls.increment() == 2 { lockBox.lock = SwiftPMWorkspaceLock.tryAcquire(lockFile: lockFile) }
+                return []
+            },
+            workspaceRoots: { [] }
+        )
+        defer { lockBox.lock?.release() }
+
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(lockBox.lock != nil)
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        let status = try #require(setup.service.statuses[setup.linked.path])
+        #expect(status.report.artifactBytes > 0)
+        #expect(status.decision.reason == "Build in progress (SwiftPM holds its lock)")
+        let retry = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(abs(retry.timeIntervalSinceNow - WorktreeActivityProbe.recentWriteWindow) < 60)
+    }
+
+    @Test("A HEAD change withdraws a removal suggestion at once")
+    func headChangeWithdrawsSuggestion() async throws {
+        let setup = try makeSetup(idle: 9 * Self.day)
+        defer { finish(setup) }
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == true)
+
+        let moved = GitWorktreeInfo(path: setup.linked.path, branch: "feature", head: "f2", isPrimary: false,
+                                    isDetached: false, isLocked: false, isPrunable: false)
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: [setup.primary, moved])
+
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == false)
+        #expect(setup.service.statuses[setup.linked.path]?.worktree == moved)
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)
@@ -356,4 +429,20 @@ private final class TerminalChangeRecorder: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         recorded.append(change)
     }
+}
+
+/// Counts provider calls across the service's reads.
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        count += 1
+        return count
+    }
+}
+
+private final class LockBox: @unchecked Sendable {
+    var lock: SwiftPMWorkspaceLock.HeldLock?
 }

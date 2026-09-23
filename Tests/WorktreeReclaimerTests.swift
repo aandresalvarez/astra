@@ -166,6 +166,42 @@ struct WorktreeReclaimerTests {
         #expect(FileManager.default.fileExists(atPath: setup.build))
     }
 
+    @Test("sourcekit-lsp's index-build lock is honored even before its folder exists")
+    func indexBuildLockWithoutDirectory() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        #expect(!FileManager.default.fileExists(atPath: "\(setup.build)/index-build"))
+        let lockFile = SwiftPMWorkspaceLock.lockFileURL(
+            forScratchPath: "\(setup.build)/index-build",
+            temporaryDirectory: URL(fileURLWithPath: setup.tmp, isDirectory: true)
+        )
+        let lock = try #require(SwiftPMWorkspaceLock.tryAcquire(lockFile: lockFile))
+        defer { lock.release() }
+
+        let outcome = setup.reclaimer.reclaim(artifactPaths: [setup.build], inWorktree: setup.worktree)
+
+        #expect(outcome.reclaimed.isEmpty)
+        #expect(outcome.skipped.first?.reason == "build in progress (SwiftPM holds its lock)")
+        #expect(FileManager.default.fileExists(atPath: setup.build))
+    }
+
+    @Test("Prepare renames aside without deleting; finish deletes")
+    func prepareThenFinish() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+
+        let step = setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree)
+        let prepared = try #require(step.prepared.first)
+        #expect(!FileManager.default.fileExists(atPath: setup.build))
+        #expect(FileManager.default.fileExists(atPath: prepared.asidePath))
+        #expect(WorktreeFileSystem.reclaimLeftoverBaseName((prepared.asidePath as NSString).lastPathComponent) == ".build")
+
+        let outcome = setup.reclaimer.finish(step.prepared)
+        #expect(outcome.freedBytes >= 300_000)
+        #expect(outcome.reclaimed.map(\.path) == [setup.build])
+        #expect(!FileManager.default.fileExists(atPath: prepared.asidePath))
+    }
+
     @Test("An artifact whose manifest disappeared is refused")
     func manifestGoneRefused() throws {
         let setup = try makeSetup()

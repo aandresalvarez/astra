@@ -68,10 +68,11 @@ enum SwiftPMWorkspaceLock {
     }
 
     /// The scratch paths whose locks guard an artifact: the artifact itself
-    /// and, when present, sourcekit-lsp's index build inside it.
+    /// and sourcekit-lsp's index build inside it. Both, always: an index build
+    /// takes its lock before it creates its directory, so the directory's
+    /// absence proves nothing.
     static func guardedScratchPaths(forArtifactAt artifactPath: String) -> [String] {
-        let indexBuild = (artifactPath as NSString).appendingPathComponent(indexBuildDirectoryName)
-        return WorktreeFileSystem.isRealDirectory(indexBuild) ? [artifactPath, indexBuild] : [artifactPath]
+        [artifactPath, (artifactPath as NSString).appendingPathComponent(indexBuildDirectoryName)]
     }
 
     /// True when another process holds the lock. Opens read-only and never

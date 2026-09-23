@@ -41,18 +41,55 @@ struct WorktreeReclaimer: Sendable {
     var rules: [WorktreeArtifactRule] = WorktreeArtifactRule.all
     var probe = WorktreeActivityProbe()
 
+    /// An artifact already renamed aside, waiting to be deleted.
+    struct Prepared: Equatable, Sendable {
+        let originalPath: String
+        let asidePath: String
+        let worktreePath: String
+    }
+
     /// Reclaims the given artifact directories of one worktree. Synchronous and
     /// slow on large trees; run it off the main actor.
     func reclaim(artifactPaths: [String], inWorktree worktreePath: String, now: Date = Date()) -> WorktreeReclaimOutcome {
+        var (prepared, outcome) = prepare(artifactPaths: artifactPaths, inWorktree: worktreePath, now: now)
+        outcome.merge(finish(prepared))
+        return outcome
+    }
+
+    /// The fast half: validates each artifact, then renames it aside under
+    /// SwiftPM's lock. Nothing is deleted yet, so a caller can prepare every
+    /// artifact right after its last in-use check and delete afterwards.
+    func prepare(
+        artifactPaths: [String],
+        inWorktree worktreePath: String,
+        now: Date = Date()
+    ) -> (prepared: [Prepared], outcome: WorktreeReclaimOutcome) {
         var outcome = WorktreeReclaimOutcome()
         guard let root = WorktreePath.realPath(worktreePath) else {
             for path in artifactPaths {
                 outcome.skipped.append(.init(path: path, reason: "worktree is missing"))
             }
-            return outcome
+            return ([], outcome)
         }
+        var prepared: [Prepared] = []
         for path in artifactPaths {
-            outcome.merge(reclaimArtifact(at: path, canonicalRoot: root, worktreePath: worktreePath, now: now))
+            let (aside, result) = prepareArtifact(at: path, canonicalRoot: root, worktreePath: worktreePath, now: now)
+            if let aside { prepared.append(aside) }
+            outcome.merge(result)
+        }
+        return (prepared, outcome)
+    }
+
+    /// The slow half: deletes what `prepare` renamed aside.
+    func finish(_ prepared: [Prepared]) -> WorktreeReclaimOutcome {
+        var outcome = WorktreeReclaimOutcome()
+        for item in prepared {
+            outcome.merge(delete(
+                item.asidePath,
+                originalPath: item.originalPath,
+                worktreePath: item.worktreePath,
+                reason: "idle build artifacts"
+            ))
         }
         return outcome
     }
@@ -78,14 +115,14 @@ struct WorktreeReclaimer: Sendable {
         return outcome
     }
 
-    private func reclaimArtifact(
+    private func prepareArtifact(
         at path: String,
         canonicalRoot: String,
         worktreePath: String,
         now: Date
-    ) -> WorktreeReclaimOutcome {
-        func skip(_ reason: String) -> WorktreeReclaimOutcome {
-            self.skip(path, worktreePath: worktreePath, reason)
+    ) -> (Prepared?, WorktreeReclaimOutcome) {
+        func skip(_ reason: String) -> (Prepared?, WorktreeReclaimOutcome) {
+            (nil, self.skip(path, worktreePath: worktreePath, reason))
         }
         // 1. A real directory, strictly inside the worktree, still anchored by
         //    its manifest. A symlinked artifact is refused outright.
@@ -128,13 +165,10 @@ struct WorktreeReclaimer: Sendable {
         guard rename(canonical, aside) == 0 else {
             let message = String(cString: strerror(errno))
             log("failed", path: path, worktreePath: worktreePath, fields: ["reason": "rename: \(message)"], level: .warning)
-            return WorktreeReclaimOutcome(failures: [.init(path: path, message: message)])
+            return (nil, WorktreeReclaimOutcome(failures: [.init(path: path, message: message)]))
         }
-        heldLocks.forEach { $0.release() }
-        heldLocks.removeAll()
-
-        // 4. Delete it for good. Trash would free nothing.
-        return delete(aside, originalPath: path, worktreePath: worktreePath, reason: "idle build artifacts")
+        // 4. `finish` deletes it for good. Trash would free nothing.
+        return (Prepared(originalPath: path, asidePath: aside, worktreePath: worktreePath), WorktreeReclaimOutcome())
     }
 
     private func delete(
