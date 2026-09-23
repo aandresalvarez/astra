@@ -92,10 +92,12 @@ same purge for initial inputs only.
 - Before the composer builds the message text, copy each ephemeral attachment
   (`EphemeralComposerAttachment.isEphemeralPath`) into `<taskFolder>/inputs/`
   and use the copy's path. A task without a folder keeps today's behavior.
-- One call at the top of `TaskMainView.sendMessage` covers all four send
-  branches: plan mode, queued, submitted, and fallback.
+- One call in the `.message` branch of `TaskMainView.sendMessage` covers all
+  four send branches: plan mode, queued, submitted, and fallback. It runs after
+  the fork and runtime-eligibility checks, which compare against a preview
+  built from the composer's live paths.
 - Reuse the materializer's copy routine (write to `.partial`, then rename; adopt
-  an existing copy) through a new `materialize(paths:taskFolder:) -> [String]`.
+  an existing copy) through a new `durableAttachmentPaths(_:for:)`.
 
 **Tests.**
 
@@ -109,28 +111,33 @@ same purge for initial inputs only.
 
 - **Event.** Add `TaskEventTypes.Conversation.attachments = "user.attachments"`,
   category `conversation`. Payload:
-  `TaskAttachmentsPayloadV1 { version, messageEventID?, items: [{ path, displayName, source }] }`.
-  - `source` is one of `file`, `pasted`, `droppedImage`, `taskInput`, or
-    `forked`. It is inferred from the `astra_paste_` and `astra_drop_`
-    basenames, so the composers need no new state.
-  - Pastes get a readable `displayName` ("Pasted image") instead of the temp
-    name.
-- **One writer, `TaskAttachmentRecorder`.**
+  `TaskAttachmentsPayloadV1 { version, messageEventID, items: [{ path, kind }] }`.
+  - `kind` is one of `file`, `pastedText`, `pastedImage`, or `droppedImage`,
+    inferred from the `astra_paste_` and `astra_drop_` basenames that a durable
+    copy keeps, so the composers need no new state.
+  - The event takes its message's timestamp.
+  - Display names ("Pasted image" instead of the temp name) are derived when
+    read, not stored.
+- **One writer, the event factory `TaskEvent.attachmentsEvent(for:paths:)`.**
   - Follow-ups: `ExecutionRequestSubmissionService.submit`
     ([:361](../../Astra/Services/Tasks/ExecutionRequestSubmissionService.swift#L361))
     takes the attachment paths and inserts the event in the same save as the
-    `user.message` and its `TaskTurnRequest`.
-  - `TaskComposerSendAction.message`
-    ([:28](../../Astra/Services/Tasks/TaskComposerCoordinator.swift#L28))
-    becomes `.message(text:attachmentPaths:)`. The three branches that insert
-    events directly (plan mode, queued, fallback) then record through the same
-    recorder.
-  - Initial inputs: the file-path entries of `task.inputs` (prose is skipped),
-    recorded once per task, on the first request that includes task inputs
-    ([:387](../../Astra/Services/Tasks/ExecutionRequestSubmissionService.swift#L387)).
-- **One reader, `TaskAttachmentLedger`.** It uses typed events first. For older
-  messages it falls back to the text block. For older tasks it falls back to
-  `task.inputs`, timed at the initial request.
+    `user.message` and its `TaskTurnRequest`. A failed save rolls back all
+    three.
+  - The three branches that insert events directly (plan mode, queued,
+    fallback) insert the message and its record together through
+    `TaskEventInsertionService.insert(_:attachmentPaths:into:)`.
+    `TaskComposerSendAction.message` did not need to change: since PR 1 the
+    send recomposes the message from the durable paths and passes those same
+    paths along.
+- **Initial inputs get no typed record.** They are copied into the task folder
+  at launch, after submission, so a record written at submission would name a
+  temp path that is about to vanish. `task.inputs` stays their owner, and their
+  time is the task's first request.
+- **One reader, `TaskAttachmentLedger`.** Each user-authored message
+  (`user.message` or `plan.user.message`) is answered from its typed record
+  when it has one, and otherwise from the text block in its own payload.
+  Records whose message is not among the events given are ignored.
 - **One parser for the legacy block.** Today there are two, and they disagree:
   - `AgentRuntimeAttachmentProjection.attachmentBlockPaths`
     ([:20](../../Astra/Services/Runtime/AgentRuntimeAttachmentProjection.swift#L20-L48))
@@ -140,24 +147,30 @@ same purge for initial inputs only.
     ([:333](../../Astra/Models/AgentTaskForkService.swift#L333-L347)) does none
     of that.
 
-  Move the runtime's parser to `ASTRACore` and have the fork use it.
+  The runtime's version moves to `ASTRACore` as `TaskAttachmentBlock`, beside
+  the writer the composer uses, so launch, fork, and ledger read the same
+  format. The fork service lives in `ASTRAModels`, which cannot import the app
+  target, which is why it had grown its own parser.
 - **Fork remap.** `AgentTaskForkService` rewrites copied payloads with
   `TaskForkPathRewriter`, a plain substring replace
   ([:280](../../Astra/Models/AgentTaskForkService.swift#L278-L292)).
   `TaskEventPayloadCodec` escapes `/` as `\/`
   ([TaskEvent.swift:179](../../Astra/Models/TaskEvent.swift#L179-L184)), so paths
-  inside the new JSON payload would silently not be remapped. Decode, remap, and
-  re-encode this event type explicitly.
+  inside the new JSON payload would silently not be remapped. The fork decodes
+  each record, points it at its copied message and copied files, and
+  re-encodes it. A record whose message stays on the far side of the cutoff
+  (a follow-up queued during the checkpoint run) is not copied.
 
 **Tests.**
 
-- `TaskTurnSubmissionServiceTests`: the event is saved atomically with the
-  message and the request.
-- Initial inputs are recorded once, with prose skipped.
-- The merged parser passes the cases from both parsers' current tests.
-- `AgentTaskForkServiceTests`: the fork remap, including the escaped-slash
-  case.
-- The ledger's three fallbacks.
+- `TaskTurnSubmissionServiceTests`: the record is durable after the same save
+  as the message and the request.
+- `TaskAttachmentRecordTests`: the writer and parser round-trip, the parser
+  reads every legacy spelling, kinds and display names, the ledger's record and
+  text fallbacks, and the event factory.
+- `AgentTaskForkServiceTests`: a file-copy fork remaps the record's paths and
+  message (disabling the remap fails the test), and a record stays behind with
+  its message.
 
 ### PR 3: stamp discovered outputs onto their run
 
