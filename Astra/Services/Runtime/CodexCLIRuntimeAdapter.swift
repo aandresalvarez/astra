@@ -278,8 +278,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         // source scoping in `providerNativeReadOnlyResourcePaths` keeps
         // non-input read grants (credentials, connector dirs) out of this
         // writable projection entirely.
-        let nativeReachability = Self.nativeReachabilityProjection(
-            for: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [],
+        let nativeReachability = ProviderNativeDirectoryProjection.project(
+            resourcePaths: context.launchResourcePlan?.providerNativeReadOnlyResourcePaths ?? [],
             alreadyReachableDirectories: [context.workspacePath]
                 + AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         )
@@ -389,56 +389,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "docker_workspace_credential_projection_count": String(executionEnvironment.effectiveCredentialProjections.count),
                 "browser_bridge_mcp_tool": mcpProjection.browserBridgeMCPToolSupported ? BrowserBridgeMCPProjection.providerToolPermission : "none"
             ]
-        )
-    }
-
-    struct NativeReachabilityProjection: Equatable {
-        let additionalDirectories: [String]
-        let unreachableFiles: [String]
-    }
-
-    private static func isSameOrDescendant(_ path: String, of root: String) -> Bool {
-        path == root || path.hasPrefix(root + "/")
-    }
-
-    /// Projects only directory-granularity authority onto Codex's `--add-dir`
-    /// interface. Exact files are either already inside an authorized root or
-    /// are reported as unreachable so the runner can fail closed.
-    static func nativeReachabilityProjection(
-        for resourcePaths: [String],
-        alreadyReachableDirectories: [String],
-        fileManager: FileManager = .default
-    ) -> NativeReachabilityProjection {
-        var reachableIdentities = alreadyReachableDirectories.compactMap(ExecutionSandbox.canonicalize)
-        var seenDirectories = Set(reachableIdentities)
-        var additionalDirectories: [String] = []
-        var files: [(path: String, identity: String)] = []
-        for rawPath in resourcePaths {
-            let path = WorkspacePathPresentation.standardizedPath(rawPath)
-            guard !path.isEmpty else { continue }
-            var isDirectory = ObjCBool(false)
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
-                continue
-            }
-            let identity = ExecutionSandbox.canonicalize(path) ?? path
-            if isDirectory.boolValue {
-                if !reachableIdentities.contains(where: { isSameOrDescendant(identity, of: $0) }),
-                   seenDirectories.insert(identity).inserted {
-                    additionalDirectories.append(path)
-                    reachableIdentities.append(identity)
-                }
-            } else {
-                files.append((path, identity))
-            }
-        }
-        let unreachableFiles = files.compactMap { file in
-            reachableIdentities.contains(where: { isSameOrDescendant(file.identity, of: $0) })
-                ? nil
-                : file.path
-        }
-        return NativeReachabilityProjection(
-            additionalDirectories: additionalDirectories,
-            unreachableFiles: unreachableFiles
         )
     }
 

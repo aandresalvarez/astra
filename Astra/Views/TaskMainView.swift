@@ -201,7 +201,8 @@ struct TaskMainView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.taskChatUnobscuredWidth) private var taskChatUnobscuredWidth
     @State var messageText = ""
-    @State private var attachedFiles: [String] = []
+    // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
+    @State var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
