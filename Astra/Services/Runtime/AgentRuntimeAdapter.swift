@@ -1934,7 +1934,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
-        let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
+        let nativeDirectories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: context.task)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let mcpProjection = CopilotMCPLaunchProjection.resolve(
@@ -2017,7 +2017,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             prompt: context.prompt,
             model: model,
             workspacePath: context.workspacePath,
-            additionalPaths: additionalPaths,
+            additionalPaths: nativeDirectories.additionalDirectories,
             permissionPolicy: providerLaunchPermissionPolicy,
             allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
@@ -2073,7 +2073,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             artifactBootstrapTools: artifactBootstrapTools,
             allowedToolsOverride: context.executionPolicy.allowedToolsOverride != nil,
             localToolCommands: localToolCommands,
-            additionalPaths: additionalPaths,
+            nativeDirectories: nativeDirectories,
             taskEnv: launchTaskEnv,
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             mcpProjection: mcpProjection,

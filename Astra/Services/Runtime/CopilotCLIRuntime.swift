@@ -314,7 +314,13 @@ enum CopilotCLIRuntime {
             args += ["--no-ask-user"]
         }
 
-        let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
+        // `--add-dir` takes a directory: the CLI exits 1 on a regular file
+        // before emitting a token. Adapters project inputs to directories, but
+        // an existing non-directory is dropped here too so no caller can turn
+        // an attached file into an argv parse failure.
+        let uniquePaths = ProviderNativeDirectoryProjection.directoryCandidates(
+            Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
+        )
         for path in uniquePaths {
             args += ["--add-dir", path]
         }
