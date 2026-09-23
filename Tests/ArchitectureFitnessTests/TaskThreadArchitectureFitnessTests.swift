@@ -321,7 +321,7 @@ struct TaskThreadArchitectureFitnessTests {
         let recompute = try code(
             in: missionControl,
             from: "func recomputeMissionControlSnapshot() async {",
-            to: "func noteContextRefreshForMissionControl()"
+            to: "func noteContextRefreshForMissionControl("
         )
         #expect(!recompute.contains("Task.detached("))
         let load = try #require(recompute.range(of: "await TaskMissionControlSnapshot.Source.loaded("))
@@ -343,13 +343,15 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
         // The view's own refresh adds a bump only for a folder that moved
         // without a save; bumping on every refresh read a saved file twice.
-        #expect(taskMainView.contains("noteContextRefreshForMissionControl()"))
+        #expect(taskMainView.contains("let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
+        #expect(taskMainView.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave)"))
         #expect(!taskMainView.contains("missionControlStateRevision &+= 1"))
         let afterRefresh = try code(
             in: missionControl,
-            from: "func noteContextRefreshForMissionControl() {",
+            from: "func noteContextRefreshForMissionControl(announcedSave: Bool) {",
             to: "struct TaskMissionControlSnapshotRefresh"
         )
+        #expect(afterRefresh.contains("guard !announcedSave"))
         #expect(afterRefresh.contains("!= missionControlSnapshotCache.taskFolder"))
     }
 

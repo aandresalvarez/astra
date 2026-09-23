@@ -59,11 +59,14 @@ extension TaskMainView {
     }
 
     /// After the view's own context refresh. A save already announced itself
-    /// through `TaskContextStateSaveObserver`, so bumping again would read the
-    /// file twice. What nothing announces is the refresh moving the folder
-    /// off the legacy layout, and the cache holds the path it read.
-    func noteContextRefreshForMissionControl() {
-        guard TaskWorkspaceAccess(task: task).taskFolder != missionControlSnapshotCache.taskFolder else { return }
+    /// through `TaskContextStateSaveObserver`, and the rebuild it triggers
+    /// resolves the folder afresh, so bumping again would read the file twice
+    /// — including when the same refresh also migrated the folder. What
+    /// nothing announces is a migration off the legacy layout without a save,
+    /// and the cache holds the path it read.
+    func noteContextRefreshForMissionControl(announcedSave: Bool) {
+        guard !announcedSave,
+              TaskWorkspaceAccess(task: task).taskFolder != missionControlSnapshotCache.taskFolder else { return }
         missionControlStateRevision &+= 1
     }
 }

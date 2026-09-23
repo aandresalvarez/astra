@@ -474,24 +474,25 @@ public enum TaskContextStateManager {
         saveState(state, taskFolder: folder, taskID: task.id)
     }
 
-    @MainActor
-    public static func refresh(task: AgentTask, followUpMessage: String = "") {
-        guard let folder = ensureTaskFolder(for: task) else { return }
+    /// Returns whether it rewrote `current_state.json`, and so announced it.
+    @MainActor @discardableResult
+    public static func refresh(task: AgentTask, followUpMessage: String = "") -> Bool {
+        guard let folder = ensureTaskFolder(for: task) else { return false }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
-        applyRefresh(existing: existing, folder: folder, task: task, followUpMessage: followUpMessage)
+        return applyRefresh(existing: existing, folder: folder, task: task, followUpMessage: followUpMessage)
     }
 
     /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
-    @MainActor
-    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String) {
+    @MainActor @discardableResult
+    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String) -> Bool {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
-        guard existing != state else { return }
+        guard existing != state else { return false }
         state.updatedAt = timestamp(Date())
-        saveState(state, taskFolder: folder, taskID: task.id)
+        return TaskContextStateSaveNotifier.replacedStateFile(saveState(state, taskFolder: folder, taskID: task.id))
     }
 
     @MainActor
