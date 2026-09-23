@@ -208,7 +208,10 @@ struct GitRepositoryPanelIntegrationTests {
             repoPath
         }
 
-        func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws {}
+        private(set) var removedWorktreePaths: [String] = []
+        func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws {
+            removedWorktreePaths.append(worktreePath)
+        }
         func getRemoteURL(at repoPath: String, remote: String?) async -> String? { nil }
 
         func createPullRequest(
@@ -512,6 +515,44 @@ struct GitRepositoryPanelIntegrationTests {
         #expect(task.executionRootPath == WorkspacePathPresentation.standardizedPath(repo))
         #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == WorkspacePathPresentation.standardizedPath(repo))
         #expect(TaskWorkspaceAccess(task: task).effectiveWorkspacePath == primary)
+    }
+
+    @MainActor
+    @Test("Removing a worktree a task holds is refused through the shared usage rule")
+    func removeWorktreeRefusesHeldWorktree() async throws {
+        let repo = try makeTempDir("held-remove-repo")
+        let worktreeDir = try makeTempDir("held-remove-wt")
+        defer {
+            try? FileManager.default.removeItem(atPath: repo)
+            try? FileManager.default.removeItem(atPath: worktreeDir)
+        }
+        // git reports the resolved path; the task stored the `/var` spelling.
+        let reported = WorktreePath.realPath(worktreeDir) ?? worktreeDir
+        let worktree = GitWorktreeInfo(path: reported, branch: "feature", head: "abc123", isPrimary: false,
+                                       isDetached: false, isLocked: false, isPrunable: false)
+        let fakeGit = FakeGitRepositoryOperations()
+        fakeGit.repositories = [GitRepositoryInfo(name: "Repo", path: repo)]
+        let workspace = Workspace(name: "Repo", primaryPath: repo)
+        let task = AgentTask(title: "Fix login", goal: "Fix it", workspace: workspace)
+        task.executionRootPath = worktreeDir
+        if !workspace.tasks.contains(where: { $0.id == task.id }) { workspace.tasks.append(task) }
+        let viewModel = WorkspaceGitViewModel(git: fakeGit)
+        viewModel.setWorkspaceForTesting(workspace)
+        await viewModel.scanRepositories()
+
+        #expect(viewModel.hasActiveTaskPinned(to: worktree))
+        viewModel.removeWorktree(worktree)
+        #expect(viewModel.errorMessage == "In use by task “Fix login”. Stop it before removing \"feature\".")
+        #expect(fakeGit.removedWorktreePaths.isEmpty)
+
+        // Once the task finishes, removal goes through.
+        task.status = .completed
+        #expect(!viewModel.hasActiveTaskPinned(to: worktree))
+        viewModel.removeWorktree(worktree)
+        for _ in 0..<100 where fakeGit.removedWorktreePaths.isEmpty {
+            await Task.yield()
+        }
+        #expect(fakeGit.removedWorktreePaths == [reported])
     }
 
     @MainActor

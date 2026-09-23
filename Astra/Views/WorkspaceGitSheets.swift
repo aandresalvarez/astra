@@ -268,9 +268,15 @@ struct WorktreeSheet: View {
 
             Divider()
 
-            Text("Worktrees")
-                .font(Stanford.caption(10).weight(.bold))
-                .foregroundStyle(.secondary)
+            if let storage = viewModel.worktreeStorage {
+                WorktreeStorageHeader(storage: storage, worktrees: viewModel.worktrees) {
+                    Task { await viewModel.reclaimWorktreeArtifacts() }
+                }
+            } else {
+                Text("Worktrees")
+                    .font(Stanford.caption(10).weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
 
             worktreeList
 
@@ -293,7 +299,9 @@ struct WorktreeSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 480, height: 460)
+        .frame(width: 480, height: 520)
+        // Opening the sheet re-measures entries older than the TTL.
+        .task { await viewModel.refreshWorktreeStorage() }
         .alert(
             "Discard uncommitted changes?",
             isPresented: Binding(
@@ -369,6 +377,7 @@ struct WorktreeSheet: View {
         let isActive = worktree.isPrimary
             ? !viewModel.isUsingWorktree
             : viewModel.activeWorkingPath == worktree.path
+        let isPinned = !worktree.isPrimary && viewModel.hasActiveTaskPinned(to: worktree)
         HStack(spacing: 10) {
             Image(systemName: worktree.isPrimary ? "house" : "arrow.triangle.branch")
                 .font(Stanford.ui(12, weight: .medium))
@@ -385,9 +394,18 @@ struct WorktreeSheet: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let storage = viewModel.worktreeStorage {
+                    WorktreeStorageRowNote(storage: storage, worktree: worktree) {
+                        attemptRemoval(worktree)
+                    }
+                }
             }
 
             Spacer(minLength: 6)
+
+            if let storage = viewModel.worktreeStorage {
+                WorktreeStorageRowSize(storage: storage, worktree: worktree)
+            }
 
             if isActive {
                 Text("Active")
@@ -412,13 +430,11 @@ struct WorktreeSheet: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(Stanford.ui(11))
-                        .foregroundStyle(viewModel.hasActiveTaskPinned(to: worktree) ? Color.secondary : Stanford.errorRed)
+                        .foregroundStyle(isPinned ? Color.secondary : Stanford.errorRed)
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.hasActiveTaskPinned(to: worktree))
-                .help(viewModel.hasActiveTaskPinned(to: worktree)
-                      ? "A running task is using this worktree"
-                      : "Remove worktree")
+                .disabled(isPinned)
+                .help(isPinned ? "A running task is using this worktree" : "Remove worktree")
             }
         }
         .padding(.horizontal, 10)

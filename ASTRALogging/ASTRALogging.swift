@@ -261,6 +261,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case gitActiveRepositoryChanged = "git.active_repository_changed"
     case gitChangedFileOpenedInShelf = "git.changed_file_opened_in_shelf"
     case gitChangedFileDiffViewed = "git.changed_file_diff_viewed"
+    case gitWorktreeReclaim = "git.worktree_reclaim"
     case executionEnvironmentChanged = "execution_environment.changed"
 
     case schedulerStarted = "scheduler.started"

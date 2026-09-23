@@ -103,6 +103,10 @@ final class WorkspaceGitViewModel: ObservableObject {
     private let refreshInterval: TimeInterval = 30.0
     private let git: GitRepositoryOperating
     private let urlLauncher: any GitHubAuthorizationURLLaunching
+    /// Measures and reclaims the worktrees' build artifacts. Opt-in at the
+    /// call site (the panel passes `.shared`), so a view model built in a test
+    /// never touches the app-wide storage cache.
+    let worktreeStorage: WorktreeReclaimService?
     /// Live subscription to completed GitHub access repairs. A verified repair
     /// is a stronger recovery signal than foregrounding, so it clears the
     /// pull-request lookup breaker for this panel's repository immediately.
@@ -112,10 +116,12 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     init(
         git: GitRepositoryOperating = GitService.shared,
-        urlLauncher: any GitHubAuthorizationURLLaunching = SystemGitHubAuthorizationURLLauncher()
+        urlLauncher: any GitHubAuthorizationURLLaunching = SystemGitHubAuthorizationURLLauncher(),
+        worktreeStorage: WorktreeReclaimService? = nil
     ) {
         self.git = git
         self.urlLauncher = urlLauncher
+        self.worktreeStorage = worktreeStorage
         observeGitHubAccessRepairs()
     }
 
@@ -476,6 +482,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.hasRemote = await remote
         self.unpushedCount = await unpushed
         self.worktrees = await trees
+        // Only reconciles the path set; this refresh runs every 30 s.
+        worktreeStorage?.reconcile(repoPath: rootPath, worktrees: self.worktrees)
         if let ab = await aheadBehind {
             self.ahead = ab.ahead
             self.behind = ab.behind
@@ -909,11 +917,38 @@ final class WorkspaceGitViewModel: ObservableObject {
         }
     }
 
-    /// True when a non-terminal task is pinned to the given worktree, so the UI
-    /// can block a removal that would pull the rug out from active work.
+    /// True when one of this workspace's tasks holds the worktree, so the UI
+    /// can block a removal that would pull the rug out from active work. The
+    /// rule lives in `WorktreeTaskUsage`, shared with artifact reclamation.
     func hasActiveTaskPinned(to worktree: GitWorktreeInfo) -> Bool {
         guard let workspace else { return false }
-        return workspace.tasks.contains { !$0.isTerminal && $0.executionRootPath == worktree.path }
+        return WorktreeTaskUsage.inUseReason(
+            forWorktreePath: worktree.path,
+            holds: WorktreeTaskUsage.holds(from: workspace.tasks)
+        ) != nil
+    }
+
+    /// The removal guard looks wider than the row: every task in the store,
+    /// including a finished one with a follow-up turn still queued.
+    private func worktreeInUseReasonForRemoval(_ worktree: GitWorktreeInfo) -> String? {
+        guard let workspace else { return nil }
+        let holds = workspace.modelContext.map { WorktreeTaskUsage.allHolds(in: $0) }
+            ?? WorktreeTaskUsage.holds(from: workspace.tasks)
+        return WorktreeTaskUsage.inUseReason(forWorktreePath: worktree.path, holds: holds)
+    }
+
+    /// Re-measures the worktrees' disk use; entries younger than `maxAge`
+    /// are kept. Pass nil to re-measure everything.
+    func refreshWorktreeStorage(maxAge: TimeInterval? = WorktreeReclaimService.measurementTTL) async {
+        guard let worktreeStorage, let rootPath = rootRepoPath, !worktrees.isEmpty else { return }
+        await worktreeStorage.refresh(repoPath: rootPath, worktrees: worktrees, maxAge: maxAge)
+    }
+
+    /// The Reclaim button: deletes build artifacts the policy allows in manual
+    /// mode, across every worktree of this repository.
+    func reclaimWorktreeArtifacts() async {
+        guard let worktreeStorage, let rootPath = rootRepoPath, !worktrees.isEmpty else { return }
+        await worktreeStorage.reclaimNow(repoPath: rootPath, worktrees: worktrees)
     }
 
     /// Removes a worktree. Refuses to remove the primary tree or a worktree that
@@ -925,8 +960,8 @@ final class WorkspaceGitViewModel: ObservableObject {
             errorMessage = GitWorktreeError.cannotRemovePrimary.localizedDescription
             return
         }
-        guard !hasActiveTaskPinned(to: worktree) else {
-            errorMessage = "A running task is using \"\(worktree.displayName)\". Stop it before removing the worktree."
+        if let reason = worktreeInUseReasonForRemoval(worktree) {
+            errorMessage = "\(reason). Stop it before removing \"\(worktree.displayName)\"."
             return
         }
         isSyncing = true

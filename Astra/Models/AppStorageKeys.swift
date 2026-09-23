@@ -73,6 +73,11 @@ public enum AppStorageKeys {
     // resolves to enforce even if this preference is broader.
     public static let sandboxReadScope = "astra.runtime.sandboxReadScope.v1"
     public static let logRetentionDays = "astra.logging.retentionDays.v1"
+    // Worktree storage hygiene: automatically reclaim build artifacts from
+    // idle worktrees, and how long a worktree must sit idle first. See
+    // WorktreeStorageSettings and docs/specs/2026-09-23-worktree-storage-hygiene.md.
+    public static let worktreeAutoReclaimEnabled = "astra.worktreeStorage.autoReclaimEnabled.v1"
+    public static let worktreeIdleThresholdHours = "astra.worktreeStorage.idleThresholdHours.v1"
     public static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     // Opt-in Tier 2 (utility-model) objective drift detection. Default OFF --
     // this is new/unproven; see ObjectiveAssessmentService.

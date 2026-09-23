@@ -80,6 +80,8 @@ struct SettingsRuntimeTab: View {
                 advancedProviderSettingsCard
 
                 runtimeGuardrailsCard
+
+                WorktreeStorageSettingsCard()
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 24)
@@ -789,5 +791,41 @@ private struct SettingsRuntimeCard<Content: View>: View {
 private extension RuntimeReadinessConfiguration {
     var runtimeReadinessCheckID: String {
         AgentRuntimeAdapterRegistry.adapter(for: runtime).readinessCheckID
+    }
+}
+
+/// Worktree storage hygiene. Local state writes through
+/// `WorktreeStorageSettings`, which the reclaim service reads on every pass.
+private struct WorktreeStorageSettingsCard: View {
+    @State private var automaticReclaim = WorktreeStorageSettings.isAutomaticReclaimEnabled()
+    @State private var idleThresholdHours = WorktreeStorageSettings.idleThresholdHours()
+
+    var body: some View {
+        SettingsRuntimeCard(
+            title: "Worktree Storage",
+            subtitle: automaticReclaim ? "Idle build artifacts are reclaimed" : "Reclaim from the Worktrees sheet"
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Automatically Reclaim Build Artifacts From Idle Worktrees", isOn: $automaticReclaim)
+
+                Text("Deletes .build, target and node_modules folders from worktrees nothing has touched for the idle threshold. They are rebuilt on the next build. Source files are never touched, and worktrees are never removed automatically.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Picker("Idle Threshold", selection: $idleThresholdHours) {
+                    ForEach(WorktreeStorageSettings.idleThresholdHourOptions, id: \.self) { hours in
+                        Text(WorktreeStorageSettings.label(forIdleThresholdHours: hours)).tag(hours)
+                    }
+                }
+                .disabled(!automaticReclaim)
+            }
+        }
+        .onChange(of: automaticReclaim) {
+            WorktreeStorageSettings.setAutomaticReclaimEnabled(automaticReclaim)
+        }
+        .onChange(of: idleThresholdHours) {
+            WorktreeStorageSettings.setIdleThresholdHours(idleThresholdHours)
+        }
     }
 }

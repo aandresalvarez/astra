@@ -52,7 +52,7 @@ struct WorkspaceGitSectionView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject var viewModel = WorkspaceGitViewModel()
+    @StateObject var viewModel = WorkspaceGitViewModel(worktreeStorage: .shared)
     let workspace: Workspace
     var selectedTask: AgentTask?
     var isCompact: Bool = false
@@ -236,7 +236,12 @@ struct WorkspaceGitSectionView: View {
     /// since it is the only always-available header function.
     private var refreshButton: some View {
         Button {
-            Task { await viewModel.scanRepositories() }
+            Task {
+                await viewModel.scanRepositories()
+                // Re-measure disk use too; the floor keeps repeated clicks from
+                // queueing walks of multi-gigabyte trees.
+                await viewModel.refreshWorktreeStorage(maxAge: 60)
+            }
         } label: {
             Image(systemName: "arrow.clockwise")
                 .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .medium))

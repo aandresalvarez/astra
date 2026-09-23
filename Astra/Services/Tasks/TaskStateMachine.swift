@@ -742,6 +742,9 @@ enum TaskStateMachine {
             "changed": String(changed),
             "result": "applied"
         ], level: .debug)
+        if changed, task.isTerminal {
+            TaskTerminalStateNotifier.post(for: task)
+        }
 
         return TransitionResult(
             from: previousStatus,

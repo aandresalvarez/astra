@@ -911,6 +911,28 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
+        startWorktreeStorageHygiene(modelContext: modelContext)
+    }
+
+    /// Connects worktree storage hygiene to the store, reacts to finished
+    /// tasks, and schedules the once-per-launch pass that finishes interrupted
+    /// reclaims and reclaims idle build artifacts. Runs after crash recovery,
+    /// so orphaned tasks no longer look in use.
+    @MainActor
+    private static func startWorktreeStorageHygiene(modelContext: ModelContext) {
+        let service = WorktreeReclaimService.shared
+        service.attach(
+            taskHolds: { WorktreeTaskUsage.allHolds(in: modelContext) },
+            workspaceRoots: {
+                ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [])
+                    .flatMap { [$0.primaryPath] + $0.additionalPaths }
+            }
+        )
+        service.startObservingTaskCompletion()
+        let workspaces = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).map {
+            WorktreeStorageWorkspacePaths(primaryPath: $0.primaryPath, additionalPaths: $0.additionalPaths)
+        }
+        service.scheduleLaunchPass(workspaces: workspaces)
     }
 
     /// Guards `runDeferredStartupMigrations`. Separate from
