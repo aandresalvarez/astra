@@ -834,11 +834,10 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-        // Even when nothing was saved: resolving the folder can move it off
-        // the legacy layout, and the mission-control cache holds its path.
-        missionControlStateRevision &+= 1
-        // So does the generated-files list, which no key sees move: the
-        // trigger keys on the workspace path to stay out of the filesystem.
+        noteContextRefreshForMissionControl()
+        // A folder this refresh moved off the legacy layout also strands the
+        // generated-files list, and no key sees it move: the trigger keys on
+        // the workspace path to stay out of the filesystem.
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         if folder != threadViewModel.generatedFilesFolder {
             threadViewModel.refreshGeneratedFiles(folder: folder)

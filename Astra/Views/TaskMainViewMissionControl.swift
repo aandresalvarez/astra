@@ -11,11 +11,11 @@ import ASTRAPersistence
 /// `TaskMissionControlSnapshot` has the full account.
 ///
 /// Same shape as `recomputeHeaderFileItems`: a syscall-free key gates a
-/// `.task(id:)`, and the disk read happens in a detached task. What is
-/// different is the invalidation. The key cannot see the file, so
-/// `missionControlStateRevision` stands in for it, bumped by
-/// `TaskContextStateSaveObserver` on each save and after the view's own
-/// context refresh.
+/// `.task(id:)`, and the disk read happens off the main actor, here in a
+/// cancellable `nonisolated async` loader. What is different is the
+/// invalidation. The key cannot see the file, so `missionControlStateRevision`
+/// stands in for it, bumped by `TaskContextStateSaveObserver` on each save and
+/// by `noteContextRefreshForMissionControl()` when the folder moved without one.
 extension TaskMainView {
     var missionControlSnapshotInputs: TaskMissionControlSnapshot.Inputs {
         TaskMissionControlSnapshot.Inputs(
@@ -43,19 +43,28 @@ extension TaskMainView {
     func recomputeMissionControlSnapshot() async {
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskID = task.id
-        let source = await Task.detached(priority: .userInitiated) {
-            TaskMissionControlSnapshot.Source.load(workspacePath: workspacePath, taskID: taskID)
-        }.value
+        // Off the main actor, and cancelled with this `.task(id:)`: a rebuild
+        // superseded before its read began skips the read altogether.
+        let source = await TaskMissionControlSnapshot.Source.loaded(workspacePath: workspacePath, taskID: taskID)
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
         // `build` reads the model, so a task deleted while the file loaded is
         // left alone too — and a persisted deletion can leave the model
         // detached with `isDeleted` still false, hence the context check.
-        guard !Task.isCancelled, !task.isDeleted, task.modelContext != nil else { return }
+        guard let source, !Task.isCancelled, !task.isDeleted, task.modelContext != nil else { return }
         missionControlSnapshotCache = TaskMissionControlSnapshot.build(
             task: task,
             planState: currentPlanState,
             source: source
         )
+    }
+
+    /// After the view's own context refresh. A save already announced itself
+    /// through `TaskContextStateSaveObserver`, so bumping again would read the
+    /// file twice. What nothing announces is the refresh moving the folder
+    /// off the legacy layout, and the cache holds the path it read.
+    func noteContextRefreshForMissionControl() {
+        guard TaskWorkspaceAccess(task: task).taskFolder != missionControlSnapshotCache.taskFolder else { return }
+        missionControlStateRevision &+= 1
     }
 }
 

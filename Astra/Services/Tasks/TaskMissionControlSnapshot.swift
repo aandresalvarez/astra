@@ -40,6 +40,16 @@ struct TaskMissionControlSnapshot: Equatable {
                 state: folder.isEmpty ? nil : TaskContextStateManager.load(taskFolder: folder)
             )
         }
+
+        /// `load`, off the main actor and cancelled with its caller: nil if
+        /// the rebuild that asked was superseded before the read began.
+        /// `nonisolated async` rather than `Task.detached`, which inherits no
+        /// cancellation and would finish every superseded read and decode —
+        /// the reasoning at `TaskContextStateManager.loadOffActor`.
+        nonisolated static func loaded(workspacePath: String, taskID: UUID) async -> Source? {
+            guard !Task.isCancelled else { return nil }
+            return load(workspacePath: workspacePath, taskID: taskID)
+        }
     }
 
     /// Everything the snapshot depends on, as values `body` already holds:
