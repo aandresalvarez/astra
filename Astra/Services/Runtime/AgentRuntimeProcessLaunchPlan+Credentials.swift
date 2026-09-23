@@ -120,20 +120,47 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
+    /// Runtimes whose native read grant is a directory allowlist (`--add-dir`),
+    /// so an exact input file outside every granted root cannot be handed to
+    /// them at all. Unless the run reaches that file some other way, it has to
+    /// fail closed rather than start without context the user attached.
+    static let directoryOnlyNativeGrantRuntimes: Set<AgentRuntimeID> = [.codexCLI, .copilotCLI]
+
+    /// Whether this plan can read a path the directory allowlist leaves out.
+    ///
+    /// Codex reads the host filesystem ambiently in autonomous mode — its
+    /// sandbox cannot restrict reads — so the policy alone answers it. Copilot
+    /// is capability-dependent instead: autonomous renders `--allow-all` only
+    /// when the installed CLI advertises it, and a build that advertises just
+    /// `--allow-all-tools` gets no blanket path grant at all
+    /// (CopilotCLIRuntime.copilotPermissionArguments, pinned by the
+    /// `legacyCapabilities` test). Reading the rendered arguments is what
+    /// distinguishes the two, so a policy check alone would exempt exactly the
+    /// legacy runs that cannot reach the file.
+    func reachesPathsOutsideNativeDirectoryGrants(permissionPolicy: PermissionPolicy) -> Bool {
+        guard permissionPolicy == .autonomous else { return false }
+        if runtime == .codexCLI { return true }
+        if runtime == .copilotCLI {
+            return arguments.contains("--allow-all") || arguments.contains("--allow-all-paths")
+        }
+        return false
+    }
+
     func unsupportedProviderNativeReadOnlyFileBlock(
         permissionPolicy: PermissionPolicy,
         workspaceCommandsRunInsideManagedExecutor: Bool
     ) -> AgentProcessResult? {
         let count = Int(commandPlannedFields["provider_native_unreachable_read_only_file_count"] ?? "0") ?? 0
         guard count > 0,
-              permissionPolicy != .autonomous,
-              runtime == .codexCLI,
+              Self.directoryOnlyNativeGrantRuntimes.contains(runtime),
+              !reachesPathsOutsideNativeDirectoryGrants(permissionPolicy: permissionPolicy),
               !workspaceCommandsRunInsideManagedExecutor else {
             return nil
         }
 
+        let provider = runtime.displayName
         let message = """
-        ASTRA blocked this Codex run because it needs an exact external file, but Codex restricted mode accepts only directory-level native grants. Granting the parent directory would expose sibling files that were never authorized. Attach the containing folder if every file in it is intended to be readable, use a Docker execution environment with the advertised container path, or switch to a runtime that supports exact-file reads.
+        ASTRA blocked this \(provider) run because it needs an exact external file, but the path grants this run can offer \(provider) are directory-level only. Granting the parent directory would expose sibling files that were never authorized. Attach the containing folder if every file in it is intended to be readable, use a Docker execution environment with the advertised container path, or switch to a runtime that supports exact-file reads.
         """
         return AgentProcessResult(
             exitCode: -1,
