@@ -814,7 +814,7 @@ struct TaskMainView: View {
     /// `phase` is opened by the caller, while the trace is still live. See
     /// `startContextStateRefresh`.
     private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
-        await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.
         // Logging it would put supersessions in the same distribution as the
@@ -827,7 +827,7 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-        noteContextRefreshForMissionControl()
+        noteContextRefreshForMissionControl(announcedSave: announcedSave)
     }
 
     private func scheduleVerificationPresentationRefresh() {

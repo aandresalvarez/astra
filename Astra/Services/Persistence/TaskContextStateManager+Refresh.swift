@@ -108,8 +108,11 @@ extension TaskContextStateManager {
     /// `refresh(task:)` itself is deliberately left alone. It is the durable
     /// launch path, where callers depend on the write having happened by the
     /// time it returns.
-    @MainActor
-    public static func refreshLoadingOffMainActor(task: AgentTask, followUpMessage: String = "") async {
+    ///
+    /// Returns whether it rewrote `current_state.json`, and so announced it,
+    /// which lets a caller tell a save from a refresh that only moved things.
+    @MainActor @discardableResult
+    public static func refreshLoadingOffMainActor(task: AgentTask, followUpMessage: String = "") async -> Bool {
         // Read off the model before leaving the actor; the load takes only
         // sendable values.
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
@@ -120,7 +123,7 @@ extension TaskContextStateManager {
         // Bounded, because a file under continuous rewriting would otherwise
         // retry forever.
         for _ in 0..<maxRevalidationAttempts {
-            guard let loaded = await loadOffActor(workspacePath: workspacePath, taskID: taskID) else { return }
+            guard let loaded = await loadOffActor(workspacePath: workspacePath, taskID: taskID) else { return false }
             #if DEBUG
             // Runs on the main actor in exactly the window the guards below
             // exist for, so a test can create the interleaving deterministically
@@ -129,7 +132,7 @@ extension TaskContextStateManager {
             #endif
             // Before anything that costs: a superseded refresh must not spend
             // the actor on work the user has already navigated away from.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             // Reading properties off a deleted model is unsafe — see the
             // membership rules in `SidebarTaskStore` — and `applyRefresh`
             // traverses them.
@@ -138,7 +141,7 @@ extension TaskContextStateManager {
             // SwiftData serves a deleted model's cached values often enough
             // that no assertion distinguishes guarded from unguarded. A test
             // here would pass either way and imply coverage it does not have.
-            guard !task.isDeleted, task.modelContext != nil else { return }
+            guard !task.isDeleted, task.modelContext != nil else { return false }
             // The workspace can be repointed while this runs, from another
             // window. The task stays attached and its id does not change, so
             // nothing else here notices — but `loaded.folder` then names the
@@ -146,16 +149,14 @@ extension TaskContextStateManager {
             // somewhere it no longer reads from. Retrying would re-derive the
             // same stale path, so this one goes to the actor.
             guard TaskWorkspaceAccess(task: task).effectiveWorkspacePath == workspacePath else {
-                fallBack(task: task, followUpMessage: followUpMessage)
-                return
+                return fallBack(task: task, followUpMessage: followUpMessage)
             }
             // An unusable load is a corrupt or unknown-schema file, and
             // recovering from it *writes*. That has to happen under the same
             // serialization as the writers, and retrying would only re-read
             // the same bad bytes.
             guard loaded.loadWasUsable else {
-                fallBack(task: task, followUpMessage: followUpMessage)
-                return
+                return fallBack(task: task, followUpMessage: followUpMessage)
             }
             // Nothing serialized the load against the main actor, so anything
             // that writes this file — `recordTurn` most obviously — may have
@@ -169,17 +170,16 @@ extension TaskContextStateManager {
                 #endif
                 continue
             }
-            applyRefresh(
+            return applyRefresh(
                 existing: loaded.existing,
                 folder: loaded.folder,
                 task: task,
                 followUpMessage: followUpMessage
             )
-            return
         }
         // Still moving after every attempt. Take the actor path once rather
         // than spin: a refresh that never lands is worse than a slow one.
-        fallBack(task: task, followUpMessage: followUpMessage)
+        return fallBack(task: task, followUpMessage: followUpMessage)
     }
 
     /// How many times a load invalidated by a concurrent write is retried off
@@ -189,11 +189,11 @@ extension TaskContextStateManager {
     /// Redoes the whole refresh under the actor. Every guard above ends here
     /// when it cannot trust what the load brought back.
     @MainActor
-    private static func fallBack(task: AgentTask, followUpMessage: String) {
+    private static func fallBack(task: AgentTask, followUpMessage: String) -> Bool {
         #if DEBUG
         fallbackCountForTesting += 1
         #endif
-        refresh(task: task, followUpMessage: followUpMessage)
+        return refresh(task: task, followUpMessage: followUpMessage)
     }
 
     /// The off-actor half: resolve the folder and read the state.
