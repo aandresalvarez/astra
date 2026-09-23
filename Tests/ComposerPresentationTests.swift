@@ -279,6 +279,16 @@ struct ComposerPresentationTests {
         """))
     }
 
+    /// The follow-up send classifies with the composer's paths, then sends a
+    /// message recomposed from durable copies; both must share one format.
+    @Test("task composer message composition matches the classified send action")
+    func taskComposerMessageCompositionMatchesSendAction() {
+        let files = ["/tmp/a.txt", "/tmp/b.png"]
+        #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: files)
+            == .message(TaskComposerCoordinator.composedMessage(messageText: "Review this", attachedFiles: files)))
+        #expect(TaskComposerCoordinator.composedMessage(messageText: "Review this ", attachedFiles: []) == "Review this ")
+    }
+
     @Test("task composer runtime update normalizes selected runtime model")
     func taskComposerRuntimeUpdateNormalizesSelectedRuntimeModel() {
         let cacheJSON = #"{"runtimeID":"copilot_cli","models":["gpt-5.1"],"checkedAt":0,"authority":"authoritative"}"#

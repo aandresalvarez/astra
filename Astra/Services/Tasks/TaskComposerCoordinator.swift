@@ -114,12 +114,15 @@ enum TaskComposerCoordinator {
             return .mcpInstallFailure(outcome.assistantMessage)
         }
 
-        var message = messageText
-        if !attachedFiles.isEmpty {
-            let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
-            message += "\n\nAttached files:\n\(fileList)"
-        }
-        return .message(message)
+        return .message(composedMessage(messageText: messageText, attachedFiles: attachedFiles))
+    }
+
+    /// The text a conversation message persists and sends: the typed text,
+    /// then one `Attached files:` block listing each attachment.
+    static func composedMessage(messageText: String, attachedFiles: [String]) -> String {
+        guard !attachedFiles.isEmpty else { return messageText }
+        let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
+        return messageText + "\n\nAttached files:\n\(fileList)"
     }
 
     static func runtimeUpdate(
