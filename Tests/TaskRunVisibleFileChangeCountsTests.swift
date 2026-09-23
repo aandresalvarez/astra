@@ -76,6 +76,7 @@ struct TaskRunVisibleFileChangeCountsTests {
         let first = TaskRunVisibleFileChangeCounts.Inputs(
             taskID: taskID,
             workspacePath: "/workspace",
+            folderRevision: 0,
             runs: [.init(id: steady, fileChangesJSONLength: 10), .init(id: growing, fileChangesJSONLength: 20)]
         )
         let cache = TaskRunVisibleFileChangeCounts().merging(
@@ -90,6 +91,7 @@ struct TaskRunVisibleFileChangeCountsTests {
         let second = TaskRunVisibleFileChangeCounts.Inputs(
             taskID: taskID,
             workspacePath: "/workspace",
+            folderRevision: 0,
             runs: [
                 .init(id: steady, fileChangesJSONLength: 10),
                 .init(id: growing, fileChangesJSONLength: 25),
@@ -99,8 +101,25 @@ struct TaskRunVisibleFileChangeCountsTests {
         #expect(cache.runsNeedingCount(second) == [growing, fresh])
 
         // Another workspace means another task folder: nothing carries over.
-        let moved = TaskRunVisibleFileChangeCounts.Inputs(taskID: taskID, workspacePath: "/other", runs: first.runs)
+        let moved = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID, workspacePath: "/other", folderRevision: 0, runs: first.runs
+        )
         #expect(cache.runsNeedingCount(moved) == [steady, growing])
+
+        // A legacy folder migrating moves only the revision; every path is
+        // judged against the new root, so every run is recounted.
+        let migrated = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID, workspacePath: "/workspace", folderRevision: 1, runs: first.runs
+        )
+        #expect(cache.runsNeedingCount(migrated) == [steady, growing])
+        let recounted = cache.merging(
+            TaskRunVisibleFileChangeCounts.counted(
+                [run(steady, length: 10), run(growing, length: 20)],
+                taskFolder: "/workspace/.astra/tasks/T1"
+            ),
+            for: migrated
+        )
+        #expect(recounted.runsNeedingCount(migrated).isEmpty)
     }
 
     /// The count runs off the main actor but stays attached to the
@@ -129,6 +148,7 @@ struct TaskRunVisibleFileChangeCountsTests {
         let first = TaskRunVisibleFileChangeCounts.Inputs(
             taskID: taskID,
             workspacePath: "/workspace",
+            folderRevision: 0,
             runs: [.init(id: kept, fileChangesJSONLength: 10), .init(id: dropped, fileChangesJSONLength: 10)]
         )
         let cache = TaskRunVisibleFileChangeCounts().merging(
@@ -145,6 +165,7 @@ struct TaskRunVisibleFileChangeCountsTests {
         let second = TaskRunVisibleFileChangeCounts.Inputs(
             taskID: taskID,
             workspacePath: "/workspace",
+            folderRevision: 0,
             runs: [.init(id: kept, fileChangesJSONLength: 30)]
         )
         #expect(cache.count(for: kept) == 2)

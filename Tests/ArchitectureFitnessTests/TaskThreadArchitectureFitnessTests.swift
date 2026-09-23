@@ -399,6 +399,11 @@ struct TaskThreadArchitectureFitnessTests {
             #expect(!diagnosticsKey.contains(forbidden), "The diagnostics key must not read \(forbidden)")
             #expect(!countsKey.contains(forbidden), "The changed-file count key must not read \(forbidden)")
         }
+        // Moving the folder off the legacy layout changes the root every count
+        // is judged by and nothing else in that key, so it carries a revision
+        // the view bumps when its own refresh moved the folder.
+        #expect(countsKey.contains("folderRevision: taskFolderRevision"))
+        #expect(taskMainView.contains("if folder != folderBefore {\n            taskFolderRevision &+= 1"))
 
         // The folder is found and read off the main actor, in loaders that are
         // cancelled with the `.task(id:)` — a detached task would finish every

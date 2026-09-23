@@ -50,6 +50,7 @@ extension TaskMainView {
         TaskRunVisibleFileChangeCounts.Inputs(
             taskID: task.id,
             workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            folderRevision: taskFolderRevision,
             runs: (threadViewModel.snapshot?.sortedRuns ?? []).map {
                 TaskRunVisibleFileChangeCounts.Run(id: $0.id, fileChangesJSONLength: $0.fileChangesJSONLength)
             }

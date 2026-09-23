@@ -28,9 +28,13 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
     }
 
     /// The `.task(id:)` key: values `body` already holds, no filesystem.
+    /// `folderRevision` moves when the view's own refresh moves the task folder
+    /// off the legacy layout, which changes the root every path is judged by
+    /// without moving anything else here.
     struct Inputs: Equatable, Sendable {
         let taskID: UUID
         let workspacePath: String
+        let folderRevision: Int
         let runs: [Run]
     }
 
@@ -43,6 +47,7 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
 
     private(set) var taskID: UUID?
     private(set) var workspacePath = ""
+    private(set) var folderRevision = 0
     private(set) var entries: [UUID: Entry] = [:]
 
     /// The last count for a run, or nil before its first one lands. A count
@@ -55,7 +60,7 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
     /// Runs that are new since the last rebuild or whose changes have moved;
     /// every run, if the task folder itself may have.
     func runsNeedingCount(_ inputs: Inputs) -> Set<UUID> {
-        let sameFolder = taskID == inputs.taskID && workspacePath == inputs.workspacePath
+        let sameFolder = countedAgainstSameFolder(as: inputs)
         return Set(inputs.runs.lazy.filter { run in
             !sameFolder || entries[run.id]?.fileChangesJSONLength != run.fileChangesJSONLength
         }.map(\.id))
@@ -63,10 +68,11 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
 
     /// Fresh counts over the ones still valid, keeping only runs in `inputs`.
     func merging(_ counted: [UUID: Entry], for inputs: Inputs) -> TaskRunVisibleFileChangeCounts {
-        let sameFolder = taskID == inputs.taskID && workspacePath == inputs.workspacePath
+        let sameFolder = countedAgainstSameFolder(as: inputs)
         var next = TaskRunVisibleFileChangeCounts()
         next.taskID = inputs.taskID
         next.workspacePath = inputs.workspacePath
+        next.folderRevision = inputs.folderRevision
         for run in inputs.runs {
             if let fresh = counted[run.id] {
                 next.entries[run.id] = fresh
@@ -75,6 +81,12 @@ struct TaskRunVisibleFileChangeCounts: Equatable {
             }
         }
         return next
+    }
+
+    private func countedAgainstSameFolder(as inputs: Inputs) -> Bool {
+        taskID == inputs.taskID
+            && workspacePath == inputs.workspacePath
+            && folderRevision == inputs.folderRevision
     }
 
     /// Counts `pending` off the main actor, resolving the task folder once for

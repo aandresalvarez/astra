@@ -222,6 +222,8 @@ struct TaskMainView: View {
     @State var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
     @State var runFileChangeCountsCache = TaskRunVisibleFileChangeCounts()
     @State var generatedFilesRevision = 0
+    /// Moves when this view's own context refresh moves the task folder.
+    @State var taskFolderRevision = 0
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
@@ -843,6 +845,11 @@ struct TaskMainView: View {
         if folder != threadViewModel.generatedFilesFolder {
             threadViewModel.refreshGeneratedFiles(folder: folder)
             generatedFilesRevision &+= 1
+        }
+        // The changed-file counts judge every path against this folder, and
+        // nothing else in their key moves with it.
+        if folder != folderBefore {
+            taskFolderRevision &+= 1
         }
     }
 
