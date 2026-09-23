@@ -52,10 +52,13 @@ struct TaskMissionControlSnapshot: Equatable {
     ///   context refresh, which can move the task folder without a save.
     /// - `status`, `goal` and `plan` are the model fields
     ///   `MissionControlPresentation.build` reads next to the file.
-    /// - The run and event counts and the latest run stand in for the
-    ///   relationships it falls back on when there is no state file
-    ///   (`task.artifacts`, each run's file changes). Those are reconciled at
-    ///   run finalize, which moves the latest run's status with them.
+    /// - The run count and the latest run stand in for the relationships it
+    ///   falls back on when there is no state file (`task.artifacts`, each
+    ///   run's file changes). Those are reconciled at run finalize, which moves
+    ///   the latest run's status with them.
+    /// - Events matter only as "are there any", so the key holds exactly that.
+    ///   An exact count would rebuild, and reread the file, on every runtime
+    ///   event a streaming run records.
     ///
     /// Deliberately absent: `task.updatedAt`, which every runtime event bumps
     /// (`TaskPlanStateRefreshTrigger` has the numbers), and the token and cost
@@ -69,7 +72,7 @@ struct TaskMissionControlSnapshot: Equatable {
         let goal: String
         let plan: TaskPlanPayload?
         let runCount: Int
-        let eventCount: Int
+        let hasEvents: Bool
         let latestRunID: UUID?
         let latestRunStatus: RunStatus?
         let stateRevision: Int
@@ -82,7 +85,7 @@ struct TaskMissionControlSnapshot: Equatable {
             goal = task.goal
             plan = planState.plan
             runCount = thread?.totalRunCount ?? 0
-            eventCount = thread?.totalEventCount ?? 0
+            hasEvents = (thread?.totalEventCount ?? 0) > 0
             latestRunID = thread?.latestRun?.id
             latestRunStatus = thread?.latestRun?.status
             self.stateRevision = stateRevision

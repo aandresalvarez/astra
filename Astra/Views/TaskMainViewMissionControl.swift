@@ -48,12 +48,38 @@ extension TaskMainView {
         }.value
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
         // `build` reads the model, so a task deleted while the file loaded is
-        // left alone too.
-        guard !Task.isCancelled, !task.isDeleted else { return }
+        // left alone too — and a persisted deletion can leave the model
+        // detached with `isDeleted` still false, hence the context check.
+        guard !Task.isCancelled, !task.isDeleted, task.modelContext != nil else { return }
         missionControlSnapshotCache = TaskMissionControlSnapshot.build(
             task: task,
             planState: currentPlanState,
             source: source
         )
+    }
+}
+
+/// Rebuilds the snapshot when its key moves, and moves the key when this
+/// task's `current_state.json` is saved.
+///
+/// A modifier rather than two more entries on `TaskMainView.body`'s modifier
+/// chain: the chain is a single expression, and with these two closures
+/// inline, CI's compiler gave up on type-checking it in reasonable time. Here
+/// the chain pays for one call that takes values and a method reference.
+struct TaskMissionControlSnapshotRefresh: ViewModifier {
+    let inputs: TaskMissionControlSnapshot.Inputs
+    @Binding var stateRevision: Int
+    let recompute: () async -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: inputs) {
+                await recompute()
+            }
+            .background {
+                TaskContextStateSaveObserver(taskID: inputs.taskID) {
+                    stateRevision &+= 1
+                }
+            }
     }
 }

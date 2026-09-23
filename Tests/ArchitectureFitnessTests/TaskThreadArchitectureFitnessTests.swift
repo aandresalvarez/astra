@@ -296,7 +296,11 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!taskMainView.contains("TaskMissionControlSnapshot.build("))
         #expect(!taskMainView.contains("TaskContextStateManager.load("))
         #expect(!taskMainView.contains("Source.load("))
-        #expect(taskMainView.contains(".task(id: missionControlSnapshotInputs)"))
+        #expect(taskMainView.contains("inputs: missionControlSnapshotInputs,"))
+        // The refresh is one `.modifier` call on `body`'s chain. With its
+        // closures inline, CI's compiler could not type-check the chain.
+        #expect(taskMainView.contains(".modifier(TaskMissionControlSnapshotRefresh("))
+        #expect(!taskMainView.contains("TaskContextStateSaveObserver("))
 
         // The key compares values the view already holds: not `messageText`,
         // no relationship faults, no filesystem, and not `updatedAt`, which
@@ -312,7 +316,11 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(key.contains("stateRevision: missionControlStateRevision"))
 
         // The load runs detached, and the model is read only once it returns.
-        let recompute = try code(in: missionControl, from: "func recomputeMissionControlSnapshot() async {", to: nil)
+        let recompute = try code(
+            in: missionControl,
+            from: "func recomputeMissionControlSnapshot() async {",
+            to: "struct TaskMissionControlSnapshotRefresh"
+        )
         let detached = try #require(recompute.range(of: "Task.detached("))
         let load = try #require(recompute.range(of: "TaskMissionControlSnapshot.Source.load("))
         let build = try #require(recompute.range(of: "TaskMissionControlSnapshot.build("))
@@ -323,7 +331,11 @@ struct TaskThreadArchitectureFitnessTests {
         // view turns that announcement into the key's revision.
         #expect(stateManager.components(separatedBy: "saveStateWithoutAudit(").count - 1 == 2)
         #expect(stateManager.contains("TaskContextStateSaveNotifier.post(result, taskID: taskID)"))
-        #expect(taskMainView.contains("TaskContextStateSaveObserver(taskID: task.id)"))
+        let refresh = try code(in: missionControl, from: "struct TaskMissionControlSnapshotRefresh", to: nil)
+        #expect(refresh.contains(".task(id: inputs)"))
+        #expect(refresh.contains("TaskContextStateSaveObserver(taskID: inputs.taskID)"))
+        #expect(refresh.contains("stateRevision &+= 1"))
+        #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
         #expect(taskMainView.contains("missionControlStateRevision &+= 1"))
     }
 

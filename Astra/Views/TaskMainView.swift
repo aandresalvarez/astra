@@ -521,18 +521,12 @@ struct TaskMainView: View {
             modelContext: modelContext,
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
-        .alert("Couldn’t Fork Conversation", isPresented: Binding(
-            get: { forkCreationError != nil },
-            set: { if !$0 { forkCreationError = nil } }
-        )) {
+        .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
             Text(forkCreationError ?? "The conversation fork could not be created.")
         }
-        .alert("Couldn’t Prepare Pull Request", isPresented: Binding(
-            get: { gitPublishPreparationError != nil },
-            set: { if !$0 { gitPublishPreparationError = nil } }
-        )) {
+        .alert("Couldn’t Prepare Pull Request", isPresented: isGitPublishPreparationErrorPresented) {
             Button("OK", role: .cancel) { gitPublishPreparationError = nil }
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
@@ -562,9 +556,11 @@ struct TaskMainView: View {
         .task(id: decisionOutcomeInputSignature) {
             recomputeDecisionOutcomes()
         }
-        .task(id: missionControlSnapshotInputs) {
-            await recomputeMissionControlSnapshot()
-        }
+        .modifier(TaskMissionControlSnapshotRefresh(
+            inputs: missionControlSnapshotInputs,
+            stateRevision: $missionControlStateRevision,
+            recompute: recomputeMissionControlSnapshot
+        ))
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
@@ -618,47 +614,11 @@ struct TaskMainView: View {
             }
         }
         .background {
-            TaskContextStateSaveObserver(taskID: task.id) {
-                missionControlStateRevision &+= 1
-            }
-        }
-        .background {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
-                onSnapshotChange: {
-                    deferTaskViewMutation {
-                        threadViewModel.requestSnapshotRefresh(for: task)
-                        schedulePlanStateCacheRefreshForRecoveredProgress()
-                        // `runtimeHealthNow` reaches `body` through
-                        // `runtimeHealth`, and this closure runs at the raw
-                        // stream rate: a fresh `Date()` each time invalidated
-                        // the whole body outside every debounce, paying two
-                        // SwiftData fetches, the O(events) filter+sort in
-                        // `TaskRuntimeHealth.evaluate`, and the O(output)
-                        // grapheme walk in `threadScrollSignature` per pass.
-                        // Its only consumer compares against a five-minute
-                        // `TaskRuntimeHealth.quietThreshold`, so whole seconds
-                        // is enough, and leaving it uncoalesced would make
-                        // `TaskThreadLiveSnapshotPacer` -- which sizes its
-                        // interval from measured main-actor occupancy --
-                        // throttle the transcript for this body's cost.
-                        let second = Date().timeIntervalSinceReferenceDate.rounded(.down)
-                        if runtimeHealthNow.timeIntervalSinceReferenceDate != second {
-                            runtimeHealthNow = Date(timeIntervalSinceReferenceDate: second)
-                        }
-                        logRuntimeHealthIfNeeded(reason: "snapshot")
-                    }
-                },
-                onGeneratedFilesChange: {
-                    deferTaskViewMutation {
-                        threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-                        // Diagnostics rebuild from `.task(id:)`, which carries
-                        // the artifact count this fires on and can be cancelled.
-                        _ = startContextStateRefresh()
-                        refreshForkSourceAvailabilityWarning()
-                    }
-                }
+                onSnapshotChange: { noteThreadSnapshotChange() },
+                onGeneratedFilesChange: { noteGeneratedFilesChange() }
             )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
@@ -677,6 +637,51 @@ struct TaskMainView: View {
             }
             runtimeHealthNow = now
             logRuntimeHealthIfNeeded(reason: "timer")
+        }
+    }
+
+    // These bindings and the `TaskThreadChangeObserver` callbacks live out
+    // here: written inline, their closures were solved as part of `body`'s one
+    // modifier-chain expression, and that is where CI's compiler ran out of
+    // budget.
+    private var isForkCreationErrorPresented: Binding<Bool> {
+        Binding(get: { forkCreationError != nil }, set: { if !$0 { forkCreationError = nil } })
+    }
+
+    private var isGitPublishPreparationErrorPresented: Binding<Bool> {
+        Binding(get: { gitPublishPreparationError != nil }, set: { if !$0 { gitPublishPreparationError = nil } })
+    }
+
+    private func noteThreadSnapshotChange() {
+        deferTaskViewMutation {
+            threadViewModel.requestSnapshotRefresh(for: task)
+            schedulePlanStateCacheRefreshForRecoveredProgress()
+            // `runtimeHealthNow` reaches `body` through `runtimeHealth`, and
+            // this closure runs at the raw stream rate: a fresh `Date()` each
+            // time invalidated the whole body outside every debounce, paying
+            // two SwiftData fetches, the O(events) filter+sort in
+            // `TaskRuntimeHealth.evaluate`, and the O(output) grapheme walk in
+            // `threadScrollSignature` per pass. Its only consumer compares
+            // against a five-minute `TaskRuntimeHealth.quietThreshold`, so whole
+            // seconds is enough, and leaving it uncoalesced would make
+            // `TaskThreadLiveSnapshotPacer` -- which sizes its interval from
+            // measured main-actor occupancy -- throttle the transcript for this
+            // body's cost.
+            let second = Date().timeIntervalSinceReferenceDate.rounded(.down)
+            if runtimeHealthNow.timeIntervalSinceReferenceDate != second {
+                runtimeHealthNow = Date(timeIntervalSinceReferenceDate: second)
+            }
+            logRuntimeHealthIfNeeded(reason: "snapshot")
+        }
+    }
+
+    private func noteGeneratedFilesChange() {
+        deferTaskViewMutation {
+            threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+            // Diagnostics rebuild from `.task(id:)`, which carries the artifact
+            // count this fires on and can be cancelled.
+            _ = startContextStateRefresh()
+            refreshForkSourceAvailabilityWarning()
         }
     }
 

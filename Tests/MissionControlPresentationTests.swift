@@ -93,10 +93,44 @@ struct MissionControlPresentationTests {
         #expect(saves == settled)
 
         // A failed write leaves the previous file in place: nothing to reload.
-        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
         let failed = TaskContextStateManager.saveState(state, taskFolder: "/dev/null/unwritable", taskID: taskID)
         #expect(!failed.didSave)
         #expect(saves == settled)
+
+        // The Markdown twin is written second, so failing it arrives with the
+        // JSON already replaced: `didSave` is false, but the cache is stale.
+        let markdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+        try FileManager.default.removeItem(atPath: markdownPath)
+        try FileManager.default.createDirectory(atPath: markdownPath, withIntermediateDirectories: false)
+        let markdownFailed = TaskContextStateManager.saveState(state, taskFolder: folder, taskID: taskID)
+        #expect(markdownFailed.status == .writeMarkdownFailed)
+        #expect(saves == settled + 1)
+    }
+
+    /// The presentation asks only whether a task has events, when it has no
+    /// state file to go on. Keying the exact count rebuilt the snapshot, and
+    /// reread the file, on every event a streaming run records.
+    @Test("mission control key tracks whether events exist, not how many")
+    func missionControlKeyTracksEventPresenceNotCount() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        let first = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "First")
+        let second = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "Second")
+        context.insert(first)
+        context.insert(second)
+
+        func key(_ events: [TaskEvent]) -> TaskMissionControlSnapshot.Inputs {
+            let thread = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: events, runs: task.runs)
+            return TaskMissionControlSnapshot.Inputs(task: task, thread: thread, planState: .empty, stateRevision: 0)
+        }
+
+        #expect(key([first]) == key([first, second]))
+        #expect(key([]) != key([first]))
     }
 
     /// `body` re-runs on every keystroke in the composer, and `.task(id:)`

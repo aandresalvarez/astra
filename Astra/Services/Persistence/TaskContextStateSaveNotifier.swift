@@ -25,12 +25,23 @@ public struct TaskContextStateSave: Equatable, Sendable {
 
 enum TaskContextStateSaveNotifier {
     static func post(_ result: TaskContextStateSaveResult, taskID: UUID?) {
-        // A failed write left the previous file in place, and a save with no
-        // task id has no view to tell.
-        guard result.didSave, let taskID else { return }
+        // A save with no task id has no view to tell.
+        guard let taskID, replacedStateFile(result) else { return }
         NotificationCenter.default.post(
             name: .taskContextStateDidSave,
             object: TaskContextStateSave(taskID: taskID)
         )
+    }
+
+    /// Whether `current_state.json` itself was written. Not `didSave`: the
+    /// Markdown twin is written second, so `.writeMarkdownFailed` arrives with
+    /// the JSON already replaced, and a cache of it is just as stale.
+    static func replacedStateFile(_ result: TaskContextStateSaveResult) -> Bool {
+        switch result.status {
+        case .saved, .writeMarkdownFailed:
+            return true
+        case .createDirectoryFailed, .encodeFailed, .writeJSONFailed:
+            return false
+        }
     }
 }
