@@ -14,8 +14,9 @@ import ASTRAPersistence
 /// `current_state.json` on the main thread.
 ///
 /// It is now a `@State` cache on the view, rebuilt under `.task(id: Inputs)`:
-/// `Source.load` is the disk half and runs detached, `build` reads the model on
-/// the main actor. The wiring is in `TaskMainViewMissionControl.swift`.
+/// `Source.loaded` is the disk half and runs off the main actor, `build` reads
+/// the model on the main actor. The wiring is in
+/// `TaskMainViewMissionControl.swift`.
 struct TaskMissionControlSnapshot: Equatable {
     static let empty = TaskMissionControlSnapshot(taskID: nil, taskFolder: "", presentation: nil)
 
@@ -115,18 +116,22 @@ struct TaskMissionControlSnapshot: Equatable {
         )
     }
 
-    /// Whether the view's own context refresh left the snapshot stale without
-    /// saying so. A save announced itself, and the rebuild it triggers
+    /// Whether, after the view's own context refresh, the cached snapshot was
+    /// read from a folder the task no longer resolves to, without anything
+    /// having said so. A save announced itself, and the rebuild it triggers
     /// resolves the folder afresh, so that is never a reason to reload again.
-    /// What is: the refresh moving the folder off the legacy layout with no
-    /// save, judged by the folder before and after the refresh rather than by
-    /// the cache, which on a task just opened may not have been filled yet.
+    ///
+    /// Judged against the folder the cache was built from, not the folder
+    /// before this refresh: a refresh cancelled after migrating a legacy
+    /// folder never reports it, and the one that replaces it starts from the
+    /// new folder. An empty cache is not stale — its first load has not
+    /// landed, and checks its own folder when it does.
     static func contextRefreshLeftSnapshotStale(
         announcedSave: Bool,
-        folderBefore: String,
-        folderAfter: String
+        cachedFolder: String,
+        currentFolder: String
     ) -> Bool {
-        !announcedSave && folderBefore != folderAfter
+        !announcedSave && !cachedFolder.isEmpty && cachedFolder != currentFolder
     }
 
     /// Not part of the cached snapshot: it carries `task.updatedAt`, and the

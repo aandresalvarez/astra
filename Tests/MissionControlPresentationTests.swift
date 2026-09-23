@@ -134,31 +134,37 @@ struct MissionControlPresentationTests {
     }
 
     /// After the view's own context refresh the snapshot reloads through the
-    /// save announcement, or not at all, except when the refresh moved the
-    /// folder without saving. Whether it moved is judged by the folder before
-    /// and after the refresh: the cache is not a witness, since on a task just
-    /// opened it may still be empty, and an empty folder read as a migration
-    /// restarted the first load for nothing.
-    @Test("only a migration without a save leaves the snapshot stale after a refresh")
+    /// save announcement, or not at all, except when it was read from a folder
+    /// the task no longer resolves to and nothing was saved. That is judged
+    /// against the cache, not the folder before the refresh: a refresh
+    /// cancelled after migrating never reports it, and the one replacing it
+    /// starts from the new folder. An empty cache is not stale; its first load
+    /// has not landed, and checks its own folder when it does.
+    @Test("only a snapshot read from a moved folder is stale after an unannounced refresh")
     func onlyAnUnannouncedMigrationLeavesTheSnapshotStale() {
         let canonical = "/workspace/.astra/tasks/T1"
         let legacy = "/workspace/tasks/T1"
 
-        // An ordinary open: nothing moved, whatever the cache holds by now.
+        // An ordinary open: the snapshot was read from where the task is.
         #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
-            announcedSave: false, folderBefore: canonical, folderAfter: canonical
+            announcedSave: false, cachedFolder: canonical, currentFolder: canonical
         ))
-        // A legacy folder migrated and nothing was saved: only a reload
-        // brings the cache's folder along.
+        // A task just opened, whose first load is still in flight.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, cachedFolder: "", currentFolder: canonical
+        ))
+        // Read from the legacy folder, which has since migrated, by this
+        // refresh or an earlier one that was cancelled: only a reload brings
+        // the cache along.
         #expect(TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
-            announcedSave: false, folderBefore: legacy, folderAfter: canonical
+            announcedSave: false, cachedFolder: legacy, currentFolder: canonical
         ))
         // Migrated and saved: the announcement already reloads it.
         #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
-            announcedSave: true, folderBefore: legacy, folderAfter: canonical
+            announcedSave: true, cachedFolder: legacy, currentFolder: canonical
         ))
         #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
-            announcedSave: true, folderBefore: canonical, folderAfter: canonical
+            announcedSave: true, cachedFolder: canonical, currentFolder: canonical
         ))
     }
 

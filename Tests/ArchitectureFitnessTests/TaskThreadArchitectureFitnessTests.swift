@@ -341,23 +341,206 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(refresh.contains("TaskContextStateSaveObserver(taskID: inputs.taskID)"))
         #expect(refresh.contains("stateRevision &+= 1"))
         #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
+        // A snapshot read from a folder that has since moved off the legacy
+        // layout is reloaded. The rebuild checks the folder it read as it
+        // lands, before building from it.
+        let landed = try #require(recompute.range(of: "guard source.taskFolder == TaskWorkspaceAccess(task: task).taskFolder else {"))
+        #expect(load.lowerBound < landed.lowerBound)
+        #expect(landed.lowerBound < build.lowerBound)
         // The view's own refresh adds a bump only for a folder that moved
         // without a save; bumping on every refresh read a saved file twice.
-        // Whether the folder moved is judged against the folder from before
-        // the refresh, never the cache: on a task just opened the cache may not
-        // be filled yet, and an empty folder would read as a migration.
-        let beforeRefresh = try #require(taskMainView.range(of: "let folderBefore = TaskWorkspaceAccess(task: task).taskFolder"))
-        let refreshCall = try #require(taskMainView.range(of: "let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
-        #expect(beforeRefresh.lowerBound < refreshCall.lowerBound)
-        #expect(taskMainView.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)"))
+        // Moved is judged by the cache's folder against the folder after the
+        // refresh, never the folder before it: a refresh cancelled after
+        // migrating never reports it, and the one replacing it starts from
+        // the new folder.
+        let refreshBody = try code(
+            in: taskMainView,
+            from: "private func refreshTaskContextState(",
+            to: "private func scheduleVerificationPresentationRefresh()"
+        )
+        let refreshCall = try #require(refreshBody.range(of: "let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
+        let folderAfter = try #require(refreshBody.range(of: "let folder = TaskWorkspaceAccess(task: task).taskFolder"))
+        #expect(refreshCall.lowerBound < folderAfter.lowerBound)
+        #expect(refreshBody.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave, folder: folder)"))
+        #expect(!taskMainView.contains("folderBefore"))
         #expect(!taskMainView.contains("missionControlStateRevision &+= 1"))
         let afterRefresh = try code(
             in: missionControl,
-            from: "func noteContextRefreshForMissionControl(announcedSave: Bool, folderBefore: String) {",
+            from: "func noteContextRefreshForMissionControl(announcedSave: Bool, folder: String) {",
             to: "struct TaskMissionControlSnapshotRefresh"
         )
         #expect(afterRefresh.contains("contextRefreshLeftSnapshotStale("))
-        #expect(!afterRefresh.contains("missionControlSnapshotCache"))
+        #expect(afterRefresh.contains("cachedFolder: missionControlSnapshotCache.taskFolder"))
+    }
+
+    /// Two more places `body` reached into the task folder on every keystroke.
+    /// The diagnostics key named the folder, which is a `stat` to resolve, and
+    /// counted `task.artifacts`. Every run bubble counted its changed files by
+    /// finding the folder again and symlink-walking it and each path. Both are
+    /// now caches keyed on scalars, read and walked off the main actor.
+    @Test("Task-folder caches key on scalars and read the folder off the main actor")
+    func taskFolderCachesDoNotTouchTheFolderPerBodyPass() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let caches = try source("Astra/Views/TaskMainViewTaskFolderCaches.swift", root: root)
+        let counts = try source("Astra/Services/Tasks/TaskRunVisibleFileChangeCounts.swift", root: root)
+
+        // The bubble reads a cached count; nothing on the body path classifies
+        // paths, and both caches refresh under `.task(id:)`.
+        #expect(!taskMainView.contains("userFacingFileChangeCount("))
+        #expect(!taskMainView.contains("TaskOutputArtifactPathPolicy."))
+        #expect(taskMainView.contains("self.visibleFileChangeCount(for: run)"))
+        #expect(taskMainView.contains(".task(id: diagnosticFileGroupsInputSignature)"))
+        #expect(taskMainView.contains(".task(id: runFileChangeCountInputs)"))
+
+        // Both keys are values the view already holds.
+        let diagnosticsKey = try code(
+            in: caches,
+            from: "var diagnosticFileGroupsInputSignature: String {",
+            to: "func recomputeDiagnosticFileGroups()"
+        )
+        let countsKey = try code(
+            in: caches,
+            from: "var runFileChangeCountInputs:",
+            to: "func visibleFileChangeCount("
+        )
+        for forbidden in ["messageText", "task.artifacts", "task.events", "task.runs", ".taskFolder",
+                          "FileManager", "ResolvedRoot", "relativePath("] {
+            #expect(!diagnosticsKey.contains(forbidden), "The diagnostics key must not read \(forbidden)")
+            #expect(!countsKey.contains(forbidden), "The changed-file count key must not read \(forbidden)")
+        }
+        // Moving the folder off the legacy layout changes the root every count
+        // is judged by and nothing else in that key, so it carries a revision.
+        // It moves when counts were judged against a folder that has since
+        // moved, which the counts remember: the view's refresh checks them
+        // against the folder after it, whatever did the migrating.
+        #expect(countsKey.contains("folderRevision: taskFolderRevision"))
+        let refreshBody = try code(
+            in: taskMainView,
+            from: "private func refreshTaskContextState(",
+            to: "private func scheduleVerificationPresentationRefresh()"
+        )
+        #expect(refreshBody.contains("noteContextRefreshForFileChangeCounts(folder: folder)"))
+        let note = try code(in: caches, from: "func noteContextRefreshForFileChangeCounts(folder: String) {", to: nil)
+        #expect(note.contains("guard runFileChangeCountsCache.isStale(forFolder: folder) else { return }"))
+        #expect(note.contains("taskFolderRevision &+= 1"))
+
+        // The folder is found and read off the main actor, in loaders that are
+        // cancelled with the `.task(id:)` — a detached task would finish every
+        // superseded walk — and neither recompute resolves it on the actor
+        // before loading.
+        let diagnostics = try source("Astra/Views/TaskDiagnosticsIndex.swift", root: root)
+        for (from, to, loader) in [
+            ("func recomputeDiagnosticFileGroups() async {", "var runFileChangeCountInputs:",
+             "await TaskDiagnosticsIndex.groups(workspacePath:"),
+            ("func recomputeRunFileChangeCounts() async {", "func noteContextRefreshForFileChangeCounts(",
+             "await TaskRunVisibleFileChangeCounts.counted(")
+        ] {
+            let recompute = try code(in: caches, from: from, to: to)
+            let load = try #require(recompute.range(of: loader))
+            #expect(!recompute.contains("Task.detached("))
+            #expect(!recompute[..<load.lowerBound].contains(".taskFolder"))
+        }
+        for (text, from) in [
+            (diagnostics, "nonisolated static func groups(workspacePath:"),
+            (counts, "nonisolated static func counted(")
+        ] {
+            let loader = try code(in: text, from: from, to: "\n    }\n")
+            let cancellation = try #require(loader.range(of: "guard !Task.isCancelled"))
+            let folder = try #require(loader.range(of: "TaskFolderResolvingAdapter.taskFolder("))
+            #expect(cancellation.lowerBound < folder.lowerBound)
+        }
+
+        // With nothing to count, the rebuild still prunes runs that left the
+        // snapshot, writing only when that changed something.
+        let countsRecompute = try code(
+            in: caches,
+            from: "func recomputeRunFileChangeCounts() async {",
+            to: "func noteContextRefreshForFileChangeCounts("
+        )
+        #expect(countsRecompute.contains("merging([:], for: inputs)"))
+        #expect(countsRecompute.contains("if pruned != runFileChangeCountsCache"))
+        // A count lands only if it was judged against the folder the task
+        // resolves to now, and would not join counts judged against another;
+        // otherwise every run is recounted under a new revision.
+        let counting = try #require(countsRecompute.range(of: "await TaskRunVisibleFileChangeCounts.counted("))
+        let landed = try #require(countsRecompute.range(of: "guard counted.taskFolder == folder,"))
+        let unmixed = try #require(countsRecompute.range(of: "runFileChangeCountsCache.canMerge(countedIn: folder, for: inputs) else {"))
+        let merged = try #require(countsRecompute.range(of: "merging(counted.entries, for: inputs, countedIn: folder)"))
+        #expect(counting.lowerBound < landed.lowerBound)
+        #expect(landed.lowerBound < unmixed.lowerBound)
+        #expect(unmixed.lowerBound < merged.lowerBound)
+        #expect(countsRecompute[landed.lowerBound..<merged.lowerBound].contains("taskFolderRevision &+= 1"))
+
+        // One root resolution per rebuild; the per-path loop only uses it.
+        let counted = try code(in: counts, from: "static func counted(", to: "static func visibleCount(")
+        let perPath = try code(in: counts, from: "static func visibleCount(", to: "nonisolated static func counted(")
+        #expect(counted.contains("ResolvedRoot(taskFolder)"))
+        #expect(!perPath.contains("ResolvedRoot("))
+        #expect(perPath.contains("relativePath(path, under: root)"))
+    }
+
+    /// `TaskGeneratedFilesTrigger` is built in `TaskThreadChangeObserver.body`,
+    /// which re-runs with `TaskMainView.body` on every keystroke. It resolved
+    /// the task folder (a `stat`) and counted `task.artifacts` (a relationship
+    /// fault) each time. It is now scalars, and new rows arrive as an
+    /// announcement from the one service every row goes through. The last
+    /// check keeps it that way: a new place that gives a task artifacts has to
+    /// announce them, or be reviewed onto this list.
+    @Test("The generated-files trigger reads no folder and no relationship")
+    func generatedFilesTriggerStaysOffTheFilesystem() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let snapshot = try source("Astra/Views/TaskThreadSnapshot.swift", root: root)
+        let observers = try source("Astra/Views/TaskMainViewObservers.swift", root: root)
+        let service = try source("Astra/Services/Persistence/TaskArtifactPersistenceService.swift", root: root)
+
+        let trigger = try code(in: snapshot, from: "struct TaskGeneratedFilesTrigger: Equatable {", to: nil)
+        for forbidden in ["taskFolder", "task.artifacts", "task.events", "task.runs", "FileManager"] {
+            #expect(!trigger.contains(forbidden), "The generated-files trigger must not read \(forbidden)")
+        }
+        #expect(trigger.contains("effectiveWorkspacePath"))
+
+        // The observer turns the service's announcement into the trigger's
+        // revision, so a burst of rows still reaches the callback once per update.
+        #expect(observers.contains(".onReceive(NotificationCenter.default.publisher(for: .taskArtifactsDidChange))"))
+        #expect(observers.contains("artifactsRevision &+= 1"))
+        #expect(observers.contains("artifactsRevision: artifactsRevision"))
+
+        // Both entry points announce, and rows are only ever inserted from
+        // them: two definitions of `insertArtifact` and three calls.
+        #expect(service.components(separatedBy: "TaskArtifactChangeNotifier.post(taskID: task.id)").count - 1 == 2)
+        #expect(service.components(separatedBy: "insertArtifact(").count - 1 == 5)
+
+        // Outside the service, artifacts are only built for tasks no view has
+        // open yet: an import, a detached launch copy, a scratch fork manifest.
+        let reviewed: Set<String> = [
+            "Astra/Services/Persistence/TaskArtifactPersistenceService.swift",
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift",
+            "Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift",
+            "Astra/Services/Tasks/TaskForkManifestService.swift"
+        ]
+        let construction = try NSRegularExpression(pattern: #"\bArtifact\(\s*task:"#)
+        var builders = Set<String>()
+        let enumerator = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"),
+            includingPropertiesForKeys: nil
+        )
+        for case let url as URL in enumerator ?? FileManager.DirectoryEnumerator() where url.pathExtension == "swift" {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard construction.firstMatch(in: text, range: range) != nil else { continue }
+            builders.insert(String(url.path.dropFirst(root.path.count + 1)))
+        }
+        #expect(
+            builders == reviewed,
+            "New code gives a task artifacts outside TaskArtifactPersistenceService: \(builders.subtracting(reviewed).sorted())"
+        )
     }
 
     @Test("Waiting-turn dock never preempts a live permission decision")

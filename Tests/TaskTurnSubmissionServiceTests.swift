@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
@@ -50,6 +51,38 @@ struct TaskTurnSubmissionServiceTests {
         #expect(intent.acceptedTurn == "Please continue safely.")
         #expect(intent.activationText == "Please continue safely.")
         #expect(try TaskTurnRequestRepository.requests(for: task, in: context).map(\.id) == [submission.requestID])
+    }
+
+    @Test("Submission saves the message's typed attachment record in the same save")
+    func submissionRecordsAttachmentsWithTheMessage() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Follow up", goal: "Record what was attached")
+        context.insert(task)
+        try context.save()
+        let paths = ["/tmp/report.md", "/tmp/astra_paste_1234ABCD.png"]
+
+        let result = TaskTurnSubmissionService.submit(
+            message: TaskAttachmentBlock.message("Compare these.", attaching: paths),
+            attachmentPaths: paths,
+            for: task,
+            into: context,
+            at: Date(timeIntervalSince1970: 1_000)
+        )
+        guard case let .success(submission) = result else {
+            Issue.record("Expected durable submission")
+            return
+        }
+
+        // Read through a fresh context: the record must be durable, not just pending.
+        let events = try ModelContext(container).fetch(FetchDescriptor<TaskEvent>())
+        #expect(events.count == 2)
+        let record = try #require(events.first { $0.type == TaskEventTypes.Conversation.attachments.rawValue })
+        #expect(record.timestamp == Date(timeIntervalSince1970: 1_000))
+        let payload = try #require(TaskAttachmentsPayloadV1.decoded(from: record.payload))
+        #expect(payload.messageEventID == submission.eventID)
+        #expect(payload.items.map(\.path) == paths)
+        #expect(payload.items.map(\.kind) == [.file, .pastedImage])
     }
 
     @Test("Legacy policy snapshot JSON without turn intent remains decodable")

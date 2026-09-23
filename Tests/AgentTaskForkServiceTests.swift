@@ -868,6 +868,116 @@ struct AgentTaskForkServiceTests {
         #expect(prompt.contains("SELECTED-TIED-CHECKPOINT"))
     }
 
+    @Test("file-copy forks point attachment records at the fork's message and file copies")
+    func fileCopyForksRemapAttachmentRecords() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let attachmentPath = (root as NSString).appendingPathComponent("evidence.txt")
+        try "checkpoint evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Attachment Records", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Review the evidence", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        run.startedAt = Date(timeIntervalSince1970: 100)
+        run.completedAt = Date(timeIntervalSince1970: 110)
+        context.insert(run)
+        let message = TaskEvent(
+            task: source,
+            type: "user.message",
+            payload: TaskAttachmentBlock.message("Review this.", attaching: [attachmentPath]),
+            run: run
+        )
+        message.timestamp = Date(timeIntervalSince1970: 105)
+        context.insert(message)
+        context.insert(try #require(TaskEvent.attachmentsEvent(for: message, paths: [attachmentPath])))
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(mode: .conversationWithFileCopies),
+            in: context
+        )
+        try context.save()
+
+        let manifest = try #require(TaskForkManifestService.load(for: forked))
+        let copiedAttachment = try #require(manifest.sourceAttachments?.first { $0.sourcePath == attachmentPath }?.localCopyPath)
+        let record = try #require(forked.events.first { $0.type == TaskEventTypes.Conversation.attachments.rawValue })
+        let forkedMessage = try #require(forked.events.first { $0.type == "user.message" })
+        let payload = try #require(TaskAttachmentsPayloadV1.decoded(from: record.payload))
+        #expect(payload.messageEventID == forkedMessage.id)
+        #expect(payload.messageEventID != message.id)
+        // The JSON payload escapes "/", so only a structured remap reaches these paths.
+        #expect(payload.items.map(\.path) == [copiedAttachment])
+        #expect(record.timestamp == forkedMessage.timestamp)
+    }
+
+    @Test("an attachment record stays behind when its message does")
+    func attachmentRecordsTravelOnlyWithTheirMessage() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let checkpointPath = (root as NSString).appendingPathComponent("evidence.txt")
+        let laterPath = (root as NSString).appendingPathComponent("later.txt")
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Queued Attachments", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Review the evidence", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let checkpoint = TaskRun(task: source)
+        checkpoint.status = .completed
+        checkpoint.startedAt = Date(timeIntervalSince1970: 100)
+        checkpoint.completedAt = Date(timeIntervalSince1970: 110)
+        let later = TaskRun(task: source)
+        later.status = .completed
+        later.startedAt = Date(timeIntervalSince1970: 120)
+        later.completedAt = Date(timeIntervalSince1970: 130)
+        context.insert(checkpoint)
+        context.insert(later)
+        let message = TaskEvent(
+            task: source,
+            type: "user.message",
+            payload: TaskAttachmentBlock.message("Review this.", attaching: [checkpointPath]),
+            run: checkpoint
+        )
+        message.timestamp = Date(timeIntervalSince1970: 105)
+        context.insert(message)
+        context.insert(try #require(TaskEvent.attachmentsEvent(for: message, paths: [checkpointPath])))
+        // Queued while the checkpoint run was still going: the message belongs to
+        // the later run, but its record carries no run and lands before the cutoff.
+        let queued = TaskEvent(
+            task: source,
+            type: "user.message",
+            payload: TaskAttachmentBlock.message("And this.", attaching: [laterPath]),
+            run: later
+        )
+        queued.timestamp = Date(timeIntervalSince1970: 108)
+        context.insert(queued)
+        context.insert(try #require(TaskEvent.attachmentsEvent(for: queued, paths: [laterPath])))
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: checkpoint,
+            options: TaskForkOptions(mode: .conversationSharedFiles),
+            in: context
+        )
+        try context.save()
+
+        #expect(forked.inputs.contains(checkpointPath))
+        #expect(!forked.inputs.contains(laterPath))
+        let records = forked.events.filter { $0.type == TaskEventTypes.Conversation.attachments.rawValue }
+        #expect(records.count == 1)
+        let payload = try #require(records.first.flatMap { TaskAttachmentsPayloadV1.decoded(from: $0.payload) })
+        let forkedMessage = try #require(forked.events.first { $0.type == "user.message" })
+        #expect(payload.messageEventID == forkedMessage.id)
+        #expect(payload.items.map(\.path) == [checkpointPath])
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-task-fork-\(UUID().uuidString)", isDirectory: true)

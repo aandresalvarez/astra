@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
@@ -66,7 +67,7 @@ struct AgentRuntimeAttachmentProjectionTests {
 
     @Test("Attachment block parsing stops at non-list text")
     func attachmentBlockParsingStopsAtNonListText() {
-        let paths = AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: """
+        let paths = TaskAttachmentBlock.paths(in: """
         Attached files/folders (dragged by user):
         - /tmp/one.md
         This is no longer part of the attachment list.
@@ -91,11 +92,11 @@ struct AgentRuntimeAttachmentProjectionTests {
         let truncatedMessage = String(fullMessage.prefix(fullMessage.count - 9))
         #expect(truncatedMessage.hasSuffix("AF9F4AD3.txt") == false)
 
-        let truncatedPaths = AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: truncatedMessage)
+        let truncatedPaths = TaskAttachmentBlock.paths(in: truncatedMessage)
         #expect(truncatedPaths.count == 1)
         #expect(fm.fileExists(atPath: truncatedPaths[0]) == false)
 
-        let fullPaths = AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: fullMessage)
+        let fullPaths = TaskAttachmentBlock.paths(in: fullMessage)
         #expect(fullPaths.count == 1)
         #expect(fm.fileExists(atPath: fullPaths[0]))
     }

@@ -218,7 +218,13 @@ struct TaskMainView: View {
     @State private var isShowingFilesPopover = false
     @State private var isShowingDiagnosticsPopover = false
     @State private var headerFileItemsCache: [TaskFileItem] = []
-    @State private var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
+    /// Not `private`: refreshed from `TaskMainViewTaskFolderCaches.swift`.
+    @State var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
+    @State var runFileChangeCountsCache = TaskRunVisibleFileChangeCounts()
+    @State var generatedFilesRevision = 0
+    /// Moves when the changed-file counts were judged against a task folder
+    /// that has since moved off the legacy layout.
+    @State var taskFolderRevision = 0
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
@@ -551,6 +557,9 @@ struct TaskMainView: View {
         .task(id: diagnosticFileGroupsInputSignature) {
             await recomputeDiagnosticFileGroups()
         }
+        .task(id: runFileChangeCountInputs) {
+            await recomputeRunFileChangeCounts()
+        }
         .task(id: decisionArtifactPathsInputSignature) {
             await recomputeDecisionArtifactPaths()
         }
@@ -679,8 +688,9 @@ struct TaskMainView: View {
     private func noteGeneratedFilesChange() {
         deferTaskViewMutation {
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-            // Diagnostics rebuild from `.task(id:)`, which carries the artifact
-            // count this fires on and can be cancelled.
+            // Diagnostics rebuild from `.task(id:)`, which can be cancelled;
+            // this revision is how its key hears that files were generated.
+            generatedFilesRevision &+= 1
             _ = startContextStateRefresh()
             refreshForkSourceAvailabilityWarning()
         }
@@ -814,7 +824,6 @@ struct TaskMainView: View {
     /// `phase` is opened by the caller, while the trace is still live. See
     /// `startContextStateRefresh`.
     private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
-        let folderBefore = TaskWorkspaceAccess(task: task).taskFolder // the refresh may migrate it
         let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.
@@ -828,7 +837,18 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-        noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)
+        // A refresh can move the task folder off the legacy layout, and so can
+        // one cancelled after migrating, before reaching here. No key sees the
+        // folder move (they key on the workspace path to stay out of the
+        // filesystem), so each cache built from it is checked against the
+        // folder it was built from, not against the folder before this pass.
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        noteContextRefreshForMissionControl(announcedSave: announcedSave, folder: folder)
+        noteContextRefreshForFileChangeCounts(folder: folder)
+        if folder != threadViewModel.generatedFilesFolder {
+            threadViewModel.refreshGeneratedFiles(folder: folder)
+            generatedFilesRevision &+= 1
+        }
     }
 
     private func scheduleVerificationPresentationRefresh() {
@@ -1010,22 +1030,6 @@ struct TaskMainView: View {
             + task.inputs).joined(separator: "|")
     }
 
-    private var diagnosticFileGroupsInputSignature: String {
-        let latestRun = currentThreadSnapshot.latestRun
-        return [
-            task.id.uuidString,
-            task.status.rawValue,
-            TaskWorkspaceAccess(task: task).taskFolder,
-            "\(currentThreadSnapshot.totalRunCount)",
-            "\(currentThreadSnapshot.totalEventCount)",
-            latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none",
-            "\(latestRun?.fileChangesJSONLength ?? 0)",
-            // One fault to count; one per row to read. See `TaskGeneratedFilesTrigger`.
-            "\(task.artifacts.count)"
-        ].joined(separator: "|")
-    }
-
     private func recomputeHeaderFileItems() async {
         let runs = currentThreadSnapshot.sortedRuns
         let generatedFilePaths = threadViewModel.generatedFilePaths
@@ -1045,15 +1049,6 @@ struct TaskMainView: View {
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
         guard !Task.isCancelled else { return }
         headerFileItemsCache = items
-    }
-
-    private func recomputeDiagnosticFileGroups() async {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        let groups = await Task.detached(priority: .utility) {
-            TaskDiagnosticsIndex.groups(in: taskFolder)
-        }.value
-        guard !Task.isCancelled else { return }
-        diagnosticFileGroupsCache = groups
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
@@ -1093,19 +1088,6 @@ struct TaskMainView: View {
         case let .system(path):
             NSWorkspace.shared.open(URL(fileURLWithPath: path))
         }
-    }
-
-    private func userFacingFileChangeCount(_ changes: [StoredFileChange]) -> Int {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        return changes.filter { change in
-            guard let relative = TaskOutputArtifactPathPolicy.relativePath(change.path, under: taskFolder) else {
-                return true
-            }
-            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
-                relative,
-                context: .taskFolder
-            ) != nil
-        }.count
     }
 
     private func formatHeaderFileSize(_ size: Int64) -> String {
@@ -2197,7 +2179,7 @@ struct TaskMainView: View {
         let runActivityPresentation = currentThreadSnapshot.activityPresentation(for: run)
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
         let showsGeneratedFiles = run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty
-        let visibleFileChangeCount = userFacingFileChangeCount(activity.fileChanges)
+        let visibleFileChangeCount = self.visibleFileChangeCount(for: run)
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
 
@@ -4771,7 +4753,7 @@ struct TaskMainView: View {
         case .message:
             // Recomposed once the send is certain, naming durable copies of pastes and image drops.
             let attachments = TaskInputMaterializer.durableAttachmentPaths(attachedFiles, for: task)
-            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments))
+            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments), attachmentPaths: attachments)
         }
     }
 
@@ -4821,13 +4803,13 @@ struct TaskMainView: View {
         threadViewModel.refreshSnapshot(for: task)
     }
 
-    private func sendConversationMessage(_ msg: String) {
+    private func sendConversationMessage(_ msg: String, attachmentPaths: [String]) {
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-        // Attachment paths are already embedded in `msg`, but the composer
-        // state must outlive a failed durable submission: clear alongside
+        // Attachment paths are embedded in `msg` and recorded beside it, but the
+        // composer state must outlive a failed durable submission: clear alongside
         // `messageText` in each success branch, never up front, so a retry
         // from the retained composer rebuilds the message with its files.
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
@@ -4841,7 +4823,7 @@ struct TaskMainView: View {
         ])
         if isPlanMode {
             (messageText, attachedFiles) = ("", [])
-            sendPlanningMessage(msg, traceID: traceID)
+            sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID)
             return
         }
         if task.status == .queued {
@@ -4854,7 +4836,7 @@ struct TaskMainView: View {
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            TaskEventInsertionService.insert(userEvent, into: modelContext)
+            TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
                 "source": "chat_message"
@@ -4866,6 +4848,7 @@ struct TaskMainView: View {
             // on admission instead of inserting a duplicate message.
             let submission = TaskTurnSubmissionService.submit(
                 message: msg,
+                attachmentPaths: attachmentPaths,
                 for: task,
                 into: modelContext
             )
@@ -4902,13 +4885,13 @@ struct TaskMainView: View {
             )
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            TaskEventInsertionService.insert(event, into: modelContext)
+            TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
             messageText = ""
             attachedFiles = []
         }
     }
 
-    private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
+    private func sendPlanningMessage(_ msg: String, attachmentPaths: [String], traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
@@ -4917,7 +4900,7 @@ struct TaskMainView: View {
 
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
-        TaskEventInsertionService.insert(userEvent, into: modelContext)
+        TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -176,7 +177,7 @@ struct TaskInputMaterializerTests {
 
         // The launch reads attachments back out of the persisted text: it must find the copy.
         let message = TaskComposerCoordinator.composedMessage(messageText: "What changed here?", attachedFiles: paths)
-        #expect(AgentRuntimeAttachmentProjection.attachmentBlockPaths(in: message) == [durable, userFile])
+        #expect(TaskAttachmentBlock.paths(in: message) == [durable, userFile])
         #expect(!message.contains(paste))
 
         // Sending again, e.g. after a failed send, reuses the copy instead of making another.
