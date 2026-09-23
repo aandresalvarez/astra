@@ -4769,7 +4769,7 @@ struct TaskMainView: View {
         case .message:
             // Recomposed once the send is certain, naming durable copies of pastes and image drops.
             let attachments = TaskInputMaterializer.durableAttachmentPaths(attachedFiles, for: task)
-            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments))
+            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments), attachmentPaths: attachments)
         }
     }
 
@@ -4819,13 +4819,13 @@ struct TaskMainView: View {
         threadViewModel.refreshSnapshot(for: task)
     }
 
-    private func sendConversationMessage(_ msg: String) {
+    private func sendConversationMessage(_ msg: String, attachmentPaths: [String]) {
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
             return
         }
-        // Attachment paths are already embedded in `msg`, but the composer
-        // state must outlive a failed durable submission: clear alongside
+        // Attachment paths are embedded in `msg` and recorded beside it, but the
+        // composer state must outlive a failed durable submission: clear alongside
         // `messageText` in each success branch, never up front, so a retry
         // from the retained composer rebuilds the message with its files.
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
@@ -4839,7 +4839,7 @@ struct TaskMainView: View {
         ])
         if isPlanMode {
             (messageText, attachedFiles) = ("", [])
-            sendPlanningMessage(msg, traceID: traceID)
+            sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID)
             return
         }
         if task.status == .queued {
@@ -4853,6 +4853,7 @@ struct TaskMainView: View {
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(userEvent, into: modelContext)
+            TaskEventInsertionService.insertAttachments(of: userEvent, paths: attachmentPaths, into: modelContext)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
                 "source": "chat_message"
@@ -4864,6 +4865,7 @@ struct TaskMainView: View {
             // on admission instead of inserting a duplicate message.
             let submission = TaskTurnSubmissionService.submit(
                 message: msg,
+                attachmentPaths: attachmentPaths,
                 for: task,
                 into: modelContext
             )
@@ -4901,12 +4903,13 @@ struct TaskMainView: View {
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, into: modelContext)
+            TaskEventInsertionService.insertAttachments(of: event, paths: attachmentPaths, into: modelContext)
             messageText = ""
             attachedFiles = []
         }
     }
 
-    private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
+    private func sendPlanningMessage(_ msg: String, attachmentPaths: [String], traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             recordForkReadOnlyBlock(readOnlyReason)
@@ -4916,6 +4919,7 @@ struct TaskMainView: View {
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
         TaskEventInsertionService.insert(userEvent, into: modelContext)
+        TaskEventInsertionService.insertAttachments(of: userEvent, paths: attachmentPaths, into: modelContext)
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
