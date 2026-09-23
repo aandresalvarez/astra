@@ -20,38 +20,233 @@ struct MissionControlPresentationTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeMissionControlContainer()
         let context = ModelContext(container)
-        let workspace = Workspace(name: "Mission Snapshot", primaryPath: root)
-        let task = AgentTask(title: "Snapshot task", goal: "Summarize mission snapshot", workspace: workspace)
-        task.status = .completed
-        context.insert(workspace)
-        context.insert(task)
-        let run = TaskRun(task: task)
-        run.status = .completed
-        run.setOutput("Finished.")
-        task.runs = [run]
-        context.insert(run)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
 
         TaskContextStateManager.refresh(task: task)
 
-        let snapshot = TaskMissionControlSnapshot.build(
+        let source = TaskMissionControlSnapshot.Source.load(
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            taskID: task.id
+        )
+        let snapshot = TaskMissionControlSnapshot.build(task: task, planState: .empty, source: source)
+
+        // The load resolves the same folder the view used to `stat` per pass.
+        #expect(source.taskFolder == TaskWorkspaceAccess(task: task).taskFolder)
+        #expect(source.state != nil)
+        #expect(snapshot.taskID == task.id)
+        #expect(snapshot.taskFolder == source.taskFolder)
+        #expect(snapshot.presentation?.objective == "Summarize mission snapshot")
+
+        let request = TaskMissionControlSnapshot.verificationLoadRequest(
             task: task,
-            planState: TaskPlanState.empty,
+            taskFolder: snapshot.taskFolder,
             isFinished: true
         )
-
-        #expect(!snapshot.taskFolder.isEmpty)
-        #expect(snapshot.state != nil)
-        #expect(snapshot.presentation?.objective == "Summarize mission snapshot")
-        #expect(snapshot.verificationLoadRequest?.taskID == task.id)
-        #expect(snapshot.verificationLoadRequest?.taskStatus == .completed)
-        #expect(snapshot.verificationLoadRequest?.taskFolder == snapshot.taskFolder)
-
-        let runningSnapshot = TaskMissionControlSnapshot.build(
+        #expect(request?.taskID == task.id)
+        #expect(request?.taskStatus == .completed)
+        #expect(request?.taskUpdatedAt == task.updatedAt)
+        #expect(request?.taskFolder == snapshot.taskFolder)
+        #expect(TaskMissionControlSnapshot.verificationLoadRequest(
             task: task,
-            planState: TaskPlanState.empty,
+            taskFolder: snapshot.taskFolder,
             isFinished: false
-        )
-        #expect(runningSnapshot.verificationLoadRequest == nil)
+        ) == nil)
+        // Before the first rebuild lands the cache has no folder to offer.
+        #expect(TaskMissionControlSnapshot.verificationLoadRequest(
+            task: task,
+            taskFolder: TaskMissionControlSnapshot.empty.taskFolder,
+            isFinished: true
+        ) == nil)
+    }
+
+    /// The mission-control cache is keyed on model scalars and cannot see
+    /// `current_state.json`. This signal is how a turn recorded at the end of a
+    /// run — or any refresh that rewrites the file — reaches the dock.
+    @Test("recording a turn announces the state save that invalidates mission control")
+    func recordingATurnAnnouncesTheStateSave() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        let run = try #require(task.runs.first)
+        let taskID = task.id
+        var saves = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: .taskContextStateDidSave,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard (notification.object as? TaskContextStateSave)?.taskID == taskID else { return }
+            saves += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Summarize the mission")
+        #expect(saves == 1)
+
+        // Once settled, a refresh with nothing new skips the write, and the
+        // signal with it; otherwise every task open would reload the dock.
+        TaskContextStateManager.refresh(task: task)
+        let settled = saves
+        TaskContextStateManager.refresh(task: task)
+        #expect(saves == settled)
+
+        // A failed write leaves the previous file in place: nothing to reload.
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        let failed = TaskContextStateManager.saveState(state, taskFolder: "/dev/null/unwritable", taskID: taskID)
+        #expect(!failed.didSave)
+        #expect(saves == settled)
+
+        // The Markdown twin is written second, so failing it arrives with the
+        // JSON already replaced: `didSave` is false, but the cache is stale.
+        let markdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+        try FileManager.default.removeItem(atPath: markdownPath)
+        try FileManager.default.createDirectory(atPath: markdownPath, withIntermediateDirectories: false)
+        let markdownFailed = TaskContextStateManager.saveState(state, taskFolder: folder, taskID: taskID)
+        #expect(markdownFailed.status == .writeMarkdownFailed)
+        #expect(saves == settled + 1)
+    }
+
+    /// The rebuild's read runs off the main actor but stays attached to the
+    /// `.task(id:)` that asked for it, so a rebuild superseded before its read
+    /// began does no I/O. A detached task would have finished every one.
+    @Test("a superseded mission-control load skips the read")
+    func supersededMissionControlLoadSkipsTheRead() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        TaskContextStateManager.refresh(task: task)
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let taskID = task.id
+
+        let live = await TaskMissionControlSnapshot.Source.loaded(workspacePath: workspacePath, taskID: taskID)
+        #expect(live?.state != nil)
+
+        let superseded = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await TaskMissionControlSnapshot.Source.loaded(workspacePath: workspacePath, taskID: taskID)
+        }.value
+        #expect(superseded == nil)
+    }
+
+    /// After the view's own context refresh the snapshot reloads through the
+    /// save announcement, or not at all, except when it was read from a folder
+    /// the task no longer resolves to and nothing was saved. That is judged
+    /// against the cache, not the folder before the refresh: a refresh
+    /// cancelled after migrating never reports it, and the one replacing it
+    /// starts from the new folder. An empty cache is not stale; its first load
+    /// has not landed, and checks its own folder when it does.
+    @Test("only a snapshot read from a moved folder is stale after an unannounced refresh")
+    func onlyAnUnannouncedMigrationLeavesTheSnapshotStale() {
+        let canonical = "/workspace/.astra/tasks/T1"
+        let legacy = "/workspace/tasks/T1"
+
+        // An ordinary open: the snapshot was read from where the task is.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, cachedFolder: canonical, currentFolder: canonical
+        ))
+        // A task just opened, whose first load is still in flight.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, cachedFolder: "", currentFolder: canonical
+        ))
+        // Read from the legacy folder, which has since migrated, by this
+        // refresh or an earlier one that was cancelled: only a reload brings
+        // the cache along.
+        #expect(TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: false, cachedFolder: legacy, currentFolder: canonical
+        ))
+        // Migrated and saved: the announcement already reloads it.
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: true, cachedFolder: legacy, currentFolder: canonical
+        ))
+        #expect(!TaskMissionControlSnapshot.contextRefreshLeftSnapshotStale(
+            announcedSave: true, cachedFolder: canonical, currentFolder: canonical
+        ))
+    }
+
+    /// The presentation asks only whether a task has events, when it has no
+    /// state file to go on. Keying the exact count rebuilt the snapshot, and
+    /// reread the file, on every event a streaming run records.
+    @Test("mission control key tracks whether events exist, not how many")
+    func missionControlKeyTracksEventPresenceNotCount() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        let first = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "First")
+        let second = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "Second")
+        context.insert(first)
+        context.insert(second)
+
+        func key(_ events: [TaskEvent]) -> TaskMissionControlSnapshot.Inputs {
+            let thread = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: events, runs: task.runs)
+            return TaskMissionControlSnapshot.Inputs(task: task, thread: thread, planState: .empty, stateRevision: 0)
+        }
+
+        #expect(key([first]) == key([first, second]))
+        #expect(key([]) != key([first]))
+    }
+
+    /// `body` re-runs on every keystroke in the composer, and `.task(id:)`
+    /// rebuilds the snapshot only when its key changes. So the key has to
+    /// compare equal across passes that moved nothing it names, without
+    /// reading the file to find that out, and the save signal has to be what
+    /// moves it when only the file changed.
+    @Test("mission control key holds across unrelated passes and moves on a state save")
+    func missionControlKeyHoldsAcrossUnrelatedPassesAndMovesOnStateSave() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let task = makeFinishedSnapshotTask(root: root, context: context)
+        TaskContextStateManager.refresh(task: task)
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let taskID = task.id
+        // Stands in for `TaskContextStateSaveObserver`, which does this for the view.
+        var stateRevision = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: .taskContextStateDidSave,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard (notification.object as? TaskContextStateSave)?.taskID == taskID else { return }
+            stateRevision += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let key = TaskMissionControlSnapshot.Inputs(task: task, thread: nil, planState: .empty, stateRevision: stateRevision)
+        let source = await Task.detached {
+            TaskMissionControlSnapshot.Source.load(workspacePath: workspacePath, taskID: taskID)
+        }.value
+        let snapshot = TaskMissionControlSnapshot.build(task: task, planState: .empty, source: source)
+        #expect(snapshot.presentation?.nextAction == "Review the result, approve it, or ask a follow-up.")
+
+        // Only the file moves; the model is untouched.
+        var edited = try #require(source.state)
+        edited.nextLikelyAction = "Ship the reviewed draft."
+        #expect(TaskContextStateManager.saveState(edited, taskFolder: source.taskFolder, taskID: taskID).didSave)
+
+        // A pass that changed nothing the key names — a keystroke — compares
+        // equal even though the file on disk no longer matches the cache.
+        #expect(TaskMissionControlSnapshot.Inputs(task: task, thread: nil, planState: .empty, stateRevision: 0) == key)
+        // The save is what moves it...
+        #expect(stateRevision == 1)
+        #expect(TaskMissionControlSnapshot.Inputs(task: task, thread: nil, planState: .empty, stateRevision: stateRevision) != key)
+        // ...and the rebuild that follows reads the new file.
+        let reloaded = await Task.detached {
+            TaskMissionControlSnapshot.Source.load(workspacePath: workspacePath, taskID: taskID)
+        }.value
+        let rebuilt = TaskMissionControlSnapshot.build(task: task, planState: .empty, source: reloaded)
+        #expect(rebuilt.presentation?.nextAction == "Ship the reviewed draft.")
+
+        // The model fields the presentation reads still move it on their own.
+        task.status = .failed
+        #expect(TaskMissionControlSnapshot.Inputs(task: task, thread: nil, planState: .empty, stateRevision: 0) != key)
     }
 
     @Test("mission control summarizes source-backed validation and correction state")
@@ -145,6 +340,20 @@ struct MissionControlPresentationTests {
         ))
 
         #expect(presentation.budgetSummary == nil)
+    }
+
+    private func makeFinishedSnapshotTask(root: String, context: ModelContext) -> AgentTask {
+        let workspace = Workspace(name: "Mission Snapshot", primaryPath: root)
+        let task = AgentTask(title: "Snapshot task", goal: "Summarize mission snapshot", workspace: workspace)
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.setOutput("Finished.")
+        task.runs = [run]
+        context.insert(run)
+        return task
     }
 
     private func temporaryRoot() throws -> String {

@@ -187,15 +187,10 @@ public enum AgentTaskForkService {
                 return event.timestamp <= cutoffDate
             }
             .sorted(by: eventOrdering)
-        // Attachments are only trusted from user-authored turns; plan-mode
-        // chat stores them under its own event type.
-        let userAuthoredMessageTypes: Set<String> = [
-            TaskEventTypes.Conversation.userMessage.rawValue,
-            TaskPlanConversationEventTypes.userMessage
-        ]
-        let attachments = attachmentPaths(in: eventsToFork.filter {
-            userAuthoredMessageTypes.contains($0.type)
-        })
+        // The ledger trusts only user-authored turns, including plan-mode chat.
+        let attachments = deduplicatedPaths(
+            TaskAttachmentLedger.entries(in: eventsToFork.map(TaskAttachmentLedger.EventFacts.init)).map(\.path)
+        )
         let forkedWorkspacePath = forked.workspace?.primaryPath ?? ""
         let forkFolder = TaskFolderResolvingSeam.required.taskFolder(
             workspacePath: forkedWorkspacePath,
@@ -275,7 +270,18 @@ public enum AgentTaskForkService {
             forked.inputs = deduplicatedPaths(forked.inputs + attachments)
         }
 
-        var copiedEvents: [TaskEvent] = eventsToFork.map { sourceEvent in
+        // An attachment record only travels with its message: a follow-up
+        // queued during the checkpoint run can land on the fork's side of the
+        // cutoff while the message it belongs to does not.
+        let forkedMessageIDs = Set(eventsToFork.filter {
+            TaskAttachmentLedger.userAuthoredMessageTypes.contains($0.type)
+        }.map(\.id))
+        let eventsToCopy = eventsToFork.filter { event in
+            guard event.type == TaskEventTypes.Conversation.attachments.rawValue else { return true }
+            return TaskAttachmentsPayloadV1.decoded(from: event.payload)
+                .map { forkedMessageIDs.contains($0.messageEventID) } ?? false
+        }
+        var copiedEvents: [TaskEvent] = eventsToCopy.map { sourceEvent in
             let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
             let rewrittenPayload = TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
             let newEvent = TaskEvent(
@@ -290,6 +296,7 @@ public enum AgentTaskForkService {
             newEvent.teamName = sourceEvent.teamName
             return newEvent
         }
+        remapAttachmentRecords(from: eventsToCopy, into: copiedEvents, using: manifestPathMapping)
 
         copiedEvents.append(TaskEvent(
             task: forked,
@@ -330,19 +337,25 @@ public enum AgentTaskForkService {
         return lhs.id.uuidString < rhs.id.uuidString
     }
 
-    private static func attachmentPaths(in events: [TaskEvent]) -> [String] {
-        var seen: Set<String> = []
-        return events.flatMap { event -> [String] in
-            guard let markerRange = event.payload.range(of: "Attached files:\n") else { return [] }
-            return event.payload[markerRange.upperBound...]
-                .split(separator: "\n")
-                .compactMap { line in
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmed.hasPrefix("- ") else { return nil }
-                    let path = String(trimmed.dropFirst(2))
-                    guard !path.isEmpty, seen.insert(path).inserted else { return nil }
-                    return path
-                }
+    /// Points each copied attachment record at the fork's copy of its message
+    /// and at the fork's copies of its files. The payload is JSON with escaped
+    /// slashes, which the text rewrite applied to other payloads cannot match.
+    private static func remapAttachmentRecords(
+        from sourceEvents: [TaskEvent],
+        into copiedEvents: [TaskEvent],
+        using pathMapping: [String: String]
+    ) {
+        let copiedIDsBySourceID = Dictionary(
+            zip(sourceEvents.map(\.id), copiedEvents.map(\.id)),
+            uniquingKeysWith: { first, _ in first }
+        )
+        for (source, copy) in zip(sourceEvents, copiedEvents)
+        where source.type == TaskEventTypes.Conversation.attachments.rawValue {
+            guard let payload = TaskAttachmentsPayloadV1.decoded(from: source.payload),
+                  let messageID = copiedIDsBySourceID[payload.messageEventID] else { continue }
+            copy.payload = TaskEvent.payloadString(payload.remapped(messageEventID: messageID) {
+                TaskForkPathRewriter.rewrite($0, using: pathMapping)
+            })
         }
     }
 

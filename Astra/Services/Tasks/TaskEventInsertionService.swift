@@ -50,6 +50,15 @@ enum TaskEventInsertionService {
         publishInsertion(for: event)
     }
 
+    /// Inserts a user message and, when files were attached to it, the typed
+    /// `user.attachments` record of them beside it.
+    static func insert(_ messageEvent: TaskEvent, attachmentPaths: [String], into modelContext: ModelContext) {
+        insert(messageEvent, into: modelContext)
+        if let attachments = TaskEvent.attachmentsEvent(for: messageEvent, paths: attachmentPaths) {
+            insert(attachments, into: modelContext)
+        }
+    }
+
     /// Publishes only after a caller has made the event durable. Most legacy
     /// insertions use `insert`; atomic multi-record transactions use this
     /// method after `ModelContext.save()` succeeds.

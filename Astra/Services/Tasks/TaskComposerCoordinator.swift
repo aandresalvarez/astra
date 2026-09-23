@@ -120,9 +120,7 @@ enum TaskComposerCoordinator {
     /// The text a conversation message persists and sends: the typed text,
     /// then one `Attached files:` block listing each attachment.
     static func composedMessage(messageText: String, attachedFiles: [String]) -> String {
-        guard !attachedFiles.isEmpty else { return messageText }
-        let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
-        return messageText + "\n\nAttached files:\n\(fileList)"
+        TaskAttachmentBlock.message(messageText, attaching: attachedFiles)
     }
 
     static func runtimeUpdate(

@@ -64,6 +64,9 @@ public enum TaskEventTypes {
         public static let agentThinking: TaskEventType = "agent.thinking"
         public static let planUserMessage: TaskEventType = "plan.user.message"
         public static let planAssistantMessage: TaskEventType = "plan.assistant.message"
+        /// The typed record of the files attached to one user message; its
+        /// payload is `TaskAttachmentsPayloadV1`.
+        public static let attachments: TaskEventType = "user.attachments"
     }
 
     public enum ExecutionRequest {
@@ -280,7 +283,8 @@ public enum TaskEventTypes {
         Conversation.agentResponse,
         Conversation.agentThinking,
         Conversation.planUserMessage,
-        Conversation.planAssistantMessage
+        Conversation.planAssistantMessage,
+        Conversation.attachments
     ]
 
     private static let toolTypes: Set<TaskEventType> = [

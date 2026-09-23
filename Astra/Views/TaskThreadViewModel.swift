@@ -134,6 +134,8 @@ final class TaskThreadViewModel {
 
     private(set) var snapshot: TaskThreadSnapshot?
     private(set) var generatedFilePaths: [String] = []
+    /// The folder `generatedFilePaths` was last listed from.
+    private(set) var generatedFilesFolder = ""
     /// Advances only when a non-placeholder snapshot has been applied. Views use
     /// this cheap revision to distinguish the initial shell from a transcript
     /// that is ready to lay out.
@@ -1393,6 +1395,7 @@ final class TaskThreadViewModel {
 
     func refreshGeneratedFiles(folder: String) {
         generatedFilesTask?.cancel()
+        generatedFilesFolder = folder
 
         guard !folder.isEmpty else {
             generatedFilePaths = []
