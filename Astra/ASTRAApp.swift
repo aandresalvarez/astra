@@ -925,13 +925,15 @@ public struct ASTRAApp: App {
             taskHolds: { try WorktreeTaskUsage.allHolds(in: modelContext) },
             workspaceRoots: {
                 WorktreeTaskUsage.protectedWorkspacePaths(of: try modelContext.fetch(FetchDescriptor<Workspace>()))
+            },
+            workspaces: {
+                try modelContext.fetch(FetchDescriptor<Workspace>()).map {
+                    WorktreeStorageWorkspacePaths(primaryPath: $0.primaryPath, additionalPaths: $0.additionalPaths)
+                }
             }
         )
         service.startObservingTaskCompletion()
-        let workspaces = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).map {
-            WorktreeStorageWorkspacePaths(primaryPath: $0.primaryPath, additionalPaths: $0.additionalPaths)
-        }
-        service.scheduleLaunchPass(workspaces: workspaces)
+        service.scheduleLaunchPass()
     }
 
     /// Guards `runDeferredStartupMigrations`. Separate from

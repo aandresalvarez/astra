@@ -23,10 +23,10 @@ struct WorktreeStorageHeader: View {
                 Spacer(minLength: 8)
                 status
             }
-            if let manual = storage.lastManualReclaim {
+            if let manual = storage.lastReclaim(.manual, among: worktrees) {
                 manualSummary(manual)
             }
-            if let automatic = storage.lastAutomaticReclaim {
+            if let automatic = storage.lastReclaim(.automatic, among: worktrees) {
                 Text("Reclaimed \(WorktreeStorageFormat.bytes(automatic.freedBytes)) from \(Self.worktreeCount(automatic.reclaimedWorktreeCount, idle: true)) · \(Self.when(automatic.finishedAt))")
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)

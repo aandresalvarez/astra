@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 /// One claim on a checkout, captured on the main actor so the rest of an
 /// evaluation can run anywhere.
@@ -34,9 +35,11 @@ struct WorktreeTaskHold: Equatable, Sendable {
 /// removal and artifact reclamation.
 ///
 /// A task claims the checkout it is pinned to (`executionRootPath`), or, only
-/// while it is queued or running unpinned, its workspace's active worktree. A
-/// queued follow-up turn claims the path its request captured when it was
-/// submitted, which is where it will run even if the task is re-pinned. A
+/// while it is queued or running unpinned, its workspace's active worktree.
+/// While it executes it also claims every folder the runtime lets it write
+/// (its workspace's additional paths). A queued follow-up turn claims the path
+/// its request captured when it was submitted, where it will run even if the
+/// task is re-pinned, plus the workspace resources the request claimed. A
 /// claim anywhere inside a worktree counts, except inside another worktree
 /// nested in it. The worktree is *in use* while a claiming task isn't terminal
 /// (draft, queued, running, pending user) or a follow-up still waits.
@@ -45,17 +48,31 @@ enum WorktreeTaskUsage {
     @MainActor
     static func holds(from tasks: some Sequence<AgentTask>) -> [WorktreeTaskHold] {
         var canonical = CanonicalPathMemo()
-        return tasks.compactMap { task in
-            guard let root = rootPath(of: task) else { return nil }
-            return WorktreeTaskHold(
-                taskTitle: task.title,
-                rootPath: root,
-                isTerminal: task.isTerminal,
-                hasActiveTurnRequest: false,
-                updatedAt: task.updatedAt,
-                canonicalRootPath: canonical[root]
-            )
+        return tasks.flatMap { task in
+            claimedPaths(of: task).map { path in
+                WorktreeTaskHold(
+                    taskTitle: task.title,
+                    rootPath: path,
+                    isTerminal: task.isTerminal,
+                    hasActiveTurnRequest: false,
+                    updatedAt: task.updatedAt,
+                    canonicalRootPath: canonical[path]
+                )
+            }
         }
+    }
+
+    /// Every path a task claims: where it runs code, plus, while it is
+    /// queued or running, the folders the runtime lets it write.
+    @MainActor
+    static func claimedPaths(of task: AgentTask) -> [String] {
+        var paths = rootPath(of: task).map { [$0] } ?? []
+        if task.status == .running || task.status == .queued {
+            for writable in TaskWorkspaceAccess(task: task).runtimeWritablePaths where !paths.contains(writable) {
+                paths.append(writable)
+            }
+        }
+        return paths
     }
 
     /// Reason reported when task state can't be read. Callers fail closed on
@@ -71,18 +88,23 @@ enum WorktreeTaskUsage {
         let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let requests = try TaskTurnRequestRepository.allActiveRequests(in: modelContext)
         var canonical = CanonicalPathMemo()
-        let requestHolds: [WorktreeTaskHold] = requests.compactMap { request in
+        let requestHolds: [WorktreeTaskHold] = requests.flatMap { request -> [WorktreeTaskHold] in
             let task = tasksByID[request.taskID]
             let captured = request.executionPolicySnapshot?.executionRootPath.flatMap { $0.isEmpty ? nil : $0 }
-            guard let root = captured ?? task.flatMap(rootPath(of:)) else { return nil }
-            return WorktreeTaskHold(
-                taskTitle: task?.title ?? "a queued turn",
-                rootPath: root,
-                isTerminal: task?.isTerminal ?? true,
-                hasActiveTurnRequest: true,
-                updatedAt: task?.updatedAt ?? request.submittedAt,
-                canonicalRootPath: canonical[root]
-            )
+            var paths = (captured ?? task.flatMap(rootPath(of:))).map { [$0] } ?? []
+            for claim in request.resourceClaims where claim.kind == .workspace && !claim.key.isEmpty && !paths.contains(claim.key) {
+                paths.append(claim.key)
+            }
+            return paths.map { path in
+                WorktreeTaskHold(
+                    taskTitle: task?.title ?? "a queued turn",
+                    rootPath: path,
+                    isTerminal: task?.isTerminal ?? true,
+                    hasActiveTurnRequest: true,
+                    updatedAt: task?.updatedAt ?? request.submittedAt,
+                    canonicalRootPath: canonical[path]
+                )
+            }
         }
         return holds(from: tasks) + requestHolds
     }

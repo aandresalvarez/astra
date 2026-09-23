@@ -213,9 +213,12 @@ and no test covers it. When moving it:
 - Also count as in use:
   - a worktree an unpinned task is running or queued in, via its workspace's
     `activeWorkingPath`;
+  - while a task is queued or running, every folder the runtime lets it
+    write (`TaskWorkspaceAccess.runtimeWritablePaths`);
   - an active `TaskTurnRequest`, at the path its execution-policy snapshot
-    captured, because queuing a follow-up doesn't change a finished task's
-    status and the turn runs where it was captured.
+    captured, plus its `.workspace` resource claims, because queuing a
+    follow-up doesn't change a finished task's status and the turn runs where
+    it was captured.
 - Automatic mode also keeps each workspace's selected worktree
   (`activeWorkingPath`), like its configured roots.
 - Read task claims again immediately before deleting: a pass can spend
@@ -269,7 +272,11 @@ enough), the pass schedules a one-shot recheck for that moment (the policy's
 `recheckAt`), and a finished task schedules one at now + threshold. Without it,
 "idle for 48 h reclaims without user action" would wait for the next launch.
 The launch pass starts 2 minutes after launch so it doesn't compete with
-startup work.
+startup work, and it reads the workspace list when it fires. A repository the
+panel shows that no automatic pass has covered yet (a workspace added or
+imported after launch) gets its own pass after the same delay.
+Reclaim summaries record the worktrees they covered. A repository's sheet
+shows only its own.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,

@@ -100,7 +100,7 @@ struct WorktreeReclaimServiceTests {
         #expect(summary.freedBytes >= 300_000)
         #expect(summary.reclaimedWorktreeCount == 1)
         #expect(summary.kept == [.init(worktreeName: "main", reason: "Primary checkout")])
-        #expect(setup.service.lastAutomaticReclaim == summary)
+        #expect(setup.service.lastReclaim(.automatic, among: setup.worktrees) == summary)
         #expect(setup.service.statuses[setup.linked.path]?.report.artifactBytes == 0)
     }
 
@@ -114,7 +114,7 @@ struct WorktreeReclaimServiceTests {
 
         #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
         #expect(summary.freedBytes == 0)
-        #expect(setup.service.lastAutomaticReclaim == nil)
+        #expect(setup.service.lastReclaim(.automatic, among: setup.worktrees) == nil)
         #expect(setup.service.pendingRecheckDates.isEmpty)
     }
 
@@ -148,7 +148,7 @@ struct WorktreeReclaimServiceTests {
 
         #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
         #expect(summary.kept.contains(.init(worktreeName: "feature", reason: "In use by task “Fix login”")))
-        #expect(setup.service.lastManualReclaim == summary)
+        #expect(setup.service.lastReclaim(.manual, among: setup.worktrees) == summary)
     }
 
     @Test("The Reclaim button includes the primary checkout")
@@ -542,6 +542,65 @@ struct WorktreeReclaimServiceTests {
         await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: 600)
 
         #expect(setup.service.measuredWorktreeCount == 2)
+    }
+
+    @Test("A repository's sheet shows only its own reclaim results")
+    func summariesStayWithTheirRepository() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        _ = await setup.service.reclaimNow(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        let elsewhere = GitWorktreeInfo(path: "/repos/other", branch: "main", head: "o1", isPrimary: true,
+                                        isDetached: false, isLocked: false, isPrunable: false)
+        #expect(setup.service.lastReclaim(.manual, among: setup.worktrees) != nil)
+        #expect(setup.service.lastReclaim(.manual, among: [elsewhere]) == nil)
+    }
+
+    @Test("A repository first seen after the launch pass gets its own automatic pass")
+    func newRepositoryGetsAutomaticPass() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let other = try setup.fixture.directory("other")
+        let otherWorktree = GitWorktreeInfo(path: other, branch: "main", head: "o1", isPrimary: true,
+                                            isDetached: false, isLocked: false, isPrunable: false)
+
+        setup.service.reconcile(repoPath: other, worktrees: [otherWorktree])
+        #expect(!setup.service.hasScheduledRepositoryPass(other), "the launch pass covers it")
+
+        await setup.service.runLaunchPass(workspaces: [
+            WorktreeStorageWorkspacePaths(primaryPath: setup.primary.path, additionalPaths: [])
+        ])
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        #expect(!setup.service.hasScheduledRepositoryPass(setup.primary.path), "already covered")
+
+        setup.service.reconcile(repoPath: other, worktrees: [otherWorktree])
+        #expect(setup.service.hasScheduledRepositoryPass(other))
+    }
+
+    @Test("The launch pass reads the workspace list when it fires")
+    func launchPassReadsCurrentWorkspaces() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let reads = CallCounter()
+        let primaryPath = setup.primary.path
+        setup.service.attach(
+            taskHolds: { [] },
+            workspaceRoots: { [] },
+            workspaces: {
+                _ = reads.increment()
+                return [WorktreeStorageWorkspacePaths(primaryPath: primaryPath, additionalPaths: [])]
+            }
+        )
+
+        setup.service.scheduleLaunchPass(delay: 0)
+        #expect(reads.increment() == 1, "nothing is read until the pass fires")
+        // The pass hops to a file-system queue, so yielding alone can't drain it.
+        for _ in 0..<4_000 where setup.service.hasScheduledLaunchPass {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(!setup.service.hasScheduledLaunchPass)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild), "the pass evaluated the workspace it read")
     }
 
     @Test("No worktree is ever removed, whatever the pass decides")

@@ -120,6 +120,50 @@ struct WorktreeTaskUsageScopeTests {
     }
 
     @MainActor
+    @Test("A running task's writable folders hold the worktrees they are in; a draft's don't")
+    func writablePathsHold() {
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app", additionalPaths: ["/worktrees/app/feature/packages/api"])
+        let running = AgentTask(title: "Build", goal: "Work", workspace: workspace)
+        running.executionRootPath = "/repos/app"
+        running.status = .running
+        let draft = AgentTask(title: "Later", goal: "Work", workspace: workspace)
+        draft.executionRootPath = "/repos/app"
+
+        #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/feature", holds: WorktreeTaskUsage.holds(from: [running]))
+            == "In use by task “Build”")
+        #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/feature", holds: WorktreeTaskUsage.holds(from: [draft])) == nil)
+    }
+
+    @MainActor
+    @Test("A queued follow-up's workspace resource claims hold their worktrees")
+    func requestClaimsHold() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let task = AgentTask(title: "Fix login", goal: "Fix it", workspace: workspace)
+        task.status = .completed
+        context.insert(task)
+        context.insert(TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [TaskExecutionResourceClaim(kind: .workspace, key: "/worktrees/app/shared", access: .exclusive)]
+        ))
+        try context.save()
+
+        let holds = try WorktreeTaskUsage.allHolds(in: context)
+
+        #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/shared", holds: holds)
+            == "Follow-up queued for task “Fix login”")
+        _ = container
+    }
+
+    @MainActor
     @Test("A queued follow-up holds the path it captured, even after the task is re-pinned")
     func followUpHoldsCapturedPath() throws {
         let container = try ModelContainer(
