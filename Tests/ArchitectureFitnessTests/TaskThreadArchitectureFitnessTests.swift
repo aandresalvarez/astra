@@ -399,6 +399,66 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(perPath.contains("relativePath(path, under: root)"))
     }
 
+    /// `TaskGeneratedFilesTrigger` is built in `TaskThreadChangeObserver.body`,
+    /// which re-runs with `TaskMainView.body` on every keystroke. It resolved
+    /// the task folder (a `stat`) and counted `task.artifacts` (a relationship
+    /// fault) each time. It is now scalars, and new rows arrive as an
+    /// announcement from the one service every row goes through. The last
+    /// check keeps it that way: a new place that gives a task artifacts has to
+    /// announce them, or be reviewed onto this list.
+    @Test("The generated-files trigger reads no folder and no relationship")
+    func generatedFilesTriggerStaysOffTheFilesystem() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let snapshot = try source("Astra/Views/TaskThreadSnapshot.swift", root: root)
+        let observers = try source("Astra/Views/TaskMainViewObservers.swift", root: root)
+        let service = try source("Astra/Services/Persistence/TaskArtifactPersistenceService.swift", root: root)
+
+        let trigger = try code(in: snapshot, from: "struct TaskGeneratedFilesTrigger: Equatable {", to: nil)
+        for forbidden in ["taskFolder", "task.artifacts", "task.events", "task.runs", "FileManager"] {
+            #expect(!trigger.contains(forbidden), "The generated-files trigger must not read \(forbidden)")
+        }
+        #expect(trigger.contains("effectiveWorkspacePath"))
+
+        // The observer turns the service's announcement into the trigger's
+        // revision, so a burst of rows still reaches the callback once per update.
+        #expect(observers.contains(".onReceive(NotificationCenter.default.publisher(for: .taskArtifactsDidChange))"))
+        #expect(observers.contains("artifactsRevision &+= 1"))
+        #expect(observers.contains("artifactsRevision: artifactsRevision"))
+
+        // Both entry points announce, and rows are only ever inserted from
+        // them: two definitions of `insertArtifact` and three calls.
+        #expect(service.components(separatedBy: "TaskArtifactChangeNotifier.post(taskID: task.id)").count - 1 == 2)
+        #expect(service.components(separatedBy: "insertArtifact(").count - 1 == 5)
+
+        // Outside the service, artifacts are only built for tasks no view has
+        // open yet: an import, a detached launch copy, a scratch fork manifest.
+        let reviewed: Set<String> = [
+            "Astra/Services/Persistence/TaskArtifactPersistenceService.swift",
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift",
+            "Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift",
+            "Astra/Services/Tasks/TaskForkManifestService.swift"
+        ]
+        let construction = try NSRegularExpression(pattern: #"\bArtifact\(\s*task:"#)
+        var builders = Set<String>()
+        let enumerator = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"),
+            includingPropertiesForKeys: nil
+        )
+        for case let url as URL in enumerator ?? FileManager.DirectoryEnumerator() where url.pathExtension == "swift" {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard construction.firstMatch(in: text, range: range) != nil else { continue }
+            builders.insert(String(url.path.dropFirst(root.path.count + 1)))
+        }
+        #expect(
+            builders == reviewed,
+            "New code gives a task artifacts outside TaskArtifactPersistenceService: \(builders.subtracting(reviewed).sorted())"
+        )
+    }
+
     @Test("Waiting-turn dock never preempts a live permission decision")
     func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
         let root = URL(fileURLWithPath: #filePath)

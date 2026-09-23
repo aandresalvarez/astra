@@ -1765,32 +1765,42 @@ struct TaskThreadSnapshotCache {
 /// task had 13,295 artifacts; a sample taken while the app sat idle found the
 /// main thread inside this initializer for 97% of its samples.
 ///
-/// So the content hash is gone and the row count stands in for it. What that
-/// still catches is every way the set of artifacts actually changes — rows
-/// added or removed — plus, through the run fields, the re-run that rewrites a
-/// path in place. What it gives up is a file deleted on disk behind the app's
-/// back, which only ever registered here by accident: this is a value read
-/// during a view update, not a filesystem watcher, so it noticed such a
-/// deletion at whatever moment something else happened to redraw.
+/// So the content hash went, and a row count stood in for it. Then the count
+/// went too: even counting faults the relationship on every keystroke, and the
+/// task folder the trigger also carried was a `stat` to resolve. What is left
+/// is scalars:
+///
+/// - `artifactsRevision` moves when rows are added, which is every way the set
+///   of artifacts changes (none are ever deleted). `TaskThreadChangeObserver`
+///   bumps it on `.taskArtifactsDidChange`, which
+///   `TaskArtifactPersistenceService` posts, and every row an existing task
+///   gains goes through that service.
+/// - The run fields catch the re-run that rewrites a path in place.
+/// - The workspace path stands in for the folder, which the callback resolves
+///   itself. A legacy folder migrating to the current layout moves the folder
+///   but not this; `TaskMainView.refreshTaskContextState`, where that
+///   migration happens, checks for it instead.
+///
+/// What it gives up is a file deleted on disk behind the app's back, which only
+/// ever registered here by accident: this is a value read during a view update,
+/// not a filesystem watcher, so it noticed such a deletion at whatever moment
+/// something else happened to redraw.
 struct TaskGeneratedFilesTrigger: Equatable {
     let taskID: UUID
-    let taskFolder: String
+    let workspacePath: String
     let latestRunID: UUID?
     let latestRunStatus: RunStatus?
     let latestRunFileChangesLength: Int
-    let artifactCount: Int
+    let artifactsRevision: Int
     let status: TaskStatus
 
-    init(task: AgentTask, latestRun: TaskRunSnapshot?) {
+    init(task: AgentTask, latestRun: TaskRunSnapshot?, artifactsRevision: Int) {
         taskID = task.id
-        taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
         latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
-        // Counting the relationship faults it once; reading a property off each
-        // element faults every row separately. Only the first is affordable
-        // here.
-        artifactCount = task.artifacts.count
+        self.artifactsRevision = artifactsRevision
         status = task.status
     }
 }

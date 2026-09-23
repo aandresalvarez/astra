@@ -836,6 +836,13 @@ struct TaskMainView: View {
         // Even when nothing was saved: resolving the folder can move it off
         // the legacy layout, and the mission-control cache holds its path.
         missionControlStateRevision &+= 1
+        // So does the generated-files list, which no key sees move: the
+        // trigger keys on the workspace path to stay out of the filesystem.
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        if folder != threadViewModel.generatedFilesFolder {
+            threadViewModel.refreshGeneratedFiles(folder: folder)
+            generatedFilesRevision &+= 1
+        }
     }
 
     private func scheduleVerificationPresentationRefresh() {
