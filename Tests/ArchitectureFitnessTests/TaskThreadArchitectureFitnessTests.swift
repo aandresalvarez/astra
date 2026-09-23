@@ -275,6 +275,91 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!outcomes.contains("task.runs"))
     }
 
+    /// `body` reads `messageText`, so it re-runs on every keystroke, and it
+    /// used to build `TaskMissionControlSnapshot` two or three times per pass:
+    /// each build a `stat` of the task folder plus a read and decode of
+    /// `current_state.json`, on the main thread. The snapshot is now a `@State`
+    /// cache rebuilt under `.task(id:)` from a key of scalars, the read happens
+    /// detached, and a save of the state file is what invalidates it.
+    @Test("Mission-control snapshot is cached, not read from disk per body pass")
+    func missionControlSnapshotIsNotReadPerBodyPass() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
+        let missionControl = try source("Astra/Views/TaskMainViewMissionControl.swift", root: root)
+        let snapshot = try source("Astra/Services/Tasks/TaskMissionControlSnapshot.swift", root: root)
+        let stateManager = try source("Astra/Services/Persistence/TaskContextStateManager.swift", root: root)
+
+        // Nothing `body` reaches builds the snapshot or reads the state file.
+        #expect(!taskMainView.contains("TaskMissionControlSnapshot.build("))
+        #expect(!taskMainView.contains("TaskContextStateManager.load("))
+        #expect(!taskMainView.contains("Source.load("))
+        #expect(taskMainView.contains("inputs: missionControlSnapshotInputs,"))
+        // The refresh is one `.modifier` call on `body`'s chain. With its
+        // closures inline, CI's compiler could not type-check the chain.
+        #expect(taskMainView.contains(".modifier(TaskMissionControlSnapshotRefresh("))
+        #expect(!taskMainView.contains("TaskContextStateSaveObserver("))
+
+        // The key compares values the view already holds: not `messageText`,
+        // no relationship faults, no filesystem, and not `updatedAt`, which
+        // every runtime event bumps. Comments are skipped because the
+        // rationale necessarily names what the code must not touch.
+        let inputs = try code(in: snapshot, from: "struct Inputs: Equatable {", to: "static func build(")
+        let key = try code(in: missionControl, from: "var missionControlSnapshotInputs:", to: "var missionControlPresentation:")
+        for forbidden in ["messageText", "task.artifacts", "task.events", "task.runs", ".taskFolder",
+                          "FileManager", "TaskContextStateManager", "updatedAt"] {
+            #expect(!inputs.contains(forbidden), "Snapshot inputs must not read \(forbidden)")
+            #expect(!key.contains(forbidden), "The snapshot key must not read \(forbidden)")
+        }
+        #expect(key.contains("stateRevision: missionControlStateRevision"))
+
+        // The load runs off the main actor in a loader cancelled with the
+        // `.task(id:)` — not a detached task, which would finish every
+        // superseded read — and the model is read only once it returns.
+        let recompute = try code(
+            in: missionControl,
+            from: "func recomputeMissionControlSnapshot() async {",
+            to: "func noteContextRefreshForMissionControl("
+        )
+        #expect(!recompute.contains("Task.detached("))
+        let load = try #require(recompute.range(of: "await TaskMissionControlSnapshot.Source.loaded("))
+        let build = try #require(recompute.range(of: "TaskMissionControlSnapshot.build("))
+        #expect(load.lowerBound < build.lowerBound)
+        let loader = try code(in: snapshot, from: "nonisolated static func loaded(", to: "struct Inputs: Equatable {")
+        let cancellation = try #require(loader.range(of: "guard !Task.isCancelled"))
+        let read = try #require(loader.range(of: "load(workspacePath:"))
+        #expect(cancellation.lowerBound < read.lowerBound)
+
+        // Invalidation: the only write of the file announces itself, and the
+        // view turns that announcement into the key's revision.
+        #expect(stateManager.components(separatedBy: "saveStateWithoutAudit(").count - 1 == 2)
+        #expect(stateManager.contains("TaskContextStateSaveNotifier.post(result, taskID: taskID)"))
+        let refresh = try code(in: missionControl, from: "struct TaskMissionControlSnapshotRefresh", to: nil)
+        #expect(refresh.contains(".task(id: inputs)"))
+        #expect(refresh.contains("TaskContextStateSaveObserver(taskID: inputs.taskID)"))
+        #expect(refresh.contains("stateRevision &+= 1"))
+        #expect(taskMainView.contains("stateRevision: $missionControlStateRevision,"))
+        // The view's own refresh adds a bump only for a folder that moved
+        // without a save; bumping on every refresh read a saved file twice.
+        // Whether the folder moved is judged against the folder from before
+        // the refresh, never the cache: on a task just opened the cache may not
+        // be filled yet, and an empty folder would read as a migration.
+        let beforeRefresh = try #require(taskMainView.range(of: "let folderBefore = TaskWorkspaceAccess(task: task).taskFolder"))
+        let refreshCall = try #require(taskMainView.range(of: "let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor("))
+        #expect(beforeRefresh.lowerBound < refreshCall.lowerBound)
+        #expect(taskMainView.contains("noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)"))
+        #expect(!taskMainView.contains("missionControlStateRevision &+= 1"))
+        let afterRefresh = try code(
+            in: missionControl,
+            from: "func noteContextRefreshForMissionControl(announcedSave: Bool, folderBefore: String) {",
+            to: "struct TaskMissionControlSnapshotRefresh"
+        )
+        #expect(afterRefresh.contains("contextRefreshLeftSnapshotStale("))
+        #expect(!afterRefresh.contains("missionControlSnapshotCache"))
+    }
+
     @Test("Waiting-turn dock never preempts a live permission decision")
     func waitingTurnDockNeverPreemptsALivePermissionDecision() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -386,5 +471,16 @@ struct TaskThreadArchitectureFitnessTests {
 
     private func source(_ relativePath: String, root: URL) throws -> String {
         try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// The non-comment lines between two markers (or to the end of `text`).
+    private func code(in text: String, from start: String, to end: String?) throws -> String {
+        let startRange = try #require(text.range(of: start))
+        let tail = text[startRange.lowerBound...]
+        let endIndex = try end.map { try #require(tail.range(of: $0)).lowerBound } ?? tail.endIndex
+        return tail[..<endIndex]
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
     }
 }

@@ -11,8 +11,12 @@ struct TaskMainViewCrashRegressionTests {
         #expect(source.contains("private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void)"))
         #expect(!source.contains(".onChange(of: task.id) {\n            PerformanceTelemetry.log(\"chat_open_selected_task\""))
         #expect(!source.contains(".onAppear {\n            PerformanceTelemetry.log(\"chat_open_selected_task\""))
-        #expect(source.contains("onSnapshotChange: {\n                    deferTaskViewMutation {"))
-        #expect(source.contains("onGeneratedFilesChange: {\n                    deferTaskViewMutation {"))
+        // The observer callbacks are methods, kept out of `body`'s modifier
+        // chain for the type-checker, and each defers before anything else.
+        #expect(source.contains("onSnapshotChange: { noteThreadSnapshotChange() }"))
+        #expect(source.contains("onGeneratedFilesChange: { noteGeneratedFilesChange() }"))
+        #expect(source.contains("private func noteThreadSnapshotChange() {\n        deferTaskViewMutation {"))
+        #expect(source.contains("private func noteGeneratedFilesChange() {\n        deferTaskViewMutation {"))
         #expect(source.contains(".onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in\n                    deferTaskViewMutation {"))
         #expect(source.contains(".onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in\n                    deferTaskViewMutation {"))
         #expect(!source.contains(".defaultScrollAnchor(.bottom)"))
