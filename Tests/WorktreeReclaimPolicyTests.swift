@@ -98,7 +98,7 @@ struct WorktreeReclaimPolicyTests {
              input: input(worktree(primary: true), idle: 30 * day, mode: .manual) { $0.mergeState = .merged; $0.isDirty = false },
              reclaims: true, suggestsRemoval: false, reason: "Reclaim requested"),
         Case(name: "workspace root is kept like the primary",
-             input: input { $0.isWorkspaceRoot = true }, reclaims: false, suggestsRemoval: false, reason: "Primary checkout"),
+             input: input { $0.isWorkspaceRoot = true }, reclaims: false, suggestsRemoval: false, reason: "Workspace checkout"),
         Case(name: "manual mode still keeps a worktree held by a task",
              input: input(mode: .manual) { $0.inUse = "In use by task “A”" },
              reclaims: false, suggestsRemoval: false, reason: "In use by task “A”"),

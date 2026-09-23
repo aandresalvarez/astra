@@ -459,6 +459,91 @@ struct WorktreeReclaimServiceTests {
         #expect(abs((status.idle ?? 0) - 3 * Self.day) < 60 * 60)
     }
 
+    @Test("A worktree selected in a workspace mid-pass keeps its artifacts")
+    func selectedMidPassIsKept() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let calls = CallCounter()
+        let linkedPath = setup.linked.path
+        setup.service.attach(
+            taskHolds: { [] },
+            // First read: the pass's snapshot. Second: the last look before deleting.
+            workspaceRoots: { calls.increment() == 1 ? [] : [linkedPath] }
+        )
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains(.init(worktreeName: "feature", reason: "Workspace checkout")))
+    }
+
+    @Test("Unreadable workspace state keeps everything in automatic mode")
+    func unreadableWorkspaceStateFailsClosed() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { throw CocoaError(.coderReadCorrupt) })
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(summary.freedBytes == 0)
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains(.init(worktreeName: "feature", reason: WorktreeReclaimService.unreadableWorkspaceStateReason)))
+    }
+
+    @Test("Turning automatic reclaim off stops a pass that is already running")
+    func turningOffMidPassStopsDeletion() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let calls = CallCounter()
+        let defaults = setup.defaults
+        setup.service.attach(
+            taskHolds: {
+                if calls.increment() == 2 { WorktreeStorageSettings.setAutomaticReclaimEnabled(false, in: defaults) }
+                return []
+            },
+            workspaceRoots: { [] }
+        )
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains(.init(worktreeName: "feature", reason: "Automatic reclaim turned off")))
+    }
+
+    @Test("A settings change schedules a fresh pass when on, and cancels work when off")
+    func settingsChangeReschedules() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        WorktreeStorageSettings.setAutomaticReclaimEnabled(false, in: setup.defaults)
+        await setup.service.runLaunchPass(workspaces: [
+            WorktreeStorageWorkspacePaths(primaryPath: setup.primary.path, additionalPaths: [])
+        ])
+        #expect(!setup.service.hasScheduledLaunchPass)
+
+        WorktreeStorageSettings.setAutomaticReclaimEnabled(true, in: setup.defaults)
+        setup.service.automaticReclaimSettingsChanged()
+        #expect(setup.service.hasScheduledLaunchPass)
+
+        WorktreeStorageSettings.setAutomaticReclaimEnabled(false, in: setup.defaults)
+        setup.service.automaticReclaimSettingsChanged()
+        #expect(!setup.service.hasScheduledLaunchPass)
+        #expect(setup.service.pendingRecheckDates.isEmpty)
+    }
+
+    @Test("Opening the sheet while a measurement is queued doesn't measure twice")
+    func measurementsAreNotRepeated() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+
+        // The panel's refresh queues a measurement of new worktrees, and the
+        // sheet opening asks again before that one has run.
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: 600)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: 600)
+
+        #expect(setup.service.measuredWorktreeCount == 2)
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)

@@ -91,6 +91,8 @@ final class WorktreeReclaimService: ObservableObject {
 
     nonisolated static let measurementTTL: TimeInterval = 10 * 60
     nonisolated static let launchDelay: TimeInterval = 120
+    /// Debounces repeated setting changes before a pass runs.
+    private static let settingsChangeDelay: TimeInterval = 5
     /// Rechecks fire a little after the threshold so rounding never re-keeps.
     private static let recheckSlack: TimeInterval = 60
 
@@ -102,7 +104,14 @@ final class WorktreeReclaimService: ObservableObject {
     private let clock: () -> Date
     /// Throws when task state can't be read; a pass then keeps everything.
     private var taskHolds: @MainActor () throws -> [WorktreeTaskHold] = { [] }
-    private var workspaceRoots: @MainActor () -> [String] = { [] }
+    /// Throws when workspace state can't be read; automatic mode then keeps
+    /// everything, and no removal is suggested.
+    private var workspaceRoots: @MainActor () throws -> [String] = { [] }
+    /// Workspaces seen by the last launch pass, so a settings change can
+    /// schedule a fresh one.
+    private var knownWorkspaces: [WorktreeStorageWorkspacePaths] = []
+    /// Worktrees measured so far; lets tests prove work isn't repeated.
+    private(set) var measuredWorktreeCount = 0
     private var repoWorktreePaths: [String: Set<String>] = [:]
     private var passChain: Task<Void, Never>?
     private var rechecks: [String: Task<Void, Never>] = [:]
@@ -127,7 +136,7 @@ final class WorktreeReclaimService: ObservableObject {
     /// this once at launch with providers backed by its main model context.
     func attach(
         taskHolds: @escaping @MainActor () throws -> [WorktreeTaskHold],
-        workspaceRoots: @escaping @MainActor () -> [String]
+        workspaceRoots: @escaping @MainActor () throws -> [String]
     ) {
         self.taskHolds = taskHolds
         self.workspaceRoots = workspaceRoots
@@ -147,15 +156,32 @@ final class WorktreeReclaimService: ObservableObject {
     /// Launch trigger: after `delay`, finish interrupted reclaims and evaluate
     /// every workspace repository once.
     func scheduleLaunchPass(workspaces: [WorktreeStorageWorkspacePaths], delay: TimeInterval = launchDelay) {
+        knownWorkspaces = workspaces
         launchPass?.cancel()
         launchPass = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             await self?.runLaunchPass(workspaces: workspaces)
+            self?.launchPass = nil
         }
     }
 
+    /// True while a launch or settings-change pass is waiting to run.
+    var hasScheduledLaunchPass: Bool { launchPass != nil }
+
+    /// The settings card calls this after either setting changes. Turning
+    /// automatic reclaim off cancels scheduled rechecks, and a pass already
+    /// running re-reads the setting before it deletes anything. Turning it
+    /// on, or changing the threshold, schedules a fresh pass over every known
+    /// workspace, so the new rule applies without waiting for a relaunch.
+    func automaticReclaimSettingsChanged() {
+        cancelScheduledWork()
+        guard WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults), !knownWorkspaces.isEmpty else { return }
+        scheduleLaunchPass(workspaces: knownWorkspaces, delay: Self.settingsChangeDelay)
+    }
+
     func runLaunchPass(workspaces: [WorktreeStorageWorkspacePaths]) async {
+        knownWorkspaces = workspaces
         var repositories: [String] = []
         for workspace in workspaces {
             let scanned = await git.scanForGitRepositories(
@@ -220,14 +246,14 @@ final class WorktreeReclaimService: ObservableObject {
             statuses[removed] = nil
         }
         repoWorktreePaths[repoPath] = paths
-        let roots = Set(workspaceRoots().map(WorktreePath.canonical))
+        let roots = currentWorkspaceRoots()
         var stale: [GitWorktreeInfo] = []
         for worktree in worktrees where !measuringPaths.contains(worktree.path) {
             guard let status = statuses[worktree.path] else {
                 stale.append(worktree)
                 continue
             }
-            let isWorkspaceRoot = roots.contains(WorktreePath.canonical(worktree.path))
+            let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots)
             guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
             // Withdraw a "Merged · Remove" suggestion at once: it described a
             // HEAD, or a selection, that has changed. The refresh decides afresh.
@@ -255,14 +281,21 @@ final class WorktreeReclaimService: ObservableObject {
         maxAge: TimeInterval?,
         context: [GitWorktreeInfo]? = nil
     ) async {
-        let now = clock()
-        let stale = worktrees.filter { worktree in
-            guard let maxAge, let status = statuses[worktree.path] else { return true }
-            return now.timeIntervalSince(status.report.measuredAt) >= maxAge
-        }
-        guard !stale.isEmpty else { return }
+        let requestedAt = clock()
         _ = await enqueue {
-            await self.runPass(repoPath: repoPath, worktrees: stale, context: context ?? worktrees, mode: .manual, act: false)
+            // Decided when the pass runs, not when it's queued: a pass queued
+            // ahead of this one may already have measured these worktrees.
+            let now = self.clock()
+            let stale = worktrees.filter { worktree in
+                guard let status = self.statuses[worktree.path] else { return true }
+                if status.report.measuredAt >= requestedAt { return false }
+                guard let maxAge else { return true }
+                return now.timeIntervalSince(status.report.measuredAt) >= maxAge
+            }
+            guard !stale.isEmpty else {
+                return WorktreeReclaimSummary(mode: .manual, finishedAt: now, outcome: WorktreeReclaimOutcome(), kept: [], reclaimedWorktreeCount: 0)
+            }
+            return await self.runPass(repoPath: repoPath, worktrees: stale, context: context ?? worktrees, mode: .manual, act: false)
         }
     }
 
@@ -354,6 +387,7 @@ final class WorktreeReclaimService: ObservableObject {
         let allPaths = Array(Set(context.map(\.path) + paths))
         measuringPaths.formUnion(paths)
         defer { measuringPaths.subtract(paths) }
+        measuredWorktreeCount += paths.count
 
         let inspector = self.inspector
         let probe = reclaimer.probe
@@ -364,7 +398,7 @@ final class WorktreeReclaimService: ObservableObject {
         // Fail closed: if task state can't be read, every worktree counts as
         // in use for this pass.
         let holds = currentTaskHolds()
-        let roots = Set(workspaceRoots().map(WorktreePath.canonical))
+        let roots = currentWorkspaceRoots()
         let thresholds = WorktreeStorageSettings.thresholds(in: defaults)
         let defaultBranch = await git.getDefaultBaseBranch(at: repoPath, remote: nil)
         resolver.beginPass()
@@ -376,14 +410,15 @@ final class WorktreeReclaimService: ObservableObject {
         for (worktree, fact) in zip(worktrees, facts) {
             var input = WorktreeReclaimInput(
                 worktree: worktree,
-                isWorkspaceRoot: roots.contains(WorktreePath.canonical(worktree.path)),
+                isWorkspaceRoot: Self.isProtected(worktree.path, roots: roots),
                 artifactBytes: fact.report.artifactBytes,
                 lastActivity: preservedActivity(
                     worktree.path,
                     observed: await lastActivity(of: worktree, facts: fact, holds: holds ?? [], otherWorktreePaths: allPaths)
                 ),
                 buildSignal: fact.buildSignal,
-                inUse: inUseReason(worktree.path, holds: holds, otherWorktreePaths: allPaths),
+                inUse: inUseReason(worktree.path, holds: holds, otherWorktreePaths: allPaths)
+                    ?? (roots == nil && mode == .automatic ? Self.unreadableWorkspaceStateReason : nil),
                 mode: mode,
                 thresholds: thresholds,
                 now: now
@@ -416,19 +451,31 @@ final class WorktreeReclaimService: ObservableObject {
         }
 
         // Last look before anything is deleted: the pass awaited git and
-        // possibly GitHub, and a task may have started using a worktree since.
+        // possibly GitHub. Meanwhile a task may have started, the user may
+        // have selected one of these worktrees, or turned automatic reclaim off.
         var jobs: [ReclaimJob] = []
         if !candidates.isEmpty {
             let current = currentTaskHolds()
+            let currentRoots = mode == .automatic ? currentWorkspaceRoots() : []
+            let stillEnabled = mode == .manual || WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
             for job in candidates {
-                guard let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) else {
+                guard var input = inputs[job.worktree] else { continue }
+                if !stillEnabled {
+                    kept.append(.init(worktreeName: job.name, reason: "Automatic reclaim turned off"))
+                    continue
+                }
+                if let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) {
+                    input.inUse = reason
+                } else if mode == .automatic, Self.isProtected(job.worktree, roots: currentRoots) {
+                    input.isWorkspaceRoot = true
+                    if currentRoots == nil { input.inUse = Self.unreadableWorkspaceStateReason }
+                } else {
                     jobs.append(job)
                     continue
                 }
-                kept.append(.init(worktreeName: job.name, reason: reason))
-                if var input = inputs[job.worktree], let status = statuses[job.worktree] {
-                    input.inUse = reason
-                    inputs[job.worktree] = input
+                inputs[job.worktree] = input
+                kept.append(.init(worktreeName: job.name, reason: WorktreeReclaimPolicy.decide(input).reason))
+                if let status = statuses[job.worktree] {
                     publishStatus(status.worktree, report: status.report, input: input)
                 }
             }
@@ -521,6 +568,24 @@ final class WorktreeReclaimService: ObservableObject {
         recorded = recorded.filter { WorktreeFileSystem.isRealDirectory($0.key) }
         defaults.set(recorded, forKey: AppStorageKeys.worktreeObservedActivity)
         return observed
+    }
+
+    nonisolated static let unreadableWorkspaceStateReason = "Workspace state couldn't be read"
+
+    /// Canonical protected paths, or nil when workspace state can't be read.
+    private func currentWorkspaceRoots() -> Set<String>? {
+        do {
+            return Set(try workspaceRoots().map(WorktreePath.canonical))
+        } catch {
+            AppLogger.error("Worktree reclaim kept everything: workspace state unreadable: \(error.localizedDescription)", category: "Git")
+            return nil
+        }
+    }
+
+    /// Unreadable workspace state protects every worktree.
+    private static func isProtected(_ path: String, roots: Set<String>?) -> Bool {
+        guard let roots else { return true }
+        return roots.contains(WorktreePath.canonical(path))
     }
 
     /// Task claims, or nil when the store can't be read.

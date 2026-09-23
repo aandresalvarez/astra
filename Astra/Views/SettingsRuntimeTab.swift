@@ -823,9 +823,11 @@ private struct WorktreeStorageSettingsCard: View {
         }
         .onChange(of: automaticReclaim) {
             WorktreeStorageSettings.setAutomaticReclaimEnabled(automaticReclaim)
+            WorktreeReclaimService.shared.automaticReclaimSettingsChanged()
         }
         .onChange(of: idleThresholdHours) {
             WorktreeStorageSettings.setIdleThresholdHours(idleThresholdHours)
+            WorktreeReclaimService.shared.automaticReclaimSettingsChanged()
         }
     }
 }

@@ -310,7 +310,10 @@ In the existing runtime settings pattern (`Astra/Services/Settings/`,
 - `Automatically reclaim build artifacts from idle worktrees` — default **on**.
 - `Idle threshold` — default 48 h.
 
-Removal suggestions have no setting in v1. Tests must use `InMemoryDefaults`
+Removal suggestions have no setting in v1. Changing either setting notifies
+the service. Turning it off cancels scheduled rechecks, and a pass already
+running re-reads the setting before it deletes. Turning it on, or changing the
+threshold, schedules a fresh pass. Tests must use `InMemoryDefaults`
 (enforced by `PreferenceDomainFitnessTests`).
 
 ## Safety invariants (tests must prove each one)

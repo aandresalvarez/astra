@@ -73,9 +73,8 @@ enum WorktreeReclaimPolicy {
         if let signal = input.buildSignal {
             return keep(signal.summary.capitalizedFirst, recheckAt: input.now.addingTimeInterval(WorktreeActivityProbe.recentWriteWindow))
         }
-        if input.mode == .automatic, input.worktree.isPrimary || input.isWorkspaceRoot {
-            return keep("Primary checkout")
-        }
+        if input.mode == .automatic, input.worktree.isPrimary { return keep("Primary checkout") }
+        if input.mode == .automatic, input.isWorkspaceRoot { return keep("Workspace checkout") }
         guard input.artifactBytes > 0 else { return keep("No build artifacts") }
 
         switch input.mode {
