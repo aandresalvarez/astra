@@ -805,6 +805,7 @@ struct ChatPanelView: View {
                     draftTask = nil
                 }
                 messages = []
+                attachedFiles = []
                 extractedSpec = nil
                 showSpecCard = false
                 pendingPlan = nil
@@ -2194,8 +2195,7 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        // Reflect this draft's own persisted runtime pick and attachments rather than
-        // whatever this view held before; saveDraft() writes the chips back to inputs.
+        // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         attachedFiles = ComposerAttachments.paths(in: task.inputs)
         // First try loading from draftMessages JSON

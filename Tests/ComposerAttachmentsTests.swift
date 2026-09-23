@@ -140,6 +140,19 @@ struct ComposerAttachmentsTests {
         #expect(chips.contains("ComposerAttachments.displayName(for: path)"))
     }
 
+    /// Start Over deletes the draft, so the chips restored from it have to go
+    /// with it; left behind, the next `quickRun()` or `saveDraft()` files them
+    /// under a task they never belonged to.
+    @Test("starting over drops the chips restored from the deleted draft")
+    func startingOverDropsRestoredChips() throws {
+        let chat = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let label = try #require(chat.range(of: "Text(\"Start Over\")"))
+        let button = try #require(chat[..<label.lowerBound].range(of: "Button {", options: .backwards))
+        let startOver = chat[button.upperBound..<label.lowerBound]
+        #expect(startOver.contains("modelContext.delete(draft)"))
+        #expect(startOver.contains("attachedFiles = []"))
+    }
+
     private func body(of function: String, in source: String) throws -> Substring {
         let start = try #require(source.range(of: "func \(function)("))
         let end = try #require(source[start.upperBound...].range(of: "\n    }\n"))
