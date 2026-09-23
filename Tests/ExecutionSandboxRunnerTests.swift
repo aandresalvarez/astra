@@ -698,6 +698,95 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan blocks restricted host Copilot instead of silently dropping an exact file grant")
+    func sandboxedPlanBlocksRestrictedCopilotExactExternalFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-copilot-exact-file-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        let attachmentDirectory = root.appendingPathComponent("private-inputs", isDirectory: true)
+        let attachment = attachmentDirectory.appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+        try Data("input".utf8).write(to: attachment)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let task = AgentTask(
+            title: "Exact file",
+            goal: "Read one attachment",
+            workspace: Workspace(name: "Copilot", primaryPath: workspace.path),
+            runtime: .copilotCLI
+        )
+        task.inputs = [attachment.path]
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider).sandboxedPlan(
+                adapter: CopilotCLIRuntimeAdapter(),
+                context: AgentRuntimeProcessLaunchContext(
+                    prompt: "Read the attachment",
+                    task: task,
+                    workspacePath: workspace.path,
+                    executablePath: "/bin/copilot-not-present",
+                    providerHomeDirectory: "",
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 1
+                )
+            )
+            // Projecting the file away from `--add-dir` fixed the argv crash, but
+            // restricted Copilot cannot read it either — starting anyway would
+            // answer from context the user attached and ASTRA silently dropped.
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected exact-file authority to fail closed for restricted host Copilot")
+                return
+            }
+            #expect(result.runtimeStopReason == "provider_native_file_read_unavailable")
+            #expect(result.runtimeStopMessage?.contains("GitHub Copilot CLI") == true)
+            #expect(result.runtimeStopMessage?.contains("expose sibling files") == true)
+        }
+    }
+
+    @Test("Autonomous Copilot without a blanket path grant still fails closed on an exact file")
+    func autonomousCopilotWithoutAllowAllPathsBlocksExactExternalFile() throws {
+        // A CLI advertising only --allow-all-tools renders no --allow-all or
+        // --allow-all-paths (pinned by CopilotRuntimeTests.legacyCapabilities),
+        // so autonomous buys no path access the allowlist did not already give.
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider).sandboxedPlan(
+                adapter: FakeLaunchAdapter(
+                    runtime: .copilotCLI,
+                    currentDirectory: "/tmp/whatever",
+                    arguments: ["--allow-all-tools"],
+                    commandPlannedFields: ["provider_native_unreachable_read_only_file_count": "1"]
+                ),
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .autonomous)
+            )
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected a legacy autonomous Copilot run to fail closed on an unreachable file")
+                return
+            }
+            #expect(result.runtimeStopReason == "provider_native_file_read_unavailable")
+        }
+    }
+
+    @Test("Autonomous Copilot with a blanket path grant reaches the file and is not blocked")
+    func autonomousCopilotWithAllowAllLaunchesDespiteUnreachableDirectoryGrant() throws {
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let outcome = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider).sandboxedPlan(
+                adapter: FakeLaunchAdapter(
+                    runtime: .copilotCLI,
+                    currentDirectory: "/tmp/whatever",
+                    arguments: ["--allow-all"],
+                    commandPlannedFields: ["provider_native_unreachable_read_only_file_count": "1"]
+                ),
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .autonomous)
+            )
+            guard case .plan = outcome else {
+                Issue.record("--allow-all reaches the file, so the run must not be blocked")
+                return
+            }
+        }
+    }
+
     @Test("sandboxedPlan resolves fallback resources before building the Codex command")
     func sandboxedPlanResolvesFallbackResourcesBeforeCodexCommand() throws {
         let root = FileManager.default.temporaryDirectory
