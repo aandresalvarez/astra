@@ -222,7 +222,8 @@ struct TaskMainView: View {
     @State var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
     @State var runFileChangeCountsCache = TaskRunVisibleFileChangeCounts()
     @State var generatedFilesRevision = 0
-    /// Moves when this view's own context refresh moves the task folder.
+    /// Moves when the changed-file counts were judged against a task folder
+    /// that has since moved off the legacy layout.
     @State var taskFolderRevision = 0
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
@@ -823,7 +824,6 @@ struct TaskMainView: View {
     /// `phase` is opened by the caller, while the trace is still live. See
     /// `startContextStateRefresh`.
     private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
-        let folderBefore = TaskWorkspaceAccess(task: task).taskFolder // the refresh may migrate it
         let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.
@@ -837,19 +837,17 @@ struct TaskMainView: View {
         guard !task.isDeleted else { return }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-        noteContextRefreshForMissionControl(announcedSave: announcedSave, folderBefore: folderBefore)
-        // A folder this refresh moved off the legacy layout also strands the
-        // generated-files list, and no key sees it move: the trigger keys on
-        // the workspace path to stay out of the filesystem.
+        // A refresh can move the task folder off the legacy layout, and so can
+        // one cancelled after migrating, before reaching here. No key sees the
+        // folder move (they key on the workspace path to stay out of the
+        // filesystem), so each cache built from it is checked against the
+        // folder it was built from, not against the folder before this pass.
         let folder = TaskWorkspaceAccess(task: task).taskFolder
+        noteContextRefreshForMissionControl(announcedSave: announcedSave, folder: folder)
+        noteContextRefreshForFileChangeCounts(folder: folder)
         if folder != threadViewModel.generatedFilesFolder {
             threadViewModel.refreshGeneratedFiles(folder: folder)
             generatedFilesRevision &+= 1
-        }
-        // The changed-file counts judge every path against this folder, and
-        // nothing else in their key moves with it.
-        if folder != folderBefore {
-            taskFolderRevision &+= 1
         }
     }
 

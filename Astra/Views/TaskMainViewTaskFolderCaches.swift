@@ -90,6 +90,26 @@ extension TaskMainView {
         )
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
         guard let counted, !Task.isCancelled else { return }
-        runFileChangeCountsCache = runFileChangeCountsCache.merging(counted, for: inputs)
+        // A legacy folder can migrate while this counted, or since the counts
+        // it would join were taken, and nothing in the key moves with it.
+        // Either way every run is recounted under a new revision. One `stat`
+        // per rebuild, not per keystroke; it converges, since both sides
+        // resolve the folder the same way and a new revision keeps nothing.
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        guard counted.taskFolder == folder,
+              runFileChangeCountsCache.canMerge(countedIn: folder, for: inputs) else {
+            taskFolderRevision &+= 1
+            return
+        }
+        runFileChangeCountsCache = runFileChangeCountsCache.merging(counted.entries, for: inputs, countedIn: folder)
+    }
+
+    /// After the view's own context refresh; `folder` is the task folder as it
+    /// resolves now. Counts judged against another folder are recounted, which
+    /// holds whatever did the migrating, even a refresh that was cancelled
+    /// before it could say so.
+    func noteContextRefreshForFileChangeCounts(folder: String) {
+        guard runFileChangeCountsCache.isStale(forFolder: folder) else { return }
+        taskFolderRevision &+= 1
     }
 }

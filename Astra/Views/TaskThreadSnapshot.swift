@@ -1778,8 +1778,8 @@ struct TaskThreadSnapshotCache {
 /// - The run fields catch the re-run that rewrites a path in place.
 /// - The workspace path stands in for the folder, which the callback resolves
 ///   itself. A legacy folder migrating to the current layout moves the folder
-///   but not this; `TaskMainView.refreshTaskContextState`, where that
-///   migration happens, checks for it instead.
+///   but not this; after each context refresh, `TaskMainView` checks the
+///   folder the list was built from against the one the task resolves to.
 ///
 /// What it gives up is a file deleted on disk behind the app's back, which only
 /// ever registered here by accident: this is a value read during a view update,

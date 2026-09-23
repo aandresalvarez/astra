@@ -130,8 +130,12 @@ struct TaskRunVisibleFileChangeCountsTests {
         let id = UUID()
         let pending = [run(id, length: 10, paths: ["/elsewhere/a"])]
 
-        let live = await TaskRunVisibleFileChangeCounts.counted(pending, workspacePath: "/workspace", taskID: UUID())
-        #expect(live?[id]?.count == 1)
+        let taskID = UUID()
+        let live = await TaskRunVisibleFileChangeCounts.counted(pending, workspacePath: "/workspace", taskID: taskID)
+        #expect(live?.entries[id]?.count == 1)
+        // It reports the folder it judged the paths by, which the view checks
+        // against the folder as it resolves when the count lands.
+        #expect(live?.taskFolder == WorkspaceFileLayout.taskFolder(workspacePath: "/workspace", taskID: taskID))
 
         let superseded = await Task {
             withUnsafeCurrentTask { $0?.cancel() }
@@ -196,5 +200,66 @@ struct TaskRunVisibleFileChangeCountsTests {
         let pruned = cache.merging([:], for: onlyKept)
         #expect(pruned.count(for: kept) == 2)
         #expect(pruned.count(for: dropped) == nil)
+    }
+
+    /// A legacy task folder migrates wherever the folder is first ensured,
+    /// and the count key cannot see it move. The cache remembers the folder
+    /// its counts were judged against, so a refresh can tell they are stale,
+    /// and so a run counted after the move cannot vouch for runs counted
+    /// before it.
+    @Test("Counts remember their folder and never mix two")
+    func countsRememberTheirFolder() {
+        let taskID = UUID()
+        let old = UUID()
+        let new = UUID()
+        let legacy = "/workspace/tasks/T1"
+        let canonical = "/workspace/.astra/tasks/T1"
+        let first = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID, workspacePath: "/workspace", folderRevision: 0, runs: [.init(id: old, fileChangesJSONLength: 10)]
+        )
+
+        // Nothing counted yet is never stale, and anything can join it.
+        let empty = TaskRunVisibleFileChangeCounts()
+        #expect(!empty.isStale(forFolder: canonical))
+        #expect(empty.canMerge(countedIn: canonical, for: first))
+
+        let cache = empty.merging(
+            TaskRunVisibleFileChangeCounts.counted([run(old, length: 10)], taskFolder: legacy),
+            for: first,
+            countedIn: legacy
+        )
+        #expect(cache.taskFolder == legacy)
+        #expect(!cache.isStale(forFolder: legacy))
+        #expect(cache.isStale(forFolder: canonical))
+
+        // Pruning counts nothing new, and keeps the folder it had.
+        #expect(cache.merging([:], for: first).taskFolder == legacy)
+
+        // The folder migrated, and a new run is counted against it before
+        // anything noticed. Joining those counts would keep the old run's
+        // legacy verdicts under the new folder's name.
+        let grown = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID,
+            workspacePath: "/workspace",
+            folderRevision: 0,
+            runs: [.init(id: old, fileChangesJSONLength: 10), .init(id: new, fileChangesJSONLength: 5)]
+        )
+        #expect(cache.canMerge(countedIn: legacy, for: grown))
+        #expect(!cache.canMerge(countedIn: canonical, for: grown))
+
+        // Under a new revision nothing is kept, so a full recount joins.
+        let recount = TaskRunVisibleFileChangeCounts.Inputs(
+            taskID: taskID, workspacePath: "/workspace", folderRevision: 1, runs: grown.runs
+        )
+        #expect(cache.runsNeedingCount(recount) == [old, new])
+        #expect(cache.canMerge(countedIn: canonical, for: recount))
+        let recounted = cache.merging(
+            TaskRunVisibleFileChangeCounts.counted([run(old, length: 10), run(new, length: 5)], taskFolder: canonical),
+            for: recount,
+            countedIn: canonical
+        )
+        #expect(recounted.taskFolder == canonical)
+        #expect(!recounted.isStale(forFolder: canonical))
+        #expect(recounted.runsNeedingCount(recount).isEmpty)
     }
 }
