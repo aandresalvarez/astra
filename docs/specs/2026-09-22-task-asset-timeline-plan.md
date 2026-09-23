@@ -125,7 +125,8 @@ same purge for initial inputs only.
     `user.message` and its `TaskTurnRequest`. A failed save rolls back all
     three.
   - The three branches that insert events directly (plan mode, queued,
-    fallback) record through `TaskEventInsertionService.insertAttachments`.
+    fallback) insert the message and its record together through
+    `TaskEventInsertionService.insert(_:attachmentPaths:into:)`.
     `TaskComposerSendAction.message` did not need to change: since PR 1 the
     send recomposes the message from the durable paths and passes those same
     paths along.

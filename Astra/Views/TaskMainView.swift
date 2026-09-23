@@ -4855,8 +4855,7 @@ struct TaskMainView: View {
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            TaskEventInsertionService.insert(userEvent, into: modelContext)
-            TaskEventInsertionService.insertAttachments(of: userEvent, paths: attachmentPaths, into: modelContext)
+            TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
                 "source": "chat_message"
@@ -4905,8 +4904,7 @@ struct TaskMainView: View {
             )
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            TaskEventInsertionService.insert(event, into: modelContext)
-            TaskEventInsertionService.insertAttachments(of: event, paths: attachmentPaths, into: modelContext)
+            TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
             messageText = ""
             attachedFiles = []
         }
@@ -4921,8 +4919,7 @@ struct TaskMainView: View {
 
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
-        TaskEventInsertionService.insert(userEvent, into: modelContext)
-        TaskEventInsertionService.insertAttachments(of: userEvent, paths: attachmentPaths, into: modelContext)
+        TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)

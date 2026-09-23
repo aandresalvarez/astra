@@ -126,6 +126,28 @@ struct TaskAttachmentRecordTests {
 
     // MARK: - Event
 
+    @Test("Inserting a user message inserts its attachment record beside it, and only when files are attached")
+    func insertingMessageInsertsItsRecord() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Attach", goal: "Record attachments")
+        context.insert(task)
+        let plain = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: "No files.")
+        let withFiles = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: "See attached.")
+
+        TaskEventInsertionService.insert(plain, attachmentPaths: [], into: context)
+        TaskEventInsertionService.insert(withFiles, attachmentPaths: ["/tmp/report.md"], into: context)
+        try context.save()
+
+        let events = try context.fetch(FetchDescriptor<TaskEvent>())
+        #expect(events.count == 3)
+        let records = events.filter { $0.type == TaskEventTypes.Conversation.attachments.rawValue }
+        let payload = try #require(records.first.flatMap { TaskAttachmentsPayloadV1.decoded(from: $0.payload) })
+        #expect(records.count == 1)
+        #expect(payload.messageEventID == withFiles.id)
+        #expect(payload.items.map(\.path) == ["/tmp/report.md"])
+    }
+
     @Test("The attachments event takes its message's time and skips an empty list")
     func attachmentsEventTakesMessageTime() throws {
         let container = try makeContainer()
