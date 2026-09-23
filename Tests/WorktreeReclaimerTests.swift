@@ -162,6 +162,19 @@ struct WorktreeReclaimerTests {
         #expect(FileManager.default.fileExists(atPath: setup.build))
     }
 
+    @Test("Prepare can skip its own activity scan when the caller already ran it")
+    func prepareWithoutScan() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        try setup.fixture.file("wt-feature/.build/out/fresh.o", bytes: 100)
+
+        #expect(setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree).prepared.isEmpty)
+        let step = setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree, probeBuildActivity: false)
+        #expect(step.prepared.count == 1)
+        _ = setup.reclaimer.finish(step.prepared)
+        #expect(!FileManager.default.fileExists(atPath: setup.build))
+    }
+
     @Test("A held SwiftPM lock skips the artifact and leaves it intact")
     func heldLockSkipped() throws {
         let setup = try makeSetup()

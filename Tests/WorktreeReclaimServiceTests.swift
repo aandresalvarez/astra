@@ -657,6 +657,34 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.pendingRecheckDates.keys.sorted() == [setup.linked.path])
     }
 
+    @Test("A workspace folder configured inside a worktree protects that worktree")
+    func configuredSubfolderProtectsWorktree() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let subfolder = try setup.fixture.directory("worktrees/feature/packages/api")
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { [subfolder] })
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains(.init(worktreeName: "feature", reason: "Workspace checkout")))
+    }
+
+    @Test("A launch pass that can't read workspaces tries again")
+    func launchPassRetriesUnreadableWorkspaces() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { [] }, workspaces: { throw CocoaError(.coderReadCorrupt) })
+
+        setup.service.scheduleLaunchPass(delay: 0)
+        for _ in 0..<4_000 where setup.service.failedLaunchReads == 0 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(setup.service.failedLaunchReads == 1)
+        #expect(setup.service.hasScheduledLaunchPass, "a retry waits")
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)

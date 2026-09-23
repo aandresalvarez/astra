@@ -219,8 +219,9 @@ and no test covers it. When moving it:
     captured, plus its `.workspace` resource claims, because queuing a
     follow-up doesn't change a finished task's status and the turn runs where
     it was captured.
-- Automatic mode also keeps each workspace's selected worktree
-  (`activeWorkingPath`), like its configured roots.
+- Automatic mode also keeps any worktree containing a workspace's
+  configured or selected path (`activeWorkingPath`), not counting worktrees
+  nested inside it.
 - Read task claims again immediately before deleting: a pass can spend
   minutes on git and GitHub, and a task may start meanwhile.
 - Take a path string, not `GitWorktreeInfo`, and get tasks from a main-actor
@@ -247,10 +248,12 @@ For each artifact:
 3. Atomically rename it to `<name>.astra-reclaiming-<uuid>` in the same parent
    directory. After this, a concurrent build sees a clean tree, not a
    half-deleted one.
-   The service re-reads task claims, workspace protection, the setting and
-   the threshold, then renames, all in one main-actor turn. Every task
-   status change also happens on the main actor, so no task can start in
-   between, for Cargo and npm too, which have no lock to hold.
+   The service runs the shallow build-activity scan on the file-system
+   queue first. Then, in one main-actor turn, it re-reads task claims,
+   workspace protection, the setting and the threshold, and renames. That
+   turn does only cheap syscalls. Every task status change also happens on
+   the main actor, so no task can start between the check and the rename,
+   for Cargo and npm too, which have no lock to hold.
 4. Delete the renamed directory off the main actor. Delete permanently; don't
    move to Trash, because Trash doesn't free space.
 5. On launch, sweep leftover `*.astra-reclaiming-*` directories inside known

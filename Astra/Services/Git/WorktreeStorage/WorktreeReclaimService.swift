@@ -113,6 +113,9 @@ final class WorktreeReclaimService: ObservableObject {
     /// The app's workspaces, read when a launch or settings-change pass fires.
     private var workspaces: @MainActor () throws -> [WorktreeStorageWorkspacePaths] = { [] }
     private var hasRunLaunchPass = false
+    /// Consecutive launch passes that couldn't read the workspace list.
+    private(set) var failedLaunchReads = 0
+    private static let maxLaunchReadAttempts = 3
     /// Repositories an automatic pass has covered (or is about to), by
     /// canonical path.
     private var automaticallyEvaluatedRepositories: Set<String> = []
@@ -175,11 +178,21 @@ final class WorktreeReclaimService: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             do {
                 let current = try self.workspaces()
+                self.failedLaunchReads = 0
                 await self.runLaunchPass(workspaces: current)
+                // A settings change may have replaced this task meanwhile.
+                if !Task.isCancelled { self.launchPass = nil }
             } catch {
-                AppLogger.error("Worktree launch pass skipped: workspace state unreadable: \(error.localizedDescription)", category: "Git")
+                if !Task.isCancelled { self.launchPass = nil }
+                self.failedLaunchReads += 1
+                AppLogger.error("Worktree launch pass deferred: workspace state unreadable (attempt \(self.failedLaunchReads)): \(error.localizedDescription)", category: "Git")
+                if self.failedLaunchReads < Self.maxLaunchReadAttempts {
+                    self.scheduleLaunchPass(delay: Self.launchDelay)
+                } else {
+                    // Stop retrying; let the panel cover repositories one by one.
+                    self.hasRunLaunchPass = true
+                }
             }
-            self.launchPass = nil
         }
     }
 
@@ -311,7 +324,7 @@ final class WorktreeReclaimService: ObservableObject {
                 stale.append(worktree)
                 continue
             }
-            let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots)
+            let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: Array(paths))
             guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
             // Withdraw a "Merged · Remove" suggestion at once: it described a
             // HEAD, or a selection, that has changed. The refresh decides afresh.
@@ -448,7 +461,7 @@ final class WorktreeReclaimService: ObservableObject {
     private struct ReclaimJob: Sendable {
         let worktree: String
         let name: String
-        let artifacts: [String]
+        let artifacts: [WorktreeArtifactMeasurement]
     }
 
     private func runPass(
@@ -486,7 +499,7 @@ final class WorktreeReclaimService: ObservableObject {
         for (worktree, fact) in zip(worktrees, facts) {
             var input = WorktreeReclaimInput(
                 worktree: worktree,
-                isWorkspaceRoot: Self.isProtected(worktree.path, roots: roots),
+                isWorkspaceRoot: Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: allPaths),
                 artifactBytes: fact.report.artifactBytes,
                 lastActivity: preservedActivity(
                     worktree.path,
@@ -516,7 +529,7 @@ final class WorktreeReclaimService: ObservableObject {
                 candidates.append(ReclaimJob(
                     worktree: worktree.path,
                     name: worktree.displayName,
-                    artifacts: fact.report.artifacts.map(\.path)
+                    artifacts: fact.report.artifacts
                 ))
             } else if fact.report.artifactBytes > 0 {
                 kept.append(.init(worktreeName: worktree.displayName, reason: decision.reason))
@@ -537,6 +550,20 @@ final class WorktreeReclaimService: ObservableObject {
         var prepared: [WorktreeReclaimer.Prepared] = []
         var outcome = WorktreeReclaimOutcome()
         if !candidates.isEmpty {
+            // The shallow build-activity scan walks thousands of entries, so
+            // it runs on the file-system queue first; the turn below only
+            // re-validates, takes SwiftPM's lock and renames.
+            let scanAt = clock()
+            let scanned = candidates
+            let busy = await WorktreeStorageWork.run { () -> [String: WorktreeBuildSignal] in
+                var busy: [String: WorktreeBuildSignal] = [:]
+                for job in scanned {
+                    busy[job.worktree] = job.artifacts.lazy
+                        .compactMap { probe.buildSignal(forArtifactAt: $0.path, rule: $0.rule, now: scanAt) }
+                        .first
+                }
+                return busy
+            }
             let checkedAt = clock()
             let current = currentTaskHolds()
             let currentRoots = mode == .automatic ? currentWorkspaceRoots() : []
@@ -551,9 +578,12 @@ final class WorktreeReclaimService: ObservableObject {
                 if let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) {
                     input.inUse = reason
                 }
+                if let signal = busy[job.worktree] {
+                    input.buildSignal = signal
+                }
                 if mode == .automatic {
                     input.thresholds = currentThresholds
-                    if Self.isProtected(job.worktree, roots: currentRoots) {
+                    if Self.isProtected(job.worktree, roots: currentRoots, otherWorktreePaths: allPaths) {
                         input.isWorkspaceRoot = true
                         if currentRoots == nil, input.inUse == nil { input.inUse = Self.unreadableWorkspaceStateReason }
                     }
@@ -572,7 +602,12 @@ final class WorktreeReclaimService: ObservableObject {
                     continue
                 }
                 jobs.append(job)
-                let step = reclaimer.prepare(artifactPaths: job.artifacts, inWorktree: job.worktree, now: checkedAt)
+                let step = reclaimer.prepare(
+                    artifactPaths: job.artifacts.map(\.path),
+                    inWorktree: job.worktree,
+                    now: checkedAt,
+                    probeBuildActivity: false
+                )
                 prepared += step.prepared
                 outcome.merge(step.outcome)
             }
@@ -672,10 +707,13 @@ final class WorktreeReclaimService: ObservableObject {
         }
     }
 
+    /// A worktree is protected when a workspace's configured or selected path
+    /// is anywhere inside it (not inside a worktree nested in it).
     /// Unreadable workspace state protects every worktree.
-    private static func isProtected(_ path: String, roots: Set<String>?) -> Bool {
+    private static func isProtected(_ path: String, roots: Set<String>?, otherWorktreePaths: [String]) -> Bool {
         guard let roots else { return true }
-        return roots.contains(WorktreePath.canonical(path))
+        let scope = WorktreeScope(path: path, otherWorktreePaths: otherWorktreePaths)
+        return roots.contains { scope.contains(canonicalPath: $0) }
     }
 
     /// Task claims, or nil when the store can't be read.

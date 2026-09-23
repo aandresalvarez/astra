@@ -59,10 +59,13 @@ struct WorktreeReclaimer: Sendable {
     /// The fast half: validates each artifact, then renames it aside under
     /// SwiftPM's lock. Nothing is deleted yet, so a caller can prepare every
     /// artifact right after its last in-use check and delete afterwards.
+    /// A caller that already ran the shallow build-activity scan off the main
+    /// actor passes `probeBuildActivity: false`, leaving only cheap syscalls.
     func prepare(
         artifactPaths: [String],
         inWorktree worktreePath: String,
-        now: Date = Date()
+        now: Date = Date(),
+        probeBuildActivity: Bool = true
     ) -> (prepared: [Prepared], outcome: WorktreeReclaimOutcome) {
         var outcome = WorktreeReclaimOutcome()
         guard let root = WorktreePath.realPath(worktreePath) else {
@@ -73,7 +76,13 @@ struct WorktreeReclaimer: Sendable {
         }
         var prepared: [Prepared] = []
         for path in artifactPaths {
-            let (aside, result) = prepareArtifact(at: path, canonicalRoot: root, worktreePath: worktreePath, now: now)
+            let (aside, result) = prepareArtifact(
+                at: path,
+                canonicalRoot: root,
+                worktreePath: worktreePath,
+                now: now,
+                probeBuildActivity: probeBuildActivity
+            )
             if let aside { prepared.append(aside) }
             outcome.merge(result)
         }
@@ -118,7 +127,8 @@ struct WorktreeReclaimer: Sendable {
         at path: String,
         canonicalRoot: String,
         worktreePath: String,
-        now: Date
+        now: Date,
+        probeBuildActivity: Bool
     ) -> (Prepared?, WorktreeReclaimOutcome) {
         func skip(_ reason: String) -> (Prepared?, WorktreeReclaimOutcome) {
             (nil, self.skip(path, worktreePath: worktreePath, reason))
@@ -139,7 +149,7 @@ struct WorktreeReclaimer: Sendable {
         // 2. TOCTOU guard: re-probe right before acting, then hold SwiftPM's
         //    lock(s) across the rename so a build that starts meanwhile waits
         //    and then sees a clean tree.
-        if let signal = probe.buildSignal(forArtifactAt: canonical, rule: rule, now: now) {
+        if probeBuildActivity, let signal = probe.buildSignal(forArtifactAt: canonical, rule: rule, now: now) {
             return skip(signal.summary)
         }
         var heldLocks: [SwiftPMWorkspaceLock.HeldLock] = []
