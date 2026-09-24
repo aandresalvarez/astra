@@ -16,15 +16,23 @@ import ASTRAPersistence
 /// files had no run that produced them.
 ///
 /// Only metadata is read, never contents, so a folder of a few hundred files
-/// costs milliseconds, and the walk runs off the main actor. The visibility
+/// costs milliseconds; the walk, the comparison, and the bounding all run off
+/// the main actor. The visibility
 /// rules are the Files shelf's (`TaskOutputArtifactPathPolicy`), so ASTRA's
 /// own bookkeeping (`outputs/`, `inputs/`, `current_state.*`, `diagnostics/`)
 /// and dependency trees never count as the run's work. Hidden files are
 /// skipped, which keeps Finder's `.DS_Store` writes out of every run.
 struct TaskFolderRunSnapshot: Sendable, Equatable {
+    /// Any field differing means the file changed. Size and modified time
+    /// alone miss a same-length rewrite on a filesystem with coarse
+    /// timestamps, or one that preserves them (`cp -p`, `touch -r`); the
+    /// kernel moves the status-change time on every write, and an atomic
+    /// replace gives the path a new file identifier.
     struct Entry: Sendable, Equatable {
         let size: Int
         let modifiedAt: Date?
+        let statusChangedAt: Date?
+        let fileIdentifier: UInt64?
     }
 
     struct Change: Sendable, Equatable {
@@ -104,7 +112,10 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
         guard hostFileAccess.fileExists(at: rootURL, isDirectory: &isDirectory, intent: intent) else {
             return TaskFolderRunSnapshot(root: root, entries: [:])
         }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [
+            .isDirectoryKey, .isRegularFileKey, .fileSizeKey,
+            .contentModificationDateKey, .attributeModificationDateKey, .fileIdentifierKey
+        ]
         let walkFailure = WalkFailure()
         guard isDirectory.boolValue,
               let enumerator = hostFileAccess.enumerator(
@@ -139,7 +150,12 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
             }
             // Symlinks are skipped: what they point at is not the task's work.
             guard isVisible, values?.isRegularFile == true else { continue }
-            entries[relativePath] = Entry(size: values?.fileSize ?? 0, modifiedAt: values?.contentModificationDate)
+            entries[relativePath] = Entry(
+                size: values?.fileSize ?? 0,
+                modifiedAt: values?.contentModificationDate,
+                statusChangedAt: values?.attributeModificationDate,
+                fileIdentifier: values?.fileIdentifier
+            )
         }
         // A directory the walk could not read leaves its files out, and against
         // a complete baseline every one of them would read as removed.
@@ -195,29 +211,63 @@ extension TaskFolderRunSnapshot {
             return []
         }
         let started = Date()
-        guard let after = await capture(taskFolder: before.root.standardized) else {
+        let recordedJSON = run.fileChangesJSON
+        // A bulk run can leave tens of thousands of entries to compare and
+        // sort, so only the bounded result comes back to the main actor.
+        guard let observation = await Task.detached(priority: .userInitiated, operation: {
+            observe(
+                since: before,
+                recordedJSON: recordedJSON,
+                executionPath: executionPath,
+                runStartedAt: runStartedAt,
+                runEndedAt: started
+            )
+        }).value else {
             logSkipped(task: task, run: run, reason: "unreadable_or_over_limit")
             return []
         }
-        let changes = after.changes(since: before)
-        let stored = append(
-            changes,
-            under: after.root,
-            to: run,
-            executionPath: executionPath,
-            runStartedAt: runStartedAt,
-            runEndedAt: Date()
-        )
+        run.appendHostFileChanges(observation.records)
         AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
             "event": "task_folder_snapshot",
             "run_id": String(run.id.uuidString.prefix(8)),
-            "files": String(after.entries.count),
-            "changed": String(changes.count),
-            "recorded": String(stored.count),
-            "limit_reached": String(stored.count >= recordedChangeLimit),
+            "files": String(observation.fileCount),
+            "changed": String(observation.changeCount),
+            "recorded": String(observation.records.count),
+            "limit_reached": String(observation.records.count >= recordedChangeLimit),
             "duration_ms": String(Int(Date().timeIntervalSince(started) * 1_000))
         ])
-        return stored
+        return observation.records
+    }
+
+    struct Observation: Sendable {
+        let fileCount: Int
+        let changeCount: Int
+        let records: [StoredFileChange]
+    }
+
+    /// The after-run walk and the records it yields, on the calling thread.
+    /// `recordedJSON` is the run's `fileChangesJSON` as the process left it.
+    static func observe(
+        since before: TaskFolderRunSnapshot,
+        recordedJSON: String,
+        executionPath: String,
+        runStartedAt: Date,
+        runEndedAt: Date
+    ) -> Observation? {
+        guard let after = scan(taskFolder: before.root.standardized) else { return nil }
+        let changes = after.changes(since: before)
+        return Observation(
+            fileCount: after.entries.count,
+            changeCount: changes.count,
+            records: records(
+                for: changes,
+                under: after.root,
+                recordedJSON: recordedJSON,
+                executionPath: executionPath,
+                runStartedAt: runStartedAt,
+                runEndedAt: runEndedAt
+            )
+        )
     }
 
     @MainActor
@@ -230,12 +280,37 @@ extension TaskFolderRunSnapshot {
         runEndedAt: Date,
         limit: Int = recordedChangeLimit
     ) -> [StoredFileChange] {
+        let stored = records(
+            for: changes,
+            under: root,
+            recordedJSON: run.fileChangesJSON,
+            executionPath: executionPath,
+            runStartedAt: runStartedAt,
+            runEndedAt: runEndedAt,
+            limit: limit
+        )
+        run.appendHostFileChanges(stored)
+        return stored
+    }
+
+    /// The changes worth appending to a run whose changes so far are
+    /// `recordedJSON`: not already recorded, new and edited files first, and
+    /// bounded by count and by encoded size.
+    static func records(
+        for changes: [Change],
+        under root: TaskOutputArtifactPathPolicy.ResolvedRoot,
+        recordedJSON: String,
+        executionPath: String,
+        runStartedAt: Date,
+        runEndedAt: Date,
+        limit: Int = recordedChangeLimit
+    ) -> [StoredFileChange] {
         guard !changes.isEmpty else { return [] }
-        // Only the handful of already-recorded paths pay a resolve; a snapshot
-        // path's two spellings come from its root.
+        // Only the already-recorded paths pay a resolve; a snapshot path's two
+        // spellings come from its root.
         var recordedPaths = Set<String>()
         var recordedRemovals = Set<String>()
-        for change in run.allFileChanges {
+        for change in (try? TaskRun.decodedFileChanges(from: recordedJSON).get()) ?? [] {
             let forms = spellings(of: change.path, relativeTo: executionPath)
             recordedPaths.formUnion(forms)
             if change.kind == .removed { recordedRemovals.formUnion(forms) }
@@ -250,7 +325,7 @@ extension TaskFolderRunSnapshot {
         let window = runStartedAt...max(runStartedAt, runEndedAt)
         // Past the thread's decode limit the whole array stops showing, the
         // tool changes with it. A run already past it has nothing left to keep.
-        let usedBytes = run.fileChangesJSON.utf8.count
+        let usedBytes = recordedJSON.utf8.count
         var byteBudget = usedBytes <= TaskRun.displayedFileChangesJSONByteLimit
             ? TaskRun.displayedFileChangesJSONByteLimit - usedBytes
             : Int.max
@@ -269,7 +344,6 @@ extension TaskFolderRunSnapshot {
             byteBudget -= size
             stored.append(record)
         }
-        run.appendHostFileChanges(stored)
         return stored
     }
 

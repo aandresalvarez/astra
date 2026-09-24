@@ -111,6 +111,51 @@ struct TaskFolderRunSnapshotTests {
         #expect(fixture.run.allFileChanges.first?.content == "tool content")
     }
 
+    @Test("A same-length rewrite whose modified time was put back still reads as an edit")
+    func sameLengthRewriteWithPreservedModifiedTimeIsAnEdit() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let plan = folder.appendingPathComponent("plan.md")
+        // Whole seconds, as a coarse-timestamp filesystem would store them.
+        let modifiedAt = Date(timeIntervalSince1970: 1_790_000_000)
+        try write("aaaa", to: folder, "plan.md")
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: plan.path)
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        // In place, so the file keeps its identifier: only the kernel's
+        // status-change time can tell.
+        try "bbbb".write(to: plan, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: plan.path)
+        let after = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        #expect(after.entries["plan.md"]?.fileIdentifier == before.entries["plan.md"]?.fileIdentifier)
+        #expect(after.entries["plan.md"]?.size == before.entries["plan.md"]?.size)
+        #expect(after.entries["plan.md"]?.modifiedAt == modifiedAt)
+        #expect(after.changes(since: before).map(\.kind) == [.modified])
+    }
+
+    @Test("The after-run comparison and bounding run off the main actor")
+    func observationRunsOffTheMainActor() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        try write("rows", to: folder, "report.csv")
+        let started = Date().addingTimeInterval(-5)
+
+        let observation = await Task.detached {
+            TaskFolderRunSnapshot.observe(
+                since: before,
+                recordedJSON: "[]",
+                executionPath: folder.path,
+                runStartedAt: started,
+                runEndedAt: Date()
+            )
+        }.value
+
+        #expect(observation?.changeCount == 1)
+        #expect(observation?.records.map(\.kind) == [.discovered])
+    }
+
     @Test("A directory the walk cannot read voids the snapshot instead of reading as removals")
     func unreadableDirectoryVoidsTheSnapshot() throws {
         let folder = try makeFolder()

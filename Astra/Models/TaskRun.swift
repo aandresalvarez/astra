@@ -138,6 +138,14 @@ public final class TaskRun {
     }
 
     public var fileChangesDecodeResult: Result<[StoredFileChange], TaskRunFileChangesDecodeError> {
+        Self.decodedFileChanges(from: fileChangesJSON)
+    }
+
+    /// `fileChangesDecodeResult` for a copy of the JSON, so the decode can run
+    /// off the main actor.
+    public static func decodedFileChanges(
+        from fileChangesJSON: String
+    ) -> Result<[StoredFileChange], TaskRunFileChangesDecodeError> {
         if fileChangesJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .success([])
         }

@@ -359,11 +359,20 @@ so on tasks with more than 50 runs the two would disagree.
 
 ## Risks
 
-- **Rollback is safe.** Older builds hide unknown event types from the thread
+- **Rollback is safe for PR 2's event, not for PR 3's entries.** Older builds
+  hide unknown event types from the thread
   ([TaskThreadSnapshot.swift:1235](../../Astra/Views/TaskThreadSnapshot.swift#L1218-L1237)),
-  and the store shape does not change.
-- **`discovered` entries become visible to every `run.fileChanges` consumer.**
-  That is why PR 3 includes the review list.
+  and the store shape does not change. But PR 3's observed entries share
+  `fileChangesJSON` with tool changes, and a build from before PR 3 has no
+  `isObserved` filter: it reads `discovered` as it is and `modified` and
+  `removed` as `unknown`, so Git publication ownership, deliverable and
+  empty-run checks, validation, prompts, and counts would treat them as tool
+  evidence for runs this build recorded. Keeping them out of an older build's
+  way means a separate record: a typed per-run event (subject to compaction,
+  the fork's substring path rewrite, and the 10-event export mirror) or a V20
+  column. Open for the owner to decide before PR 3 ships.
+- **Observed entries are hidden from every existing `run.fileChanges` reader**
+  in this build (`isObserved`); each is opted in deliberately (PR 4).
 - **Imports lose turns.** The workspace export mirrors only the last 10 runs and
   10 events per task
   ([WorkspaceConfigManager.swift:24](../../Astra/Services/Persistence/WorkspaceConfigManager.swift#L24-L33)),
