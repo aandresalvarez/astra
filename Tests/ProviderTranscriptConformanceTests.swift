@@ -512,7 +512,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [
-                .answerVisible: .whole("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)")
+                .answerVisible: .items("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
@@ -544,7 +544,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                     $0 == "answer.md"
                 },
                 .sessionRecorded: .whole("Copilot names its session only in the result frame, which is not read (plan phase 2)"),
-                .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
+                .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
@@ -577,7 +577,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .completionRecorded: .items("ASTRA_EVENT markers in agent_message items are stripped, never recorded (plan phase 2)") {
                     $0 == "Drafted the reply and saved answer.md"
                 },
-                .answerVisible: .whole("the answer message is dropped before it can be shown (plan phase 2)")
+                .answerVisible: .items("the answer message is dropped before it can be shown (plan phase 2)") { $0 == "text" }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
@@ -736,9 +736,12 @@ struct ProviderStreamTruth {
                 // envelopes; read it the way the runtime does.
                 let (type, object) = Self.copilotFrame(frame)
                 let data = Self.copilotPayload(object)
-                if type == "assistant.message", let text = data?["content"] as? String {
+                // A field can sit on the frame or in its payload; the runtime
+                // reads both, the frame first.
+                func field(_ key: String) -> Any? { object[key] ?? data?[key] }
+                if type == "assistant.message", let text = field("content") as? String {
                     appendMessage(text)
-                } else if type == "session.shutdown", let metrics = data?["modelMetrics"] as? [String: Any] {
+                } else if type == "session.shutdown", let metrics = field("modelMetrics") as? [String: Any] {
                     // Per-model totals; Copilot counts cache reads and writes
                     // next to inputTokens rather than inside them.
                     let entries = metrics.values.compactMap { $0 as? [String: Any] }.map { $0["usage"] as? [String: Any] ?? $0 }
@@ -748,12 +751,12 @@ struct ProviderStreamTruth {
                     )
                 } else if type == "result" {
                     // Copilot's stdout names its session only in the result.
-                    sessionID = (object["sessionId"] ?? data?["sessionId"]) as? String
+                    sessionID = field("sessionId") as? String
                 } else if type == "tool.execution_complete" {
-                    toolResultOutcomes.append(data?["success"] as? Bool == false ? "failure" : "success")
+                    toolResultOutcomes.append(field("success") as? Bool == false ? "failure" : "success")
                 } else if type == "tool.execution_start" {
-                    appendTool(data?["toolName"] as? String ?? "tool")
-                    if data?["toolName"] as? String == "apply_patch", let patch = data?["arguments"] as? String {
+                    appendTool(field("toolName") as? String ?? "tool")
+                    if field("toolName") as? String == "apply_patch", let patch = field("arguments") as? String {
                         writtenPaths += Self.patchedPaths(in: patch)
                     }
                 }

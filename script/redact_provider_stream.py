@@ -80,13 +80,24 @@ def workspace_spellings(workspace):
     return {spelling for spelling in spellings if len(spelling) > 1}
 
 
+def dash_escaped(path):
+    """The ways Claude Code folds a path into one directory name for its task
+    output: `/` becomes `-`, and in newer versions every other non-alphanumeric
+    character does too."""
+    return {path.replace("/", "-"), re.sub(r"[^A-Za-z0-9]", "-", path)}
+
+
 def replacements(workspace):
     """Exact machine strings: distinctive enough to replace anywhere."""
     home = os.path.expanduser("~")
     pairs = []
     for path in workspace_spellings(workspace):
         pairs.append((path, "/workspace"))
+        # A workspace outside the var-folders temp root (a custom TMPDIR under
+        # $HOME) also appears dash-escaped in Claude's task-output paths.
+        pairs += [(escaped, "-workspace") for escaped in dash_escaped(path)]
     pairs.append((home, "/Users/tester"))
+    pairs += [(escaped, "-Users-tester") for escaped in dash_escaped(home)]
     email = os.environ.get("ASTRA_CAPTURE_REDACT_EMAIL", "").strip()
     if email:
         pairs.append((email, "tester@example.com"))
@@ -247,18 +258,28 @@ COPILOT_RESULT_PAYLOAD_KEYS = {
 
 
 def without_copilot_result_payload(fields):
-    """Blank what a Copilot result carried; keep ids, flags and the outcome.
-    Its tool telemetry (resolved file paths, command metadata) is not read by
-    the parser and is dropped."""
-    return {
-        key: (
-            error_placeholder(value) if key == "error"
-            else TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value
-            else value
-        )
-        for key, value in fields.items()
-        if key != "toolTelemetry"
-    }
+    """Blank what a Copilot result carried and keep only its identity,
+    envelope and outcome. Anything else is dropped: tool telemetry (resolved
+    file paths), and any field the parser does not know, which it would
+    otherwise fall back to recording as part of the raw frame."""
+    kept = {}
+    for key, value in fields.items():
+        if key == "error":
+            kept[key] = error_placeholder(value)
+        elif key in COPILOT_RESULT_PAYLOAD_KEYS:
+            kept[key] = TOOL_OUTPUT if value else value
+        elif key in COPILOT_RESULT_IDENTITY_KEYS:
+            kept[key] = value
+    return kept
+
+
+# What a Copilot result keeps besides its (blanked) text: ids, the tool, the
+# outcome flags, and the envelope the stream wraps every frame in.
+COPILOT_RESULT_IDENTITY_KEYS = {
+    "type", "event", "kind", "sessionUpdate", "name", "id", "timestamp", "parentId", "ephemeral", "data", "payload",
+    "toolCallId", "toolUseId", "tool_call_id", "callId", "toolName", "tool", "model", "interactionId", "turnId",
+    "rte", "success", "succeeded", "ok", "isError", "is_error", "exitCode", "status",
+}
 
 
 CODEX_FILE_CHANGE_PATH_KEYS = ("path", "file_path", "filePath", "filename", "name")
@@ -458,6 +479,24 @@ def tool_call_arguments(frame):
         call = copilot_tool_call(frame)
         if call:
             yield call
+        yield from copilot_tool_requests(frame)
+
+
+def copilot_tool_requests(frame):
+    """Tool calls a Copilot assistant message announces in `toolRequests`.
+    The parser only checks that they exist, but their arguments are published,
+    so they are audited like the tool.execution_start that follows."""
+    wrapper = copilot_envelope(frame)
+    if wrapper:
+        yield from copilot_tool_requests(frame[wrapper])
+        return
+    for container in (frame, copilot_payload(frame)):
+        for key in ("toolRequests", "tool_requests"):
+            requests = container.get(key)
+            for request in requests if isinstance(requests, list) else []:
+                if isinstance(request, dict):
+                    arguments = {name: request[name] for name in COPILOT_ARGUMENT_KEYS if name in request}
+                    yield request.get("name") or request.get("toolName") or "toolRequest", json.dumps(arguments or request)
 
 
 COPILOT_TYPE_KEYS = ("type", "event", "kind", "sessionUpdate", "name")
