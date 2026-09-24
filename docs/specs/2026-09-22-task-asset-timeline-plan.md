@@ -194,8 +194,11 @@ lost for good, so this ships before the UI.
 **Change.**
 
 - `TaskFolderRunSnapshot` walks the task folder just before the provider
-  starts and again after it exits, off the main actor, reading only size and
-  modified time. The visibility rules are the Files shelf's
+  starts and again after it exits, off the main actor. It reads size,
+  modified and status-change times, and file identifier for every file, and a
+  content fingerprint for files up to 256 KB (at most 32 MB per walk), which
+  catches a same-length rewrite whose timestamps round to the same tick. The
+  visibility rules are the Files shelf's
   (`TaskOutputArtifactPathPolicy`), so `outputs/`, `inputs/`,
   `current_state.*`, `diagnostics/`, dependency trees, and hidden files never
   count. A folder past 50,000 entries is skipped rather than half-compared.
@@ -210,8 +213,9 @@ lost for good, so this ships before the UI.
   ahead of removals, and never more than still fit under the 256 KB past which
   the thread stops decoding a run's changes, tool changes included
   (`TaskRun.displayedFileChangesJSONByteLimit`).
-- A walk that hits an unreadable directory is discarded rather than compared,
-  since every file it missed would otherwise read as removed. A tool path
+- A walk that hits an unreadable directory, or a visible file whose metadata
+  cannot be read, is discarded rather than compared, since every file it
+  missed would otherwise read as removed. A tool path
   relative to the provider's working directory is resolved before deduping,
   and a removal is kept even when a tool edited the file earlier in the run.
 - **No existing reader changes behavior.** `TaskRun.fileChanges` now returns
