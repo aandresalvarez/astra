@@ -113,8 +113,18 @@ public final class TaskRun {
         hasProtocolEvents = output.contains(AstraRunProtocolParser.markerToken)
     }
 
-    /// Decoded file changes from JSON storage
+    /// The changes a provider reported through its file tools, plus the
+    /// inferred detector's. Publication ownership, deliverable checks,
+    /// validation, prompts, and file counts all rest on this evidence, so it
+    /// leaves out what `TaskFolderRunSnapshot` observed. Read
+    /// `allFileChanges` for the complete record of what the run touched.
     public var fileChanges: [StoredFileChange] {
+        allFileChanges.filter { !$0.kind.isObserved }
+    }
+
+    /// Every recorded change, including the task-folder differences observed
+    /// between the run's start and end.
+    public var allFileChanges: [StoredFileChange] {
         switch fileChangesDecodeResult {
         case .success(let changes):
             return changes
@@ -138,9 +148,19 @@ public final class TaskRun {
     }
 
     public func appendFileChange(_ change: StoredFileChange) {
-        var changes = fileChanges
+        var changes = allFileChanges
         changes.append(change.translated(using: ExecutionEnvironmentStore.decode(executionEnvironmentSnapshotJSON)))
         fileChangesJSON = TaskEvent.payloadString(changes, fallback: fileChangesJSON)
+        task?.updatedAt = Date()
+    }
+
+    /// Appends changes whose paths are already host paths, with one decode
+    /// and one encode. `appendFileChange` round-trips the whole array per
+    /// call, which is quadratic for a run that produces hundreds of files, and
+    /// maps container paths, which a host-side observation never has.
+    public func appendHostFileChanges(_ newChanges: [StoredFileChange]) {
+        guard !newChanges.isEmpty else { return }
+        fileChangesJSON = TaskEvent.payloadString(allFileChanges + newChanges, fallback: fileChangesJSON)
         task?.updatedAt = Date()
     }
 
@@ -256,10 +276,16 @@ public struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// `write` and `edit` come from a provider's own file tools. `discovered`,
+/// `modified`, and `removed` are observed by comparing the task folder before
+/// and after the run (`TaskFolderRunSnapshot`), so they carry no content.
+/// Builds that predate a kind decode it as `unknown`.
 public enum StoredFileChangeKind: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case write = "Write"
     case edit = "Edit"
     case discovered = "discovered"
+    case modified = "modified"
+    case removed = "removed"
     case unknown = "unknown"
 
     public init(changeType: String) {
@@ -270,6 +296,10 @@ public enum StoredFileChangeKind: String, Codable, CaseIterable, Sendable, Equat
             self = .edit
         case "discovered":
             self = .discovered
+        case "modified":
+            self = .modified
+        case "removed":
+            self = .removed
         default:
             self = .unknown
         }
@@ -279,12 +309,24 @@ public enum StoredFileChangeKind: String, Codable, CaseIterable, Sendable, Equat
         switch self {
         case .write:
             "created"
-        case .edit:
+        case .edit, .modified:
             "edited"
         case .discovered:
             "output"
+        case .removed:
+            "removed"
         case .unknown:
             "changed"
+        }
+    }
+
+    /// Observed on disk by comparing snapshots, not reported by a tool.
+    public var isObserved: Bool {
+        switch self {
+        case .discovered, .modified, .removed:
+            true
+        case .write, .edit, .unknown:
+            false
         }
     }
 }

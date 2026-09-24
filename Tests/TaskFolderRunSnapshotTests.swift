@@ -1,0 +1,263 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@Suite("Task folder run snapshot")
+@MainActor
+struct TaskFolderRunSnapshotTests {
+    @Test("A before/after comparison reports created, modified, and removed files")
+    func reportsCreatedModifiedAndRemoved() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write("kept", to: folder, "README.md")
+        try write("v1", to: folder, "plan.md")
+        try write("old", to: folder, "reports/old.md")
+
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        try write("version two", to: folder, "plan.md")
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("reports/old.md"))
+        try write("new", to: folder, "reports/new.md")
+        let after = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        let changes = after.changes(since: before)
+        #expect(changes.map(\.relativePath) == ["plan.md", "reports/new.md", "reports/old.md"])
+        #expect(changes.map(\.kind) == [.modified, .created, .removed])
+    }
+
+    @Test("Bookkeeping, hidden files, and dependency trees are not the run's work")
+    func ignoresFilesTheShelfHides() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        for path in [
+            "outputs/turn_001.md",
+            "session_history.md",
+            "current_state.json",
+            "inputs/astra_paste_1.txt",
+            "diagnostics/run_resource_manifest_1.json",
+            ".DS_Store",
+            "node_modules/pkg/index.js",
+            ".venv/bin/python"
+        ] {
+            try write("x", to: folder, path)
+        }
+        try write("deliverable", to: folder, "answer.md")
+        let after = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        #expect(after.changes(since: before).map(\.relativePath) == ["answer.md"])
+    }
+
+    @Test("A task folder the run creates starts from an empty snapshot")
+    func missingFolderIsAnEmptyBaseline() throws {
+        let parent = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let folder = parent.appendingPathComponent("not-yet", isDirectory: true)
+
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        #expect(before.entries.isEmpty)
+        try write("first", to: folder, "notes.md")
+        let after = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+
+        #expect(after.changes(since: before).map(\.kind) == [.created])
+    }
+
+    @Test("A folder past the walk limit is not snapshotted rather than half-compared")
+    func folderPastTheLimitIsSkipped() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for index in 0..<5 {
+            try write("\(index)", to: folder, "data/\(index).csv")
+        }
+
+        #expect(TaskFolderRunSnapshot.scan(taskFolder: folder.path, entryLimit: 4) == nil)
+        #expect(TaskFolderRunSnapshot.scan(taskFolder: folder.path, entryLimit: 6)?.entries.count == 5)
+    }
+
+    @Test("Paths a tool already recorded keep that record, under either spelling of the root")
+    func toolRecordedPathsAreNotRepeated() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        // A task folder reached through a symlink, as `/var` → `/private/var` is.
+        let link = fixture.folder.appendingPathComponent("linked-task-folder")
+        let target = fixture.folder.appendingPathComponent("real-task-folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(link.path)
+        #expect(root.standardized != root.resolved)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: root.resolved + "/written.md",
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: "tool content"
+        ))
+
+        let stored = TaskFolderRunSnapshot.append(
+            [
+                .init(relativePath: "written.md", kind: .created, modifiedAt: nil),
+                .init(relativePath: "script-output.csv", kind: .created, modifiedAt: nil)
+            ],
+            under: root,
+            to: fixture.run,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(stored.map(\.path) == [root.standardized + "/script-output.csv"])
+        #expect(fixture.run.allFileChanges.map(\.kind) == [.write, .discovered])
+        #expect(fixture.run.allFileChanges.first?.content == "tool content")
+    }
+
+    @Test("Observed changes are stamped inside the run's window with their kind")
+    func observedChangesAreStampedInsideTheRunWindow() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let end = Date(timeIntervalSinceReferenceDate: 2_000)
+
+        TaskFolderRunSnapshot.append(
+            [
+                .init(relativePath: "a.md", kind: .created, modifiedAt: Date(timeIntervalSinceReferenceDate: 1_500)),
+                .init(relativePath: "b.md", kind: .modified, modifiedAt: Date(timeIntervalSinceReferenceDate: 9_000)),
+                .init(relativePath: "c.md", kind: .removed, modifiedAt: nil)
+            ],
+            under: root,
+            to: fixture.run,
+            runStartedAt: start,
+            runEndedAt: end
+        )
+
+        let changes = fixture.run.allFileChanges
+        #expect(changes.map(\.kind) == [.discovered, .modified, .removed])
+        #expect(changes.map(\.timestamp) == [Date(timeIntervalSinceReferenceDate: 1_500), end, end])
+        #expect(changes.allSatisfy { $0.content == nil })
+    }
+
+    @Test("A run records what happened in its task folder, however it was written")
+    func recordChangesAppendsToTheRun() async throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let folder = URL(fileURLWithPath: TaskWorkspaceAccess(task: fixture.task).taskFolder, isDirectory: true)
+        try write("old", to: folder, "stale.md")
+        try write("v1", to: folder, "plan.md")
+
+        let before = await TaskFolderRunSnapshot.capture(for: fixture.task)
+        try write("version two", to: folder, "plan.md")
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("stale.md"))
+        try write("bq output", to: folder, "results/rows.csv")
+        try write("turn log", to: folder, "outputs/turn_001.md")
+        let stored = await TaskFolderRunSnapshot.recordChanges(
+            since: before,
+            task: fixture.task,
+            run: fixture.run,
+            runStartedAt: Date().addingTimeInterval(-5)
+        )
+
+        let byName = Dictionary(uniqueKeysWithValues: stored.map { (URL(fileURLWithPath: $0.path).lastPathComponent, $0.kind) })
+        #expect(byName == ["plan.md": .modified, "rows.csv": .discovered, "stale.md": .removed])
+        #expect(fixture.run.allFileChanges.count == 3)
+    }
+
+    @Test("Observed kinds decode by name, and an unrecognized kind reads as unknown")
+    func observedKindsRoundTrip() {
+        #expect(StoredFileChangeKind(changeType: "modified") == .modified)
+        #expect(StoredFileChangeKind(changeType: "removed") == .removed)
+        #expect(StoredFileChangeKind.modified.sourceLabel == "edited")
+        #expect(StoredFileChangeKind.removed.sourceLabel == "removed")
+        #expect(StoredFileChangeKind(changeType: "renamed") == .unknown)
+    }
+
+    @Test("A batch append keeps earlier changes and writes the paths as given")
+    func batchAppendKeepsEarlierChanges() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.run.appendFileChange(StoredFileChange(path: "/tmp/one.md", changeType: "Edit"))
+        fixture.run.appendHostFileChanges([
+            StoredFileChange(path: "/tmp/two.md", changeType: "discovered"),
+            StoredFileChange(path: "/tmp/three.md", changeType: "removed")
+        ])
+
+        #expect(fixture.run.allFileChanges.map(\.path) == ["/tmp/one.md", "/tmp/two.md", "/tmp/three.md"])
+    }
+
+    @Test("Existing readers see only tool evidence, so gates and counts do not move")
+    func existingReadersSeeOnlyToolEvidence() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.run.appendHostFileChanges([
+            StoredFileChange(path: "/tmp/new.csv", changeType: "discovered"),
+            StoredFileChange(path: "/tmp/plan.md", changeType: "modified"),
+            StoredFileChange(path: "/tmp/gone.md", changeType: "removed")
+        ])
+        // A tool change arriving later must not drop the observed ones.
+        fixture.run.appendFileChange(StoredFileChange(path: "/tmp/tool.md", changeType: "Write"))
+
+        #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/tool.md"])
+        #expect(fixture.run.allFileChanges.count == 4)
+        let threadRun = TaskRunSnapshot(input: TaskRunSnapshotInput(run: fixture.run))
+        #expect(threadRun.fileChanges.map(\.path) == ["/tmp/tool.md"])
+    }
+
+    @Test("A bulk run records a bounded list, new and edited files first")
+    func bulkRunIsCappedWithRemovalsLast() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+
+        let stored = TaskFolderRunSnapshot.append(
+            [
+                .init(relativePath: "a-removed.md", kind: .removed, modifiedAt: nil),
+                .init(relativePath: "b-edited.md", kind: .modified, modifiedAt: nil),
+                .init(relativePath: "c-new.md", kind: .created, modifiedAt: nil)
+            ],
+            under: root,
+            to: fixture.run,
+            runStartedAt: Date(),
+            runEndedAt: Date(),
+            limit: 2
+        )
+
+        #expect(stored.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["c-new.md", "b-edited.md"])
+    }
+
+    // MARK: - Fixtures
+
+    private struct RunFixture {
+        let container: ModelContainer
+        let folder: URL
+        let task: AgentTask
+        let run: TaskRun
+    }
+
+    private func makeRun() throws -> RunFixture {
+        let folder = try makeFolder()
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let workspace = Workspace(name: "Snapshot", primaryPath: folder.path)
+        let task = AgentTask(title: "Produce files", goal: "Write outputs", workspace: workspace)
+        let run = TaskRun(task: task)
+        container.mainContext.insert(workspace)
+        container.mainContext.insert(task)
+        container.mainContext.insert(run)
+        return RunFixture(container: container, folder: folder, task: task, run: run)
+    }
+
+    private func makeFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-task-folder-snapshot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func write(_ text: String, to folder: URL, _ relativePath: String) throws {
+        let url = folder.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
