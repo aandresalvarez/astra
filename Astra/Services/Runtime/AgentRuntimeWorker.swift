@@ -1046,6 +1046,7 @@ final class AgentRuntimeWorker {
             )
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
+        await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
         let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")

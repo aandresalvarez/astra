@@ -68,6 +68,11 @@ struct TaskRunInterruptionSummary {
     var runsUpdated = 0
     var eventsInserted = 0
     private(set) var affectedWorkspaces: [Workspace] = []
+    /// The runs this pass took from `.running` to interrupted.
+    private(set) var interruptedRuns: [TaskRun] = []
+    /// Set by `recoverOrphanedRunningRuns`: replaying the interrupted runs'
+    /// task-folder baselines, which finishes after the summary is returned.
+    var folderSnapshotRecovery: Task<Void, Never>?
     private var affectedWorkspaceIDs: Set<UUID> = []
 
     var hasChanges: Bool {
@@ -78,9 +83,14 @@ struct TaskRunInterruptionSummary {
         tasksUpdated += other.tasksUpdated
         runsUpdated += other.runsUpdated
         eventsInserted += other.eventsInserted
+        interruptedRuns += other.interruptedRuns
         for workspace in other.affectedWorkspaces {
             addAffectedWorkspace(workspace)
         }
+    }
+
+    mutating func addInterruptedRun(_ run: TaskRun) {
+        interruptedRuns.append(run)
     }
 
     mutating func addAffectedWorkspace(_ workspace: Workspace?) {
@@ -167,6 +177,15 @@ enum TaskRunLifecycleService {
             modelContext: modelContext,
             autoExportWorkspaces: autoExportWorkspaces
         )
+        // No worker outlived the restart to compare the task folder after
+        // these runs, so replay the baselines they left on disk. Only here:
+        // a user or queue cancel leaves the worker to finish the comparison.
+        let recoverable = TaskFolderRunSnapshot.runsWithPersistedBaseline(summary.interruptedRuns)
+        if !recoverable.isEmpty {
+            summary.folderSnapshotRecovery = Task { @MainActor in
+                await TaskFolderRunSnapshot.recoverInterruptedRuns(recoverable, modelContext: modelContext)
+            }
+        }
         return summary
     }
 
@@ -218,6 +237,7 @@ enum TaskRunLifecycleService {
                 run.setOutput(cappedOutput)
             }
             summary.runsUpdated += 1
+            summary.addInterruptedRun(run)
         }
 
         let shouldCancelTask = source.alwaysCancelTask

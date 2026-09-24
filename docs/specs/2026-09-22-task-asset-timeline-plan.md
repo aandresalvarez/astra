@@ -244,11 +244,13 @@ recorder stores a tool's file change when the tool is called, before its
 result says whether it succeeded, so the write is no proof the file existed
 and no deletion is inferred from it. A run whose change record cannot be
 decoded is skipped rather than rewritten. A run interrupted by a crash or quit
-records no observed changes: the pre-run baseline lives only in the worker's
-memory, and `TaskRunLifecycleService.finalizeInterruptedRuns` has nothing to
-compare against. Recovering them means persisting the baseline with a
-fingerprint that is stable across launches (the current one is a per-process
-`Hasher`).
+is compared at the next launch instead: the worker keeps the pre-run baseline
+in the task folder's `diagnostics/` for the length of the run (content
+fingerprints are SHA-256, so they compare across launches), and
+`recoverOrphanedRunningRuns` replays it for each run it interrupts and removes
+it. Anything that changed the folder between the crash and that launch is
+attributed to the interrupted run, since nothing on disk tells the two apart.
+Writing a run's baseline removes any other the task left behind.
 
 **Tests.**
 

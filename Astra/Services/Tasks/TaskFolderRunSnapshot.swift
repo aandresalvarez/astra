@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ASTRACore
 import ASTRAModels
@@ -28,14 +29,14 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
     /// time on every write and an atomic replace changes the file identifier,
     /// but on a filesystem with coarse timestamps both writes can still land
     /// in one tick; the content fingerprint covers that for small files.
-    struct Entry: Sendable, Equatable {
+    struct Entry: Sendable, Equatable, Codable {
         let size: Int
         let modifiedAt: Date?
         let statusChangedAt: Date?
         let fileIdentifier: UInt64?
-        /// Seeded per process, like every `Hasher`: comparable between the
-        /// two walks of one run, never persisted.
-        let contentFingerprint: Int?
+        /// The first 8 bytes of the content's SHA-256: the same in every
+        /// launch, so a baseline persisted before a crash still compares.
+        let contentFingerprint: UInt64?
 
         /// A fingerprint only counts when both walks took one: the byte budget
         /// can fall differently between them, and a missing fingerprint is no
@@ -191,7 +192,7 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
             // Symlinks are skipped: what they point at is not the task's work.
             guard isVisible, values.isRegularFile == true else { continue }
             let size = values.fileSize ?? 0
-            var fingerprint: Int?
+            var fingerprint: UInt64?
             if size <= fingerprintFileLimit, size <= fingerprintBytesLeft {
                 let read = contentFingerprint(
                     of: url,
@@ -229,7 +230,7 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
         maxBytes: Int,
         hostFileAccess: HostFileAccessBroker = HostFileAccessBroker(),
         intent: HostFileAccessIntent
-    ) -> (fingerprint: Int?, bytesRead: Int) {
+    ) -> (fingerprint: UInt64?, bytesRead: Int) {
         guard let data = try? hostFileAccess.readData(
             at: url,
             maxBytes: maxBytes + 1,
@@ -237,9 +238,8 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
             intent: intent
         ) else { return (nil, 0) }
         guard data.count <= maxBytes else { return (nil, data.count) }
-        var hasher = Hasher()
-        data.withUnsafeBytes { hasher.combine(bytes: $0) }
-        return (hasher.finalize(), data.count)
+        let digest = SHA256.hash(data: data)
+        return (digest.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }, data.count)
     }
 
     /// `scan` off the main actor.
@@ -287,10 +287,13 @@ extension TaskFolderRunSnapshot {
         }
         let started = Date()
         let recordedJSON = run.fileChangesJSON
+        let baselineURL = baselineURL(taskFolder: before.root.standardized, runID: run.id)
         // A bulk run can leave tens of thousands of entries to compare and
         // sort, so only the bounded result comes back to the main actor.
         let outcome = await Task.detached(priority: .userInitiated, operation: {
-            observe(
+            // The run ended here, so the copy kept for crash recovery is done.
+            defer { removeBaseline(at: baselineURL) }
+            return observe(
                 since: before,
                 recordedJSON: recordedJSON,
                 executionPath: executionPath,
@@ -307,7 +310,19 @@ extension TaskFolderRunSnapshot {
             return []
         }
         run.appendHostFileChanges(observation.records)
-        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+        logObservation(observation, task: task, run: run, started: started)
+        return observation.records
+    }
+
+    @MainActor
+    static func logObservation(
+        _ observation: Observation,
+        task: AgentTask,
+        run: TaskRun,
+        started: Date,
+        recovered: Bool = false
+    ) {
+        var fields = [
             "event": "task_folder_snapshot",
             "run_id": String(run.id.uuidString.prefix(8)),
             "files": String(observation.fileCount),
@@ -317,8 +332,9 @@ extension TaskFolderRunSnapshot {
             "omitted": String(observation.omittedCount),
             "limit_reached": String(observation.omittedCount > 0),
             "duration_ms": String(Int(Date().timeIntervalSince(started) * 1_000))
-        ])
-        return observation.records
+        ]
+        if recovered { fields["recovered"] = "true" }
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: fields)
     }
 
     struct Observation: Sendable {
@@ -337,6 +353,7 @@ extension TaskFolderRunSnapshot {
     enum ObservationSkip: String, Error {
         case unreadableOrOverLimit = "unreadable_or_over_limit"
         case undecodableRecord = "undecodable_file_changes"
+        case unreadableBaseline = "unreadable_baseline"
     }
 
     /// The after-run walk and the records it yields, on the calling thread.
@@ -465,12 +482,14 @@ extension TaskFolderRunSnapshot {
     }
 
     @MainActor
-    private static func logSkipped(task: AgentTask, run: TaskRun, reason: String) {
-        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+    static func logSkipped(task: AgentTask, run: TaskRun, reason: String, recovered: Bool = false) {
+        var fields = [
             "event": "task_folder_snapshot_skipped",
             "run_id": String(run.id.uuidString.prefix(8)),
             "reason": reason
-        ])
+        ]
+        if recovered { fields["recovered"] = "true" }
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: fields)
     }
 }
 

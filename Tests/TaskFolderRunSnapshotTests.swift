@@ -168,7 +168,7 @@ struct TaskFolderRunSnapshotTests {
         #expect(unbudgeted?.entries.values.allSatisfy { $0.contentFingerprint == nil } == true)
 
         let stamp = Date(timeIntervalSince1970: 1_790_000_000)
-        func entry(_ fingerprint: Int?) -> TaskFolderRunSnapshot.Entry {
+        func entry(_ fingerprint: UInt64?) -> TaskFolderRunSnapshot.Entry {
             .init(size: 4, modifiedAt: stamp, statusChangedAt: stamp, fileIdentifier: 7, contentFingerprint: fingerprint)
         }
         #expect(entry(1).differs(from: entry(2)))
