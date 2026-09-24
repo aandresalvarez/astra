@@ -182,7 +182,7 @@ def without_copilot_result_payload(fields):
     """Blank what a Copilot result carried; keep ids, flags and the outcome."""
     return {
         key: (
-            copilot_error_placeholder(value) if key == "error"
+            error_placeholder(value) if key == "error"
             else TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value
             else value
         )
@@ -190,9 +190,9 @@ def without_copilot_result_payload(fields):
     }
 
 
-def copilot_error_placeholder(error):
+def error_placeholder(error):
     # A failed tool's `error` is a flag, or an object whose `message` the
-    # parser reads as the result text: stderr, file contents, a credential.
+    # parsers read as the result text: stderr, file contents, a credential.
     if error is None or isinstance(error, bool):
         return error
     return {"message": TOOL_OUTPUT} if isinstance(error, dict) else TOOL_OUTPUT
@@ -252,13 +252,21 @@ def without_tool_output(frame):
         })
     elif is_copilot_tool_result(frame):  # Copilot's other result shapes
         frame = without_copilot_result_payload(frame)
-        if isinstance(frame.get("data"), dict):
-            frame["data"] = without_copilot_result_payload(frame["data"])
+        # The parser reads a result from either wrapper object.
+        for wrapper in ("data", "payload"):
+            if isinstance(frame.get(wrapper), dict):
+                frame[wrapper] = without_copilot_result_payload(frame[wrapper])
     elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
         step = frame["step_update"]
         info = step.get("tool_info")
-        if isinstance(info, dict) and "output" in info:
-            frame = dict(frame, step_update=dict(step, tool_info=dict(info, output=TOOL_OUTPUT)))
+        if isinstance(info, dict) and ("output" in info or "error" in info):
+            # A tool in ERROR reports its text in `error.message` instead.
+            info = dict(info)
+            if "output" in info:
+                info["output"] = TOOL_OUTPUT
+            if "error" in info:
+                info["error"] = error_placeholder(info["error"])
+            frame = dict(frame, step_update=dict(step, tool_info=info))
     return frame
 
 
@@ -270,8 +278,9 @@ def tool_call_arguments(frame):
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 yield block.get("name", "tool"), json.dumps(block.get("input"))
     elif kind == "tool.execution_start":  # Copilot
-        data = frame.get("data") or {}
-        yield data.get("toolName", "tool"), json.dumps(data.get("arguments"))
+        # Arguments may sit under `arguments` or `input`; audit whatever the
+        # parser could read, or the whole frame.
+        yield copilot_payload(frame).get("toolName", "tool"), json.dumps(copilot_arguments(frame) or frame)
     elif kind in ("item.started", "item.completed"):  # Codex
         item = frame.get("item") or {}
         if kind == "item.started" and item.get("type") in CODEX_TOOL_ITEM_TYPES:
@@ -306,6 +315,11 @@ def copilot_payload(frame):
     return {}
 
 
+def copilot_arguments(frame):
+    containers = (copilot_payload(frame), frame)
+    return {key: container[key] for container in containers for key in COPILOT_ARGUMENT_KEYS if key in container}
+
+
 def copilot_tool_call(frame):
     """A Copilot tool call in any shape but tool.execution_start, as a
     (name, arguments JSON) pair, or None.
@@ -332,7 +346,7 @@ def copilot_tool_call(frame):
     identified = any(key in container for container in containers for key in COPILOT_TOOL_ID_KEYS)
     if not (uses_tool or (identified and not is_result)):
         return None
-    arguments = {key: container[key] for container in reversed(containers) for key in COPILOT_ARGUMENT_KEYS if key in container}
+    arguments = copilot_arguments(frame)
     name = next(
         (container[key] for container in containers for key in ("toolName", "tool", "name") if isinstance(container.get(key), str)),
         kind or "tool",
@@ -356,7 +370,14 @@ OUTSIDE_PATH_PATTERN = re.compile(
     r"(?<![\w.\-~/:])/(?!workspace(?:/|$|[\s\"'\\])|dev/null(?:$|[\s\"'\\]))"
     r"|(?<![\w.\-])\.\.(?=/|[\s\"'\\]|$)"
     r"|(?<![\w])~[A-Za-z0-9._\-]*(?=/|[\s\"'\\]|$)"
-    r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
+    # An inherited variable that holds a path outside the workspace. `$PWD`
+    # is the workspace itself; slicing it is refused below.
+    r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR|TMP|TEMP|SHELL|PATH|OLDPWD|BASH|ZDOTDIR)\b"
+    # A parameter expansion with an operator or a subscript can carve a path
+    # out of any variable: `${SHELL:0:1}etc` is `/etc`, `${PWD%/*}` is the
+    # parent, and zsh's `$PWD[1]` is `/`.
+    r"|\$\{[#!]?(?:[A-Za-z_]\w*|\d+|[@*?$!-])(?:\[[^]]*\])?[:#%/^,@]"
+    r"|\$\{?[A-Za-z_]\w*\["
     # A local file URL reads the disk however its slashes look.
     r"|(?i:\bfile:(?=/))"
 )
