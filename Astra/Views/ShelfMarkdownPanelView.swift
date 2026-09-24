@@ -198,9 +198,8 @@ struct ShelfMarkdownPanelView: View {
 
             toolbarActions
         }
-        .frame(height: 42)
-        .padding(.horizontal, 12)
-        .background(.bar)
+        .frame(height: ShelfChrome.toolbarHeight)
+        .padding(.horizontal, ShelfChrome.barHorizontalPadding)
     }
 
     private var browseFilesButton: some View {
@@ -297,7 +296,7 @@ struct ShelfMarkdownPanelView: View {
                 } label: {
                     Image(systemName: isEditing ? "checkmark" : "pencil")
                 }
-                .buttonStyle(TextShelfToolbarButtonStyle())
+                .buttonStyle(ShelfToolbarButtonStyle())
                 .help(isEditing ? "Done editing" : "Edit file")
             }
 
@@ -307,7 +306,7 @@ struct ShelfMarkdownPanelView: View {
                 } label: {
                     Image(systemName: "square.and.arrow.down")
                 }
-                .buttonStyle(TextShelfToolbarButtonStyle())
+                .buttonStyle(ShelfToolbarButtonStyle())
                 .disabled(!session.isSelectedDocumentDirty)
                 .keyboardShortcut("s", modifiers: .command)
                 .help(session.isSelectedDocumentDirty ? "Save changes" : "No changes to save")
@@ -382,7 +381,7 @@ struct ShelfMarkdownPanelView: View {
                             )
                         }
                     }
-                        .background(.bar)
+                        .background(ShelfChrome.floatingSurface)
                         .shadow(color: Color.black.opacity(0.14), radius: 14, x: 3, y: 0)
                         .transition(fileNavigatorTransition)
                         .zIndex(1)
@@ -425,7 +424,6 @@ struct ShelfMarkdownPanelView: View {
             fileNavigatorContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.cardBackground.opacity(0.20))
     }
 
     private var fileNavigatorContent: some View {
@@ -813,7 +811,7 @@ struct ShelfMarkdownPanelView: View {
             .padding(.trailing, 10)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
-            .background(isSelected ? Stanford.lagunita.opacity(0.10) : Color.clear)
+            .background(isSelected ? Stanford.lagunita.opacity(Stanford.fillTint) : Color.clear)
         }
         .buttonStyle(.plain)
         .help(node.path)
@@ -896,7 +894,7 @@ struct ShelfMarkdownPanelView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
-            .background(isSelected ? Stanford.lagunita.opacity(0.10) : Color.clear)
+            .background(isSelected ? Stanford.lagunita.opacity(Stanford.fillTint) : Color.clear)
         }
         .buttonStyle(.plain)
         .help(node.path)
@@ -1361,69 +1359,18 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var tabStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(session.documents) { document in
-                    textTab(document)
-                }
+        ShelfTabStrip {
+            ForEach(session.documents) { document in
+                ShelfDocumentTab(
+                    title: document.title,
+                    systemImage: document.kind.systemImage,
+                    help: document.fileURL.path,
+                    isSelected: session.selectedDocumentID == document.id,
+                    isDirty: document.isDirty,
+                    onSelect: { session.selectDocument(document.id) },
+                    onClose: { session.closeDocument(document.id) }
+                )
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 2)
-        }
-        .frame(height: 40)
-        .background(Stanford.cardBackground.opacity(0.55))
-    }
-
-    private func textTab(_ document: ShelfMarkdownDocument) -> some View {
-        let isSelected = session.selectedDocumentID == document.id
-        return HStack(spacing: 6) {
-            Button {
-                session.selectDocument(document.id)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: document.kind.systemImage)
-                        .font(Stanford.ui(11, weight: .semibold))
-                    Text(document.title)
-                        .font(Stanford.ui(12, weight: isSelected ? .semibold : .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if document.isDirty {
-                        Circle()
-                            .fill(Stanford.cardinalRed)
-                            .frame(width: 6, height: 6)
-                            .help("Unsaved changes")
-                    }
-                }
-                .foregroundStyle(isSelected ? Stanford.black : Stanford.coolGrey)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(document.fileURL.path)
-
-            Button {
-                session.closeDocument(document.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(isSelected ? Stanford.black.opacity(0.75) : Stanford.coolGrey.opacity(0.7))
-                    .frame(width: 18, height: 18)
-                    .background(
-                        Circle()
-                            .fill(Color.primary.opacity(0.001))
-                    )
-            }
-            .buttonStyle(.plain)
-            .help("Close \(document.title)")
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 6)
-        .frame(width: 190, height: 34)
-        .background(isSelected ? Stanford.cardBackground : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(isSelected ? Stanford.cardinalRed : Color.clear)
-                .frame(height: 2)
         }
     }
 
@@ -1532,6 +1479,8 @@ struct ShelfMarkdownPanelView: View {
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
+        .buttonStyle(ShelfToolbarButtonStyle())
+        .fixedSize()
         .help("Files shelf options")
     }
 
@@ -1606,7 +1555,7 @@ struct ShelfMarkdownPanelView: View {
                     text: session.content,
                     signature: session.contentSignature
                 )
-                .background(Stanford.cardBackground.opacity(0.45))
+                .background(ShelfChrome.contentSurface)
             }
         } else if effectiveViewMode == .preview, session.selectedDocumentKind == .json {
             jsonPreviewBody
@@ -1619,7 +1568,7 @@ struct ShelfMarkdownPanelView: View {
                 isEditable: true,
                 wrapLines: wrapLines
             )
-            .background(Stanford.cardBackground.opacity(0.45))
+            .background(ShelfChrome.contentSurface)
         } else {
             ShelfSyntaxHighlightedTextView(
                 text: session.content,
@@ -1627,7 +1576,7 @@ struct ShelfMarkdownPanelView: View {
                 wrapLines: wrapLines,
                 signature: session.contentSignature
             )
-            .background(Stanford.cardBackground.opacity(0.45))
+            .background(ShelfChrome.contentSurface)
         }
     }
 
@@ -1661,7 +1610,7 @@ struct ShelfMarkdownPanelView: View {
         if let preview = document.imagePreview {
             GeometryReader { proxy in
                 ZStack {
-                    Stanford.cardBackground.opacity(0.45)
+                    ShelfChrome.contentSurface
 
                     ScrollView([.horizontal, .vertical]) {
                         Image(nsImage: preview.image)
@@ -1748,7 +1697,7 @@ struct ShelfMarkdownPanelView: View {
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.cardBackground.opacity(0.45))
+        .background(ShelfChrome.contentSurface)
     }
 
     private func largeFileOverview(_ document: ShelfMarkdownDocument) -> some View {
@@ -1808,7 +1757,7 @@ struct ShelfMarkdownPanelView: View {
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.cardBackground.opacity(0.45))
+        .background(ShelfChrome.contentSurface)
     }
 
     private func fileFactRow(_ title: String, value: String, systemImage: String) -> some View {
@@ -1845,7 +1794,7 @@ struct ShelfMarkdownPanelView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Stanford.cardBackground.opacity(0.45))
+            .background(ShelfChrome.contentSurface)
         } else {
             ShelfSyntaxHighlightedTextView(
                 text: session.selectedDocument?.formattedJSONContent ?? session.content,
@@ -1853,7 +1802,7 @@ struct ShelfMarkdownPanelView: View {
                 wrapLines: wrapLines,
                 signature: "\(session.contentSignature)|pretty-json"
             )
-            .background(Stanford.cardBackground.opacity(0.45))
+            .background(ShelfChrome.contentSurface)
         }
     }
 
@@ -1893,7 +1842,6 @@ struct ShelfMarkdownPanelView: View {
         .lineLimit(1)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(Stanford.cardBackground.opacity(0.65))
     }
 
     private var effectiveViewMode: ShelfTextViewMode {
@@ -2280,44 +2228,6 @@ enum ShelfSyntaxHighlighter {
             appliedRanges.append(matchRange)
         }
         return appliedRanges
-    }
-}
-
-private struct TextShelfToolbarButtonStyle: ButtonStyle {
-    var isActive = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Stanford.ui(13, weight: .semibold))
-            .foregroundStyle(foregroundColor(isPressed: configuration.isPressed))
-            .frame(width: 28, height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(backgroundColor(isPressed: configuration.isPressed))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(strokeColor, lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-
-    private func foregroundColor(isPressed: Bool) -> Color {
-        if isActive {
-            return Stanford.lagunita.opacity(isPressed ? 0.72 : 1)
-        }
-        return Color.primary.opacity(isPressed ? 0.55 : 0.82)
-    }
-
-    private func backgroundColor(isPressed: Bool) -> Color {
-        if isPressed {
-            return isActive ? Stanford.lagunita.opacity(0.16) : Color.primary.opacity(0.12)
-        }
-        return isActive ? Stanford.lagunita.opacity(0.10) : Color.clear
-    }
-
-    private var strokeColor: Color {
-        isActive ? Stanford.lagunita.opacity(Stanford.strokeActive) : Color.clear
     }
 }
 

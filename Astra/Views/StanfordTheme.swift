@@ -295,6 +295,18 @@ enum Stanford {
     /// draws, for hand-drawn region edges and the sidebar's split divider.
     static let separator = Color(nsColor: .separatorColor)
 
+    // MARK: - Fill Scale
+    //
+    // Interaction and wash fills, paired like the stroke scale with
+    // `Color.primary` or a tint: Soft (0.06) → resting soft controls, hint
+    // boxes, and hover; Pressed (0.12) → a pressed neutral control; Tint
+    // (0.10) → selected rows, active toggles, badges, and notices in any
+    // tint; Tint pressed (0.16) → a pressed tinted control.
+    static let fillSoft: Double = 0.06
+    static let fillPressed: Double = 0.12
+    static let fillTint: Double = 0.10
+    static let fillTintPressed: Double = 0.16
+
     // MARK: - Density Tokens
 
     static func density(_ value: CGFloat) -> CGFloat {

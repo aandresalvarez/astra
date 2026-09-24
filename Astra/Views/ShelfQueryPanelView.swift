@@ -96,11 +96,10 @@ struct ShelfQueryPanelView: View {
                 Image(systemName: "xmark")
             }
             .help("Close query shelf")
-            .buttonStyle(QueryShelfToolbarButtonStyle())
+            .buttonStyle(ShelfToolbarButtonStyle())
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.bar)
+        .padding(.horizontal, ShelfChrome.barHorizontalPadding)
+        .frame(minHeight: ShelfChrome.toolbarHeight)
     }
 
     private var workflowConnectionMenu: some View {
@@ -217,71 +216,24 @@ struct ShelfQueryPanelView: View {
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
-        .buttonStyle(QueryShelfToolbarButtonStyle())
+        .buttonStyle(ShelfToolbarButtonStyle())
+        .fixedSize()
         .help("Query actions")
     }
 
     private var tabStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(session.documents) { document in
-                    queryTab(document)
-                }
+        ShelfTabStrip {
+            ForEach(session.documents) { document in
+                ShelfDocumentTab(
+                    title: document.title,
+                    systemImage: "doc.text.magnifyingglass",
+                    help: document.sourcePath ?? document.title,
+                    isSelected: session.selectedDocumentID == document.id,
+                    isDirty: document.isDirty,
+                    onSelect: { session.selectDocument(document.id) },
+                    onClose: { session.closeDocument(document.id) }
+                )
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 2)
-        }
-        .frame(height: 40)
-        .background(Stanford.cardBackground.opacity(0.55))
-    }
-
-    private func queryTab(_ document: ShelfQueryDocument) -> some View {
-        let isSelected = session.selectedDocumentID == document.id
-        return HStack(spacing: 6) {
-            Button {
-                session.selectDocument(document.id)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(Stanford.ui(11, weight: .semibold))
-                    Text(document.title)
-                        .font(Stanford.ui(12, weight: isSelected ? .semibold : .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if document.isDirty {
-                        Circle()
-                            .fill(Stanford.cardinalRed)
-                            .frame(width: 6, height: 6)
-                            .help("Unsaved changes")
-                    }
-                }
-                .foregroundStyle(isSelected ? Stanford.black : Stanford.coolGrey)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(document.sourcePath ?? document.title)
-
-            Button {
-                session.closeDocument(document.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(isSelected ? Stanford.black.opacity(0.75) : Stanford.coolGrey.opacity(0.7))
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(Color.primary.opacity(0.001)))
-            }
-            .buttonStyle(.plain)
-            .help("Close \(document.title)")
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 6)
-        .frame(width: 190, height: 34)
-        .background(isSelected ? Stanford.cardBackground : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(isSelected ? Stanford.lagunita : Color.clear)
-                .frame(height: 2)
         }
     }
 
@@ -294,7 +246,7 @@ struct ShelfQueryPanelView: View {
             Divider()
             queryActionBar
         }
-        .background(Stanford.cardBackground.opacity(0.28))
+        .background(ShelfChrome.contentSurface)
     }
 
     private var querySetupBar: some View {
@@ -320,7 +272,6 @@ struct ShelfQueryPanelView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     private var querySetupSummary: some View {
@@ -362,7 +313,6 @@ struct ShelfQueryPanelView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     private var queryActionSummary: some View {
@@ -393,7 +343,7 @@ struct ShelfQueryPanelView: View {
                 } label: {
                     Text("Restore SQL")
                 }
-                .buttonStyle(QueryWorkflowSecondaryButtonStyle())
+                .buttonStyle(ShelfSoftButtonStyle())
                 .disabled(session.isRunning)
                 .help("Restore the SQL from before AI repair")
             }
@@ -413,7 +363,7 @@ struct ShelfQueryPanelView: View {
         }
         .disabled(!canRun)
         .help(runHelp)
-        .buttonStyle(QueryShelfActionButtonStyle(isPrimary: true))
+        .buttonStyle(ShelfSoftButtonStyle(isPrimary: true))
     }
 
     private var rowLimitField: some View {
@@ -430,8 +380,8 @@ struct ShelfQueryPanelView: View {
         .padding(.horizontal, 9)
         .frame(height: 34)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(0.055))
+            RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
+                .fill(Color.primary.opacity(Stanford.fillSoft))
         )
         .help("Preview row limit")
     }
@@ -443,7 +393,7 @@ struct ShelfQueryPanelView: View {
             Label("Format", systemImage: "text.alignleft")
         }
         .labelStyle(.titleAndIcon)
-        .buttonStyle(QueryWorkflowSecondaryButtonStyle())
+        .buttonStyle(ShelfSoftButtonStyle())
         .disabled(!hasRunnableSQL || session.isRunning)
         .help("Auto-format SQL")
     }
@@ -456,7 +406,7 @@ struct ShelfQueryPanelView: View {
         }
         .disabled(!canExecute)
         .help("Dry run query")
-        .buttonStyle(QueryWorkflowSecondaryButtonStyle())
+        .buttonStyle(ShelfSoftButtonStyle())
     }
 
     private var recoveryButton: some View {
@@ -467,7 +417,7 @@ struct ShelfQueryPanelView: View {
         }
         .disabled(!canExecute)
         .help("Prepare rollback or restore instructions before running")
-        .buttonStyle(QueryWorkflowSecondaryButtonStyle())
+        .buttonStyle(ShelfSoftButtonStyle())
     }
 
     @ViewBuilder
@@ -481,7 +431,7 @@ struct ShelfQueryPanelView: View {
             }
             .disabled(!canExecute)
             .help("Approve this exact SQL and prepared recovery plan for execution")
-            .buttonStyle(QueryWorkflowSecondaryButtonStyle())
+            .buttonStyle(ShelfSoftButtonStyle())
         } else if session.hasApprovedSafetyGate(connection: selectedConnection) {
             Text("Gate approved")
                 .font(Stanford.ui(11, weight: .semibold))
@@ -496,7 +446,6 @@ struct ShelfQueryPanelView: View {
             get: { session.sql },
             set: { session.updateSelectedSQL($0) }
         ))
-        .background(Stanford.cardBackground.opacity(0.32))
         .overlay(alignment: .topTrailing) {
             if session.isRunning {
                 ProgressView()
@@ -516,7 +465,6 @@ struct ShelfQueryPanelView: View {
         .controlSize(.small)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     @ViewBuilder
@@ -722,7 +670,6 @@ struct ShelfQueryPanelView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.bar)
 
             if selectedConnection.id == DatabaseConnection.editOnly.id {
                 ContentUnavailableView {
@@ -932,7 +879,7 @@ struct ShelfQueryPanelView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(Stanford.cardBackground.opacity(0.45))
+                    .background(ShelfChrome.contentSurface)
 
                     if let error = session.tableSchemaErrorMessage,
                        session.tableSchemaErrorTableID == table.id {
@@ -1171,7 +1118,7 @@ private struct QueryBriefView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color.primary.opacity(0.018))
+        .background(ShelfChrome.contentSurface)
     }
 }
 
@@ -1186,7 +1133,7 @@ private struct QueryBriefRiskBadge: View {
             .padding(.vertical, 4)
             .background(
                 Capsule(style: .continuous)
-                    .fill(color.opacity(0.12))
+                    .fill(color.opacity(Stanford.fillTint))
             )
     }
 
@@ -1217,8 +1164,8 @@ private struct QueryBriefChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Stanford.lagunita.opacity(0.10))
+            RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
+                .fill(Stanford.lagunita.opacity(Stanford.fillTint))
         )
         .textSelection(.enabled)
     }
@@ -1245,8 +1192,8 @@ private struct QueryBriefSection: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
                             .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Stanford.cardBackground.opacity(0.72))
+                                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                                    .fill(ShelfChrome.raisedSurface)
                             )
                     }
                 }
@@ -1278,8 +1225,8 @@ private struct QueryBriefChecksView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Stanford.cardBackground.opacity(0.72))
+                        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                            .fill(ShelfChrome.raisedSurface)
                     )
                 }
             }
@@ -1346,8 +1293,8 @@ private struct QueryValidationTrailView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Stanford.cardBackground.opacity(0.72))
+                        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                            .fill(ShelfChrome.raisedSurface)
                     )
                 }
             }
@@ -1436,8 +1383,8 @@ private struct QueryResultExplanationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Stanford.cardBackground.opacity(0.72))
+                    RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                        .fill(ShelfChrome.raisedSurface)
                 )
 
                 QueryBriefSection(title: "Key findings", systemImage: "chart.line.uptrend.xyaxis", values: explanation.keyFindings)
@@ -1524,8 +1471,8 @@ private struct QuerySafetyGateView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Stanford.cardBackground.opacity(0.72))
+                        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                            .fill(ShelfChrome.raisedSurface)
                     )
                 }
             }
@@ -1584,7 +1531,7 @@ private struct QueryResultGrid: View {
                             }
                         }
                         .frame(width: tableWidth, alignment: .topLeading)
-                        .background(Stanford.cardBackground)
+                        .background(ShelfChrome.raisedSurface)
                         .clipShape(RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous)
@@ -1595,10 +1542,9 @@ private struct QueryResultGrid: View {
                     .frame(minWidth: availableWidth, minHeight: availableHeight, alignment: .topLeading)
                     .padding(QueryResultGridLayout.outerPadding)
                 }
-                .background(Stanford.fog.opacity(0.42))
             }
         }
-        .background(Stanford.panelBackground)
+        .background(ShelfChrome.contentSurface)
     }
 
     private var resultSummary: some View {
@@ -1650,7 +1596,6 @@ private struct QueryResultGrid: View {
         .font(Stanford.caption(11))
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     private func columnWidths(availableWidth: CGFloat) -> [CGFloat] {
@@ -1716,7 +1661,7 @@ private struct QueryResultMetric: View {
         .padding(.vertical, 4)
         .background {
             Capsule(style: .continuous)
-                .fill(Color.primary.opacity(0.055))
+                .fill(Color.primary.opacity(Stanford.fillSoft))
         }
     }
 }
@@ -1820,7 +1765,7 @@ private struct QueryResultCell: View {
                 .padding(.vertical, 2)
                 .background {
                     Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
+                        .fill(Color.primary.opacity(Stanford.fillSoft))
                 }
                 .textSelection(.enabled)
         } else {
@@ -2030,30 +1975,11 @@ private struct QueryWorkflowFieldButtonStyle: ButtonStyle {
             .padding(.horizontal, 9)
             .frame(height: 34)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0.055))
+                RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
+                    .fill(Color.primary.opacity(configuration.isPressed ? Stanford.fillPressed : Stanford.fillSoft))
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.42)
-    }
-}
-
-private struct QueryWorkflowSecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Stanford.ui(11, weight: .semibold))
-            .foregroundStyle(Color.primary.opacity(isEnabled ? 0.84 : 0.45))
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.12 : 0.065))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.42)
+            .contentShape(RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous))
+            .opacity(isEnabled ? 1 : ShelfChrome.disabledOpacity)
     }
 }
 
@@ -2070,59 +1996,6 @@ private struct QueryShelfToolbarMenuLabel: View {
             Image(systemName: systemImage)
         }
         .labelStyle(.titleAndIcon)
-    }
-}
-
-private struct QueryShelfActionButtonStyle: ButtonStyle {
-    var isPrimary = false
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Stanford.ui(12, weight: .semibold))
-            .lineLimit(1)
-            .foregroundStyle(foregroundColor)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(backgroundColor(isPressed: configuration.isPressed))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.42)
-    }
-
-    private var foregroundColor: Color {
-        if isPrimary {
-            return .white
-        }
-        return Color.primary.opacity(isEnabled ? 0.82 : 0.45)
-    }
-
-    private func backgroundColor(isPressed: Bool) -> Color {
-        if isPrimary {
-            return Stanford.lagunita.opacity(isPressed ? 0.82 : 1)
-        }
-        return Color.primary.opacity(isPressed ? 0.12 : 0.065)
-    }
-}
-
-private struct QueryShelfToolbarButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Stanford.ui(13, weight: .semibold))
-            .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.55 : 0.82))
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .frame(minWidth: 28, minHeight: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(configuration.isPressed ? Color.primary.opacity(0.12) : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.42)
     }
 }
 

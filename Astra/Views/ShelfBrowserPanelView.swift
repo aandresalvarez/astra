@@ -203,7 +203,7 @@ struct ShelfBrowserPanelView: View {
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
-        .buttonStyle(BrowserBarButtonStyle())
+        .buttonStyle(ShelfToolbarButtonStyle())
         .fixedSize()
         .help("Browser options")
     }
@@ -235,10 +235,9 @@ struct ShelfBrowserPanelView: View {
             condensedToolbarRow
             stackedToolbarRow
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
+        .padding(.horizontal, ShelfChrome.barHorizontalPadding)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: ShelfChrome.toolbarHeight)
     }
 
     private var toolbarRow: some View {
@@ -448,7 +447,7 @@ struct ShelfBrowserPanelView: View {
     private var addressFieldFill: Color {
         if isAddressFocused { return Stanford.cardBackground }
         if isAddressHovered { return Stanford.cardBackground }
-        return Stanford.cardBackground.opacity(0.55)
+        return ShelfChrome.contentSurface
     }
 
     private var addressFieldStroke: Color {
@@ -596,8 +595,8 @@ struct ShelfBrowserPanelView: View {
             }
         }
         .padding(14)
-        .background(Color.primary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color.primary.opacity(Stanford.fillSoft))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
     }
 
     private func engineHintRow(title: String, body: String) -> some View {
@@ -684,7 +683,7 @@ struct ShelfBrowserPanelView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.panelBackground)
+        .background(ShelfChrome.contentSurface)
         .task {
             await session.refreshControlledBrowserStatus()
         }
@@ -704,7 +703,7 @@ struct ShelfBrowserPanelView: View {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                        .fill(controlledBrowserTint.opacity(0.12))
+                        .fill(controlledBrowserTint.opacity(Stanford.fillTint))
                     Image(systemName: controlledHeroIcon)
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(controlledBrowserTint)
@@ -734,7 +733,7 @@ struct ShelfBrowserPanelView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
@@ -779,7 +778,7 @@ struct ShelfBrowserPanelView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             // Neutral subtle border so this card doesn't compete with the
@@ -823,7 +822,7 @@ struct ShelfBrowserPanelView: View {
             }
         }
         .padding(10)
-        .background(Stanford.statusInfo.opacity(0.07))
+        .background(Stanford.statusInfo.opacity(Stanford.fillTint))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
@@ -935,7 +934,7 @@ struct ShelfBrowserPanelView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.08))
+        .background(tint.opacity(Stanford.fillTint))
         .clipShape(Capsule())
     }
 
@@ -1016,7 +1015,7 @@ struct ShelfBrowserPanelView: View {
                 state: controlledAgentStageState
             )
         }
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1109,7 +1108,7 @@ struct ShelfBrowserPanelView: View {
                 monospacedDetail: true
             )
         }
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1158,7 +1157,7 @@ struct ShelfBrowserPanelView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1202,7 +1201,7 @@ struct ShelfBrowserPanelView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(12)
-        .background(Stanford.cardBackground)
+        .background(ShelfChrome.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1274,7 +1273,7 @@ struct ShelfBrowserPanelView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.08))
+        .background(tint.opacity(Stanford.fillTint))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1288,7 +1287,7 @@ struct ShelfBrowserPanelView: View {
             .foregroundStyle(tint)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(tint.opacity(0.12))
+            .background(tint.opacity(Stanford.fillTint))
             .clipShape(Capsule())
     }
 
@@ -1667,7 +1666,7 @@ struct ShelfBrowserPanelView: View {
                 .font(Stanford.ui(13, weight: .semibold))
                 .foregroundStyle(disabled ? Color.secondary.opacity(0.45) : Color.primary.opacity(0.82))
         }
-        .buttonStyle(BrowserBarButtonStyle())
+        .buttonStyle(ShelfToolbarButtonStyle())
         .disabled(disabled)
         .help(help)
         .accessibilityLabel(help)
@@ -1771,58 +1770,12 @@ private struct BridgeStatusDot: View {
 
 // Ghost button used in the browser toolbar (back, forward, refresh, external link, close).
 // Transparent at rest, lightly tinted on hover, slightly tinted on press, with a small scale dip.
-private struct BrowserBarButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    var size: CGFloat = 30
-    var cornerRadius: CGFloat = Stanford.radiusSmall
-
-    func makeBody(configuration: Configuration) -> some View {
-        BrowserBarButtonContent(
-            configuration: configuration,
-            isEnabled: isEnabled,
-            size: size,
-            cornerRadius: cornerRadius
-        )
-    }
-}
-
-private struct BrowserBarButtonContent: View {
-    let configuration: ButtonStyle.Configuration
-    let isEnabled: Bool
-    let size: CGFloat
-    let cornerRadius: CGFloat
-    @State private var isHovered = false
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        configuration.label
-            .frame(width: size, height: size)
-            .background(shape.fill(backgroundFill))
-            .contentShape(shape)
-            .opacity(isEnabled ? 1.0 : 0.4)
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.92 : 1.0)
-            .onHover { hovering in
-                guard isEnabled else { return }
-                isHovered = hovering
-            }
-            .animation(.easeOut(duration: 0.14), value: isHovered)
-            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
-    }
-
-    private var backgroundFill: Color {
-        guard isEnabled else { return .clear }
-        if configuration.isPressed { return Color.primary.opacity(0.14) }
-        if isHovered { return Color.primary.opacity(0.07) }
-        return .clear
-    }
-}
-
 private struct BrowserEngineMenuButtonStyle: ButtonStyle {
     let tint: Color
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
         configuration.label
             .padding(.horizontal, 9)
             .frame(minHeight: 30)
@@ -1830,13 +1783,11 @@ private struct BrowserEngineMenuButtonStyle: ButtonStyle {
             .overlay(shape.stroke(tint.opacity(Stanford.strokeActive), lineWidth: 1))
             .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.55)
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
-            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
     }
 
     private func backgroundFill(isPressed: Bool) -> Color {
-        if isPressed { return tint.opacity(0.16) }
-        return tint.opacity(0.10)
+        if isPressed { return tint.opacity(Stanford.fillTintPressed) }
+        return tint.opacity(Stanford.fillTint)
     }
 }
 
@@ -1869,19 +1820,17 @@ private struct BrowserQuickLinkContent: View {
             .background(shape.fill(backgroundFill))
             .overlay(shape.stroke(strokeColor, lineWidth: 1))
             .contentShape(shape)
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
             .onHover { hovering in
                 guard isEnabled else { return }
                 isHovered = hovering
             }
             .animation(.easeOut(duration: 0.14), value: isHovered)
-            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
     }
 
     private var backgroundFill: Color {
-        if configuration.isPressed { return tint.opacity(0.18) }
-        if isHovered { return tint.opacity(0.10) }
-        return Stanford.cardBackground
+        if configuration.isPressed { return tint.opacity(Stanford.fillTintPressed) }
+        if isHovered { return tint.opacity(Stanford.fillTint) }
+        return ShelfChrome.raisedSurface
     }
 
     private var strokeColor: Color {
