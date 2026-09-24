@@ -244,14 +244,18 @@ Status: landed with this plan, except the OpenCode capture.
     and a signal stops the timeout watchdog too, so it cannot later signal a
     reused process group.
   - Session and result frames keep only what the parsers read (session
-    identity, model, the discriminator); shell-only audit rules (environment
+    identity, model, the discriminator, and for `session.shutdown` the usage
+    metrics), on the frame itself and in its wrappers; shell-only audit rules (environment
     dumps, directory jumps, escape bytes) apply to command arguments only,
     while paths are checked in every argument.
   - The audit is a tripwire, not isolation: it also refuses inherited path
     variables, parameter expansions that can build a path, escape sequences
     that `printf` / `echo` turn into one, and a `cd` whose only arguments are
     options or `-`. It checks every path key of a Codex file change. It fails
-    closed, and only a shell command's own executable is exempt from the path
+    closed: `ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1` accepts only its outside-path
+    findings (exit 3), never a frame it could not audit (exit 4). It also
+    audits Claude's `wire_tool_inputs` copies. Only a shell command's own
+    executable is exempt from the path
     rule (a file tool's path is always a path), so a legitimate command (a
     `sed` expression with `)/`) can need
     `ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1`, and the owner still reviews every
@@ -295,7 +299,8 @@ Status: landed with this plan, except the OpenCode capture.
     either;
   - identical messages are counted by how many times the provider sent them;
   - messages and tool calls interleave in provider order;
-  - each message keeps its line and paragraph breaks;
+  - each message keeps its line and paragraph breaks, in the output and in
+    the response rows;
   - tool results are recorded with their success or failure outcome, with
     failures tracked as their own check;
   - the run's token totals equal what the provider reported;

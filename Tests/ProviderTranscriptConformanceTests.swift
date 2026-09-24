@@ -87,20 +87,6 @@ struct ProviderTranscriptConformanceTests {
         // only lines the provider actually sent are counted.
         let sent = lineCounts(truth.messages.joined(separator: "\n"))
 
-        // Collapsed comparisons ignore line breaks, so each message present in
-        // the output must also keep its lines and blank-line paragraph breaks.
-        // Counted per occurrence: every recorded copy of a text, up to how
-        // many the provider sent, must keep its structure.
-        let structuredOutput = lineStructure(output)
-        report(.paragraphStructure, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
-            let text = collapsed(message)
-            guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
-            let present = min(expectedMultiplicity[text] ?? 1, messageCount(text, in: collapsedOutput, among: collapsedMessages))
-            let structured = structuredOutput.components(separatedBy: lineStructure(message)).count - 1
-            return structured >= present
-                ? nil
-                : (message, "line or paragraph breaks lost in \(present - structured) of \(present) copies: \(message.prefix(80))")
-        })
 
         // Messages and tool calls must interleave as the provider produced
         // them: a message counts as recorded once the response rows up to that
@@ -153,6 +139,25 @@ struct ProviderTranscriptConformanceTests {
         report(.messagesInOrder, of: fixture, failures: sources.flatMap { source, text in
             outOfOrderMessages(in: collapsed(text), messages: truth.messages).map {
                 ($0, "message in \(source) recorded before the one the provider sent ahead of it: \($0)")
+            }
+        })
+
+        // Collapsed comparisons ignore line breaks, so each message present in
+        // the output and in the durable rows must also keep its lines and
+        // blank-line paragraph breaks. Counted per occurrence: every recorded
+        // copy of a text, up to how many the provider sent, must keep its
+        // structure.
+        report(.paragraphStructure, of: fixture, failures: sources.flatMap { source, recorded in
+            let collapsedRecorded = collapsed(recorded)
+            let structuredRecorded = lineStructure(recorded)
+            return truth.messages.enumerated().compactMap { index, message -> (item: String, message: String)? in
+                let text = collapsed(message)
+                guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
+                let present = min(expectedMultiplicity[text] ?? 1, messageCount(text, in: collapsedRecorded, among: collapsedMessages))
+                let structured = structuredRecorded.components(separatedBy: lineStructure(message)).count - 1
+                return structured >= present
+                    ? nil
+                    : (message, "line or paragraph breaks lost in \(present - structured) of \(present) copies in \(source): \(message.prefix(80))")
             }
         })
 
@@ -315,7 +320,7 @@ struct ProviderTranscriptConformanceTests {
         // its text, and its line and paragraph breaks.
         let snapshot = TaskThreadSnapshot(task: task)
         let displayed = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
-        let answer = try #require(truth.answer, "fixture has no answer message")
+        let answer = try #require(truth.answer, "fixture has no answer message (answer-write-signoff needs a `## Suggested reply` heading line)")
         let answerCopies = collapsed(displayed).components(separatedBy: collapsed(answer)).count - 1
         let answerFailure: (item: String, message: String)? =
             if answerCopies == 0 {
@@ -853,10 +858,13 @@ struct ProviderStreamTruth {
         }
 
         // The drafted reply is the message with the scenario's own heading
-        // line, not one that only mentions it.
-        answer = messages.first { message in
+        // line, not one that only mentions it. In that scenario it is
+        // required: falling back to another message would let a bubble that
+        // shows only the sign-off pass.
+        let draftedReply = messages.first { message in
             message.components(separatedBy: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "## Suggested reply" }
-        } ?? messages.last
+        }
+        answer = fixture.scenario == "answer-write-signoff" ? draftedReply : messages.last
     }
 
     /// The recorder strips ASTRA protocol marker lines from visible text.

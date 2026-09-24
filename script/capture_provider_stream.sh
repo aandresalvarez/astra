@@ -200,9 +200,20 @@ if ! python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"
   keep_raw_copy
   exit 4
 fi
-if ! findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$out.tmp")" \
-  && [[ "${ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS:-}" != 1 ]]; then
-  echo "==> tool calls reached outside the workspace; fixture not written:" >&2
+audit_status=0
+findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$out.tmp")" || audit_status=$?
+# Exit 3 is the audit's outside-path findings, which an owner may accept after
+# reviewing them. Any other failure (a frame the audit cannot read, a crash)
+# means the fixture was never audited, and is always refused.
+if [[ "$audit_status" -eq 3 && "${ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS:-}" == 1 ]]; then
+  echo "==> outside-path findings accepted by ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1:" >&2
+  echo "$findings" >&2
+elif [[ "$audit_status" -ne 0 ]]; then
+  if [[ "$audit_status" -eq 3 ]]; then
+    echo "==> tool calls reached outside the workspace; fixture not written:" >&2
+  else
+    echo "==> the audit could not check the capture (exit $audit_status); fixture not written:" >&2
+  fi
   echo "$findings" >&2
   rm -f "$out.tmp"
   keep_raw_copy
