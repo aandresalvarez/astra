@@ -72,43 +72,20 @@ struct ProviderTranscriptConformanceTests {
         // recorded exactly as many times as the provider sent it.
         var expectedMultiplicity: [String: Int] = [:]
         for message in truth.messages { expectedMultiplicity[collapsed(message), default: 0] += 1 }
+        let collapsedMessages = truth.messages.map(collapsed)
         report(.eachMessageOnce, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
             let text = collapsed(message)
             guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
             let expected = expectedMultiplicity[text] ?? 1
-            let occurrences = collapsedOutput.components(separatedBy: text).count - 1
+            let occurrences = messageCount(text, in: collapsedOutput, among: collapsedMessages)
             return occurrences == expected
                 ? nil
                 : (message, "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
-        // Match messages left to right: each must be found after the previous
-        // match. A message present only earlier is out of order; one absent
-        // everywhere belongs to eachMessageOnce.
-        var cursor = collapsedOutput.startIndex
-        var outOfOrder: [String] = []
-        for message in truth.messages {
-            let text = collapsed(message)
-            if let match = collapsedOutput.range(of: text, range: cursor..<collapsedOutput.endIndex) {
-                cursor = match.upperBound
-            } else if collapsedOutput.contains(text) {
-                outOfOrder.append(String(message.prefix(60)))
-            }
-        }
-        report(.messagesInOrder, of: fixture, failures: outOfOrder.map {
-            ($0, "message recorded before the one the provider sent ahead of it: \($0)")
-        })
-
         // Lines two messages glued together are not the provider's lines, so
         // only lines the provider actually sent are counted.
         let sent = lineCounts(truth.messages.joined(separator: "\n"))
-        // The item carries the overage, so a known issue can cover "one extra
-        // copy of a short line" without also excusing a worse duplication.
-        report(.noExtraLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
-            guard let expected = sent[line], count > expected else { return nil }
-            return (extraLineItem(line, overage: count - expected, sent: expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
-        })
-
 
         // Collapsed comparisons ignore line breaks, so each message present in
         // the output must also keep its lines and blank-line paragraph breaks.
@@ -118,7 +95,7 @@ struct ProviderTranscriptConformanceTests {
         report(.paragraphStructure, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
             let text = collapsed(message)
             guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
-            let present = min(expectedMultiplicity[text] ?? 1, collapsedOutput.components(separatedBy: text).count - 1)
+            let present = min(expectedMultiplicity[text] ?? 1, messageCount(text, in: collapsedOutput, among: collapsedMessages))
             let structured = structuredOutput.components(separatedBy: lineStructure(message)).count - 1
             return structured >= present
                 ? nil
@@ -141,7 +118,7 @@ struct ProviderTranscriptConformanceTests {
                 for (index, message) in truth.messages.enumerated() where !seenMessages.contains(index) {
                     let text = collapsed(message)
                     let rank = truth.messages[..<index].filter { collapsed($0) == text }.count
-                    guard collapsedSoFar.components(separatedBy: text).count - 1 > rank else { continue }
+                    guard messageCount(text, in: collapsedSoFar, among: collapsedMessages) > rank else { continue }
                     seenMessages.insert(index)
                     recordedSteps.append(.message(index))
                 }
@@ -163,15 +140,37 @@ struct ProviderTranscriptConformanceTests {
             let text = collapsed(message)
             guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
             let expected = expectedMultiplicity[text] ?? 1
-            let occurrences = collapsedRows.components(separatedBy: text).count - 1
+            let occurrences = messageCount(text, in: collapsedRows, among: collapsedMessages)
             return occurrences == expected
                 ? nil
                 : (message, "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
+        // Messages must appear in provider order in the output and in the
+        // durable rows alike, which also catches two messages reversed inside
+        // one row.
+        let sources = [("run output", output), ("agent.response rows", responseSoFar)]
+        report(.messagesInOrder, of: fixture, failures: sources.flatMap { source, text in
+            outOfOrderMessages(in: collapsed(text), messages: truth.messages).map {
+                ($0, "message in \(source) recorded before the one the provider sent ahead of it: \($0)")
+            }
+        })
+
+        // The item carries the overage, so a known issue can cover "one extra
+        // copy of a short line" without also excusing a worse duplication.
+        report(.noExtraLines, of: fixture, failures: sources.flatMap { source, text in
+            lineCounts(text).sorted { $0.key < $1.key }.compactMap { line, count in
+                guard let expected = sent[line], count > expected else { return nil }
+                return (
+                    extraLineItem(line, overage: count - expected, sent: expected),
+                    "line in \(source) recorded \(count)x, sent \(expected)x: \(line.prefix(80))"
+                )
+            }
+        })
+
         // Neither the output nor the durable rows may hold text the provider
         // never sent, apart from joins at message boundaries.
-        report(.noUnsentLines, of: fixture, failures: [("run output", output), ("agent.response rows", responseSoFar)].flatMap {
+        report(.noUnsentLines, of: fixture, failures: sources.flatMap {
             unsentLineFailures(in: $0.1, sent: sent, boundaries: truth.boundaryJoins, source: $0.0)
         })
 
@@ -183,11 +182,22 @@ struct ProviderTranscriptConformanceTests {
             }
         })
         let expectedOutcomes = multiset(truth.toolResultOutcomes)
-        report(.toolResultsRecorded, of: fixture, failures: ["success", "failure"].compactMap { outcome in
+        func outcomeFailures(_ outcome: String) -> [(item: String, message: String)] {
             let expected = expectedOutcomes[outcome] ?? 0
             let recorded = recordedOutcomes[outcome] ?? 0
-            return expected == recorded ? nil : (outcome, "\(outcome) tool results: provider reported \(expected), recorded \(recorded)")
-        })
+            return expected == recorded ? [] : [(outcome, "\(outcome) tool results: provider reported \(expected), recorded \(recorded)")]
+        }
+        report(.toolResultsRecorded, of: fixture, failures: outcomeFailures("success"))
+        // Without a failing tool call the failure count is zero against zero,
+        // so the gap is declared instead of passing silently.
+        if expectedOutcomes["failure"] == nil {
+            #expect(fixture.notExercised[.failedToolResultsRecorded] != nil,
+                    "no tool call in the capture fails; list failedToolResultsRecorded in notExercised")
+        } else {
+            #expect(fixture.notExercised[.failedToolResultsRecorded] == nil,
+                    "fixture now has a failed tool call; drop failedToolResultsRecorded from notExercised")
+        }
+        report(.failedToolResultsRecorded, of: fixture, failures: outcomeFailures("failure"))
 
         if let usage = truth.usage {
             #expect(fixture.notExercised[.usageRecorded] == nil, "fixture now reports usage; drop usageRecorded from notExercised")
@@ -227,7 +237,7 @@ struct ProviderTranscriptConformanceTests {
             return expected == recorded ? nil : (summary, "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
         })
 
-        report(.noRawProviderJSON, of: fixture, failures: [("run output", output), ("agent.response rows", responseSoFar)].flatMap { source, text in
+        report(.noRawProviderJSON, of: fixture, failures: sources.flatMap { source, text in
             text.components(separatedBy: "\n").filter(isRawProviderFrame).map { ("", "raw provider frame in \(source): \($0.prefix(80))") }
         })
 
@@ -331,6 +341,21 @@ struct ProviderTranscriptConformanceTests {
         #expect(unsentLineFailures(in: "xyz", sent: [:], boundaries: overlapping, source: "output").count == 1)
     }
 
+    @Test("A message inside a longer provider message is not counted as a copy of it")
+    func overlappingMessagesAreCountedApart() {
+        let messages = ["Done", "Done with work"]
+        #expect(messageCount("Done", in: "DoneDone with work", among: messages) == 1)
+        #expect(messageCount("Done with work", in: "DoneDone with work", among: messages) == 1)
+        #expect(messageCount("Done", in: "Done with work", among: messages) == 0)
+        #expect(messageCount("Done", in: "DoneDoneDone with work", among: messages) == 2)
+    }
+
+    @Test("Two messages reversed in one text are out of order")
+    func reversedMessagesAreOutOfOrder() {
+        #expect(outOfOrderMessages(in: "Second. First.", messages: ["First.", "Second."]) == ["Second."])
+        #expect(outOfOrderMessages(in: "First. Second.", messages: ["First.", "Second."]).isEmpty)
+    }
+
     /// Records each failure of `check`. Failures the fixture's known issue
     /// covers are recorded together under that known issue; the rest are real
     /// failures. A known issue with nothing left to cover is itself reported,
@@ -424,6 +449,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case toolsInterleaved
         case messagesInResponseRows
         case toolResultsRecorded
+        case failedToolResultsRecorded
         case usageRecorded
         case completionRecorded
         case noRawProviderJSON
@@ -467,7 +493,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "claude-sonnet-5",
             knownIssues: [
                 .answerVisible: .whole("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)")
-            ]
+            ],
+            notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
             provider: "claude",
@@ -477,6 +504,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "claude-sonnet-5",
             knownIssues: [:],
             notExercised: [
+                .failedToolResultsRecorded: "no tool call in this capture fails",
                 .fileChangesRecorded: "the subagent scenario only reads",
                 .completionRecorded: "the subagent scenario asks for no complete marker"
             ]
@@ -498,7 +526,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .sessionRecorded: .whole("Copilot names its session only in the result frame, which is not read (plan phase 2)"),
                 .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
             ],
-            notExercised: [.usageRecorded: "Copilot's stream reports premium requests, not tokens"]
+            notExercised: [
+                .failedToolResultsRecorded: "no tool call in this capture fails",
+                .usageRecorded: "Copilot's stream reports premium requests, not tokens"
+            ]
         ),
         ProviderStreamFixture(
             provider: "codex",
@@ -527,7 +558,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                     $0 == "Drafted the reply and saved answer.md"
                 },
                 .answerVisible: .whole("the answer message is dropped before it can be shown (plan phase 2)")
-            ]
+            ],
+            notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
             provider: "cursor",
@@ -553,7 +585,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .answerVisible: .items("the re-sent previous message splits the answer with echo residue (plan phase 2)") {
                     $0 == "text"
                 }
-            ]
+            ],
+            notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
             provider: "antigravity",
@@ -568,6 +601,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // outside the workspace (env, /tmp), which the capture audit now
             // refuses.
             notExercised: [
+                .failedToolResultsRecorded: "no tool call in this capture fails",
                 .fileChangesRecorded: "agy ends the turn after the text-only answer",
                 .completionRecorded: "agy ends the turn before the closing marker message"
             ]
@@ -607,8 +641,9 @@ struct ProviderStreamTruth {
     /// besides the provider's own, that appending messages without a
     /// separator can produce, once per boundary.
     private(set) var boundaryJoins: [Set<String>] = []
-    /// The message the user asked for: the drafted reply in the
-    /// answer-write-signoff scenario, otherwise the last message.
+    /// The message the user asked for: in the answer-write-signoff scenario
+    /// the one with a `## Suggested reply` heading line, otherwise the last
+    /// message.
     private(set) var answer: String?
 
     init(fixture: ProviderStreamFixture, frames: [String]) {
@@ -810,7 +845,11 @@ struct ProviderStreamTruth {
             boundaryJoins.append(Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]))
         }
 
-        answer = messages.first { $0.contains("Suggested reply") } ?? messages.last
+        // The drafted reply is the message with the scenario's own heading
+        // line, not one that only mentions it.
+        answer = messages.first { message in
+            message.components(separatedBy: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "## Suggested reply" }
+        } ?? messages.last
     }
 
     /// The recorder strips ASTRA protocol marker lines from visible text.
@@ -857,6 +896,45 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
         remaining[step] = count - 1
         return true
     }
+}
+
+/// Copies of `message` in `text` (both collapsed), leaving out occurrences
+/// that are part of a longer provider message containing it: `Done` inside
+/// `Done with work` belongs to that message, not a copy of `Done`.
+private func messageCount(_ message: String, in text: String, among messages: [String]) -> Int {
+    guard !message.isEmpty else { return 0 }
+    let covering = Set(messages.filter { $0.count > message.count && $0.contains(message) })
+        .flatMap { nonOverlappingRanges(of: $0, in: text) }
+    return nonOverlappingRanges(of: message, in: text).filter { range in
+        !covering.contains { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound }
+    }.count
+}
+
+private func nonOverlappingRanges(of needle: String, in text: String) -> [Range<String.Index>] {
+    var ranges: [Range<String.Index>] = []
+    var start = text.startIndex
+    while let range = text.range(of: needle, range: start..<text.endIndex) {
+        ranges.append(range)
+        start = range.upperBound
+    }
+    return ranges
+}
+
+/// Messages found in `text` (collapsed) only before the one the provider sent
+/// ahead of them. Matching runs left to right; a message absent everywhere
+/// belongs to the multiplicity checks.
+private func outOfOrderMessages(in text: String, messages: [String]) -> [String] {
+    var cursor = text.startIndex
+    var outOfOrder: [String] = []
+    for message in messages {
+        let needle = collapsed(message)
+        if let match = text.range(of: needle, range: cursor..<text.endIndex) {
+            cursor = match.upperBound
+        } else if text.contains(needle) {
+            outOfOrder.append(String(message.prefix(60)))
+        }
+    }
+    return outOfOrder
 }
 
 /// Lines of `text` the provider never sent. A line may instead be a join of

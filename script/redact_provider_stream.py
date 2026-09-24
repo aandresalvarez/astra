@@ -162,10 +162,18 @@ def minimized_copilot_session_fields(kind, data):
         ]
     elif kind == "session.mcp_server_status_changed" and "serverName" in data:
         data["serverName"] = "[redacted]"
-    elif kind == "session.usage_checkpoint":
-        # Account usage and prompt-cache state; the parser reads none of it.
-        data = {}
+    elif kind != "session.shutdown":
+        # Any other session frame (tools_updated, usage_checkpoint, ...) keeps
+        # only what the parser reads from it: the session's identity and model.
+        # Tool inventories, account usage and cache state go. session.shutdown
+        # is the one whose usage the parser reads.
+        data = {key: value for key, value in data.items() if key in COPILOT_SESSION_KEEP_KEYS}
+        if isinstance(data.get("session"), dict):
+            data["session"] = {key: value for key, value in data["session"].items() if key in COPILOT_SESSION_KEEP_KEYS}
     return data
+
+
+COPILOT_SESSION_KEEP_KEYS = {"session_id", "sessionId", "id", "model", "session"}
 
 
 TOOL_OUTPUT = "[tool output redacted]"
@@ -528,6 +536,9 @@ def has_escaped_bytes(command):
 # Argument keys whose strings a tool runs as a shell command. Only these get
 # the executable-path exemption: a path given to a file tool is always a path.
 COMMAND_ARGUMENT_KEYS = {"command", "cmd", "commandline", "script", "shell_command", "shellcommand"}
+# A tool's whole input given as one plain string (a custom tool's `input`) is
+# a command line too; as an object, its own keys decide.
+COMMAND_ARGUMENT_KEYS |= {"input", "arguments", "args"}
 
 
 def argument_leaves(arguments_json):
@@ -608,22 +619,28 @@ def audit(fixture_path):
                 # Shell-escaped strings are judged raw and decoded, and escapes
                 # left over (printf, echo -e) are refused as obfuscation.
                 leaves = argument_leaves(arguments)
-                decoded = [shell_decoded(leaf) for _, leaf in leaves]
                 forms = [
-                    command_executables_as_basenames(json.dumps(text)) if is_command else json.dumps(text)
-                    for (is_command, leaf), shell_text in zip(leaves, decoded)
-                    for text in (leaf, shell_text)
+                    (is_command, command_executables_as_basenames(json.dumps(text)) if is_command else json.dumps(text))
+                    for is_command, leaf in leaves
+                    for text in (leaf, shell_decoded(leaf))
                 ]
-                reached = any(OUTSIDE_PATH_PATTERN.search(form) or ENV_DUMP_PATTERN.search(form) for form in forms)
-                reached = reached or any(jumps_directory(leaf) for leaf in decoded)
-                if reached or any(has_escaped_bytes(leaf) for leaf in decoded):
+                # Paths count in every argument. Shell syntax (an environment
+                # dump, a directory jump, escapes that build bytes) only counts
+                # in a command: prose that mentions `env` is not run.
+                commands = [shell_decoded(leaf) for is_command, leaf in leaves if is_command]
+                reached = (
+                    any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
+                    or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
+                    or any(jumps_directory(command) for command in commands)
+                )
+                if reached or any(has_escaped_bytes(command) for command in commands):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:
         print(finding)
     return 3 if findings else 0
 
 
-COPILOT_RESULT_KEEP_KEYS = {"type", "id", "timestamp", "sessionId", "exitCode"}
+COPILOT_RESULT_KEEP_KEYS = {"id", "timestamp", "sessionId", "exitCode"} | set(COPILOT_TYPE_KEYS)
 
 
 def minimized(frame):
@@ -637,10 +654,17 @@ def minimized(frame):
     copilot = copilot_kind(frame)
     if copilot.startswith("session."):
         return minimized_copilot_session(frame, copilot)
-    if copilot == "result" and "sessionId" in frame:  # Copilot's terminal frame
-        # It ends the turn and names the session; its usage block is premium
-        # requests, timings and change counts the parser does not read.
-        return {key: value for key, value in frame.items() if key in COPILOT_RESULT_KEEP_KEYS}
+    if copilot == "result" and any("sessionId" in container for container in (frame, copilot_payload(frame))):
+        # Copilot's terminal frame ends the turn and names the session; its
+        # usage block is premium requests, timings and change counts the parser
+        # does not read. Its discriminator, whichever key holds it, stays.
+        def kept(fields):
+            return {key: value for key, value in fields.items() if key in COPILOT_RESULT_KEEP_KEYS}
+        result = kept(frame)
+        for wrapper in ("data", "payload"):
+            if isinstance(frame.get(wrapper), dict):
+                result[wrapper] = kept(frame[wrapper])
+        return result
     if kind == "system" and str(frame.get("subtype") or "").lower() == "init":
         return {key: value for key, value in frame.items() if key in INIT_KEEP_KEYS}
     if kind == "rate_limit_event" and isinstance(frame.get("rate_limit_info"), dict):
