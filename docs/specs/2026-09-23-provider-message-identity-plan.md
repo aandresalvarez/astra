@@ -234,7 +234,9 @@ Status: landed with this plan, except the OpenCode capture.
   - The CLI runs under `env -i` with an allowlist, so no session tokens.
   - Tool results are replaced with a placeholder in every fixture, including
     failure details, partial output, progress messages, wrapped Copilot
-    envelopes, Codex file-change text and Claude subagent summaries.
+    envelopes, every Codex item the parser treats as a tool, Codex
+    file-change text and Claude subagent summaries. Copilot usage
+    checkpoints (account usage, prompt-cache state) are emptied.
   - `redact_provider_stream.py --audit` refuses a capture whose tool calls
     reach outside the workspace or dump the environment, in every tool-call
     shape the parsers accept.
@@ -265,7 +267,8 @@ Status: landed with this plan, except the OpenCode capture.
   - there are no duplicated lines beyond what the provider sent;
   - no raw provider JSON appears in the text;
   - tool calls are recorded;
-  - once Phase 3 lands, the answer bubble contains the final answer;
+  - once Phase 3 lands, the answer bubble contains the whole answer message,
+    all of its text and its line and paragraph breaks, not a digest;
   - a successful turn completes and records no error events;
   - messages are recorded in provider order;
   - every file the provider wrote is recorded as a file change;
@@ -291,7 +294,7 @@ Status: landed with this plan, except the OpenCode capture.
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
   failure.
-- The suite landed with 15 known issues across 4 fixtures, all matching
+- The suite landed with 16 known issues across 4 fixtures, all matching
   production symptoms or the captures:
   - Claude: short closing message doubled, hollow echo lines, answer not shown.
   - Copilot: answer not shown; `apply_patch` write not recorded; session id
@@ -299,7 +302,8 @@ Status: landed with this plan, except the OpenCode capture.
   - Codex: run failed by warning items, earlier messages lost, spurious errors,
     write not recorded, answer not shown.
   - Cursor: the re-sent previous message recorded as a hollow echo, the
-    message not stored once, tool calls and the write not recorded.
+    message not stored once and its answer split in the bubble, tool calls
+    and the write not recorded.
   - Antigravity and the Claude subagent capture: fully green.
 - Copilot's narration doubling is not exercised: the capture's only narration
   with `toolRequests` is the run's first message, which today's whole-output

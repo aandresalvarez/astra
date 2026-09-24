@@ -159,16 +159,36 @@ def minimized_copilot_session(frame):
     elif kind == "session.mcp_server_status_changed" and "serverName" in data:
         data["serverName"] = "[redacted]"
     elif kind == "session.usage_checkpoint":
-        data.pop("promptCacheBreakState", None)
+        # Account usage and prompt-cache state; the parser reads none of it.
+        data = {}
     frame["data"] = data
     return frame
 
 
 TOOL_OUTPUT = "[tool output redacted]"
 CODEX_TOOL_ITEM_TYPES = {"command_execution", "mcp_tool_call", "local_shell_call", "function_call", "web_search"}
-CODEX_ITEM_NON_ARGUMENT_KEYS = {
-    "id", "type", "status", "exit_code", "aggregated_output", "output", "stdout", "stderr", "result", "text", "message",
+# Where a Codex tool item's result text may sit: every key the parser's
+# textValue and commandResultSummary read.
+CODEX_ITEM_PAYLOAD_KEYS = {
+    "aggregated_output", "output", "stdout", "stderr", "result", "text", "message", "content", "error", "summary", "delta",
 }
+CODEX_ITEM_NON_ARGUMENT_KEYS = {"id", "type", "kind", "status", "exit_code", "exitCode"} | CODEX_ITEM_PAYLOAD_KEYS
+
+
+def codex_item_type(item):
+    return next((item[key].lower() for key in ("type", "kind") if isinstance(item.get(key), str)), "unknown")
+
+
+def is_codex_tool_item(item):
+    """CodexStreamEventParser's tool test: a command, or any item whose type
+    names a tool or that carries a `tool` or `name`, other than messages,
+    reasoning and file changes, which it handles first."""
+    item_type = codex_item_type(item)
+    if item_type in CODEX_TOOL_ITEM_TYPES:
+        return True
+    if item_type in ("file_change", "agent_message", "message", "assistant_message") or "reasoning" in item_type:
+        return False
+    return "tool" in item_type or "tool" in item or "name" in item
 # Copilot also emits result frames other than tool.execution_complete (the
 # parser accepts any tool *result/output/complete* type or a toolResult key),
 # and streams partial output and progress while a tool runs.
@@ -282,18 +302,22 @@ def without_tool_output(frame):
             ]
             frame["message"] = message
     elif kind == "tool.execution_complete" and isinstance(frame.get("data"), dict):  # Copilot
-        frame = dict(frame, data=dict(without_copilot_result_payload(frame["data"]), result={"content": TOOL_OUTPUT}))
+        # The parser also reads a result from the frame itself and `payload`.
+        frame = without_copilot_result_payload(frame)
+        if isinstance(frame.get("payload"), dict):
+            frame["payload"] = without_copilot_result_payload(frame["payload"])
+        frame["data"] = dict(without_copilot_result_payload(frame["data"]), result={"content": TOOL_OUTPUT})
     elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
         item = frame["item"]
         # Only tool items: agent messages, reasoning and warning items keep
         # their text, which is what the conformance suite reads.
-        payload_keys = [
-            key for key in ("aggregated_output", "output", "stdout", "stderr", "result", "text", "message")
-            if key in item
-        ]
-        if payload_keys and item.get("type") in CODEX_TOOL_ITEM_TYPES:
-            frame = dict(frame, item=dict(item, **{key: TOOL_OUTPUT if item[key] else item[key] for key in payload_keys}))
-        elif item.get("type") == "file_change":
+        if is_codex_tool_item(item):
+            frame = dict(frame, item={
+                key: (error_placeholder(value) if key == "error" else TOOL_OUTPUT if value else value)
+                if key in CODEX_ITEM_PAYLOAD_KEYS else value
+                for key, value in item.items()
+            })
+        elif codex_item_type(item) == "file_change":
             frame = dict(frame, item=without_file_change_payload(item))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
         # Keep the outcome key (`success` / `error`), drop what it carried.
@@ -336,10 +360,12 @@ def tool_call_arguments(frame):
         yield copilot_payload(frame).get("toolName", "tool"), json.dumps(copilot_arguments(frame) or frame)
     elif kind in ("item.started", "item.completed"):  # Codex
         item = frame.get("item") or {}
-        if kind == "item.started" and item.get("type") in CODEX_TOOL_ITEM_TYPES:
+        # The parser records a tool call from a completed item too, so both
+        # are audited.
+        if is_codex_tool_item(item):
             arguments = {key: value for key, value in item.items() if key not in CODEX_ITEM_NON_ARGUMENT_KEYS}
-            yield item.get("type"), json.dumps(arguments)
-        elif item.get("type") == "file_change":
+            yield codex_item_type(item), json.dumps(arguments)
+        elif codex_item_type(item) == "file_change":
             paths = [change.get("path") for change in item.get("changes") or [] if isinstance(change, dict)]
             yield "file_change", json.dumps(paths)
     elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
