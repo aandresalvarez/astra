@@ -104,6 +104,18 @@ public enum CopilotStreamEventParser {
     }
 
     public static func parseAgentEvents(line: String) -> [AgentEvent] {
+        agentEvents(line: line, keyed: false)
+    }
+
+    /// The events the worker records, with each assistant message keyed by
+    /// the provider's own identity (docs/specs/2026-09-23-provider-message-
+    /// identity-plan.md). `parseAgentEvents` keeps the unkeyed shapes that
+    /// utility-prompt collectors aggregate, until those paths move over too.
+    public static func parseIdentifiedAgentEvents(line: String) -> [AgentEvent] {
+        agentEvents(line: line, keyed: true)
+    }
+
+    private static func agentEvents(line: String, keyed: Bool) -> [AgentEvent] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -115,17 +127,17 @@ public enum CopilotStreamEventParser {
             return [.unknown(provider: "copilot", type: "unknown", raw: trimmed)]
         }
 
-        return events(from: object, raw: trimmed)
+        return events(from: object, raw: trimmed, keyed: keyed)
     }
 
-    private static func events(from object: [String: Any], raw: String) -> [AgentEvent] {
+    private static func events(from object: [String: Any], raw: String, keyed: Bool) -> [AgentEvent] {
         let type = firstStringIncludingPayload(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"]) ?? "unknown"
         let normalized = type.lowercased()
 
         if ["event", "message", "data", "payload"].contains(normalized),
            let payload = payloadObject(in: object),
            firstString(in: payload, keys: ["type", "event", "kind", "sessionUpdate", "name"]) != nil {
-            return events(from: payload, raw: raw)
+            return events(from: payload, raw: raw, keyed: keyed)
         }
 
         if normalized == "session.shutdown",
@@ -179,9 +191,24 @@ public enum CopilotStreamEventParser {
 
         if normalized == "assistant.message_delta" {
             if let text = textValue(in: object), !text.isEmpty {
+                if keyed, let key = messageKey(in: object) {
+                    return [.assistantMessage(.fragment(AssistantMessageFragment(key: key, kind: .delta, text: text)))]
+                }
                 return [.text(text: text)]
             }
             return [.control(type: normalized)]
+        }
+
+        // A message with an id is keyed: its deltas build the draft and this
+        // copy, narration with tool requests included, is its final text. The
+        // recorder keeps every message once, in order, so neither the
+        // commentary/final_answer labels nor last-completed-wins decide what
+        // is recorded (docs/specs/2026-09-23-provider-message-identity-plan.md).
+        if keyed, normalized == "assistant.message", let key = messageKey(in: object) {
+            if let text = textValue(in: object), !text.isEmpty {
+                return [.assistantMessage(.fragment(AssistantMessageFragment(key: key, kind: .final, text: text)))]
+            }
+            return [.control(type: hasToolRequests(in: object) ? "assistant.message.tool_request" : normalized)]
         }
 
         if normalized == "assistant.message" {
@@ -252,6 +279,11 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized.contains("usage") || normalized.contains("stats") || normalized == "result" {
+            // Copilot names its session only here, at the end of the run.
+            let session: [AgentEvent] = normalized == "result"
+                ? firstStringIncludingPayload(in: object, keys: ["sessionId", "session_id"])
+                    .map { [.started(sessionID: $0, model: nil)] } ?? []
+                : []
             let input = intValueIncludingPayload(in: object, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
                 ?? nestedIntIncludingPayload(object, path: ["usage", "input_tokens"])
                 ?? nestedIntIncludingPayload(object, path: ["usage", "inputTokens"])
@@ -284,7 +316,7 @@ public enum CopilotStreamEventParser {
             if events.contains(where: { if case .completed = $0 { true } else { false } }) {
                 events.append(.control(type: resultFrameControlType))
             }
-            return events.isEmpty ? [.unknown(provider: "copilot", type: type, raw: raw)] : events
+            return events.isEmpty ? [.unknown(provider: "copilot", type: type, raw: raw)] : session + events
         }
 
         if let text = textValue(in: object), !text.isEmpty {
@@ -325,6 +357,8 @@ public enum CopilotStreamEventParser {
             return .text(text: summary)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
+        case .notice:
+            return nil
         case .fileChange(let path, let kind, let summary, let oldString, let newString):
             let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
             var input: [String: Any] = ["file_path": path]
@@ -692,6 +726,14 @@ public enum CopilotStreamEventParser {
             return false
         }
         return keys.contains { payload[$0] != nil }
+    }
+
+    /// `copilot:<messageId>`, shared by a message's deltas and its final copy.
+    private static func messageKey(in object: [String: Any]) -> String? {
+        guard let id = firstStringIncludingPayload(in: object, keys: ["messageId", "message_id"]), !id.isEmpty else {
+            return nil
+        }
+        return "copilot:\(id)"
     }
 
     private static func hasToolRequests(in object: [String: Any]) -> Bool {

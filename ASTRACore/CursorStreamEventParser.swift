@@ -24,6 +24,14 @@ public enum CursorStreamEventParser {
         parseAll(line: line).flatMap { agentEvents(from: $0, rawLine: line) }
     }
 
+    /// The events the worker records, with each assistant message keyed by
+    /// the provider's own identity (docs/specs/2026-09-23-provider-message-
+    /// identity-plan.md). `parseAgentEvents` keeps the unkeyed shapes that
+    /// utility-prompt collectors aggregate, until those paths move over too.
+    public static func parseIdentifiedAgentEvents(line: String) -> [AgentEvent] {
+        CursorMessageIdentity.annotate(parseAgentEvents(line: line), line: line)
+    }
+
     public static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
         CopilotStreamEventParser.parsePlainTextAgentEvents(
             line: line,

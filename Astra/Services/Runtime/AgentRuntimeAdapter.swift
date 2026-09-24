@@ -2114,7 +2114,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
         let events = parsesJSONLines
-            ? CopilotStreamEventParser.parseAgentEvents(line: line)
+            ? CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line)
             : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
         return AgentRuntimeStreamEventBatch(agentEvents: events)
     }

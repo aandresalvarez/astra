@@ -91,6 +91,27 @@ struct AssistantMessageLedgerTests {
         #expect(harness.run.output == "Subagent result")
     }
 
+    @Test("A later final that differs replaces a committed message, as OpenCode re-sends parts")
+    func laterFinalReplacesCommittedMessage() throws {
+        let harness = try Harness()
+        harness.final("opencode:prt_1", "Draft")
+        harness.final("opencode:prt_1", "Draft, now longer.")
+
+        #expect(try harness.responseRows().map(\.payload) == ["Draft, now longer."])
+        #expect(harness.run.output == "Draft, now longer.")
+    }
+
+    @Test("A notice is a system note and never an agent-reported failure")
+    func noticeIsRecordedAsInfo() throws {
+        let harness = try Harness()
+        harness.record(.notice(message: "Configured value for approval_policy is disallowed"))
+
+        let infos = harness.task.events.filter { $0.type == TaskEventTypes.System.info.rawValue }
+        #expect(infos.map(\.payload) == ["Configured value for approval_policy is disallowed"])
+        #expect(!harness.task.events.contains { $0.type == TaskEventTypes.System.error.rawValue })
+        #expect(!harness.state.agentReportedError(for: harness.run))
+    }
+
     @Test("Text for a committed message is ignored")
     func committedMessageIgnoresLateText() throws {
         let harness = try Harness()

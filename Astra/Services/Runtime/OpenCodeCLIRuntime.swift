@@ -160,7 +160,7 @@ enum OpenCodeCLIRuntime {
 
     static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
         parsesJSONLines
-            ? OpenCodeStreamEventParser.parseAgentEvents(line: line)
+            ? OpenCodeStreamEventParser.parseIdentifiedAgentEvents(line: line)
             : OpenCodeStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
     }
 

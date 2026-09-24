@@ -73,6 +73,15 @@ public enum AntigravityStreamEventParser {
             guard let delta = string(in: step, keys: ["text_delta"]), !delta.isEmpty else {
                 return [.control(type: "agy.step.agent_response")]
             }
+            // One response step is one message; its deltas share the step's
+            // index, and the DONE frame's trailing delta still belongs to it.
+            if let index = int(in: step, keys: ["step_index"]) {
+                return [.assistantMessage(.fragment(AssistantMessageFragment(
+                    key: "antigravity:step-\(index)",
+                    kind: .delta,
+                    text: delta
+                )))]
+            }
             return [.text(text: delta)]
         case "tool":
             return toolEvents(in: step, state: state)
@@ -203,6 +212,9 @@ public enum AntigravityStreamEventParser {
             return .systemInit(model: model, sessionId: sessionID)
         case .text(let text):
             return .text(text: text)
+        case .assistantMessage(let message):
+            // Keyed response text is visible progress for the monitor too.
+            return message.text.map { .text(text: $0) }
         case .thinking(let text):
             return .thinking(text: text)
         case .toolUse(let name, let id, let inputSummary):

@@ -399,6 +399,14 @@ How it landed, where it differs from the design above:
 
 ### Phase 2: Copilot, Codex, Antigravity, OpenCode, Cursor identity
 
+Status: implemented. The conformance suite lost every Phase 2 known issue:
+Copilot's session id; all eight Codex issues (warning items failing the run,
+lost messages, no response rows, spurious errors, double-counted input tokens,
+dropped `ASTRA_EVENT` completions, dropped file changes, hidden answer); and
+Cursor's re-sent message, its echo lines and its split answer. What remains is
+Phase 3 (Claude's and Copilot's answer before the write) and Phase 4
+(Copilot `apply_patch` writes, Cursor `tool_call` frames).
+
 - Copilot keyed by `messageId`. Codex keeps every `agent_message`. Antigravity
   keyed by `step_index`. OpenCode keyed by `part.id`. Cursor keyed by
   `model_call_id`, with the exact-prefix continuation for its last frame.
@@ -432,6 +440,46 @@ How it landed, where it differs from the design above:
   repetition signatures, for every provider at once.
 - Tests: every provider's conformance fixtures go green on the "recorded exactly
   once" and "no lost messages" assertions.
+
+How it landed, where it differs from the list above:
+
+- **Keys.** Parsers emit resolved fragments directly where a line carries the
+  identity: `copilot:<messageId>` (deltas and the final copy, narration with
+  `toolRequests` included), `codex:<item.id>` (finals), `antigravity:step-<n>`
+  (deltas), `opencode:<part id>` (finals). Cursor needs state, so its parser
+  emits `cursorFrame(modelCallID:text:)` and the resolver keys it
+  `cursor:<model_call_id>#<n>`.
+- **Cursor's last frame** is keyed as a continuation of the previous message
+  (`<key>+<n>`) carrying only the text after the repeated prefix, instead of a
+  final that rewrites the previous key: the committed message stays immutable
+  and the recorded text is the same. An exact repeat is dropped; an id-less
+  frame that does not extend the previous message gets `cursor:frame-<n>`.
+- **OpenCode upsert.** A later final for a committed message that differs now
+  replaces it (the ledger's final path no longer ignores committed entries),
+  so OpenCode can re-send a part with more text. Other providers never repeat
+  a final for one key.
+- **Codex warnings** become `AgentEvent.notice`, recorded as a `system.info`
+  event. They no longer fail the run, and no longer reach the process monitor
+  as a terminal error result either.
+- **Codex file changes** are recorded once, on `item.completed`, one per
+  `changes[]` entry; `item.started` is control.
+- **Two parse entry points, until Phase 4.** The worker's recording path
+  calls `parseIdentifiedAgentEvents` (Copilot, Codex, Cursor, OpenCode;
+  Antigravity is keyed everywhere). `parseAgentEvents` keeps the unkeyed
+  shapes for the utility-prompt collectors, which aggregate one reply from
+  `.text` / `.completed` and, for Copilot, end early on a completed final
+  answer; keyed events would fall through their `default` branches. The
+  monitor's ParsedEvent mappings turn keyed text back into `.text`, so its
+  progress signal is unchanged (Antigravity's mapping needed this).
+- **The process monitor change moves to Phase 4.** The monitor reads the
+  separate `parseProcessEvents` path; feeding it resolved fragments means
+  moving the runner onto the resolved AgentEvent stream, which belongs with
+  deleting the legacy paths. Estimated tokens still count a final after its
+  deltas, as before this plan.
+- **Behavior change landed:** Codex `run.output` holds every message in
+  order. Validation `text_contains` reads files and artifacts, not
+  `run.output`; follow-up prompts keep a bounded suffix of it, which still
+  ends with the answer.
 
 ### Phase 3: choose the answer from messages (shared policy)
 
@@ -478,6 +526,11 @@ How it landed, where it differs from the design above:
   masking bug upstream with a redacted sample.
 - Delete `responseTextToAppend`'s echo heuristics and the Copilot and Codex
   last-completed-wins paths once no adapter emits unkeyed duplicates.
+- Move the utility-prompt collectors onto `parseIdentifiedAgentEvents` and
+  delete the unkeyed `parseAgentEvents` shapes.
+- The process monitor (moved from Phase 2): run it on the resolved AgentEvent
+  stream so a final that repeats its deltas counts as `.control` for
+  estimated tokens and repetition signatures.
 - Read `docs/design-system/lean-ui-system.md` before the Updates and bubble UI
   changes.
 

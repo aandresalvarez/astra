@@ -116,9 +116,10 @@ enum AssistantMessageRecording {
             return
         }
         let entry = ledger.entries[index]
-        guard !entry.committed else { return }
         ledger.update(index) { $0.committed = true }
-        // The common case: the streamed draft already is the message.
+        // The common case: the streamed draft (or the copy already committed)
+        // already is the message. A differing later final replaces a committed
+        // message too: OpenCode re-sends a part with more text under its id.
         guard whitespaceCollapsed(entry.text) != whitespaceCollapsed(fragment.text) else { return }
 
         let movesForward = canMoveForward(index, in: ledger, sequence: sequence)

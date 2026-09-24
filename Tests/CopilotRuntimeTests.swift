@@ -94,12 +94,12 @@ struct CopilotStreamEventParserTests {
         }
     }
 
-    @Test("Copilot commentary and final answer both stay completions, so the last one wins")
+    @Test("Copilot commentary and final answer stay completions on the unkeyed utility path")
     func copilotCommentaryStaysACompletion() {
-        // Both frames captured live. Commentary must NOT become `.text`:
-        // streamed text locks run.output, and the final answer could then
-        // never replace the preamble. Keeping both as completions is what
-        // lets last-completed-wins pick the answer.
+        // Both frames captured live. The unkeyed parse, which utility-prompt
+        // collectors aggregate, keeps both as completions so the last one is
+        // the reply. The worker records them as keyed messages instead
+        // (`parseIdentifiedAgentEvents`, ProviderMessageIdentityTests).
         let commentary = #"""
         {"type":"assistant.message","data":{"messageId":"673c1058","phase":"commentary","toolRequests":[],"content":"I'm about to run the requested shell command."}}
         """#

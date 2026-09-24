@@ -174,7 +174,7 @@ enum CursorCLIRuntime {
 
     static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
         parsesJSONLines
-            ? CursorStreamEventParser.parseAgentEvents(line: line)
+            ? CursorStreamEventParser.parseIdentifiedAgentEvents(line: line)
             : CursorStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
     }
 

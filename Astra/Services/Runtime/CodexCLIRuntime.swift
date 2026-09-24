@@ -189,7 +189,7 @@ enum CodexCLIRuntime {
 
     static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
         parsesJSONLines
-            ? CodexStreamEventParser.parseAgentEvents(line: line)
+            ? CodexStreamEventParser.parseIdentifiedAgentEvents(line: line)
             : CodexStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
     }
 
