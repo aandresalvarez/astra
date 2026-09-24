@@ -98,8 +98,8 @@ case "$provider" in
     cmd=(codex exec --json --color never --skip-git-repo-check --sandbox workspace-write
          --cd "$workspace" ${model_args[@]+"${model_args[@]}"} "$prompt") ;;
   antigravity)
-    # agy scopes its workspace by --add-dir, not by the working directory, and
-    # hides account details only when ASTRA's AGY_CLI_HIDE_ACCOUNT_INFO is set.
+    # --add-dir makes the scratch workspace explicit to the model, and agy hides
+    # account details only when ASTRA's AGY_CLI_HIDE_ACCOUNT_INFO is set.
     cmd=(env AGY_CLI_HIDE_ACCOUNT_INFO=1 agy --print "$prompt" --output-format stream-json
          --print-timeout "${TIMEOUT_SECONDS}s" --sandbox --mode accept-edits --add-dir "$workspace"
          ${model_args[@]+"${model_args[@]}"}) ;;
@@ -148,7 +148,12 @@ fi
 out_dir="$ROOT_DIR/Tests/Fixtures/ProviderStreams/$provider"
 mkdir -p "$out_dir"
 out="$out_dir/$scenario.jsonl"
-python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"
+if ! python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"; then
+  echo "==> redaction refused the capture; fixture not written" >&2
+  rm -f "$out.tmp"
+  keep_raw_copy
+  exit 4
+fi
 if ! findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$out.tmp")" \
   && [[ "${ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS:-}" != 1 ]]; then
   echo "==> tool calls reached outside the workspace; fixture not written:" >&2

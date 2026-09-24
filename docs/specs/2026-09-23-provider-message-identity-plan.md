@@ -237,13 +237,12 @@ Status: landed with this plan, except the OpenCode capture.
     reach outside the workspace or dump the environment.
 - Captured scenarios:
   - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
-    Antigravity was captured with `--add-dir <workspace>`; see the open
-    question below. It covers
-    planned scenarios 1–4: narration, a tool read, a multi-line answer with
-    short lines, a quote block and a table, a file write, and a final message
-    that opens with an `ASTRA_EVENT complete` marker. Antigravity's model
-    answered after its tools rather than before the write, so its capture
-    exercises the shape but not the trailing sign-off.
+    It covers planned scenarios 1–4: narration, a tool read, a multi-line
+    answer with short lines, a quote block and a table, a file write, and a
+    final message that opens with an `ASTRA_EVENT complete` marker.
+    Antigravity was captured with `--add-dir <workspace>` (see "Resolved:
+    Antigravity sees the workspace" below). Its print mode ends the turn after
+    the text-only answer, so that capture has no write or sign-off.
   - `subagent` for Claude.
   - Still to capture: OpenCode (not installed). A long answer over 4,096
     characters stays a synthetic Phase 1 test.
@@ -401,15 +400,27 @@ runs started after the phase's build:
   (`~/.claude/projects`, `~/.codex/sessions`, Copilot `session-state`), but it is
   out of scope here.
 
-## Open question: Antigravity's workspace
+## Resolved: Antigravity sees the workspace
 
-`agy` scopes its workspace with `--add-dir`, not the process's working
-directory. Without the flag, a capture's `run_command` reported `pwd` as the
-home directory and `view_file` could not find `question.txt`. ASTRA leaves the
-workspace out of `--add-dir` and relies on the working directory
-([AntigravityCLIRuntime.swift:473](../../Astra/Services/Runtime/AntigravityCLIRuntime.swift#L473)).
-Verify whether ASTRA's own Antigravity runs can see the workspace before
-relying on them. This is separate from message identity.
+An early capture raised the concern that `agy` ignores its working directory:
+one `run_command` printed the home directory for `pwd`, and the model did not
+know the workspace path. The question was checked on 2026-09-23, and ASTRA's
+reliance on the working directory
+([AntigravityCLIRuntime.swift:473](../../Astra/Services/Runtime/AntigravityCLIRuntime.swift#L473))
+holds:
+
+- Two controlled `agy` 1.2.9 runs under `env -i`, both without `--add-dir`
+  and one also without `--mode accept-edits`, ran `pwd` in the working
+  directory and read a file there by absolute path.
+- In production, Antigravity runs used `view_file`, `replace_file_content`,
+  `write_to_file` and `list_dir` on workspace and task-folder paths, and ran
+  repo-relative commands. For example, run 5222's `git log
+  origin/main..origin/perf/…` returned that Astra branch's commit.
+- The early capture's `init` frame already reported the scratch directory as
+  `cwd`. Its one home-directory `pwd` did not reproduce.
+
+The capture script still passes `--add-dir <workspace>`, which makes the
+workspace explicit to the model; ASTRA's launch needs no change.
 
 ## Out of scope
 

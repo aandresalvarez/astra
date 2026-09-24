@@ -14,8 +14,10 @@ tool result: an agent that reads outside the workspace must not carry what it
 read into the repository. ASTRA only needs to see that a result arrived.
 
 `--audit` lists tool calls in a redacted fixture that reach outside the
-scratch workspace or dump the environment, and exits 3 if there are any. Lines that are not JSON pass through with string redaction
-only.
+scratch workspace or dump the environment, and exits 3 if there are any.
+
+A line that is not JSON can be neither minimized nor audited, so the redactor
+refuses the whole capture instead of publishing it.
 """
 
 import getpass
@@ -235,7 +237,7 @@ EXECUTABLE_PATTERN = re.compile(
     r"(?<![\w.\-])/(?:usr/(?:local/)?|opt/homebrew/)?s?bin/[A-Za-z0-9._+\-]+(?![\w/.\-])"
 )
 OUTSIDE_PATH_PATTERN = re.compile(
-    r"(?<![\w.\-])(?:/(?!workspace\b|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
+    r"(?<![\w.\-])(?:/(?!workspace\b|dev/null\b)[A-Za-z0-9*?\[{]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
     r"|(?<![\w])~(?=/|[\s\"'\\]|$)"
     r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
 )
@@ -253,7 +255,9 @@ def audit(fixture_path):
             if not isinstance(frame, dict):
                 continue
             for name, arguments in tool_call_arguments(frame):
-                reach = EXECUTABLE_PATTERN.sub("", arguments)
+                # An executable path becomes its basename, so `/usr/bin/env` is
+                # judged like `env` while `/bin/zsh` stops counting as a path.
+                reach = EXECUTABLE_PATTERN.sub(lambda match: " " + os.path.basename(match.group(0)), arguments)
                 if OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:
@@ -283,15 +287,16 @@ def main():
     raw_path, workspace = sys.argv[1], sys.argv[2]
     pairs = replacements(workspace)
     with open(raw_path, encoding="utf-8", errors="replace") as raw:
-        for line in raw:
+        for number, line in enumerate(raw, 1):
             line = line.rstrip("\n")
             if not line.strip():
                 continue
             try:
                 frame = json.loads(line)
             except ValueError:
-                print(redact_string(line, pairs))
-                continue
+                # A malformed frame cannot have its tool output removed or its
+                # tool calls audited, so it is never published.
+                sys.exit(f"line {number} of the capture is not JSON; refusing to write a fixture")
             if isinstance(frame, dict):
                 frame = without_tool_output(minimized(frame))
             print(json.dumps(redact(frame, pairs), ensure_ascii=False, separators=(",", ":")))

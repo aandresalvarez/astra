@@ -65,7 +65,7 @@ struct ProviderTranscriptConformanceTests {
         let events = task.events
 
         report(.runCompletes, of: fixture, failures: run.status == .completed ? [] : [
-            ("", "run ended \(run.status) with stopReason=\(run.stopReason)")
+            (run.stopReason, "run ended \(run.status) with stopReason=\(run.stopReason)")
         ])
 
         // Two provider messages can carry the same text; each text must be
@@ -114,6 +114,40 @@ struct ProviderTranscriptConformanceTests {
         report(.noUnsentLines, of: fixture, failures: lineCounts(output).keys.sorted().compactMap { line in
             sent[line] != nil || joins.contains(line) ? nil : (line, "line the provider never sent: \(line.prefix(80))")
         })
+
+        // Collapsed comparisons ignore line breaks, so each message present in
+        // the output must also keep its lines and blank-line paragraph breaks.
+        let structuredOutput = lineStructure(output)
+        report(.paragraphStructure, of: fixture, failures: truth.messages.compactMap { message in
+            guard collapsedOutput.contains(collapsed(message)),
+                  !structuredOutput.contains(lineStructure(message)) else { return nil }
+            return (message, "line or paragraph breaks lost: \(message.prefix(80))")
+        })
+
+        // Messages and tool calls must interleave as the provider produced
+        // them: a message counts as recorded once the response rows up to that
+        // point contain it. Lost messages and tools belong to other checks.
+        var recordedSteps: [TranscriptStep] = []
+        var responseSoFar = ""
+        var seenMessages = Set<Int>()
+        for event in events.sorted(by: { $0.timestamp < $1.timestamp }) {
+            if event.type == TaskEventTypes.Conversation.agentResponse.rawValue {
+                responseSoFar += event.payload
+                let collapsedSoFar = collapsed(responseSoFar)
+                for (index, message) in truth.messages.enumerated()
+                where !seenMessages.contains(index) && collapsedSoFar.contains(collapsed(message)) {
+                    seenMessages.insert(index)
+                    recordedSteps.append(.message(index))
+                }
+            } else if event.type == TaskEventTypes.Tool.use.rawValue {
+                recordedSteps.append(.tool(toolName(fromUsePayload: event.payload)))
+            }
+        }
+        let expectedSteps = commonSteps(truth.sequence, with: recordedSteps)
+        let actualSteps = commonSteps(recordedSteps, with: truth.sequence)
+        report(.toolsInterleaved, of: fixture, failures: expectedSteps == actualSteps ? [] : [
+            ("", "provider order \(expectedSteps), recorded \(actualSteps)")
+        ])
 
         let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
         report(.noRawProviderJSON, of: fixture, failures: rawFrameInOutput ? [("", "raw provider frame in run output")] : [])
@@ -201,6 +235,20 @@ struct ProviderTranscriptConformanceTests {
     }
 }
 
+/// One entry of a run's transcript: a message (by index into the provider's
+/// messages) or a tool call (by name).
+enum TranscriptStep: Hashable, CustomStringConvertible {
+    case message(Int)
+    case tool(String)
+
+    var description: String {
+        switch self {
+        case .message(let index): "message \(index + 1)"
+        case .tool(let name): "tool \(name)"
+        }
+    }
+}
+
 /// A defect the suite expects today, limited to the failures it explains.
 struct ProviderStreamKnownIssue: Sendable {
     let reason: String
@@ -231,6 +279,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case messagesInOrder
         case noExtraLines
         case noUnsentLines
+        case paragraphStructure
+        case toolsInterleaved
         case noRawProviderJSON
         case toolCallsRecorded
         case fileChangesRecorded
@@ -309,7 +359,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "codex",
             model: "gpt-5.5",
             knownIssues: [
-                .runCompletes: .whole("config-warning items of type error fail the run as agent_reported_error (plan phase 2)"),
+                .runCompletes: .items("config-warning items of type error fail the run as agent_reported_error (plan phase 2)") {
+                    $0 == "agent_reported_error"
+                },
                 .eachMessageOnce: .items("last-completed-wins keeps only the final agent_message (plan phase 2)") {
                     !$0.hasPrefix("The draft is saved")
                 },
@@ -365,6 +417,13 @@ struct ProviderStreamTruth {
     /// Every tool call's name, subagent calls included: ASTRA records those
     /// as tool activity too.
     private(set) var toolNames: [String] = []
+    /// Messages and tool calls in the order the provider produced them.
+    private(set) var sequence: [TranscriptStep] = []
+
+    private enum RawStep {
+        case message(Int)
+        case tool(String)
+    }
     private(set) var writtenPaths: [String] = []
     /// Collapsed "last line of a message + first line of a later message":
     /// the only lines, besides the provider's own, that appending messages
@@ -376,7 +435,16 @@ struct ProviderStreamTruth {
 
     init(fixture: ProviderStreamFixture, frames: [String]) {
         var rawMessages: [String] = []
-        var antigravitySteps: [(index: Int, text: String)] = []
+        var rawSequence: [RawStep] = []
+        var antigravityMessageIndex: [Int: Int] = [:]
+        func appendMessage(_ text: String) {
+            rawSequence.append(.message(rawMessages.count))
+            rawMessages.append(text)
+        }
+        func appendTool(_ name: String) {
+            toolNames.append(name)
+            rawSequence.append(.tool(name))
+        }
         for line in frames {
             guard let data = line.data(using: .utf8),
                   let frame = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
@@ -392,9 +460,9 @@ struct ProviderStreamTruth {
                 let isMainAgent = frame["parent_tool_use_id"] is NSNull || frame["parent_tool_use_id"] == nil
                 for block in blocks {
                     if block["type"] as? String == "text", isMainAgent, let text = block["text"] as? String {
-                        rawMessages.append(text)
+                        appendMessage(text)
                     } else if block["type"] as? String == "tool_use" {
-                        toolNames.append(block["name"] as? String ?? "tool")
+                        appendTool(block["name"] as? String ?? "tool")
                         if ["Write", "Edit", "MultiEdit"].contains(block["name"] as? String ?? ""),
                            let path = (block["input"] as? [String: Any])?["file_path"] as? String {
                             writtenPaths.append(path)
@@ -404,9 +472,9 @@ struct ProviderStreamTruth {
             case .copilotCLI:
                 let data = frame["data"] as? [String: Any]
                 if type == "assistant.message", let text = data?["content"] as? String {
-                    rawMessages.append(text)
+                    appendMessage(text)
                 } else if type == "tool.execution_start" {
-                    toolNames.append(data?["toolName"] as? String ?? "tool")
+                    appendTool(data?["toolName"] as? String ?? "tool")
                     if data?["toolName"] as? String == "apply_patch", let patch = data?["arguments"] as? String {
                         writtenPaths += Self.patchedPaths(in: patch)
                     }
@@ -415,9 +483,9 @@ struct ProviderStreamTruth {
                 let item = frame["item"] as? [String: Any]
                 if type == "item.completed", item?["type"] as? String == "agent_message",
                    let text = item?["text"] as? String {
-                    rawMessages.append(text)
+                    appendMessage(text)
                 } else if type == "item.started", item?["type"] as? String == "command_execution" {
-                    toolNames.append("command_execution")
+                    appendTool("command_execution")
                 } else if type == "item.completed", item?["type"] as? String == "file_change",
                           let changes = item?["changes"] as? [[String: Any]] {
                     writtenPaths += changes.compactMap { $0["path"] as? String }
@@ -434,11 +502,11 @@ struct ProviderStreamTruth {
                     if let previous = rawMessages.last, !previous.isEmpty, text.hasPrefix(previous) {
                         rawMessages[rawMessages.count - 1] = text
                     } else if !text.isEmpty {
-                        rawMessages.append(text)
+                        appendMessage(text)
                     }
                 } else if type == "tool_call", frame["subtype"] as? String == "started" {
                     let call = frame["tool_call"] as? [String: Any] ?? [:]
-                    toolNames.append(call.keys.first { $0.hasSuffix("ToolCall") } ?? "tool")
+                    appendTool(call.keys.first { $0.hasSuffix("ToolCall") } ?? "tool")
                     let edit = call["editToolCall"] as? [String: Any]
                     if let path = (edit?["args"] as? [String: Any])?["path"] as? String {
                         writtenPaths.append(path)
@@ -450,13 +518,14 @@ struct ProviderStreamTruth {
                       let index = step["step_index"] as? Int else { continue }
                 if step["step_type"] as? String == "agent_response" {
                     let delta = step["text_delta"] as? String ?? ""
-                    if let position = antigravitySteps.firstIndex(where: { $0.index == index }) {
-                        antigravitySteps[position].text += delta
+                    if let position = antigravityMessageIndex[index] {
+                        rawMessages[position] += delta
                     } else {
-                        antigravitySteps.append((index, delta))
+                        antigravityMessageIndex[index] = rawMessages.count
+                        appendMessage(delta)
                     }
                 } else if step["step_type"] as? String == "tool", step["state"] as? String == "ACTIVE" {
-                    toolNames.append(step["tool_name"] as? String ?? "tool")
+                    appendTool(step["tool_name"] as? String ?? "tool")
                     let parameters = (step["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
                     if step["tool_name"] as? String == "write_to_file", let path = parameters?["TargetFile"] as? String {
                         writtenPaths.append(path)
@@ -466,8 +535,19 @@ struct ProviderStreamTruth {
                 continue
             }
         }
-        rawMessages += antigravitySteps.map(\.text)
-        messages = rawMessages.map(Self.visibleText).filter { !$0.isEmpty }
+        var messageIndexByRaw: [Int: Int] = [:]
+        for (rawIndex, raw) in rawMessages.enumerated() {
+            let visible = Self.visibleText(raw)
+            guard !visible.isEmpty else { continue }
+            messageIndexByRaw[rawIndex] = messages.count
+            messages.append(visible)
+        }
+        sequence = rawSequence.compactMap { step in
+            switch step {
+            case .message(let rawIndex): messageIndexByRaw[rawIndex].map { .message($0) }
+            case .tool(let name): .tool(name)
+            }
+        }
         for (index, earlier) in messages.enumerated() {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
             for later in messages.dropFirst(index + 1) {
@@ -522,6 +602,29 @@ private func collapsed(_ text: String) -> String {
     text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
 }
 
+/// Whitespace collapsed within each line, line breaks kept, and any run of
+/// blank lines reduced to one paragraph break.
+private func lineStructure(_ text: String) -> String {
+    var lines: [String] = []
+    for line in text.components(separatedBy: "\n").map(collapsed) {
+        if line.isEmpty, lines.last?.isEmpty ?? true { continue }
+        lines.append(line)
+    }
+    while lines.last?.isEmpty == true { lines.removeLast() }
+    return lines.joined(separator: "\n")
+}
+
+/// `steps` keeping only entries `other` also has, each at most as often as it
+/// occurs there, in order.
+private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]) -> [TranscriptStep] {
+    var remaining = other.reduce(into: [TranscriptStep: Int]()) { $0[$1, default: 0] += 1 }
+    return steps.filter { step in
+        guard let count = remaining[step], count > 0 else { return false }
+        remaining[step] = count - 1
+        return true
+    }
+}
+
 private func multiset(_ items: [String]) -> [String: Int] {
     items.reduce(into: [:]) { counts, item in counts[item, default: 0] += 1 }
 }
@@ -535,6 +638,12 @@ private func toolName(fromUsePayload payload: String) -> String {
 /// A path relative to whichever workspace root contains it; other paths stay
 /// absolute so a wrong directory never matches.
 private func workspaceRelative(_ path: String, roots: [String]) -> String {
+    // A relative stored path is already workspace-relative, as
+    // TaskArtifactPathNormalizer treats it; never resolve it against the
+    // test process's working directory.
+    guard path.hasPrefix("/") else {
+        return (path as NSString).standardizingPath
+    }
     let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
     for root in roots {
         let base = URL(fileURLWithPath: root).standardizedFileURL.path
