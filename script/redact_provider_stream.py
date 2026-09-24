@@ -244,7 +244,7 @@ COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|\\?\")\s*$")
 OUTSIDE_PATH_PATTERN = re.compile(
     r"(?<![\w.\-~/:])/(?!workspace(?:/|$|[\s\"'\\])|dev/null(?:$|[\s\"'\\]))"
     r"|(?<![\w.\-])\.\.(?=/|[\s\"'\\]|$)"
-    r"|(?<![\w])~(?=/|[\s\"'\\]|$)"
+    r"|(?<![\w])~[A-Za-z0-9._\-]*(?=/|[\s\"'\\]|$)"
     r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")

@@ -74,7 +74,9 @@ then a blank line, then one sentence under 60 characters saying the draft is sav
 esac
 
 workspace="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture.XXXXXX")"
-cleanup() { [[ -n "$keep_raw" ]] || rm -rf "$workspace"; }
+# --keep-raw copies what it keeps first, so the unredacted original never
+# outlives the script.
+cleanup() { rm -rf "$workspace"; }
 trap cleanup EXIT
 cat > "$workspace/question.txt" <<'EOF'
 Dana asks: for the 32,872-day top-coding, did we cap each day offset with
@@ -125,14 +127,24 @@ set -m
 (cd "$workspace" && exec env -i "${capture_env[@]}" "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
 pid=$!
 set +m
-( sleep "$TIMEOUT_SECONDS"; kill -TERM -- "-$pid" ) 2>/dev/null &
+# TERM the provider's whole group, give it a bounded grace period, then KILL
+# whatever ignored TERM.
+stop_provider_group() {
+  kill -TERM -- "-$pid" 2>/dev/null || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 -- "-$pid" 2>/dev/null || return 0
+    sleep 0.3
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+}
+( sleep "$TIMEOUT_SECONDS"; kill -TERM -- "-$pid"; sleep 3; kill -KILL -- "-$pid" ) 2>/dev/null &
 watchdog=$!
 status=0
 wait "$pid" || status=$?
 pkill -P "$watchdog" 2>/dev/null || true
 kill "$watchdog" 2>/dev/null || true
 # Anything the provider left running must not outlive the capture.
-kill -TERM -- "-$pid" 2>/dev/null || true
+stop_provider_group
 echo "==> exit $status, $(wc -l <"$raw" | tr -d ' ') stdout lines" >&2
 
 keep_raw_copy() {
