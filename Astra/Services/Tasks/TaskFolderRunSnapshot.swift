@@ -15,24 +15,39 @@ import ASTRAPersistence
 /// production task, 76 of 90 runs recorded no file changes, and 515 of 529
 /// files had no run that produced them.
 ///
-/// Only metadata is read, never contents, so a folder of a few hundred files
-/// costs milliseconds; the walk, the comparison, and the bounding all run off
-/// the main actor. The visibility
+/// Metadata is read for every file and contents only for small ones, so a
+/// folder of a few hundred files costs milliseconds; the walk, the
+/// comparison, and the bounding all run off the main actor. The visibility
 /// rules are the Files shelf's (`TaskOutputArtifactPathPolicy`), so ASTRA's
 /// own bookkeeping (`outputs/`, `inputs/`, `current_state.*`, `diagnostics/`)
 /// and dependency trees never count as the run's work. Hidden files are
 /// skipped, which keeps Finder's `.DS_Store` writes out of every run.
 struct TaskFolderRunSnapshot: Sendable, Equatable {
-    /// Any field differing means the file changed. Size and modified time
-    /// alone miss a same-length rewrite on a filesystem with coarse
-    /// timestamps, or one that preserves them (`cp -p`, `touch -r`); the
-    /// kernel moves the status-change time on every write, and an atomic
-    /// replace gives the path a new file identifier.
+    /// Size and modified time alone miss a same-length rewrite that keeps its
+    /// timestamp (`cp -p`, `touch -r`). The kernel moves the status-change
+    /// time on every write and an atomic replace changes the file identifier,
+    /// but on a filesystem with coarse timestamps both writes can still land
+    /// in one tick; the content fingerprint covers that for small files.
     struct Entry: Sendable, Equatable {
         let size: Int
         let modifiedAt: Date?
         let statusChangedAt: Date?
         let fileIdentifier: UInt64?
+        /// Seeded per process, like every `Hasher`: comparable between the
+        /// two walks of one run, never persisted.
+        let contentFingerprint: Int?
+
+        /// A fingerprint only counts when both walks took one: the byte budget
+        /// can fall differently between them, and a missing fingerprint is no
+        /// evidence of an edit.
+        func differs(from other: Entry) -> Bool {
+            if size != other.size || modifiedAt != other.modifiedAt ||
+                statusChangedAt != other.statusChangedAt || fileIdentifier != other.fileIdentifier {
+                return true
+            }
+            guard let contentFingerprint, let otherFingerprint = other.contentFingerprint else { return false }
+            return contentFingerprint != otherFingerprint
+        }
     }
 
     struct Change: Sendable, Equatable {
@@ -68,6 +83,12 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
     /// cannot be compared: a file past the cutoff would read as removed.
     static let entryLimit = 50_000
 
+    /// Files up to this size are fingerprinted, until one walk has read
+    /// `fingerprintByteBudget` bytes; anything larger relies on metadata, so
+    /// a folder of data files is never read in full.
+    static let fingerprintFileLimit = 256 * 1_024
+    static let fingerprintByteBudget = 32 * 1_024 * 1_024
+
     /// Observed changes recorded on one run. A run that touches more files
     /// than this is a bulk operation nobody reviews file by file; new and
     /// edited files are kept ahead of removals. The encoded size is bounded
@@ -82,7 +103,7 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
         var changes: [Change] = []
         for (relativePath, entry) in entries {
             if let previous = before.entries[relativePath] {
-                guard previous != entry else { continue }
+                guard previous.differs(from: entry) else { continue }
                 changes.append(Change(relativePath: relativePath, kind: .modified, modifiedAt: entry.modifiedAt))
             } else {
                 changes.append(Change(relativePath: relativePath, kind: .created, modifiedAt: entry.modifiedAt))
@@ -101,7 +122,10 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
     static func scan(
         taskFolder: String,
         entryLimit: Int = entryLimit,
-        fileManager: FileManager = .default
+        fingerprintFileLimit: Int = fingerprintFileLimit,
+        fingerprintByteBudget: Int = fingerprintByteBudget,
+        fileManager: FileManager = .default,
+        readValues: (URL, Set<URLResourceKey>) throws -> URLResourceValues = { try $0.resourceValues(forKeys: $1) }
     ) -> TaskFolderRunSnapshot? {
         guard !taskFolder.isEmpty else { return nil }
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder)
@@ -133,28 +157,45 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
 
         var entries: [String: Entry] = [:]
         var visited = 0
+        var fingerprintBytesLeft = fingerprintByteBudget
         while let url = enumerator.nextObject() as? URL {
             visited += 1
             guard visited <= entryLimit else { return nil }
             guard let relativePath = relativePath(of: url, under: root) else { continue }
-            let values = try? url.resourceValues(forKeys: Set(keys))
             let isVisible = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
                 relativePath,
                 context: .taskFolder
             ) != nil
-            if values?.isDirectory == true {
+            let values: URLResourceValues
+            do {
+                values = try readValues(url, Set(keys))
+            } catch {
+                // A visible file left out of one walk reads as removed, or as
+                // created, against the other.
+                guard isVisible else { continue }
+                walkFailure.occurred = true
+                break
+            }
+            if values.isDirectory == true {
                 // Prune before descending: `outputs/`, `diagnostics/`, and a
                 // virtualenv are whole subtrees nobody would look at.
                 if !isVisible { enumerator.skipDescendants() }
                 continue
             }
             // Symlinks are skipped: what they point at is not the task's work.
-            guard isVisible, values?.isRegularFile == true else { continue }
+            guard isVisible, values.isRegularFile == true else { continue }
+            let size = values.fileSize ?? 0
+            var fingerprint: Int?
+            if size <= fingerprintFileLimit, size <= fingerprintBytesLeft {
+                fingerprint = contentFingerprint(of: url, hostFileAccess: hostFileAccess, intent: intent)
+                fingerprintBytesLeft -= size
+            }
             entries[relativePath] = Entry(
-                size: values?.fileSize ?? 0,
-                modifiedAt: values?.contentModificationDate,
-                statusChangedAt: values?.attributeModificationDate,
-                fileIdentifier: values?.fileIdentifier
+                size: size,
+                modifiedAt: values.contentModificationDate,
+                statusChangedAt: values.attributeModificationDate,
+                fileIdentifier: values.fileIdentifier,
+                contentFingerprint: fingerprint
             )
         }
         // A directory the walk could not read leaves its files out, and against
@@ -165,6 +206,19 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
 
     private final class WalkFailure {
         var occurred = false
+    }
+
+    /// Nil when the file cannot be read: the fingerprint only adds evidence,
+    /// so its absence falls back to metadata.
+    private static func contentFingerprint(
+        of url: URL,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) -> Int? {
+        guard let data = try? hostFileAccess.readData(at: url, intent: intent) else { return nil }
+        var hasher = Hasher()
+        data.withUnsafeBytes { hasher.combine(bytes: $0) }
+        return hasher.finalize()
     }
 
     /// `scan` off the main actor.
@@ -339,8 +393,9 @@ extension TaskFolderRunSnapshot {
                 timestamp: change.modifiedAt.map { $0.clamped(to: window) } ?? runEndedAt
             )
             // The array encodes each element exactly as alone, plus a comma.
+            // One long path that does not fit leaves room for shorter ones.
             let size = TaskEvent.payloadString(record).utf8.count + 1
-            guard size <= byteBudget else { break }
+            guard size <= byteBudget else { continue }
             byteBudget -= size
             stored.append(record)
         }

@@ -134,6 +134,75 @@ struct TaskFolderRunSnapshotTests {
         #expect(after.changes(since: before).map(\.kind) == [.modified])
     }
 
+    @Test("A visible file whose metadata cannot be read voids the snapshot; a hidden one does not")
+    func unreadableMetadataVoidsTheSnapshot() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write("plan", to: folder, "plan.md")
+        try write("{}", to: folder, "current_state.json")
+        struct Unreadable: Error {}
+        func failing(on name: String) -> (URL, Set<URLResourceKey>) throws -> URLResourceValues {
+            { url, keys in
+                if url.lastPathComponent == name { throw Unreadable() }
+                return try url.resourceValues(forKeys: keys)
+            }
+        }
+
+        #expect(TaskFolderRunSnapshot.scan(taskFolder: folder.path, readValues: failing(on: "plan.md")) == nil)
+        let snapshot = TaskFolderRunSnapshot.scan(taskFolder: folder.path, readValues: failing(on: "current_state.json"))
+        #expect(snapshot?.entries.keys.sorted() == ["plan.md"])
+    }
+
+    @Test("Small files carry a content fingerprint, and it only counts when both walks took one")
+    func contentFingerprintSeparatesSameLengthRewrites() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write("aaaa", to: folder, "small.md")
+        try write(String(repeating: "x", count: 64), to: folder, "large.md")
+
+        let snapshot = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path, fingerprintFileLimit: 16))
+        #expect(snapshot.entries["small.md"]?.contentFingerprint != nil)
+        #expect(snapshot.entries["large.md"]?.contentFingerprint == nil)
+        let unbudgeted = TaskFolderRunSnapshot.scan(taskFolder: folder.path, fingerprintByteBudget: 0)
+        #expect(unbudgeted?.entries.values.allSatisfy { $0.contentFingerprint == nil } == true)
+
+        let stamp = Date(timeIntervalSince1970: 1_790_000_000)
+        func entry(_ fingerprint: Int?) -> TaskFolderRunSnapshot.Entry {
+            .init(size: 4, modifiedAt: stamp, statusChangedAt: stamp, fileIdentifier: 7, contentFingerprint: fingerprint)
+        }
+        #expect(entry(1).differs(from: entry(2)))
+        #expect(!entry(1).differs(from: entry(1)))
+        #expect(!entry(1).differs(from: entry(nil)))
+    }
+
+    @Test("One observation too long for the byte budget leaves room for shorter ones")
+    func oversizedObservationDoesNotBlockShorterOnes() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: root.standardized + "/big.md",
+            changeType: "Write",
+            content: String(repeating: "x", count: TaskRun.displayedFileChangesJSONByteLimit - 1_500)
+        ))
+        let longName = "a-" + String(repeating: "long", count: 500) + ".md"
+
+        let stored = TaskFolderRunSnapshot.append(
+            [
+                .init(relativePath: longName, kind: .created, modifiedAt: nil),
+                .init(relativePath: "b.csv", kind: .created, modifiedAt: nil)
+            ],
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(stored.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["b.csv"])
+        #expect(fixture.run.fileChangesJSON.utf8.count <= TaskRun.displayedFileChangesJSONByteLimit)
+    }
+
     @Test("The after-run comparison and bounding run off the main actor")
     func observationRunsOffTheMainActor() async throws {
         let folder = try makeFolder()
