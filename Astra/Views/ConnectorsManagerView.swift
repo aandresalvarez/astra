@@ -309,7 +309,7 @@ struct ConnectorEditorView: View {
                         ForEach(Array(connector.configKeys.enumerated()), id: \.offset) { idx, key in
                             if idx < connector.configValues.count {
                                 if idx > 0 {
-                                    Divider().opacity(0.5)
+                                    SubtleDivider()
                                 }
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(key)
@@ -452,7 +452,7 @@ struct ConnectorEditorView: View {
                                 // would then replace/remove the wrong secret.
                                 ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
                                     if idx > 0 {
-                                        Divider().opacity(0.5)
+                                        SubtleDivider()
                                     }
                                     HStack(spacing: 8) {
                                         Text(key)

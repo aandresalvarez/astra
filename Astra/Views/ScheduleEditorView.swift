@@ -182,7 +182,7 @@ struct ScheduleEditorView: View {
                         }
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.borderRest, lineWidth: 1))
 
                         if hasConversationContext {
                             HStack(spacing: 8) {
@@ -240,7 +240,7 @@ struct ScheduleEditorView: View {
                         }
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.borderRest, lineWidth: 1))
                     }
 
                     // MARK: - Frequency
@@ -298,7 +298,7 @@ struct ScheduleEditorView: View {
                         }
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.borderRest, lineWidth: 1))
 
                         // Frequency summary
                         Text(frequencyDescription)
@@ -364,7 +364,7 @@ struct ScheduleEditorView: View {
                         }
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.borderRest, lineWidth: 1))
 
                         Text(resultMode.description)
                             .font(Stanford.caption(12))
@@ -404,7 +404,7 @@ struct ScheduleEditorView: View {
                             }
                             .background(Stanford.cardBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.borderRest, lineWidth: 1))
                         }
                     }
                 }

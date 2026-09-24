@@ -263,7 +263,7 @@ struct WorkspacePackageImportReviewView: View {
         }
         .padding(.horizontal, 24).padding(.vertical, 16)
         .background(Color.primary.opacity(0.025))
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Stanford.separator).frame(height: 1) }
     }
 
     private var importHelp: String {
@@ -529,7 +529,7 @@ struct WorkspacePackageImportReviewView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.025))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Stanford.borderRest, lineWidth: 1))
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

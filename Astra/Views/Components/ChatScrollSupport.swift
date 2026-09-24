@@ -155,7 +155,7 @@ struct ChatJumpToLatestButton: View {
             .overlay(
                 Capsule()
                     .stroke(
-                        Stanford.lagunita.opacity(hasUnseenActivity ? 0.45 : 0.25),
+                        Stanford.lagunita.opacity(hasUnseenActivity ? Stanford.strokeFocus : Stanford.strokeActive),
                         lineWidth: 1
                     )
             )

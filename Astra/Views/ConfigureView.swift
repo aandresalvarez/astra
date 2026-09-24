@@ -343,7 +343,7 @@ private struct ConfigureSelectionCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(shape.fill(Color.primary.opacity(0.018)))
         .overlay {
-            shape.stroke(Color.primary.opacity(0.055), lineWidth: 1)
+            shape.stroke(Stanford.borderSubtle, lineWidth: 1)
         }
         .clipShape(shape)
     }
@@ -698,7 +698,7 @@ struct CapabilityCreationWizardView: View {
                         .padding(6)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
                 }
 
                 HStack {
@@ -738,7 +738,7 @@ struct CapabilityCreationWizardView: View {
                     .padding(6)
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
             }
         }
     }
@@ -2266,7 +2266,7 @@ struct TemplateEditorView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .stroke(selectedPhase == phase ? phase.color.opacity(0.3) : .clear, lineWidth: 1)
+                                    .stroke(selectedPhase == phase ? phase.color.opacity(Stanford.strokeActive) : .clear, lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
@@ -2381,7 +2381,7 @@ struct TemplateEditorView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(Stanford.coolGrey.opacity(0.2), lineWidth: 1)
+                        .stroke(Stanford.borderRest, lineWidth: 1)
                 )
             Text("Use {{variable}} placeholders. Available: " + template.variables.map { "{{\($0.name)}}" }.joined(separator: ", "))
                 .font(Stanford.caption(11))

@@ -48,7 +48,7 @@ struct GoogleWorkspaceSetupPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         }
         .accessibilityIdentifier("GoogleWorkspaceSetupPanel")
     }

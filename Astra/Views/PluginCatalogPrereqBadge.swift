@@ -52,7 +52,7 @@ struct PluginCatalogPrereqBadge: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(statusColor.opacity(0.25), lineWidth: 1)
+                .stroke(statusColor.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .onTapGesture { showDetail = true }
         .popover(isPresented: $showDetail) {
