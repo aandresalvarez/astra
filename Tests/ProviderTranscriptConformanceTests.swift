@@ -296,7 +296,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // whole-output echo check already drops; prod runs show the
             // doubling on later narration.
             knownIssues: [
-                .fileChangesRecorded: .whole("apply_patch writes are not recorded as file changes (plan phase 4)"),
+                .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
+                    $0 == "answer.md"
+                },
                 .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
             ]
         ),
@@ -311,7 +313,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .eachMessageOnce: .items("last-completed-wins keeps only the final agent_message (plan phase 2)") {
                     !$0.hasPrefix("The draft is saved")
                 },
-                .fileChangesRecorded: .whole("file_change paths nest under changes[] and are dropped (plan phase 2)"),
+                .fileChangesRecorded: .items("file_change paths nest under changes[] and are dropped (plan phase 2)") {
+                    $0 == "answer.md"
+                },
                 .noSpuriousErrors: .items("config-warning items of type error are recorded as agent errors (plan phase 2)") {
                     $0.hasPrefix("Configured value for")
                 },
@@ -329,8 +333,12 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                     $0.hasSuffix("The same draft is saved in `answer.md`.")
                 },
                 .noExtraLines: .shortLines("re-sent short lines of the previous message are appended again (plan phase 2)"),
-                .toolCallsRecorded: .whole("tool_call frames are not parsed (plan phase 4)"),
-                .fileChangesRecorded: .whole("editToolCall writes are not parsed (plan phase 4)")
+                .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
+                    ["readToolCall", "editToolCall"].contains($0)
+                },
+                .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
+                    $0 == "answer.md"
+                }
             ]
         ),
         ProviderStreamFixture(

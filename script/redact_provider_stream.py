@@ -227,12 +227,15 @@ def tool_call_arguments(frame):
             yield step.get("tool_name", "tool"), json.dumps((step.get("tool_info") or {}).get("parameters"))
 
 
-# After redaction the scratch workspace is /workspace. System executables are
-# fine; any other absolute path, a home-relative path (`~/`, `$HOME`), a
-# parent-directory escape, or an environment dump means the agent explored
-# beyond the capture.
+# After redaction the scratch workspace is /workspace. An executable named by
+# its full path (`/bin/zsh`, `/usr/bin/sed`) is fine; any other absolute path,
+# a home-relative path (`~/`, `$HOME`), a parent-directory escape, or an
+# environment dump means the agent explored beyond the capture.
+EXECUTABLE_PATTERN = re.compile(
+    r"(?<![\w.\-])/(?:usr/(?:local/)?|opt/homebrew/)?s?bin/[A-Za-z0-9._+\-]+(?![\w/.\-])"
+)
 OUTSIDE_PATH_PATTERN = re.compile(
-    r"(?<![\w.\-])(?:/(?!workspace\b|bin/|usr/|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
+    r"(?<![\w.\-])(?:/(?!workspace\b|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
     r"|(?<![\w])~(?=/|[\s\"'\\]|$)"
     r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
 )
@@ -250,7 +253,8 @@ def audit(fixture_path):
             if not isinstance(frame, dict):
                 continue
             for name, arguments in tool_call_arguments(frame):
-                if OUTSIDE_PATH_PATTERN.search(arguments) or ENV_DUMP_PATTERN.search(arguments):
+                reach = EXECUTABLE_PATTERN.sub("", arguments)
+                if OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:
         print(finding)
