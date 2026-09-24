@@ -287,13 +287,20 @@ struct ProviderTranscriptConformanceTests {
             return expected == recorded ? nil : (step, "subagent \(step): provider reported \(expected)x, recorded \(recorded)x")
         })
 
+        // The bubble must hold the whole answer, not a digest of it: all of
+        // its text, and its line and paragraph breaks.
         let snapshot = TaskThreadSnapshot(task: task)
-        let displayed = collapsed(
-            snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
-        )
-        report(.answerVisible, of: fixture, failures: truth.answerExcerpts.compactMap { excerpt in
-            displayed.contains(excerpt) ? nil : (excerpt, "answer bubble is missing: \(excerpt)")
-        })
+        let displayed = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
+        let answer = try #require(truth.answer, "fixture has no answer message")
+        let answerFailure: (item: String, message: String)? =
+            if !collapsed(displayed).contains(collapsed(answer)) {
+                ("text", "answer bubble is missing answer text: \(answer.prefix(80))")
+            } else if !lineStructure(displayed).contains(lineStructure(answer)) {
+                ("structure", "answer bubble lost the answer's line or paragraph breaks")
+            } else {
+                nil
+            }
+        report(.answerVisible, of: fixture, failures: answerFailure.map { [$0] } ?? [])
     }
 
     /// Records each failure of `check`. Failures the fixture's known issue
@@ -507,6 +514,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
                 .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
                     $0 == "answer.md"
+                },
+                .answerVisible: .items("the re-sent previous message splits the answer with echo residue (plan phase 2)") {
+                    $0 == "text"
                 }
             ]
         ),
@@ -561,9 +571,9 @@ struct ProviderStreamTruth {
     /// the only lines, besides the provider's own, that appending messages
     /// without a separator can produce.
     private(set) var boundaryJoins: Set<String> = []
-    /// Collapsed excerpts of the answer's substantive lines, so a bubble that
-    /// shows only a hollow skeleton of headings and greetings fails.
-    private(set) var answerExcerpts: [String] = []
+    /// The message the user asked for: the drafted reply in the
+    /// answer-write-signoff scenario, otherwise the last message.
+    private(set) var answer: String?
 
     init(fixture: ProviderStreamFixture, frames: [String]) {
         var rawMessages: [String] = []
@@ -767,11 +777,7 @@ struct ProviderStreamTruth {
             }
         }
 
-        if let answer = messages.first(where: { $0.contains("Suggested reply") }) {
-            answerExcerpts = Self.substantiveExcerpts(of: answer)
-        } else if let last = messages.last {
-            answerExcerpts = [String(collapsed(last).prefix(60))]
-        }
+        answer = messages.first { $0.contains("Suggested reply") } ?? messages.last
     }
 
     /// The recorder strips ASTRA protocol marker lines from visible text.
@@ -780,21 +786,6 @@ struct ProviderStreamTruth {
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("ASTRA_EVENT ") }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// The opening 40 characters of every prose line of 60+ characters, with
-    /// quote and bullet markers removed. Table rows and short lines are left
-    /// out, because the echo defect keeps exactly those.
-    private static func substantiveExcerpts(of answer: String) -> [String] {
-        answer.components(separatedBy: "\n").compactMap { line in
-            var text = line.trimmingCharacters(in: .whitespaces)
-            guard !text.hasPrefix("|") else { return nil }
-            for marker in ["> ", "- ", "* "] where text.hasPrefix(marker) {
-                text = String(text.dropFirst(marker.count))
-            }
-            let words = collapsed(text)
-            return words.count >= 60 ? String(words.prefix(40)) : nil
-        }
     }
 
     /// `*** Add File: <path>` / `*** Update File: <path>` headers of a patch.
