@@ -533,7 +533,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             ],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
-                .usageRecorded: "Copilot's stream reports premium requests, not tokens"
+                .usageRecorded: "the capture has no session.shutdown frame, the only one with token totals"
             ]
         ),
         ProviderStreamFixture(
@@ -720,6 +720,15 @@ struct ProviderStreamTruth {
                 let data = frame["data"] as? [String: Any]
                 if type == "assistant.message", let text = data?["content"] as? String {
                     appendMessage(text)
+                } else if type == "session.shutdown",
+                          let metrics = (data ?? frame["payload"] as? [String: Any])?["modelMetrics"] as? [String: Any] {
+                    // Per-model totals; Copilot counts cache reads and writes
+                    // next to inputTokens rather than inside them.
+                    let entries = metrics.values.compactMap { $0 as? [String: Any] }.map { $0["usage"] as? [String: Any] ?? $0 }
+                    usage = (
+                        entries.reduce(0) { $0 + int($1["inputTokens"]) + int($1["cacheReadTokens"]) + int($1["cacheWriteTokens"]) },
+                        entries.reduce(0) { $0 + int($1["outputTokens"]) }
+                    )
                 } else if type == "result" {
                     // Copilot's stdout names its session only in the result.
                     sessionID = frame["sessionId"] as? String
