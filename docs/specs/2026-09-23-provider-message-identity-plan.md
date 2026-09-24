@@ -243,6 +243,10 @@ Status: landed with this plan, except the OpenCode capture.
   - A capture that stops before its audit passes deletes the staged fixture,
     and a signal stops the timeout watchdog too, so it cannot later signal a
     reused process group.
+  - Session and result frames keep only what the parsers read (session
+    identity, model, the discriminator); shell-only audit rules (environment
+    dumps, directory jumps, escape bytes) apply to command arguments only,
+    while paths are checked in every argument.
   - The audit is a tripwire, not isolation: it also refuses inherited path
     variables, parameter expansions that can build a path, escape sequences
     that `printf` / `echo` turn into one, and a `cd` whose only arguments are
@@ -261,7 +265,9 @@ Status: landed with this plan, except the OpenCode capture.
     Antigravity sees the workspace" below). Its print mode ends the turn after
     the text-only answer, so that capture has no write or sign-off.
   - `subagent` for Claude.
-  - Still to capture: OpenCode (not installed). A long answer over 4,096
+  - Still to capture: OpenCode (not installed), and a scenario with a failed
+    tool call (no committed capture has one, so every fixture lists
+    `failedToolResultsRecorded` as not exercised). A long answer over 4,096
     characters stays a synthetic Phase 1 test.
 - Store the captures under `Tests/Fixtures/ProviderStreams/<provider>/<scenario>.jsonl`
   and add them to the test target's `resources`.
@@ -271,14 +277,16 @@ Status: landed with this plan, except the OpenCode capture.
   every provider and scenario it asserts:
   - every provider message appears in `run.output`, and in the durable
     `agent.response` rows, exactly as many times as the provider sent it;
-  - there are no duplicated lines beyond what the provider sent;
+  - there are no duplicated lines beyond what the provider sent, in the
+    output or the response rows;
   - no raw provider JSON appears in the text, whatever its key order;
   - tool calls are recorded;
   - once Phase 3 lands, the answer bubble contains the whole answer message
     exactly once, all of its text and its line and paragraph breaks, not a
     digest;
   - a successful turn completes and records no error events;
-  - messages are recorded in provider order;
+  - messages are recorded in provider order, in the output and in the
+    response rows (so two messages reversed inside one row fail);
   - every file the provider wrote is recorded as a file change;
   - no line of the output or of the response rows is text the provider never
     sent, apart from at most one join per boundary between consecutive
@@ -288,7 +296,8 @@ Status: landed with this plan, except the OpenCode capture.
   - identical messages are counted by how many times the provider sent them;
   - messages and tool calls interleave in provider order;
   - each message keeps its line and paragraph breaks;
-  - tool results are recorded with their success or failure outcome;
+  - tool results are recorded with their success or failure outcome, with
+    failures tracked as their own check;
   - the run's token totals equal what the provider reported;
   - every distinct `ASTRA_EVENT` complete marker leaves its `astra.complete`
     event (identical markers are idempotent and recorded once);
@@ -301,6 +310,10 @@ Status: landed with this plan, except the OpenCode capture.
   a response without tool calls, so the answer-first scenario never reaches its
   write or its closing `ASTRA_EVENT` message; the Claude subagent scenario asks
   for no marker. Completion recording is therefore not exercised for either.
+- Message copies are counted without overlap: a message inside a longer
+  provider message (`Done` in `Done with work`) is not counted as its copy.
+  The answer is the message with the scenario's `## Suggested reply` heading
+  line.
 - A known issue is scoped to the items it explains: a specific message,
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
