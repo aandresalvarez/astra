@@ -106,7 +106,7 @@ struct ProviderTranscriptConformanceTests {
         // copy of a short line" without also excusing a worse duplication.
         report(.noExtraLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
             guard let expected = sent[line], count > expected else { return nil }
-            return (extraLineItem(line, overage: count - expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
+            return (extraLineItem(line, overage: count - expected, sent: expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
         })
 
         // Every other line must be a join of one message's last line with a
@@ -373,12 +373,14 @@ struct ProviderStreamKnownIssue: Sendable {
         Self(reason: reason, covers: covers)
     }
 
-    /// The per-line echo check re-appends each line under its 80-character
-    /// floor once; a longer line, or more than one extra copy, is a new defect.
+    /// The per-line echo check re-appends each copy of a line under its
+    /// 80-character floor once; a longer line, or more extra copies than the
+    /// provider sent, is a new defect.
     static func shortLines(_ reason: String) -> Self {
         items(reason) { item in
             let parts = item.components(separatedBy: extraLineSeparator)
-            return parts.count == 2 && parts[1] == "+1" && parts[0].count < 80
+            guard parts.count == 3, let overage = Int(parts[1]), let sent = Int(parts[2]) else { return false }
+            return overage <= sent && parts[0].count < 80
         }
     }
 }
@@ -832,9 +834,10 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
 
 private let extraLineSeparator = "\u{1F}"
 
-/// A `noExtraLines` failure item: the line and how many copies too many.
-private func extraLineItem(_ line: String, overage: Int) -> String {
-    "\(line)\(extraLineSeparator)+\(overage)"
+/// A `noExtraLines` failure item: the line, how many copies too many, and how
+/// many the provider sent.
+private func extraLineItem(_ line: String, overage: Int, sent: Int) -> String {
+    [line, String(overage), String(sent)].joined(separator: extraLineSeparator)
 }
 
 private func int(_ value: Any?) -> Int {
@@ -874,7 +877,9 @@ private func lineCounts(_ text: String) -> [String: Int] {
     var counts: [String: Int] = [:]
     for line in text.components(separatedBy: "\n") {
         let key = collapsed(line)
-        guard !key.isEmpty, key != ">" else { continue }
+        // A lone `>` is a quote block's blank line: part of the paragraph
+        // structure, so it is counted like any other line.
+        guard !key.isEmpty else { continue }
         counts[key, default: 0] += 1
     }
     return counts

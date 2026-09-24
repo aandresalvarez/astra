@@ -145,12 +145,16 @@ def minimized_copilot_session(frame):
     names, instructions, tool metadata and cache state are dropped while the
     frame shape stays.
     """
-    data = frame.get("data")
-    if not isinstance(data, dict):
-        return frame
     frame = dict(frame)
+    # The parser reads either wrapper object, so both are minimized.
+    for wrapper in ("data", "payload"):
+        if isinstance(frame.get(wrapper), dict):
+            frame[wrapper] = minimized_copilot_session_fields(frame.get("type"), frame[wrapper])
+    return frame
+
+
+def minimized_copilot_session_fields(kind, data):
     data = dict(data)
-    kind = frame.get("type")
     if kind == "session.mcp_servers_loaded" and isinstance(data.get("servers"), list):
         data["servers"] = [
             {"name": "[redacted]", "status": server.get("status"), "source": server.get("source")}
@@ -161,8 +165,7 @@ def minimized_copilot_session(frame):
     elif kind == "session.usage_checkpoint":
         # Account usage and prompt-cache state; the parser reads none of it.
         data = {}
-    frame["data"] = data
-    return frame
+    return data
 
 
 TOOL_OUTPUT = "[tool output redacted]"
@@ -210,6 +213,7 @@ def without_copilot_result_payload(fields):
     }
 
 
+CODEX_FILE_CHANGE_PATH_KEYS = ("path", "file_path", "filePath", "filename", "name")
 # What a Codex file change keeps: the parser reads its text (a diff, file
 # contents) from many keys, so everything but identity, paths and kinds goes.
 CODEX_FILE_CHANGE_KEEP_KEYS = {
@@ -366,7 +370,9 @@ def tool_call_arguments(frame):
             arguments = {key: value for key, value in item.items() if key not in CODEX_ITEM_NON_ARGUMENT_KEYS}
             yield codex_item_type(item), json.dumps(arguments)
         elif codex_item_type(item) == "file_change":
-            paths = [change.get("path") for change in item.get("changes") or [] if isinstance(change, dict)]
+            # Every path key the parser reads, on the item and on each change.
+            entries = [item] + [change for change in item.get("changes") or [] if isinstance(change, dict)]
+            paths = [entry[key] for entry in entries for key in CODEX_FILE_CHANGE_PATH_KEYS if key in entry]
             yield "file_change", json.dumps(paths)
     elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
         yield "tool_call", json.dumps(frame.get("tool_call"))
@@ -459,8 +465,9 @@ OUTSIDE_PATH_PATTERN = re.compile(
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
 # `cd` with no directory, or `-`, moves to $HOME or the previous directory: a
-# path that never appears in the arguments.
-DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+--?)?\s*(?=$|[;&|)`}\"'\n])")
+# path that never appears in the arguments. Options (`-L`, `-P`, `-e`, `-@`,
+# zsh's `-q` / `-s`) may come before the missing directory.
+DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?\s*(?=$|[;&|)`}\"'\n])")
 
 
 def jumps_directory(command):
@@ -473,6 +480,16 @@ def jumps_directory(command):
 
 ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
 ESCAPED_BYTES = re.compile(r"\\(?:x[0-9A-Fa-f]{1,2}|[0-7]{3}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})")
+# `printf '\57'` is `/` too. A one- or two-digit escape is otherwise usually a
+# sed backreference, so it only counts next to a command that expands it.
+SHORT_OCTAL_ESCAPE = re.compile(r"\\[0-7]{1,2}(?![0-7])")
+ESCAPE_EXPANDING_COMMAND = re.compile(r"(?<![\w.\-])(?:printf|print|echo)(?![\w.\-])")
+
+
+def has_escaped_bytes(command):
+    return bool(ESCAPED_BYTES.search(command)) or bool(
+        SHORT_OCTAL_ESCAPE.search(command) and ESCAPE_EXPANDING_COMMAND.search(command)
+    )
 
 
 def string_leaves(arguments_json):
@@ -546,7 +563,7 @@ def audit(fixture_path):
                     for reach in map(command_executables_as_basenames, forms)
                 )
                 reached = reached or any(jumps_directory(leaf) for leaf in decoded)
-                if reached or any(ESCAPED_BYTES.search(leaf) for leaf in decoded):
+                if reached or any(has_escaped_bytes(leaf) for leaf in decoded):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:
         print(finding)
