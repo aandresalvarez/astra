@@ -235,7 +235,9 @@ Status: landed with this plan, except the OpenCode capture.
   - Tool results are replaced with a placeholder in every fixture, including
     failure details, partial output, progress messages, wrapped Copilot
     envelopes, every Codex item the parser treats as a tool, Codex
-    file-change text and Claude subagent summaries. Copilot usage
+    file-change text and Claude subagent summaries. Copilot's tool telemetry
+    (resolved file paths) is dropped, and object keys are redacted like
+    values. Copilot usage
     checkpoints (account usage, prompt-cache state) are emptied.
   - `redact_provider_stream.py --audit` refuses a capture whose tool calls
     reach outside the workspace or dump the environment, in every tool-call
