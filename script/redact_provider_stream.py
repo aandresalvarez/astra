@@ -232,6 +232,8 @@ def is_codex_tool_item(item):
 COPILOT_RESULT_PAYLOAD_KEYS = {
     "output", "result", "content", "text", "message", "toolResult", "detailedContent", "stdout", "stderr",
     "partialOutput", "progressMessage",
+    # Everything else CopilotStreamEventParser.textValue reads as a result's text.
+    "delta", "deltaContent", "delta_content", "chunk", "summary",
 }
 
 
@@ -507,6 +509,11 @@ EXECUTABLE_PATTERN = re.compile(
 # What may precede a command: the start of the arguments, a shell separator
 # or subshell opener, or the quote that opens a JSON string or `-c` script.
 COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|\\?\")\s*$")
+# Where an executable path is exempt from the path rule: the start of the
+# command string (the opening quote of its JSON form) or after a separator. A
+# quote inside the command opens an argument, so `cat "/usr/bin/private"` is a
+# path, not an executable.
+EXECUTABLE_POSITION_PREFIX = re.compile(r"(?:^\"|[;&|(`\n{]|\$\()\s*$")
 # Any rooted token is outside unless it is exactly /workspace, something below
 # it, or /dev/null. A token rooted at a URL's `://` is not a path.
 OUTSIDE_PATH_PATTERN = re.compile(
@@ -628,7 +635,7 @@ def command_executables_as_basenames(arguments):
     """
     pieces, last = [], 0
     for match in EXECUTABLE_PATTERN.finditer(arguments):
-        if COMMAND_POSITION_PREFIX.search(arguments[:match.start()]):
+        if EXECUTABLE_POSITION_PREFIX.search(arguments[:match.start()]):
             pieces += [arguments[last:match.start()], " " + os.path.basename(match.group(0))]
             last = match.end()
     return "".join(pieces) + arguments[last:]
