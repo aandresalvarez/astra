@@ -207,8 +207,13 @@ lost for good, so this ships before the UI.
   clamped to the run; removals with the run's end.
 - `TaskRun.appendHostFileChanges(_:)` appends the batch with one decode and one
   encode. At most 250 observed changes are kept per run, new and edited files
-  ahead of removals: each is about 200 bytes, and the thread stops decoding a
-  run's changes past 256 KB, which would hide its tool changes too.
+  ahead of removals, and never more than still fit under the 256 KB past which
+  the thread stops decoding a run's changes, tool changes included
+  (`TaskRun.displayedFileChangesJSONByteLimit`).
+- A walk that hits an unreadable directory is discarded rather than compared,
+  since every file it missed would otherwise read as removed. A tool path
+  relative to the provider's working directory is resolved before deduping,
+  and a removal is kept even when a tool edited the file earlier in the run.
 - **No existing reader changes behavior.** `TaskRun.fileChanges` now returns
   tool evidence only (tool events plus the inferred detector), and the
   thread's own decoder applies the same filter. `allFileChanges` is the whole

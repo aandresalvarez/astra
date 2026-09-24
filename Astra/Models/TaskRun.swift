@@ -113,6 +113,10 @@ public final class TaskRun {
         hasProtocolEvents = output.contains(AstraRunProtocolParser.markerToken)
     }
 
+    /// Past this many bytes of `fileChangesJSON` the thread stops decoding a
+    /// run's changes (`TaskRunSnapshot`), tool changes included.
+    public static let displayedFileChangesJSONByteLimit = 262_144
+
     /// The changes a provider reported through its file tools, plus the
     /// inferred detector's. Publication ownership, deliverable checks,
     /// validation, prompts, and file counts all rest on this evidence, so it
