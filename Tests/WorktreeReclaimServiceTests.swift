@@ -889,6 +889,72 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.hasScheduledRepositoryPass(setup.primary.path))
     }
 
+    @Test("A checkout discovery missed is reported for another try; a plain folder isn't")
+    func discoveryFailureIsReported() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try setup.fixture.directory("app/.git")
+        let workspace = WorktreeStorageWorkspacePaths(primaryPath: setup.primary.path, additionalPaths: [])
+        setup.git.failingScans = 1
+
+        #expect(await setup.service.runLaunchPass(workspaces: [workspace]) == [workspace])
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild), "nothing was evaluated")
+
+        let plain = WorktreeStorageWorkspacePaths(primaryPath: try setup.fixture.directory("notes"), additionalPaths: [])
+        #expect(await setup.service.runLaunchPass(workspaces: [plain]).isEmpty)
+
+        // The retry covers what was missed.
+        #expect(await setup.service.runLaunchPass(workspaces: [workspace], skippingCovered: true).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild))
+    }
+
+    @Test("A launch pass git couldn't answer for schedules a bounded retry of those workspaces")
+    func launchPassRetriesUnansweredWorkspaces() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try setup.fixture.directory("app/.git")
+        let workspace = WorktreeStorageWorkspacePaths(primaryPath: setup.primary.path, additionalPaths: [])
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { [] }, workspaces: { [workspace] })
+        setup.git.failingScans = 10
+
+        setup.service.scheduleLaunchPass(delay: 0)
+        for _ in 0..<4_000 where setup.service.launchRetryWorkspaces == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(setup.service.launchRetryWorkspaces == [workspace])
+
+        // The last attempt gives up rather than retrying forever.
+        setup.service.scheduleLaunchPass(delay: 0, retrying: [workspace], attempt: WorktreeReclaimService.maxLaunchReadAttempts)
+        for _ in 0..<4_000 where setup.service.hasScheduledLaunchPass {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!setup.service.hasScheduledLaunchPass)
+    }
+
+    @Test("A task that starts using a cached worktree withdraws its reclaim and removal offers")
+    func taskClaimInvalidatesCachedDecision() async throws {
+        let setup = try makeSetup(idle: 9 * Self.day)
+        defer { finish(setup) }
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+        let claims = HoldsBox()
+        setup.service.attach(taskHolds: { claims.holds }, workspaceRoots: { [] })
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        let cached = try #require(setup.service.statuses[setup.linked.path])
+        #expect(cached.decision.suggestRemoval)
+        #expect(cached.reclaimableBytes > 0)
+
+        claims.holds = [WorktreeTaskHold(taskTitle: "Fix login", rootPath: setup.linked.path, isTerminal: false,
+                                         hasActiveTurnRequest: false, updatedAt: Date())]
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        let withdrawn = try #require(setup.service.statuses[setup.linked.path])
+        #expect(!withdrawn.decision.suggestRemoval)
+        #expect(withdrawn.reclaimableBytes == 0)
+        #expect(withdrawn.decision.reason == "In use by task “Fix login”")
+        #expect(withdrawn.taskClaim == "In use by task “Fix login”")
+    }
+
     @Test("A finished task rechecks the worktrees its writable folders are in")
     func terminalTaskRechecksWritableWorktrees() throws {
         let setup = try makeSetup()
@@ -1084,6 +1150,10 @@ private final class CallCounter: @unchecked Sendable {
         count += 1
         return count
     }
+}
+
+private final class HoldsBox: @unchecked Sendable {
+    var holds: [WorktreeTaskHold] = []
 }
 
 private final class FailSwitch: @unchecked Sendable {

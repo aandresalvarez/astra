@@ -309,6 +309,12 @@ up to 3 times in a row, still failing closed.
 The service starts listening before startup crash recovery, so the runs and
 turns recovery ends are recorded as activity; the launch pass reads state when
 it fires, two minutes later.
+A launch pass returns the workspaces git couldn't answer for (a configured
+path with a `.git` that discovery didn't return, or a failed worktree listing)
+and retries only those after the launch delay, up to 3 passes.
+The panel's cached decision also depends on task claims: when a task starts or
+stops using a worktree, `reconcile` re-evaluates it, and a new claim withdraws
+the reclaimable bytes and any removal suggestion at once.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,

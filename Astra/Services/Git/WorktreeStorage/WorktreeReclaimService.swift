@@ -53,6 +53,9 @@ struct WorktreeStorageStatus: Equatable, Sendable {
     /// suggestion.
     let decision: WorktreeReclaimDecision
     let idle: TimeInterval?
+    /// Why a task held the worktree when this was decided, if one did. When
+    /// tasks start or stop using it, the decision no longer applies.
+    var taskClaim: String?
 
     var reclaimableBytes: Int64 { decision.reclaimArtifacts ? report.artifactBytes : 0 }
 }
@@ -115,7 +118,9 @@ final class WorktreeReclaimService: ObservableObject {
     private var hasRunLaunchPass = false
     /// Consecutive launch passes that couldn't read the workspace list.
     private(set) var failedLaunchReads = 0
-    private static let maxLaunchReadAttempts = 3
+    static let maxLaunchReadAttempts = 3
+    /// The workspaces the waiting launch pass retries; nil for a full pass.
+    private(set) var launchRetryWorkspaces: [WorktreeStorageWorkspacePaths]?
     /// Repositories an automatic pass has covered (or is about to), by
     /// canonical path.
     private var automaticallyEvaluatedRepositories: Set<String> = []
@@ -168,6 +173,7 @@ final class WorktreeReclaimService: ObservableObject {
     func cancelScheduledWork() {
         launchPass?.cancel()
         launchPass = nil
+        launchRetryWorkspaces = nil
         repositoryPasses.values.forEach { $0.cancel() }
         repositoryPasses.removeAll()
         rechecks.values.forEach { $0.cancel() }
@@ -180,23 +186,37 @@ final class WorktreeReclaimService: ObservableObject {
     /// Launch trigger: after `delay`, finish interrupted reclaims and evaluate
     /// every workspace repository once. The workspace list is read when the
     /// pass fires, so workspaces added in the meantime are included.
-    func scheduleLaunchPass(delay: TimeInterval = launchDelay) {
+    /// `retrying` limits the pass to workspaces an earlier pass couldn't get
+    /// answers for; `attempt` counts those passes.
+    func scheduleLaunchPass(
+        delay: TimeInterval = launchDelay,
+        retrying missed: [WorktreeStorageWorkspacePaths]? = nil,
+        attempt: Int = 1
+    ) {
         launchPass?.cancel()
+        launchRetryWorkspaces = missed
         launchPass = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             do {
-                let current = try self.workspaces()
+                var current = try self.workspaces()
+                if let missed { current = current.filter { missed.contains($0) } }
                 self.failedLaunchReads = 0
-                await self.runLaunchPass(workspaces: current)
+                let unanswered = await self.runLaunchPass(workspaces: current, skippingCovered: missed != nil)
                 // A settings change may have replaced this task meanwhile.
-                if !Task.isCancelled { self.launchPass = nil }
+                guard !Task.isCancelled else { return }
+                self.launchPass = nil
+                // Nothing polls, so git failing for a workspace now would
+                // otherwise leave it uncovered until its panel opens.
+                if !unanswered.isEmpty, attempt < Self.maxLaunchReadAttempts {
+                    self.scheduleLaunchPass(delay: Self.launchDelay, retrying: unanswered, attempt: attempt + 1)
+                }
             } catch {
                 if !Task.isCancelled { self.launchPass = nil }
                 self.failedLaunchReads += 1
                 AppLogger.error("Worktree launch pass deferred: workspace state unreadable (attempt \(self.failedLaunchReads)): \(error.localizedDescription)", category: "Git")
                 if self.failedLaunchReads < Self.maxLaunchReadAttempts {
-                    self.scheduleLaunchPass(delay: Self.launchDelay)
+                    self.scheduleLaunchPass(delay: Self.launchDelay, retrying: missed, attempt: attempt)
                 } else {
                     // Stop retrying; let the panel cover repositories one by one.
                     self.hasRunLaunchPass = true
@@ -224,31 +244,56 @@ final class WorktreeReclaimService: ObservableObject {
         scheduleLaunchPass(delay: Self.settingsChangeDelay)
     }
 
-    func runLaunchPass(workspaces: [WorktreeStorageWorkspacePaths]) async {
+    /// Evaluates every repository of these workspaces once. Returns the
+    /// workspaces git couldn't fully answer for: a configured path with a
+    /// `.git` that discovery didn't return, or a failed worktree listing.
+    /// `skippingCovered` leaves out repositories a pass already covered.
+    @discardableResult
+    func runLaunchPass(
+        workspaces: [WorktreeStorageWorkspacePaths],
+        skippingCovered: Bool = false
+    ) async -> [WorktreeStorageWorkspacePaths] {
         hasRunLaunchPass = true
-        var repositories: [String] = []
-        for workspace in workspaces {
+        var repositories: [(path: String, workspace: Int)] = []
+        var unanswered = Set<Int>()
+        for (index, workspace) in workspaces.enumerated() {
             let scanned = await git.scanForGitRepositories(
                 primaryPath: workspace.primaryPath,
                 additionalPaths: workspace.additionalPaths
             )
-            for repository in scanned.map(\.path) where !repositories.contains(where: { WorktreePath.same($0, repository) }) {
-                repositories.append(repository)
+            // Discovery answers "no repository" and "git failed" alike.
+            let configured = WorkspacePathPresentation.descriptors(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            ).map(\.path)
+            if configured.contains(where: { path in
+                WorkspacePathPresentation.isGitRepository(at: path) && !scanned.contains { WorktreePath.same($0.path, path) }
+            }) {
+                unanswered.insert(index)
+            }
+            for repository in scanned.map(\.path) where !repositories.contains(where: { WorktreePath.same($0.path, repository) }) {
+                repositories.append((repository, index))
             }
         }
         var seen = Set<String>()
         for repository in repositories {
+            let key = WorktreePath.canonical(repository.path)
+            if skippingCovered, automaticallyEvaluatedRepositories.contains(key) { continue }
             // Two configured paths can be checkouts of one repository; each
             // worktree is evaluated once.
-            let listed = await git.listWorktrees(at: repository)
-            // An empty list means git failed: leave the repository uncovered so
-            // the panel's next look schedules another try.
-            guard !listed.isEmpty else { continue }
-            automaticallyEvaluatedRepositories.insert(WorktreePath.canonical(repository))
+            let listed = await git.listWorktrees(at: repository.path)
+            // An empty list means git failed: leave the repository uncovered
+            // and its workspace up for another try.
+            guard !listed.isEmpty else {
+                unanswered.insert(repository.workspace)
+                continue
+            }
+            automaticallyEvaluatedRepositories.insert(key)
             let worktrees = listed.filter { seen.insert(WorktreePath.canonical($0.path)).inserted }
             guard !worktrees.isEmpty else { continue }
-            _ = await evaluate(repoPath: repository, worktrees: worktrees, mode: .automatic)
+            _ = await evaluate(repoPath: repository.path, worktrees: worktrees, mode: .automatic)
         }
+        return unanswered.sorted().map { workspaces[$0] }
     }
 
     /// New-repository trigger: a repository the panel shows that no automatic
@@ -359,8 +404,8 @@ final class WorktreeReclaimService: ObservableObject {
     // MARK: - Panel
 
     /// Called on every panel refresh: measures worktrees the cache hasn't
-    /// seen, re-evaluates any whose HEAD, branch, lock or prune state moved,
-    /// and forgets removed ones. Cheap when nothing changed.
+    /// seen, re-evaluates any whose HEAD, branch, lock, prune state or task
+    /// claims moved, and forgets removed ones. Cheap when nothing changed.
     func reconcile(repoPath: String, worktrees: [GitWorktreeInfo]) {
         guard !worktrees.isEmpty else { return }
         let paths = Set(worktrees.map(\.path))
@@ -370,6 +415,7 @@ final class WorktreeReclaimService: ObservableObject {
         repoWorktreePaths[repoPath] = paths
         scheduleFirstAutomaticPassIfNeeded(repoPath: repoPath)
         let roots = currentWorkspaceRoots()
+        let holds = worktrees.contains { statuses[$0.path] != nil } ? currentTaskHolds() : []
         var stale: [GitWorktreeInfo] = []
         for worktree in worktrees where !measuringPaths.contains(worktree.path) {
             guard let status = statuses[worktree.path] else {
@@ -377,7 +423,9 @@ final class WorktreeReclaimService: ObservableObject {
                 continue
             }
             let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: Array(paths))
-            guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
+            let taskClaim = inUseReason(worktree.path, holds: holds, otherWorktreePaths: Array(paths))
+            guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot
+                || status.taskClaim != taskClaim else { continue }
             if status.isWorkspaceRoot, !isWorkspaceRoot, pendingRecheckDates[worktree.path] == nil,
                WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) {
                 // No longer a workspace's checkout: the pass that kept it for
@@ -389,12 +437,18 @@ final class WorktreeReclaimService: ObservableObject {
             // HEAD, or a selection, that has changed. The refresh decides afresh.
             var decision = status.decision
             decision.suggestRemoval = false
+            // A task now using it: stop offering its artifacts at once too.
+            if let taskClaim {
+                decision.reclaimArtifacts = false
+                decision.reason = taskClaim
+            }
             statuses[worktree.path] = WorktreeStorageStatus(
                 worktree: worktree,
                 isWorkspaceRoot: isWorkspaceRoot,
                 report: status.report,
                 decision: decision,
-                idle: status.idle
+                idle: status.idle,
+                taskClaim: taskClaim
             )
             stale.append(worktree)
         }
@@ -435,7 +489,8 @@ final class WorktreeReclaimService: ObservableObject {
                     isWorkspaceRoot: status.isWorkspaceRoot,
                     report: status.report,
                     decision: decision,
-                    idle: status.idle
+                    idle: status.idle,
+                    taskClaim: status.taskClaim
                 )
             }
         }
@@ -872,6 +927,11 @@ final class WorktreeReclaimService: ObservableObject {
     nonisolated static let unreadableWorkspaceStateReason = "Workspace state couldn't be read"
     nonisolated static let unreadableTrackingReason = "Tracked files couldn't be checked"
     nonisolated static let indexChangedReason = "Git index changed during the check"
+    nonisolated static let nonTaskKeepReasons: Set<String> = [
+        unreadableWorkspaceStateReason,
+        unreadableTrackingReason,
+        indexChangedReason
+    ]
 
     /// Keeps caused by state that couldn't be read (or moved mid-check), not
     /// by a worktree being busy. Nothing else would bring the pass back.
@@ -944,7 +1004,9 @@ final class WorktreeReclaimService: ObservableObject {
             isWorkspaceRoot: input.isWorkspaceRoot,
             report: report,
             decision: WorktreeReclaimPolicy.decide(display),
-            idle: input.lastActivity.map { input.now.timeIntervalSince($0) }
+            idle: input.lastActivity.map { input.now.timeIntervalSince($0) },
+            // `inUse` also carries keeps that aren't about tasks.
+            taskClaim: input.inUse.flatMap { Self.nonTaskKeepReasons.contains($0) ? nil : $0 }
         )
     }
 

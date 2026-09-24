@@ -162,8 +162,16 @@ final class StubWorktreeGit: WorktreeStorageGitReading {
     private(set) var ancestryCalls: [String] = []
     private(set) var lookupCalls: [String] = []
 
+    /// Discovery calls answer empty, as a failing `rev-parse` does, while
+    /// this is above zero; each call uses one.
+    var failingScans = 0
+
     func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo] {
-        repositories
+        guard failingScans == 0 else {
+            failingScans -= 1
+            return []
+        }
+        return repositories
     }
 
     func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo] { worktrees }
