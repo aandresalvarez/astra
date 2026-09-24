@@ -287,7 +287,7 @@ struct SettingsRuntimeTab: View {
     }
 
     private var settingsDivider: some View {
-        Divider().opacity(0.45)
+        SubtleDivider()
     }
 
     /// Silent while the field is empty: an untouched Vertex form should read as

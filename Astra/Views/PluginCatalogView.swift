@@ -1650,7 +1650,7 @@ struct PluginCatalogView: View {
         let sourceKind = package.sourceMetadata?.kind ?? "local"
 
         if sourceKind == "built-in" {
-            Divider().opacity(0.35)
+            SubtleDivider()
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "lock.fill")
                     .font(Stanford.ui(10, weight: .semibold))
@@ -1662,7 +1662,7 @@ struct PluginCatalogView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } else if sourceKind == "local" || sourceKind == "remote" {
-            Divider().opacity(0.35)
+            SubtleDivider()
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Library Package")
@@ -1717,7 +1717,7 @@ struct PluginCatalogView: View {
 
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Divider().opacity(0.35)
+                SubtleDivider()
 
                 // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
                 // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.

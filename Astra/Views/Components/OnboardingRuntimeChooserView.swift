@@ -32,7 +32,7 @@ struct OnboardingRuntimeChooserView: View {
             ForEach(primaryRows) { presentation in
                 runtimeRow(presentation)
                 if presentation.id != primaryRows.last?.id || !additionalRows.isEmpty {
-                    Divider().opacity(0.52)
+                    SubtleDivider()
                 }
             }
 
@@ -42,7 +42,7 @@ struct OnboardingRuntimeChooserView: View {
                 DisclosureGroup(isExpanded: $showsAdditionalRuntimes) {
                     VStack(spacing: 0) {
                         ForEach(additionalRows) { presentation in
-                            Divider().opacity(0.52)
+                            SubtleDivider()
                             runtimeRow(presentation)
                         }
                     }
@@ -56,7 +56,7 @@ struct OnboardingRuntimeChooserView: View {
                 .accessibilityLabel("More runtimes, \(additionalRows.count)")
             }
 
-            Divider().opacity(0.52)
+            SubtleDivider()
             recheckFooter
         }
         .background(Stanford.cardBackground)

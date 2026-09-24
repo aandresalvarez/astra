@@ -85,7 +85,7 @@ struct RuntimeSetupSection: View {
             }
 
             if !remediationViewIsEmpty {
-                Divider().opacity(0.45)
+                SubtleDivider()
                 remediationView
             }
 
@@ -287,7 +287,7 @@ struct RuntimeSetupSection: View {
     @ViewBuilder
     private var installStatusView: some View {
         if let installState = model.installState, installState.runtime == model.selectedRuntime {
-            Divider().opacity(0.45)
+            SubtleDivider()
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
@@ -308,7 +308,7 @@ struct RuntimeSetupSection: View {
                     .accessibilityLabel("Cancel install")
             }
         } else if let result = model.installResult, result.runtime == model.selectedRuntime {
-            Divider().opacity(0.45)
+            SubtleDivider()
             installResultRow(result)
         }
     }
@@ -518,7 +518,7 @@ struct RuntimeSetupSection: View {
     }
 
     private var rowDivider: some View {
-        Divider().opacity(0.45).padding(.leading, 34)
+        SubtleDivider().padding(.leading, 34)
     }
 
     /// Which computed catalog group a row is rendered under. The heading

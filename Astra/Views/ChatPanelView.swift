@@ -1036,11 +1036,11 @@ struct ChatPanelView: View {
                     sshConnections: sshConnections
                 )
             }
-            .background(Stanford.composerSurface)
+            .background(isComposerFocused ? Stanford.composerSurfaceFocused : Stanford.composerSurface)
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
-                    .stroke(isDragOver ? Stanford.lagunita.opacity(Stanford.strokeFocus) : Stanford.borderRest, lineWidth: isDragOver ? Stanford.strokeFocusWidth : 1)
+                    .stroke(isDragOver || isComposerFocused ? Stanford.lagunita.opacity(Stanford.strokeFocus) : Stanford.borderRest, lineWidth: isDragOver || isComposerFocused ? Stanford.strokeFocusWidth : 1)
             )
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !slashOptions.isEmpty {

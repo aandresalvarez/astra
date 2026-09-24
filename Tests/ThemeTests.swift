@@ -230,10 +230,13 @@ struct ThemeTests {
                         if character == "(" { depth += 1 }
                         if character == ")" { depth -= 1; if depth == 0 { break } }
                     }
-                } else if line.contains("Divider()"), index + 1 < lines.count,
-                          case let next = lines[index + 1].trimmingCharacters(in: .whitespaces),
-                          next.hasPrefix(".opacity(") || next.hasPrefix(".overlay(") {
-                    checked = "restyled Divider(): \(next)"
+                } else if let divider = line.range(of: "Divider()"),
+                          case let inline = line[divider.upperBound...].trimmingCharacters(in: .whitespaces),
+                          case let modifier = inline.isEmpty && index + 1 < lines.count
+                            ? lines[index + 1].trimmingCharacters(in: .whitespaces) : inline,
+                          modifier.hasPrefix(".opacity(") || modifier.hasPrefix(".overlay(") {
+                    // The modifier may trail on the same line or open the next one.
+                    checked = "restyled Divider(): \(modifier)"
                 } else if line.contains(".fill("),
                           window.range(of: #"\.fill\([^\n]*\)\s*\.frame\((width|height): 1\)"#, options: .regularExpression) != nil {
                     checked = line

@@ -124,7 +124,7 @@ struct WorkspaceDetailView: View {
                                 VStack(alignment: .leading, spacing: 0) {
                                     ForEach(Array(workspace.additionalPaths.enumerated()), id: \.element) { index, path in
                                         if index > 0 {
-                                            Divider().opacity(0.4)
+                                            SubtleDivider()
                                         }
                                         HStack {
                                             Image(systemName: "folder")
@@ -183,7 +183,7 @@ struct WorkspaceDetailView: View {
                                 VStack(alignment: .leading, spacing: 0) {
                                     ForEach(Array(sshConnections.enumerated()), id: \.element.id) { index, conn in
                                         if index > 0 {
-                                            Divider().opacity(0.4)
+                                            SubtleDivider()
                                         }
                                         sshRow(conn)
                                     }
@@ -243,9 +243,9 @@ struct WorkspaceDetailView: View {
                     GroupBox("Stats") {
                         VStack(spacing: 0) {
                             statRow("Tasks", value: "\(workspace.tasks.count)")
-                            Divider().opacity(0.4)
+                            SubtleDivider()
                             statRow("Tokens", value: Formatters.formatTokens(workspace.totalTokens))
-                            Divider().opacity(0.4)
+                            SubtleDivider()
                             statRow("Cost", value: String(format: "$%.2f", workspace.totalCost))
                         }
                         .padding(.vertical, 4)
