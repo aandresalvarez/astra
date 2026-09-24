@@ -101,6 +101,7 @@ struct TaskFolderRunSnapshotTests {
             ],
             under: root,
             to: fixture.run,
+            executionPath: fixture.folder.path,
             runStartedAt: Date(),
             runEndedAt: Date()
         )
@@ -108,6 +109,90 @@ struct TaskFolderRunSnapshotTests {
         #expect(stored.map(\.path) == [root.standardized + "/script-output.csv"])
         #expect(fixture.run.allFileChanges.map(\.kind) == [.write, .discovered])
         #expect(fixture.run.allFileChanges.first?.content == "tool content")
+    }
+
+    @Test("A directory the walk cannot read voids the snapshot instead of reading as removals")
+    func unreadableDirectoryVoidsTheSnapshot() throws {
+        let folder = try makeFolder()
+        let locked = folder.appendingPathComponent("reports", isDirectory: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        try write("q3", to: folder, "reports/q3.md")
+        #expect(TaskFolderRunSnapshot.scan(taskFolder: folder.path)?.entries.count == 1)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+
+        #expect(TaskFolderRunSnapshot.scan(taskFolder: folder.path) == nil)
+    }
+
+    @Test("A path a tool recorded relative to its working directory is not recorded twice")
+    func relativeToolPathsAreNotRepeated() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.appendingPathComponent("task").path)
+        fixture.run.appendFileChange(StoredFileChange(path: "task/written.md", changeType: "Write", content: "x"))
+
+        let stored = TaskFolderRunSnapshot.append(
+            [.init(relativePath: "written.md", kind: .created, modifiedAt: nil)],
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(stored.isEmpty)
+    }
+
+    @Test("A file a tool edited and a shell command then deleted keeps its removal")
+    func removalAfterAToolEditIsKept() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        fixture.run.appendFileChange(StoredFileChange(path: root.standardized + "/plan.md", changeType: "Edit"))
+
+        let stored = TaskFolderRunSnapshot.append(
+            [.init(relativePath: "plan.md", kind: .removed, modifiedAt: nil)],
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(stored.map(\.kind) == [.removed])
+        #expect(fixture.run.allFileChanges.map(\.kind) == [.edit, .removed])
+    }
+
+    @Test("Observed changes stop short of the thread's decode limit, so tool changes stay visible")
+    func observedChangesFitUnderTheDecodeLimit() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        let limit = TaskRun.displayedFileChangesJSONByteLimit
+        fixture.run.appendFileChange(StoredFileChange(
+            path: root.standardized + "/big.md",
+            changeType: "Write",
+            content: String(repeating: "x", count: limit - 2_000)
+        ))
+
+        let stored = TaskFolderRunSnapshot.append(
+            (0..<50).map { .init(relativePath: "rows/\($0).csv", kind: .created, modifiedAt: nil) },
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(!stored.isEmpty)
+        #expect(stored.count < 50)
+        #expect(fixture.run.fileChangesJSON.utf8.count <= limit)
+        let threadRun = TaskRunSnapshot(input: TaskRunSnapshotInput(run: fixture.run))
+        #expect(!threadRun.hasOmittedFileChanges)
+        #expect(threadRun.fileChanges.map(\.kind) == [.write])
     }
 
     @Test("Observed changes are stamped inside the run's window with their kind")
@@ -126,6 +211,7 @@ struct TaskFolderRunSnapshotTests {
             ],
             under: root,
             to: fixture.run,
+            executionPath: fixture.folder.path,
             runStartedAt: start,
             runEndedAt: end
         )
@@ -153,7 +239,8 @@ struct TaskFolderRunSnapshotTests {
             since: before,
             task: fixture.task,
             run: fixture.run,
-            runStartedAt: Date().addingTimeInterval(-5)
+            runStartedAt: Date().addingTimeInterval(-5),
+            executionPath: fixture.folder.path
         )
 
         let byName = Dictionary(uniqueKeysWithValues: stored.map { (URL(fileURLWithPath: $0.path).lastPathComponent, $0.kind) })
@@ -215,6 +302,7 @@ struct TaskFolderRunSnapshotTests {
             ],
             under: root,
             to: fixture.run,
+            executionPath: fixture.folder.path,
             runStartedAt: Date(),
             runEndedAt: Date(),
             limit: 2

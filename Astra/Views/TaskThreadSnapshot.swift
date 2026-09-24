@@ -48,7 +48,7 @@ struct TaskEventSnapshot: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
-    private static let maximumDecodedFileChangesJSONBytes = 262_144
+    private static let maximumDecodedFileChangesJSONBytes = TaskRun.displayedFileChangesJSONByteLimit
     let id: UUID
     let status: RunStatus
     let startedAt: Date

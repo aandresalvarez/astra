@@ -1181,7 +1181,13 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
-        await TaskFolderRunSnapshot.recordChanges(since: taskFolderBeforeRun, task: task, run: run, runStartedAt: startTime)
+        await TaskFolderRunSnapshot.recordChanges(
+            since: taskFolderBeforeRun,
+            task: task,
+            run: run,
+            runStartedAt: startTime,
+            executionPath: executionPath
+        )
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
