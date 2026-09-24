@@ -145,35 +145,61 @@ def minimized_copilot_session(frame, kind):
     names, instructions, tool metadata and cache state are dropped while the
     frame shape stays.
     """
-    frame = dict(frame)
-    # The parser reads either wrapper object, so both are minimized.
+    # The frame itself is minimized too (its discriminator and envelope stay),
+    # and so is either wrapper object the parser reads.
+    frame = minimized_copilot_session_fields(kind, frame, keep=COPILOT_ENVELOPE_KEEP_KEYS)
     for wrapper in ("data", "payload"):
         if isinstance(frame.get(wrapper), dict):
             frame[wrapper] = minimized_copilot_session_fields(kind, frame[wrapper])
     return frame
 
 
-def minimized_copilot_session_fields(kind, data):
-    data = dict(data)
+def minimized_copilot_session_fields(kind, data, keep=frozenset()):
+    """What a session frame keeps: the session's identity and model (all the
+    parser reads from most of them), plus the MCP status frames' shape with
+    server names redacted, and the shutdown frame's usage metrics."""
+    kept = {key: value for key, value in data.items() if key in COPILOT_SESSION_KEEP_KEYS or key in keep}
+    if isinstance(kept.get("session"), dict):
+        kept["session"] = {key: value for key, value in kept["session"].items() if key in COPILOT_SESSION_KEEP_KEYS}
     if kind == "session.mcp_servers_loaded" and isinstance(data.get("servers"), list):
-        data["servers"] = [
+        kept["servers"] = [
             {"name": "[redacted]", "status": server.get("status"), "source": server.get("source")}
             for server in data["servers"] if isinstance(server, dict)
         ]
-    elif kind == "session.mcp_server_status_changed" and "serverName" in data:
-        data["serverName"] = "[redacted]"
-    elif kind != "session.shutdown":
-        # Any other session frame (tools_updated, usage_checkpoint, ...) keeps
-        # only what the parser reads from it: the session's identity and model.
-        # Tool inventories, account usage and cache state go. session.shutdown
-        # is the one whose usage the parser reads.
-        data = {key: value for key, value in data.items() if key in COPILOT_SESSION_KEEP_KEYS}
-        if isinstance(data.get("session"), dict):
-            data["session"] = {key: value for key, value in data["session"].items() if key in COPILOT_SESSION_KEEP_KEYS}
-    return data
+    elif kind == "session.mcp_server_status_changed":
+        if "serverName" in data:
+            kept["serverName"] = "[redacted]"
+        if "status" in data:
+            kept["status"] = data["status"]
+    elif kind == "session.shutdown":
+        # sessionShutdownEvents reads token, cost and request counts per model
+        # and the API duration; nothing else survives.
+        if isinstance(data.get("modelMetrics"), dict):
+            kept["modelMetrics"] = {
+                model: shutdown_metrics(entry) for model, entry in data["modelMetrics"].items() if isinstance(entry, dict)
+            }
+        kept.update({key: data[key] for key in SHUTDOWN_DURATION_KEYS if key in data})
+    return kept
+
+
+def shutdown_metrics(entry):
+    metrics = {key: entry[key] for key in SHUTDOWN_METRIC_KEYS if key in entry}
+    if isinstance(entry.get("usage"), dict):
+        metrics["usage"] = {key: entry["usage"][key] for key in SHUTDOWN_METRIC_KEYS if key in entry["usage"]}
+    if isinstance(entry.get("requests"), dict) and "count" in entry["requests"]:
+        metrics["requests"] = {"count": entry["requests"]["count"]}
+    return metrics
 
 
 COPILOT_SESSION_KEEP_KEYS = {"session_id", "sessionId", "id", "model", "session"}
+SHUTDOWN_METRIC_KEYS = {
+    "inputTokens", "input_tokens", "promptTokens", "prompt_tokens",
+    "cacheReadTokens", "cacheReadInputTokens", "cache_read_input_tokens",
+    "cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens",
+    "outputTokens", "output_tokens", "completionTokens", "completion_tokens",
+    "costUSD", "cost_usd", "total_cost_usd",
+}
+SHUTDOWN_DURATION_KEYS = ("totalApiDurationMs", "durationMs", "duration_ms")
 
 
 TOOL_OUTPUT = "[tool output redacted]"
@@ -384,6 +410,12 @@ def tool_call_arguments(frame):
         for block in (frame.get("message") or {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 yield block.get("name", "tool"), json.dumps(block.get("input"))
+        # The CLI also repeats each call's input here; ASTRA does not read it,
+        # but it is published, so it is audited like the block input.
+        wire_inputs = frame.get("wire_tool_inputs")
+        if isinstance(wire_inputs, dict):
+            for tool_use_id, wire_input in wire_inputs.items():
+                yield f"wire_tool_inputs {tool_use_id}", json.dumps(wire_input)
     elif kind == "tool.execution_start":  # Copilot
         # Arguments may sit under `arguments` or `input`; audit whatever the
         # parser could read, or the whole frame.
@@ -406,7 +438,8 @@ def tool_call_arguments(frame):
         step = frame.get("step_update") if isinstance(frame.get("step_update"), dict) else {}
         # The parser lowercases step_type and uppercases state before matching.
         if str(step.get("step_type") or "").lower() == "tool" and str(step.get("state") or "").upper() == "ACTIVE":
-            yield step.get("tool_name", "tool"), json.dumps((step.get("tool_info") or {}).get("parameters"))
+            info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
+            yield step.get("tool_name", "tool"), json.dumps(info.get("parameters"))
     else:
         call = copilot_tool_call(frame)
         if call:
@@ -414,6 +447,7 @@ def tool_call_arguments(frame):
 
 
 COPILOT_TYPE_KEYS = ("type", "event", "kind", "sessionUpdate", "name")
+COPILOT_ENVELOPE_KEEP_KEYS = frozenset(COPILOT_TYPE_KEYS) | {"id", "timestamp", "parentId", "ephemeral", "data", "payload"}
 COPILOT_TOOL_ID_KEYS = ("tool", "toolName", "tool_call_id", "toolUseId", "callId")
 # Where CopilotStreamEventParser reads a tool call's input: on the frame or on
 # its `data` / `payload` object.
@@ -600,44 +634,61 @@ def command_executables_as_basenames(arguments):
     return "".join(pieces) + arguments[last:]
 
 
+AUDIT_FINDINGS_EXIT = 3
+AUDIT_REFUSED_EXIT = 4
+
+
 def audit(fixture_path):
+    """Exit 3 when tool calls reach outside the workspace (the capture script
+    lets an owner accept those after review), 4 when a frame cannot be audited
+    at all (never accepted), 0 otherwise."""
     findings = []
+    unauditable = []
     with open(fixture_path, encoding="utf-8") as fixture:
         for number, line in enumerate(fixture, 1):
             try:
                 frame = json.loads(line)
             except ValueError:
-                findings.append(f"line {number}: not JSON, cannot be audited")
+                unauditable.append(f"line {number}: not JSON, cannot be audited")
                 continue
             if not isinstance(frame, dict):
-                findings.append(f"line {number}: JSON that is not an object, cannot be audited")
+                unauditable.append(f"line {number}: JSON that is not an object, cannot be audited")
                 continue
-            for name, arguments in tool_call_arguments(frame):
-                # In a command, an executable path becomes its basename, so
-                # `/usr/bin/env` is judged like `env` while `/bin/zsh` stops
-                # counting as a path; anywhere else a path stays a path.
-                # Shell-escaped strings are judged raw and decoded, and escapes
-                # left over (printf, echo -e) are refused as obfuscation.
-                leaves = argument_leaves(arguments)
-                forms = [
-                    (is_command, command_executables_as_basenames(json.dumps(text)) if is_command else json.dumps(text))
-                    for is_command, leaf in leaves
-                    for text in (leaf, shell_decoded(leaf))
-                ]
-                # Paths count in every argument. Shell syntax (an environment
-                # dump, a directory jump, escapes that build bytes) only counts
-                # in a command: prose that mentions `env` is not run.
-                commands = [shell_decoded(leaf) for is_command, leaf in leaves if is_command]
-                reached = (
-                    any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
-                    or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
-                    or any(jumps_directory(command) for command in commands)
-                )
-                if reached or any(has_escaped_bytes(command) for command in commands):
-                    findings.append(f"line {number}: {name} {arguments[:160]}")
-    for finding in findings:
+            try:
+                findings += audit_frame(number, frame)
+            except Exception as error:  # a shape the audit does not expect
+                unauditable.append(f"line {number}: cannot be audited ({type(error).__name__}: {error})")
+    for finding in unauditable + findings:
         print(finding)
-    return 3 if findings else 0
+    return AUDIT_REFUSED_EXIT if unauditable else AUDIT_FINDINGS_EXIT if findings else 0
+
+
+def audit_frame(number, frame):
+    findings = []
+    for name, arguments in tool_call_arguments(frame):
+        # In a command, an executable path becomes its basename, so
+        # `/usr/bin/env` is judged like `env` while `/bin/zsh` stops
+        # counting as a path; anywhere else a path stays a path.
+        # Shell-escaped strings are judged raw and decoded, and escapes
+        # left over (printf, echo -e) are refused as obfuscation.
+        leaves = argument_leaves(arguments)
+        forms = [
+            (is_command, command_executables_as_basenames(json.dumps(text)) if is_command else json.dumps(text))
+            for is_command, leaf in leaves
+            for text in (leaf, shell_decoded(leaf))
+        ]
+        # Paths count in every argument. Shell syntax (an environment
+        # dump, a directory jump, escapes that build bytes) only counts
+        # in a command: prose that mentions `env` is not run.
+        commands = [shell_decoded(leaf) for is_command, leaf in leaves if is_command]
+        reached = (
+            any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
+            or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
+            or any(jumps_directory(command) for command in commands)
+        )
+        if reached or any(has_escaped_bytes(command) for command in commands):
+            findings.append(f"line {number}: {name} {arguments[:160]}")
+    return findings
 
 
 COPILOT_RESULT_KEEP_KEYS = {"id", "timestamp", "sessionId", "exitCode"} | set(COPILOT_TYPE_KEYS)
