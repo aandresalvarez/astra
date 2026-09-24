@@ -237,7 +237,12 @@ Status: landed with this plan, except the OpenCode capture.
   - `redact_provider_stream.py --audit` refuses a capture whose tool calls
     reach outside the workspace or dump the environment, in every tool-call
     shape the parsers accept.
-  - A capture that stops before its audit passes deletes the staged fixture.
+  - A capture that stops before its audit passes deletes the staged fixture,
+    and a signal stops the timeout watchdog too, so it cannot later signal a
+    reused process group.
+  - The audit is a tripwire, not isolation: it also refuses inherited path
+    variables and parameter expansions that can build a path. The owner still
+    reviews every fixture diff.
 - Captured scenarios:
   - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
     It covers planned scenarios 1–4: narration, a tool read, a multi-line
@@ -277,7 +282,8 @@ Status: landed with this plan, except the OpenCode capture.
 - A fixture that cannot exercise a check says so in `notExercised`, and the
   suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
   a response without tool calls, so the answer-first scenario never reaches its
-  write.
+  write or its closing `ASTRA_EVENT` message; the Claude subagent scenario asks
+  for no marker. Completion recording is therefore not exercised for either.
 - A known issue is scoped to the items it explains: a specific message,
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real

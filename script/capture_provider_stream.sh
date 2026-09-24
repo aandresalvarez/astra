@@ -80,6 +80,7 @@ workspace="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture.XXXXXX")"
 # list, read and write.
 capture_dir="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture-logs.XXXXXX")"
 pid=""
+watchdog=""
 # The fixture being redacted and audited, until it is moved into place.
 staged=""
 # TERM the provider's whole group, give it a bounded grace period, then KILL
@@ -93,10 +94,20 @@ stop_provider_group() {
   done
   kill -KILL -- "-$pid" 2>/dev/null || true
 }
+# The watchdog must not outlive the capture: once the provider group is gone
+# its id can be reused, and a late kill would reach an unrelated group.
+stop_watchdog() {
+  [[ -n "$watchdog" ]] || return 0
+  pkill -P "$watchdog" 2>/dev/null || true
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  watchdog=""
+}
 # Stop the provider before its workspace disappears, however the script ends.
 # --keep-raw copies what it keeps first, so no unredacted original outlives it,
 # and a fixture that has not passed the audit never stays in the repository.
 cleanup() {
+  stop_watchdog
   stop_provider_group
   rm -rf "$workspace" "$capture_dir"
   [[ -z "$staged" ]] || rm -f "$staged"
@@ -158,8 +169,7 @@ set +m
 watchdog=$!
 status=0
 wait "$pid" || status=$?
-pkill -P "$watchdog" 2>/dev/null || true
-kill "$watchdog" 2>/dev/null || true
+stop_watchdog
 # Anything the provider left running must not outlive the capture.
 stop_provider_group
 echo "==> exit $status, $(wc -l <"$raw" | tr -d ' ') stdout lines" >&2

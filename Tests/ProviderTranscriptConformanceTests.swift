@@ -199,6 +199,15 @@ struct ProviderTranscriptConformanceTests {
                 (try? JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])?["summary"] as? String
             })
         let expectedSummaries = multiset(truth.completionSummaries)
+        // With no marker in the capture the comparison below is empty against
+        // empty, so the gap must be declared rather than pass silently.
+        if truth.completionSummaries.isEmpty {
+            #expect(fixture.notExercised[.completionRecorded] != nil,
+                    "fixture sends no complete marker; list completionRecorded in notExercised")
+        } else {
+            #expect(fixture.notExercised[.completionRecorded] == nil,
+                    "fixture now sends a complete marker; drop completionRecorded from notExercised")
+        }
         report(.completionRecorded, of: fixture, failures: Set(recordedSummaries.keys).union(expectedSummaries.keys).sorted().compactMap { summary in
             let expected = expectedSummaries[summary] ?? 0
             let recorded = recordedSummaries[summary] ?? 0
@@ -411,7 +420,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [:],
-            notExercised: [.fileChangesRecorded: "the subagent scenario only reads"]
+            notExercised: [
+                .fileChangesRecorded: "the subagent scenario only reads",
+                .completionRecorded: "the subagent scenario asks for no complete marker"
+            ]
         ),
         ProviderStreamFixture(
             provider: "copilot",
@@ -492,7 +504,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // write-first capture was withheld: that run's agent explored
             // outside the workspace (env, /tmp), which the capture audit now
             // refuses.
-            notExercised: [.fileChangesRecorded: "agy ends the turn after the text-only answer"]
+            notExercised: [
+                .fileChangesRecorded: "agy ends the turn after the text-only answer",
+                .completionRecorded: "agy ends the turn before the closing marker message"
+            ]
         )
     ]
 }
