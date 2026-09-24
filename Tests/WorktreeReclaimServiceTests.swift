@@ -242,12 +242,13 @@ struct WorktreeReclaimServiceTests {
         let result = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
 
         #expect(result.changed)
-        #expect(recorder.changes == [TaskTerminalStateChange(
-            taskID: task.id,
-            status: .cancelled,
-            workingPath: "/worktrees/app/feature",
-            writablePaths: ["/worktrees/app/shared"]
-        )])
+        let change = try #require(recorder.changes.first)
+        #expect(recorder.changes.count == 1)
+        #expect(change.status == .cancelled)
+        #expect(change.workingPath == "/worktrees/app/feature")
+        // The same set the runtime grants: additional paths and the workspace.
+        #expect(change.writablePaths.contains("/worktrees/app/shared"))
+        #expect(change.writablePaths.contains("/repos/app"))
         // A repeated terminal write is not a new event.
         _ = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
         #expect(recorder.changes.count == 1)
@@ -726,6 +727,47 @@ struct WorktreeReclaimServiceTests {
         for case let relative as String in enumerator {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: (path as NSString).appendingPathComponent(relative))
         }
+    }
+
+    @Test("A moved base branch withdraws a stale removal suggestion while the sheet is open")
+    func baseMoveWithdrawsSuggestion() async throws {
+        let setup = try makeSetup(idle: 9 * Self.day)
+        defer { finish(setup) }
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == true)
+
+        // origin/main was force-pushed; the worktree record itself is unchanged.
+        setup.git.ancestry["f1>origin/main"] = .notAncestor
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        for _ in 0..<2_000 where setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == true {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == false)
+    }
+
+    @Test("A finished task's grace survives a protection release and an early pass")
+    func terminalGraceSurvivesRelease() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let roots = RootsBox(paths: [setup.linked.path])
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { roots.paths })
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: setup.linked.path)
+        )
+        let grace = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        roots.paths = []
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] == grace, "the release keeps the grace period")
+
+        // Even a pass that runs now sees the task's finish as recent activity.
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
     }
 
     @Test("No worktree is ever removed, whatever the pass decides")

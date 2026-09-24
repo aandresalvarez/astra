@@ -120,6 +120,9 @@ final class WorktreeReclaimService: ObservableObject {
     /// canonical path.
     private var automaticallyEvaluatedRepositories: Set<String> = []
     private var repositoryPasses: [String: Task<Void, Never>] = [:]
+    private var suggestionCheckedAt: [String: Date] = [:]
+    private var revalidatingSuggestions: Set<String> = []
+    private static let suggestionRecheckInterval: TimeInterval = 60
     /// Worktrees measured so far; lets tests prove work isn't repeated.
     private(set) var measuredWorktreeCount = 0
     private var repoWorktreePaths: [String: Set<String>] = [:]
@@ -299,8 +302,12 @@ final class WorktreeReclaimService: ObservableObject {
                 roots.append(root)
             }
         }
+        let finishedAt = clock()
         for root in roots {
-            scheduleRecheck(repoPath: root, worktreePath: root, at: clock().addingTimeInterval(reclaimAfter))
+            // Recorded durably: once finished, an unpinned task no longer
+            // claims the checkout, and no other signal need show it was busy.
+            _ = preservedActivity(root, observed: finishedAt)
+            scheduleRecheck(repoPath: root, worktreePath: root, at: finishedAt.addingTimeInterval(reclaimAfter))
         }
     }
 
@@ -326,10 +333,11 @@ final class WorktreeReclaimService: ObservableObject {
             }
             let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: Array(paths))
             guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
-            if status.isWorkspaceRoot, !isWorkspaceRoot,
+            if status.isWorkspaceRoot, !isWorkspaceRoot, pendingRecheckDates[worktree.path] == nil,
                WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) {
                 // No longer a workspace's checkout: the pass that kept it for
-                // that reason scheduled nothing, so look again now.
+                // that reason scheduled nothing, so look again now. A pending
+                // recheck (a finished task's grace period) is left in place.
                 scheduleRecheck(repoPath: repoPath, worktreePath: worktree.path, at: clock())
             }
             // Withdraw a "Merged · Remove" suggestion at once: it described a
@@ -345,8 +353,47 @@ final class WorktreeReclaimService: ObservableObject {
             )
             stale.append(worktree)
         }
+        revalidateSuggestions(repoPath: repoPath, worktrees: worktrees.filter { !stale.contains($0) })
         guard !stale.isEmpty else { return }
         Task { await self.refresh(repoPath: repoPath, worktrees: stale, maxAge: nil, context: worktrees) }
+    }
+
+    /// A "Merged · Remove" suggestion depends on the base branch too, which can
+    /// move (a force-push, a retarget) without the worktree changing. At most
+    /// once a minute per worktree, re-check cleanliness and merge state and
+    /// withdraw the suggestion if either no longer holds. Ancestry is a local
+    /// git call; a merge GitHub confirmed stays cached.
+    private func revalidateSuggestions(repoPath: String, worktrees: [GitWorktreeInfo]) {
+        let now = clock()
+        let due = worktrees.filter { worktree in
+            guard statuses[worktree.path]?.decision.suggestRemoval == true,
+                  !revalidatingSuggestions.contains(worktree.path) else { return false }
+            return now.timeIntervalSince(suggestionCheckedAt[worktree.path] ?? .distantPast) >= Self.suggestionRecheckInterval
+        }
+        guard !due.isEmpty else { return }
+        revalidatingSuggestions.formUnion(due.map(\.path))
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.revalidatingSuggestions.subtract(due.map(\.path)) }
+            let defaultBranch = await self.git.getDefaultBaseBranch(at: repoPath, remote: nil)
+            for worktree in due {
+                self.suggestionCheckedAt[worktree.path] = self.clock()
+                let clean = await self.git.hasUncommittedChanges(at: worktree.path) == false
+                let merged = clean
+                    ? await self.resolver.resolve(worktree: worktree, repoPath: repoPath, defaultBranch: defaultBranch) == .merged
+                    : false
+                guard !(clean && merged), let status = self.statuses[worktree.path], status.worktree == worktree else { continue }
+                var decision = status.decision
+                decision.suggestRemoval = false
+                self.statuses[worktree.path] = WorktreeStorageStatus(
+                    worktree: status.worktree,
+                    isWorkspaceRoot: status.isWorkspaceRoot,
+                    report: status.report,
+                    decision: decision,
+                    idle: status.idle
+                )
+            }
+        }
     }
 
     /// Re-measures worktrees whose entry is older than `maxAge`, or all of
@@ -696,10 +743,13 @@ final class WorktreeReclaimService: ObservableObject {
     /// worktree could look idle for longer right after its cleanup. Entries
     /// for worktrees that no longer exist are dropped on each write.
     private func preservedActivity(_ path: String, observed: Date?) -> Date? {
+        // Canonical keys: a task's path and git's can spell one checkout
+        // differently.
+        let key = WorktreePath.canonical(path)
         var recorded = defaults.dictionary(forKey: AppStorageKeys.worktreeObservedActivity) as? [String: Double] ?? [:]
-        let previous = recorded[path].map { Date(timeIntervalSince1970: $0) }
+        let previous = recorded[key].map { Date(timeIntervalSince1970: $0) }
         guard let observed, observed > (previous ?? .distantPast) else { return previous ?? observed }
-        recorded[path] = observed.timeIntervalSince1970
+        recorded[key] = observed.timeIntervalSince1970
         recorded = recorded.filter { WorktreeFileSystem.isRealDirectory($0.key) }
         defaults.set(recorded, forKey: AppStorageKeys.worktreeObservedActivity)
         return observed

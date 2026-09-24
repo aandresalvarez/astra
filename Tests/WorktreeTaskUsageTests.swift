@@ -74,8 +74,12 @@ struct WorktreeTaskUsageTests {
         unpinnedRunning.status = .running
 
         let holds = WorktreeTaskUsage.holds(from: [pinned, unpinnedDraft, unpinnedRunning])
-        #expect(holds.map(\.taskTitle) == ["Pinned", "Running"])
-        #expect(holds.allSatisfy { $0.rootPath == "/worktrees/app/feature" })
+        // A draft claims nothing unpinned; a pinned draft claims only its pin;
+        // a running task also claims what the runtime lets it write.
+        #expect(Set(holds.map(\.taskTitle)) == ["Pinned", "Running"])
+        #expect(holds.filter { $0.taskTitle == "Pinned" }.map(\.rootPath) == ["/worktrees/app/feature"])
+        #expect(holds.contains { $0.taskTitle == "Running" && $0.rootPath == "/worktrees/app/feature" })
+        #expect(holds.contains { $0.taskTitle == "Running" && $0.rootPath == "/repos/app" })
     }
 }
 
@@ -132,6 +136,17 @@ struct WorktreeTaskUsageScopeTests {
         #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/feature", holds: WorktreeTaskUsage.holds(from: [running]))
             == "In use by task “Build”")
         #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/worktrees/app/feature", holds: WorktreeTaskUsage.holds(from: [draft])) == nil)
+    }
+
+    @MainActor
+    @Test("A running unpinned task holds its workspace's primary checkout")
+    func runningTaskHoldsPrimary() {
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        let task = AgentTask(title: "Build", goal: "Work", workspace: workspace)
+        task.status = .running
+
+        #expect(WorktreeTaskUsage.inUseReason(forWorktreePath: "/repos/app", holds: WorktreeTaskUsage.holds(from: [task]))
+            == "In use by task “Build”")
     }
 
     @MainActor

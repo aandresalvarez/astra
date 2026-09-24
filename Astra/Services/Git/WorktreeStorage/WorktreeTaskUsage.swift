@@ -63,13 +63,18 @@ enum WorktreeTaskUsage {
     }
 
     /// Every path a task claims: where it runs code, plus, while it is
-    /// queued or running, the folders the runtime lets it write.
+    /// queued or running, its working directory and the exact set the runtime
+    /// lets it write (`AgentRuntimeProcessRunner.runtimeWritablePaths`, which
+    /// includes the workspace's primary path), so a manual reclaim of the
+    /// primary checkout can't run underneath it.
     @MainActor
     static func claimedPaths(of task: AgentTask) -> [String] {
         var paths = rootPath(of: task).map { [$0] } ?? []
         if task.status == .running || task.status == .queued {
-            for writable in TaskWorkspaceAccess(task: task).runtimeWritablePaths where !paths.contains(writable) {
-                paths.append(writable)
+            let executing = [TaskWorkspaceAccess(task: task).codeWorkingDirectory]
+                + AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+            for path in executing where !path.isEmpty && !paths.contains(path) {
+                paths.append(path)
             }
         }
         return paths

@@ -17,7 +17,7 @@ struct TaskTerminalStateChange: Equatable, Sendable {
     /// The task's pinned checkout, or its workspace's active worktree when the
     /// task wasn't pinned. Nil when it ran in the workspace's primary path.
     let workingPath: String?
-    /// Folders the runtime let the task write besides `workingPath`.
+    /// Folders the runtime let the task write (the same set it grants).
     var writablePaths: [String] = []
 }
 
@@ -32,7 +32,7 @@ enum TaskTerminalStateNotifier {
                 taskID: task.id,
                 status: task.status,
                 workingPath: pinned ?? workspaceWorktree,
-                writablePaths: TaskWorkspaceAccess(task: task).runtimeWritablePaths
+                writablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
             )
         )
     }

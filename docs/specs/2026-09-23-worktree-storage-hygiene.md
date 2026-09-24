@@ -213,8 +213,10 @@ and no test covers it. When moving it:
 - Also count as in use:
   - a worktree an unpinned task is running or queued in, via its workspace's
     `activeWorkingPath`;
-  - while a task is queued or running, every folder the runtime lets it
-    write (`TaskWorkspaceAccess.runtimeWritablePaths`);
+  - while a task is queued or running, its working directory and exactly
+    the set the runtime lets it write
+    (`AgentRuntimeProcessRunner.runtimeWritablePaths`: additional paths, the
+    workspace's primary path and the task folder);
   - an active `TaskTurnRequest`, at the path its execution-policy snapshot
     captured, plus its `.workspace` resource claims, because queuing a
     follow-up doesn't change a finished task's status and the turn runs where
@@ -287,6 +289,11 @@ panel shows that no automatic pass has covered yet (a workspace added or
 imported after launch) gets its own pass after the same delay.
 Reclaim summaries record the worktrees they covered. A repository's sheet
 shows only its own.
+A "Merged · Remove" suggestion is re-validated at most once a minute while the
+panel refreshes (cleanliness plus a local ancestry check; merges GitHub
+confirmed stay cached), so a moved base branch withdraws it. A finished task
+records its finish time as durable activity for its checkouts, so a recheck
+that runs early can't reclaim a checkout that was just in use.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,
