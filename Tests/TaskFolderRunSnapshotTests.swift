@@ -296,6 +296,57 @@ struct TaskFolderRunSnapshotTests {
         #expect(stored.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["b.csv", "c.csv"])
     }
 
+    @Test("A record already past the decode limit grows by a bounded allowance, not without limit")
+    func overLimitRecordGrowsByABoundedAllowance() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: root.standardized + "/big.md",
+            changeType: "Write",
+            content: String(repeating: "x", count: TaskRun.displayedFileChangesJSONByteLimit + 10_000)
+        ))
+        let usedBytes = fixture.run.fileChangesJSON.utf8.count
+        let folderName = String(repeating: "f", count: 300)
+
+        let stored = TaskFolderRunSnapshot.append(
+            (0..<250).map { .init(relativePath: "\(folderName)/\($0).csv", kind: .created, modifiedAt: nil) },
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date()
+        )
+
+        #expect(!stored.isEmpty)
+        #expect(stored.count < 250)
+        #expect(fixture.run.fileChangesJSON.utf8.count - usedBytes <= TaskFolderRunSnapshot.overLimitByteAllowance)
+    }
+
+    @Test("Observations the bounds leave out are counted, for the audit line")
+    func omittedObservationsAreCounted() {
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot("/ws/task")
+        let bounded = TaskFolderRunSnapshot.records(
+            for: [
+                .init(relativePath: "a.md", kind: .created, modifiedAt: nil),
+                .init(relativePath: "b.md", kind: .modified, modifiedAt: nil),
+                .init(relativePath: "c.md", kind: .removed, modifiedAt: nil)
+            ],
+            under: root,
+            recorded: [StoredFileChange(path: "/ws/task/b.md", changeType: "Edit")],
+            usedBytes: 2,
+            executionPath: "/ws",
+            runStartedAt: Date(),
+            runEndedAt: Date(),
+            limit: 1
+        )
+
+        // b.md is already recorded by its tool edit, so it is neither kept
+        // nor omitted; of a.md and c.md the limit keeps one.
+        #expect(bounded.records.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["a.md"])
+        #expect(bounded.omitted == 1)
+    }
+
     @Test("The after-run comparison and bounding run off the main actor")
     func observationRunsOffTheMainActor() async throws {
         let folder = try makeFolder()

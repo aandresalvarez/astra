@@ -212,7 +212,9 @@ lost for good, so this ships before the UI.
   encode. At most 250 observed changes are kept per run, new and edited files
   ahead of removals, and never more than still fit under the 256 KB past which
   the thread stops decoding a run's changes, tool changes included
-  (`TaskRun.displayedFileChangesJSONByteLimit`).
+  (`TaskRun.displayedFileChangesJSONByteLimit`). A record already past it
+  gains at most 64 KB: the thread shows none of it, but the turns ledger
+  reads the whole record.
 - A walk that hits an unreadable directory, or a visible file whose metadata
   cannot be read, is discarded rather than compared, since every file it
   missed would otherwise read as removed. A tool path
@@ -229,8 +231,8 @@ lost for good, so this ships before the UI.
   as edits. Each is opted in deliberately in PR 4 or later.
 - `reconcileTaskOutputArtifacts` is unchanged: it still creates `Artifact` rows
   for new paths. Observed edits and removals create no `Artifact` rows.
-- One `task.stats event=task_folder_snapshot` log line per run, with counts
-  and duration.
+- One `task.stats event=task_folder_snapshot` log line per run, with counts,
+  the number of detected changes the bounds omitted, and duration.
 
 **Not covered.** Workspace files outside the task folder that a shell command
 changes (tool events and the Git-based detector still cover those), and a
@@ -241,7 +243,12 @@ created and a command deleted within one run keeps only the tool's write: the
 recorder stores a tool's file change when the tool is called, before its
 result says whether it succeeded, so the write is no proof the file existed
 and no deletion is inferred from it. A run whose change record cannot be
-decoded is skipped rather than rewritten.
+decoded is skipped rather than rewritten. A run interrupted by a crash or quit
+records no observed changes: the pre-run baseline lives only in the worker's
+memory, and `TaskRunLifecycleService.finalizeInterruptedRuns` has nothing to
+compare against. Recovering them means persisting the baseline with a
+fingerprint that is stable across launches (the current one is a per-process
+`Hasher`).
 
 **Tests.**
 
