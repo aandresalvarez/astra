@@ -685,6 +685,49 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.hasScheduledLaunchPass, "a retry waits")
     }
 
+    @Test("A worktree released from workspace protection is looked at again")
+    func releasedProtectionSchedulesRecheck() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let roots = RootsBox(paths: [setup.linked.path])
+        setup.service.attach(taskHolds: { [] }, workspaceRoots: { roots.paths })
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        #expect(setup.service.statuses[setup.linked.path]?.isWorkspaceRoot == true)
+
+        roots.paths = []
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] != nil)
+    }
+
+    @Test("A delete that fails after its rename is retried")
+    func failedDeleteIsRetried() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        // A read-only folder inside `.build`: the rename succeeds, the delete
+        // can't empty it, and a leftover stays behind.
+        let locked = try setup.fixture.directory("worktrees/feature/.build/stuck")
+        try setup.fixture.file("worktrees/feature/.build/stuck/file.o")
+        WorktreeStorageFixture.backdate(setup.linkedBuild, by: 3 * Self.day)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked)
+        defer { Self.makeWritable(setup.linked.path) }
+
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(setup.service.statuses[setup.linked.path]?.report.interruptedReclaims.count == 1)
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] != nil)
+    }
+
+    /// Restores write permission under `path` so the fixture can be removed.
+    private static func makeWritable(_ path: String) {
+        guard let enumerator = FileManager.default.enumerator(atPath: path) else { return }
+        for case let relative as String in enumerator {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: (path as NSString).appendingPathComponent(relative))
+        }
+    }
+
     @Test("No worktree is ever removed, whatever the pass decides")
     func neverRemovesWorktrees() async throws {
         let setup = try makeSetup(idle: 30 * Self.day)
@@ -736,4 +779,12 @@ private final class CallCounter: @unchecked Sendable {
 
 private final class LockBox: @unchecked Sendable {
     var lock: SwiftPMWorkspaceLock.HeldLock?
+}
+
+private final class RootsBox: @unchecked Sendable {
+    var paths: [String]
+
+    init(paths: [String]) {
+        self.paths = paths
+    }
 }

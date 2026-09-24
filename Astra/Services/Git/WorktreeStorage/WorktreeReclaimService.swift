@@ -326,6 +326,12 @@ final class WorktreeReclaimService: ObservableObject {
             }
             let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: Array(paths))
             guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot else { continue }
+            if status.isWorkspaceRoot, !isWorkspaceRoot,
+               WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) {
+                // No longer a workspace's checkout: the pass that kept it for
+                // that reason scheduled nothing, so look again now.
+                scheduleRecheck(repoPath: repoPath, worktreePath: worktree.path, at: clock())
+            }
             // Withdraw a "Merged · Remove" suggestion at once: it described a
             // HEAD, or a selection, that has changed. The refresh decides afresh.
             var decision = status.decision
@@ -645,10 +651,13 @@ final class WorktreeReclaimService: ObservableObject {
                 )
                 input.now = later
                 publishStatus(status.worktree, report: fact.report, input: input)
-                guard mode == .automatic, act, fact.report.artifactBytes > 0 else { continue }
+                let hasLeftovers = !fact.report.interruptedReclaims.isEmpty
+                guard mode == .automatic, act, fact.report.artifactBytes > 0 || hasLeftovers else { continue }
+                // A delete that failed after its rename leaves a leftover the
+                // next pass sweeps; still-eligible artifacts get another try.
                 let retry = WorktreeReclaimPolicy.decide(input)
-                if let recheckAt = retry.recheckAt ?? (retry.reclaimArtifacts
-                    ? later.addingTimeInterval(WorktreeActivityProbe.recentWriteWindow) : nil) {
+                let retryLater = later.addingTimeInterval(WorktreeActivityProbe.recentWriteWindow)
+                if let recheckAt = retry.recheckAt ?? (retry.reclaimArtifacts || hasLeftovers ? retryLater : nil) {
                     scheduleRecheck(repoPath: repoPath, worktreePath: path, at: recheckAt)
                 }
             }
