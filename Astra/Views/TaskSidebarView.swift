@@ -843,7 +843,7 @@ struct TaskSidebarView: View {
     private var pinnedEmptyDropTarget: some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
         let dashStyle = StrokeStyle(
-            lineWidth: isPinnedDropTargeted ? 1.25 : 1,
+            lineWidth: isPinnedDropTargeted ? Stanford.strokeFocusWidth : 1,
             lineCap: .round,
             dash: [3, 3]
         )

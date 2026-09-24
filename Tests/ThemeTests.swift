@@ -222,8 +222,9 @@ struct ThemeTests {
             for (index, line) in lines.enumerated() {
                 let window = lines[index..<min(index + 4, lines.count)].joined(separator: " ")
                 var checked = ""
-                if line.range(of: #"\.stroke(Border)?\("#, options: .regularExpression) != nil,
-                   let range = window.range(of: #"\.stroke(Border)?\("#, options: .regularExpression),
+                // A width can also live in a reusable `StrokeStyle` declared apart from `.stroke`.
+                if line.range(of: #"\.stroke(Border)?\(|StrokeStyle\("#, options: .regularExpression) != nil,
+                   let range = window.range(of: #"\.stroke(Border)?\(|StrokeStyle\("#, options: .regularExpression),
                    !window[range.upperBound...].hasPrefix("Stanford.cardBackground") {
                     var depth = 0
                     for character in window[range.lowerBound...] {

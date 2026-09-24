@@ -603,9 +603,9 @@ struct MarkdownTextView: View, Equatable {
     }
 
     private static func tableRenderedWidth(_ widths: [CGFloat], columnCount: Int) -> CGFloat {
-        let dividerWidth = max(0, columnCount - 1)
-        let horizontalPadding = CGFloat(columnCount) * 24
-        return widths.reduce(0, +) + horizontalPadding + CGFloat(dividerWidth)
+        // Cells plus 12pt padding on each side; column separators are drawn in
+        // a row overlay and take no width of their own.
+        widths.reduce(0, +) + CGFloat(columnCount) * 24
     }
 
     private static func numericTableColumns(_ rows: [[String]], columnCount: Int) -> Set<Int> {
