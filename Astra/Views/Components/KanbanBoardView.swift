@@ -953,9 +953,8 @@ struct KanbanBoardView: View {
                 }
             )
 
-            Divider()
+            SubtleDivider(axis: .vertical)
                 .frame(height: 18)
-                .opacity(0.35)
 
             // Customize menu now hosts the column-visibility toggles
             // (Show All Columns / Hide Empty) alongside density and
