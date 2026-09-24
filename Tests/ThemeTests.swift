@@ -212,7 +212,8 @@ struct ThemeTests {
         let views = root.appendingPathComponent("Astra")
         let rawOpacity = try NSRegularExpression(pattern: #"\.opacity\([^)]*\b0?\.\d*[1-9]"#)
         let offScaleColor = try NSRegularExpression(pattern: #"sandstone|Color\.secondary|coolGrey"#)
-        let literalWidth = try NSRegularExpression(pattern: #"lineWidth: (?!1\b)[0-9.]+|\? [0-9.]+ : 1\b"#)
+        // Compare the whole literal: `1.5` must not pass as "starts with 1".
+        let literalWidth = try NSRegularExpression(pattern: #"lineWidth: (?!1(?![0-9.]))[0-9.]+|\? (?!1(?![0-9.]))[0-9.]+ : 1(?![0-9.])"#)
         var violations: [String] = []
         let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)?
             .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" && !exempt.contains($0.lastPathComponent) } ?? []

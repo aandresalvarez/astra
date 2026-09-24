@@ -128,7 +128,7 @@ struct OnboardingRuntimeChooserView: View {
                 Circle()
                     .stroke(
                         presentation.isSelected ? Stanford.interactive : Stanford.textTertiary,
-                        lineWidth: 1.5
+                        lineWidth: Stanford.strokeFocusWidth
                     )
                 if presentation.isSelected {
                     Circle()

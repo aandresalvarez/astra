@@ -447,10 +447,13 @@ struct MarkdownTextView: View, Equatable {
                         // its tallest cell; a sibling in this top-aligned,
                         // vertically unbounded HStack would size to a stub.
                         .overlay(alignment: .leading) {
-                            HStack(spacing: 0) {
+                            // Each separator sits independently at its column's
+                            // trailing edge (cell width plus 12pt padding each
+                            // side), so none consumes width and pushes the next.
+                            ZStack(alignment: .leading) {
                                 ForEach(0..<max(table.columnCount - 1, 0), id: \.self) { colIdx in
-                                    Color.clear.frame(width: columnWidths[colIdx] + 24)
                                     SubtleDivider(axis: .vertical)
+                                        .offset(x: columnWidths.prefix(colIdx + 1).reduce(0, +) + CGFloat(colIdx + 1) * 24)
                                 }
                             }
                         }

@@ -171,7 +171,7 @@ struct SkillEditorView: View {
                                             .clipShape(RoundedRectangle(cornerRadius: 6))
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(skill.icon == icon ? Stanford.lagunita : .clear, lineWidth: 1.5)
+                                                    .stroke(skill.icon == icon ? Stanford.lagunita : .clear, lineWidth: Stanford.strokeFocusWidth)
                                             )
                                     }
                                     .buttonStyle(.plain)
