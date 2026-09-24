@@ -223,14 +223,19 @@ struct ThemeTests {
                 let window = lines[index..<min(index + 4, lines.count)].joined(separator: " ")
                 var checked = ""
                 // A width can also live in a reusable `StrokeStyle` declared apart from `.stroke`.
-                if line.range(of: #"\.stroke(Border)?\(|StrokeStyle\("#, options: .regularExpression) != nil,
-                   let range = window.range(of: #"\.stroke(Border)?\(|StrokeStyle\("#, options: .regularExpression),
-                   !window[range.upperBound...].hasPrefix("Stanford.cardBackground") {
-                    var depth = 0
-                    for character in window[range.lowerBound...] {
-                        checked.append(character)
-                        if character == "(" { depth += 1 }
-                        if character == ")" { depth -= 1; if depth == 0 { break } }
+                let strokeCall = #"\.stroke(Border)?\(|StrokeStyle\("#
+                if line.range(of: strokeCall, options: .regularExpression) != nil {
+                    // Read through the balanced closing parenthesis, however many
+                    // lines the arguments span, so a trailing width is not cut off.
+                    let call = lines[index..<min(index + 60, lines.count)].joined(separator: " ")
+                    if let range = call.range(of: strokeCall, options: .regularExpression),
+                       !call[range.upperBound...].hasPrefix("Stanford.cardBackground") {
+                        var depth = 0
+                        for character in call[range.lowerBound...] {
+                            checked.append(character)
+                            if character == "(" { depth += 1 }
+                            if character == ")" { depth -= 1; if depth == 0 { break } }
+                        }
                     }
                 } else if let divider = line.range(of: "Divider()"),
                           case let chain = ([String(line[divider.upperBound...])] + lines[(index + 1)...]
