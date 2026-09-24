@@ -174,8 +174,13 @@ def without_tool_output(frame):
         message = frame.get("message")
         if isinstance(message, dict) and isinstance(message.get("content"), list):
             message = dict(message)
+            # Keep only the result's identity: its payload may sit in `content`
+            # or `text` (both are parsed), so nothing else survives.
             message["content"] = [
-                dict(block, content=TOOL_OUTPUT)
+                {
+                    **{key: block[key] for key in ("type", "tool_use_id", "is_error") if key in block},
+                    "content": TOOL_OUTPUT,
+                }
                 if isinstance(block, dict) and block.get("type") == "tool_result" else block
                 for block in message["content"]
             ]
@@ -184,8 +189,9 @@ def without_tool_output(frame):
         frame = dict(frame, data=dict(frame["data"], result={"content": TOOL_OUTPUT}))
     elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
         item = frame["item"]
-        if "aggregated_output" in item:
-            frame = dict(frame, item=dict(item, aggregated_output=TOOL_OUTPUT if item["aggregated_output"] else ""))
+        payload_keys = [key for key in ("aggregated_output", "output", "stdout", "stderr", "result") if key in item]
+        if payload_keys and item.get("type") not in ("agent_message", "reasoning"):
+            frame = dict(frame, item=dict(item, **{key: TOOL_OUTPUT if item[key] else item[key] for key in payload_keys}))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
         frame = dict(frame, tool_call={
             name: (dict(call, result=TOOL_OUTPUT) if isinstance(call, dict) and "result" in call else call)
@@ -222,10 +228,13 @@ def tool_call_arguments(frame):
 
 
 # After redaction the scratch workspace is /workspace. System executables are
-# fine; any other absolute path, a parent-directory escape, or an environment
-# dump means the agent explored beyond the capture.
+# fine; any other absolute path, a home-relative path (`~/`, `$HOME`), a
+# parent-directory escape, or an environment dump means the agent explored
+# beyond the capture.
 OUTSIDE_PATH_PATTERN = re.compile(
-    r"(?<![\w.\-])(?:/(?!workspace\b|bin/|usr/|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\./)"
+    r"(?<![\w.\-])(?:/(?!workspace\b|bin/|usr/|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
+    r"|(?<![\w])~(?=/|[\s\"'\\]|$)"
+    r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
 

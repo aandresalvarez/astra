@@ -118,23 +118,34 @@ struct ProviderTranscriptConformanceTests {
         let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
         report(.noRawProviderJSON, of: fixture, failures: rawFrameInOutput ? [("", "raw provider frame in run output")] : [])
 
-        let recordedToolCalls = events.filter { $0.type == TaskEventTypes.Tool.use.rawValue }.count
-        report(.toolCallsRecorded, of: fixture, failures: recordedToolCalls >= truth.toolCallCount ? [] : [
-            ("", "recorded \(recordedToolCalls) of \(truth.toolCallCount) tool calls")
-        ])
+        // Tool calls are compared by name as a multiset, so a dropped call
+        // cannot hide behind an extra or duplicated one.
+        let recordedTools = multiset(events
+            .filter { $0.type == TaskEventTypes.Tool.use.rawValue }
+            .map { toolName(fromUsePayload: $0.payload) })
+        let expectedTools = multiset(truth.toolNames)
+        report(.toolCallsRecorded, of: fixture, failures: Set(recordedTools.keys).union(expectedTools.keys).sorted().compactMap { name in
+            let expected = expectedTools[name] ?? 0
+            let recorded = recordedTools[name] ?? 0
+            return expected == recorded ? nil : (name, "tool \(name): provider called \(expected)x, recorded \(recorded)x")
+        })
 
         if fixture.notExercised[.fileChangesRecorded] == nil {
-            #expect(!truth.writtenFileNames.isEmpty,
+            #expect(!truth.writtenPaths.isEmpty,
                     "fixture writes no file; capture one or list fileChangesRecorded in notExercised")
         } else {
-            #expect(truth.writtenFileNames.isEmpty,
+            #expect(truth.writtenPaths.isEmpty,
                     "fixture now writes a file; drop fileChangesRecorded from notExercised")
         }
-        let recordedFileNames = Set(run.fileChanges.map { URL(fileURLWithPath: $0.path).lastPathComponent })
-        report(.fileChangesRecorded, of: fixture, failures: truth.writtenFileNames.sorted().compactMap { fileName in
-            recordedFileNames.contains(fileName)
-                ? nil
-                : (fileName, "write to \(fileName) not recorded; recorded \(recordedFileNames.sorted())")
+        // Paths are compared relative to the workspace, with multiplicity: a
+        // change recorded under the wrong directory is a different file.
+        let workspaceRoots = ["/workspace", harness.workspaceURL.path]
+        let recordedPaths = multiset(run.fileChanges.map { workspaceRelative($0.path, roots: workspaceRoots) })
+        let expectedPaths = multiset(truth.writtenPaths.map { workspaceRelative($0, roots: workspaceRoots) })
+        report(.fileChangesRecorded, of: fixture, failures: Set(recordedPaths.keys).union(expectedPaths.keys).sorted().compactMap { path in
+            let expected = expectedPaths[path] ?? 0
+            let recorded = recordedPaths[path] ?? 0
+            return expected == recorded ? nil : (path, "file \(path): provider wrote \(expected)x, recorded \(recorded)x")
         })
 
         report(.noSpuriousErrors, of: fixture, failures: events
@@ -343,8 +354,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
 /// frames.
 struct ProviderStreamTruth {
     private(set) var messages: [String] = []
-    private(set) var toolCallCount = 0
-    private(set) var writtenFileNames: Set<String> = []
+    /// Every tool call's name, subagent calls included: ASTRA records those
+    /// as tool activity too.
+    private(set) var toolNames: [String] = []
+    private(set) var writtenPaths: [String] = []
     /// Collapsed "last line of a message + first line of a later message":
     /// the only lines, besides the provider's own, that appending messages
     /// without a separator can produce.
@@ -356,7 +369,6 @@ struct ProviderStreamTruth {
     init(fixture: ProviderStreamFixture, frames: [String]) {
         var rawMessages: [String] = []
         var antigravitySteps: [(index: Int, text: String)] = []
-        var writtenPaths: [String] = []
         for line in frames {
             guard let data = line.data(using: .utf8),
                   let frame = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
@@ -364,16 +376,17 @@ struct ProviderStreamTruth {
             switch fixture.runtime {
             case .claudeCode:
                 // Subagent frames carry a parent_tool_use_id; only the main
-                // agent's messages are the user's transcript.
+                // agent's messages are the user's transcript, but every tool
+                // call is tool activity.
                 guard type == "assistant",
-                      frame["parent_tool_use_id"] is NSNull || frame["parent_tool_use_id"] == nil,
                       let message = frame["message"] as? [String: Any],
                       let blocks = message["content"] as? [[String: Any]] else { continue }
+                let isMainAgent = frame["parent_tool_use_id"] is NSNull || frame["parent_tool_use_id"] == nil
                 for block in blocks {
-                    if block["type"] as? String == "text", let text = block["text"] as? String {
+                    if block["type"] as? String == "text", isMainAgent, let text = block["text"] as? String {
                         rawMessages.append(text)
                     } else if block["type"] as? String == "tool_use" {
-                        toolCallCount += 1
+                        toolNames.append(block["name"] as? String ?? "tool")
                         if ["Write", "Edit", "MultiEdit"].contains(block["name"] as? String ?? ""),
                            let path = (block["input"] as? [String: Any])?["file_path"] as? String {
                             writtenPaths.append(path)
@@ -385,7 +398,7 @@ struct ProviderStreamTruth {
                 if type == "assistant.message", let text = data?["content"] as? String {
                     rawMessages.append(text)
                 } else if type == "tool.execution_start" {
-                    toolCallCount += 1
+                    toolNames.append(data?["toolName"] as? String ?? "tool")
                     if data?["toolName"] as? String == "apply_patch", let patch = data?["arguments"] as? String {
                         writtenPaths += Self.patchedPaths(in: patch)
                     }
@@ -396,7 +409,7 @@ struct ProviderStreamTruth {
                    let text = item?["text"] as? String {
                     rawMessages.append(text)
                 } else if type == "item.started", item?["type"] as? String == "command_execution" {
-                    toolCallCount += 1
+                    toolNames.append("command_execution")
                 } else if type == "item.completed", item?["type"] as? String == "file_change",
                           let changes = item?["changes"] as? [[String: Any]] {
                     writtenPaths += changes.compactMap { $0["path"] as? String }
@@ -416,8 +429,9 @@ struct ProviderStreamTruth {
                         rawMessages.append(text)
                     }
                 } else if type == "tool_call", frame["subtype"] as? String == "started" {
-                    toolCallCount += 1
-                    let edit = (frame["tool_call"] as? [String: Any])?["editToolCall"] as? [String: Any]
+                    let call = frame["tool_call"] as? [String: Any] ?? [:]
+                    toolNames.append(call.keys.first { $0.hasSuffix("ToolCall") } ?? "tool")
+                    let edit = call["editToolCall"] as? [String: Any]
                     if let path = (edit?["args"] as? [String: Any])?["path"] as? String {
                         writtenPaths.append(path)
                     }
@@ -434,7 +448,7 @@ struct ProviderStreamTruth {
                         antigravitySteps.append((index, delta))
                     }
                 } else if step["step_type"] as? String == "tool", step["state"] as? String == "ACTIVE" {
-                    toolCallCount += 1
+                    toolNames.append(step["tool_name"] as? String ?? "tool")
                     let parameters = (step["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
                     if step["tool_name"] as? String == "write_to_file", let path = parameters?["TargetFile"] as? String {
                         writtenPaths.append(path)
@@ -446,7 +460,6 @@ struct ProviderStreamTruth {
         }
         rawMessages += antigravitySteps.map(\.text)
         messages = rawMessages.map(Self.visibleText).filter { !$0.isEmpty }
-        writtenFileNames = Set(writtenPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
         for (index, earlier) in messages.enumerated() {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
             for later in messages.dropFirst(index + 1) {
@@ -499,6 +512,29 @@ struct ProviderStreamTruth {
 
 private func collapsed(_ text: String) -> String {
     text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+}
+
+private func multiset(_ items: [String]) -> [String: Int] {
+    items.reduce(into: [:]) { counts, item in counts[item, default: 0] += 1 }
+}
+
+/// The tool name in a recorded `Using tool: <name>[: <summary>]` payload.
+private func toolName(fromUsePayload payload: String) -> String {
+    let body = payload.hasPrefix("Using tool: ") ? String(payload.dropFirst("Using tool: ".count)) : payload
+    return String(body.prefix { $0 != ":" }).trimmingCharacters(in: .whitespaces)
+}
+
+/// A path relative to whichever workspace root contains it; other paths stay
+/// absolute so a wrong directory never matches.
+private func workspaceRelative(_ path: String, roots: [String]) -> String {
+    let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+    for root in roots {
+        let base = URL(fileURLWithPath: root).standardizedFileURL.path
+        for candidate in [base, "/private" + base] where standardized.hasPrefix(candidate + "/") {
+            return String(standardized.dropFirst(candidate.count + 1))
+        }
+    }
+    return standardized
 }
 
 private func lineCounts(_ text: String) -> [String: Int] {
