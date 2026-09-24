@@ -109,12 +109,20 @@ struct ProviderTranscriptConformanceTests {
             return (extraLineItem(line, overage: count - expected, sent: expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
         })
 
-        // Every other line must be a join of one message's last line with a
-        // later message's first line (messages are appended without a
-        // separator); anything else is text the provider never sent.
+        // Every other line must be a join of one message's last line with the
+        // next message's first line (messages are appended without a
+        // separator), at most once per such boundary; anything else is text
+        // the provider never sent.
         let joins = truth.boundaryJoins
-        report(.noUnsentLines, of: fixture, failures: lineCounts(output).keys.sorted().compactMap { line in
-            sent[line] != nil || joins.contains(line) ? nil : (line, "line the provider never sent: \(line.prefix(80))")
+        report(.noUnsentLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
+            guard sent[line] == nil else { return nil }
+            let boundaries = joins[line] ?? 0
+            if boundaries == 0 {
+                return (line, "line the provider never sent: \(line.prefix(80))")
+            }
+            return count <= boundaries
+                ? nil
+                : (line, "boundary join recorded \(count)x across \(boundaries) boundary(ies): \(line.prefix(80))")
         })
 
         // Collapsed comparisons ignore line breaks, so each message present in
@@ -573,10 +581,10 @@ struct ProviderStreamTruth {
     /// Task ids of the subagents the provider started and finished.
     private(set) var subagentStarts: [String] = []
     private(set) var subagentCompletions: [String] = []
-    /// Collapsed "last line of a message + first line of a later message":
-    /// the only lines, besides the provider's own, that appending messages
-    /// without a separator can produce.
-    private(set) var boundaryJoins: Set<String> = []
+    /// Collapsed "last line of a message + first line of the next message",
+    /// counted per boundary: the only lines, besides the provider's own, that
+    /// appending messages without a separator can produce, once each.
+    private(set) var boundaryJoins: [String: Int] = [:]
     /// The message the user asked for: the drafted reply in the
     /// answer-write-signoff scenario, otherwise the last message.
     private(set) var answer: String?
@@ -774,12 +782,12 @@ struct ProviderStreamTruth {
             case .tool(let name): .tool(name)
             }
         }
-        for (index, earlier) in messages.enumerated() {
+        for (earlier, later) in zip(messages, messages.dropFirst()) {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
-            for later in messages.dropFirst(index + 1) {
-                let firstLine = later.components(separatedBy: "\n").first ?? ""
-                boundaryJoins.insert(collapsed(lastLine + firstLine))
-                boundaryJoins.insert(collapsed(lastLine + " " + firstLine))
+            let firstLine = later.components(separatedBy: "\n").first ?? ""
+            // Either spelling of the join, but one boundary is one join.
+            for join in Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]) {
+                boundaryJoins[join, default: 0] += 1
             }
         }
 
