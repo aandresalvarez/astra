@@ -376,6 +376,16 @@ struct ProviderTranscriptConformanceTests {
         #expect(ProviderStreamTruth.copilotFrame(payloadTyped).type == "assistant.message")
     }
 
+    @Test("Copilot tool calls and results are classified by every shape the stream uses")
+    func copilotToolRolesCoverEveryShape() {
+        #expect(ProviderStreamTruth.copilotToolRole("tool.execution_start", [:]) == .use)
+        #expect(ProviderStreamTruth.copilotToolRole("tool.execution_complete", ["data": ["toolCallId": "c"]]) == .result)
+        #expect(ProviderStreamTruth.copilotToolRole("tool.result", ["toolUseId": "x", "success": false]) == .result)
+        #expect(ProviderStreamTruth.copilotToolRole("custom", ["toolResult": ["content": "x"]]) == .result)
+        #expect(ProviderStreamTruth.copilotToolRole("assistant.tool_call_delta", [:]) == nil)
+        #expect(ProviderStreamTruth.copilotToolRole("tool.execution_progress", [:]) == nil)
+    }
+
     /// Records each failure of `check`. Failures the fixture's known issue
     /// covers are recorded together under that known issue; the rest are real
     /// failures. A known issue with nothing left to cover is itself reported,
@@ -752,12 +762,21 @@ struct ProviderStreamTruth {
                 } else if type == "result" {
                     // Copilot's stdout names its session only in the result.
                     sessionID = field("sessionId") as? String
-                } else if type == "tool.execution_complete" {
-                    toolResultOutcomes.append(field("success") as? Bool == false ? "failure" : "success")
-                } else if type == "tool.execution_start" {
-                    appendTool(field("toolName") as? String ?? "tool")
-                    if field("toolName") as? String == "apply_patch", let patch = field("arguments") as? String {
-                        writtenPaths += Self.patchedPaths(in: patch)
+                } else if let role = Self.copilotToolRole(type, object) {
+                    // Every shape Copilot's stream uses for a tool call or
+                    // result, not only tool.execution_start / _complete.
+                    switch role {
+                    case .result:
+                        let explicitError = ["is_error", "isError", "error"].lazy.compactMap { field($0) as? Bool }.first
+                        let success = ["success", "succeeded", "ok"].lazy.compactMap { field($0) as? Bool }.first
+                        let failed = explicitError ?? success.map { !$0 } ?? false
+                        toolResultOutcomes.append(failed ? "failure" : "success")
+                    case .use:
+                        let name = ["tool", "toolName", "name"].lazy.compactMap { field($0) as? String }.first ?? "tool"
+                        appendTool(name)
+                        if name == "apply_patch", let patch = field("arguments") as? String {
+                            writtenPaths += Self.patchedPaths(in: patch)
+                        }
                     }
                 }
             case .codexCLI:
@@ -905,6 +924,36 @@ struct ProviderStreamTruth {
             return copilotFrame(payload)
         }
         return (type, frame)
+    }
+
+    enum CopilotToolRole {
+        case use
+        case result
+    }
+
+    /// Whether a Copilot frame is a tool call or a tool result, by the shapes
+    /// the stream uses: after the conversation, session, progress, permission
+    /// and error frames that are neither, a type naming a tool use, call or
+    /// start is a call; a type naming a tool result, output or completion, or
+    /// a `toolResult` field, is a result; a tool identity on any other frame is
+    /// a call.
+    static func copilotToolRole(_ type: String, _ object: [String: Any]) -> CopilotToolRole? {
+        let conversation: Set<String> = [
+            "user.message", "assistant.turn_start", "assistant.turn_end", "assistant.message_start", "assistant.idle",
+            "assistant.reasoning", "assistant.reasoning_delta", "assistant.tool_call_delta", "assistant.message_delta",
+            "assistant.message", "agent_message_chunk", "agent_thought_chunk", "thinking",
+            "tool.execution_partial_result", "tool.execution_progress"
+        ]
+        guard !conversation.contains(type), !type.hasPrefix("session."), !type.contains("reasoning"),
+              !type.contains("permission"), !type.contains("approval"),
+              !type.contains("error"), type != "failed" else { return nil }
+        let payload = copilotPayload(object)
+        func has(_ keys: [String]) -> Bool { keys.contains { object[$0] != nil || payload?[$0] != nil } }
+        let isResult = type.contains("tool") && ["result", "output", "complete"].contains(where: type.contains)
+            || has(["toolResult"])
+        if type.contains("tool") && ["use", "call", "start"].contains(where: type.contains) { return .use }
+        if has(["tool", "toolName", "tool_call_id", "toolUseId", "callId"]) && !isResult { return .use }
+        return isResult ? .result : nil
     }
 
     static func copilotPayload(_ object: [String: Any]) -> [String: Any]? {

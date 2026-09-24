@@ -232,6 +232,18 @@ CODEX_ITEM_PAYLOAD_KEYS = {
 CODEX_ITEM_NON_ARGUMENT_KEYS = {"id", "type", "kind", "status", "exit_code", "exitCode"} | CODEX_ITEM_PAYLOAD_KEYS
 
 
+def without_codex_tool_output(fields):
+    """Blank a Codex tool item's result text, including inside the `data` and
+    `item` objects the parser's textValue also reads from."""
+    return {
+        key: (error_placeholder(value) if key == "error" else TOOL_OUTPUT if value else value)
+        if key in CODEX_ITEM_PAYLOAD_KEYS
+        else without_codex_tool_output(value) if key in ("data", "item") and isinstance(value, dict)
+        else value
+        for key, value in fields.items()
+    }
+
+
 def codex_item_type(item):
     return next((item[key].lower() for key in ("type", "kind") if isinstance(item.get(key), str)), "unknown")
 
@@ -371,7 +383,7 @@ def without_tool_output(frame):
     kind = str(frame.get("type") or "").lower()
     wrapper = copilot_envelope(frame)
     if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
-        return dict(frame, **{wrapper: without_tool_output(frame[wrapper])})
+        return {**envelope_fields(frame), wrapper: without_tool_output(frame[wrapper])}
     if kind == "system" and str(frame.get("subtype") or "").lower() in ("task_notification", "task_completed"):  # Claude subagents
         # The summary repeats the subagent's answer; its identity and status stay.
         return {key: (TOOL_OUTPUT if key == "summary" and value else value) for key, value in frame.items()}
@@ -403,11 +415,7 @@ def without_tool_output(frame):
         # Only tool items: agent messages, reasoning and warning items keep
         # their text, which is what the conformance suite reads.
         if is_codex_tool_item(item):
-            frame = dict(frame, item={
-                key: (error_placeholder(value) if key == "error" else TOOL_OUTPUT if value else value)
-                if key in CODEX_ITEM_PAYLOAD_KEYS else value
-                for key, value in item.items()
-            })
+            frame = dict(frame, item=without_codex_tool_output(item))
         elif codex_item_type(item) == "file_change":
             frame = dict(frame, item=without_file_change_payload(item))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
@@ -603,6 +611,13 @@ DIRECTORY_JUMP_PATTERN = re.compile(
 COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+(?:-[A-Za-z]+|--))*\s+)+$")
 
 
+def unquoted(command):
+    """The command with backslash escapes and quote characters removed, as
+    quote removal leaves its words: `c\\d` and `c""d` both run `cd`. Checked
+    alongside the original, where quotes still mark `eval` / `sh -c` scripts."""
+    return re.sub(r"\\(.)", r"\1", command).replace('"', "").replace("'", "")
+
+
 def jumps_directory(command):
     for match in DIRECTORY_JUMP_PATTERN.finditer(command):
         before = command[:match.start()]
@@ -749,7 +764,7 @@ def audit_frame(number, frame):
         reached = (
             any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
             or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
-            or any(jumps_directory(command) for command in commands)
+            or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
         )
         if reached or any(has_escaped_bytes(command) for command in commands):
             findings.append(f"line {number}: {name} {arguments[:160]}")
@@ -759,11 +774,17 @@ def audit_frame(number, frame):
 COPILOT_RESULT_KEEP_KEYS = {"id", "timestamp", "sessionId", "exitCode"} | set(COPILOT_TYPE_KEYS)
 
 
+def envelope_fields(frame):
+    return {key: value for key, value in frame.items() if key in COPILOT_ENVELOPE_KEEP_KEYS}
+
+
 def minimized(frame):
     """Drop the local inventory that init and session frames advertise."""
     wrapper = copilot_envelope(frame)
     if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
-        return dict(frame, **{wrapper: minimized(frame[wrapper])})
+        # The runtime reads only the wrapped object; the envelope keeps its
+        # discriminator and identity, and any other sibling is dropped.
+        return {**envelope_fields(frame), wrapper: minimized(frame[wrapper])}
     # Parsers lowercase the type before matching, so casing is no way around.
     kind = str(frame.get("type") or "").lower()
     # Copilot's type can sit under any of its discriminator keys.
