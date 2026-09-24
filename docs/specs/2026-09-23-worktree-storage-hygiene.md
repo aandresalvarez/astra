@@ -295,8 +295,12 @@ confirmed stay cached), so a moved base branch withdraws it. A finished task
 records its finish time as durable activity for its checkouts, so a recheck
 that runs early can't reclaim a checkout that was just in use. It records that
 even while automatic reclaim is off; only the recheck depends on the setting.
-Its checkouts include the roots and workspace claims its latest turn requests
-captured, since a turn runs where its snapshot says even after a re-pin.
+Each turn request posts its own event when it ends
+(`TaskTurnRequestStateMachine`), carrying the root and workspace claims it
+captured, since a turn runs where its snapshot says even after a re-pin. A turn
+that ran records activity and rechecks at the threshold; a follow-up retracted
+before it ran (no task status changes) rechecks after 15 minutes. An earlier
+pending recheck is kept, since it re-derives any later one.
 A recheck whose `git worktree list` fails (an empty list) tries again after
 15 minutes, up to 3 attempts; a worktree git no longer lists is gone.
 The panel lists worktrees only for the selected repository, and only while it's
@@ -349,7 +353,10 @@ threshold, schedules a fresh pass. Tests must use `InMemoryDefaults`
 
 1. Nothing outside a matched artifact directory is ever deleted. Source files
    are byte-identical and `git status` is unchanged after a reclaim.
-2. An artifact without its sibling manifest is never deleted.
+2. An artifact without its sibling manifest is never deleted, and neither is
+   one holding any file in git's index (`git ls-files`, staged or committed):
+   a tracked file is source whatever its folder is called. When git can't
+   answer, the whole worktree is kept, even by the Reclaim button.
 3. Symlinks are never followed, whether measuring or deleting. An artifact
    symlink pointing outside the worktree is refused.
 4. Nothing is reclaimed from a worktree with a non-terminal pinned task or a

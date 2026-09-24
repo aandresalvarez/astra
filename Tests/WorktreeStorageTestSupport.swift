@@ -149,6 +149,10 @@ final class StubWorktreeGit: WorktreeStorageGitReading {
     var ancestry: [String: GitAncestry] = [:]
     var commitDates: [String: Date] = [:]
     var dirtyPaths: Set<String> = []
+    /// Worktree-relative files in the index, keyed by worktree path.
+    var trackedFiles: [String: [String]] = [:]
+    /// Worktrees whose `ls-files` fails.
+    var trackingFailures: Set<String> = []
     /// Keyed by branch; missing branches answer `.none`.
     var mergedPullRequests: [String: GitMergedPullRequestLookupResult] = [:]
     private(set) var ancestryCalls: [String] = []
@@ -171,6 +175,14 @@ final class StubWorktreeGit: WorktreeStorageGitReading {
     func commitDate(of commit: String, at repoPath: String) async -> Date? { commitDates[commit] }
 
     func hasUncommittedChanges(at worktreePath: String) async -> Bool? { dirtyPaths.contains(worktreePath) }
+
+    func trackedDirectories(among relativePaths: [String], at worktreePath: String) async -> Set<String>? {
+        guard !trackingFailures.contains(worktreePath) else { return nil }
+        let files = trackedFiles[worktreePath] ?? []
+        return Set(relativePaths.filter { directory in
+            files.contains { $0 == directory || $0.hasPrefix(directory + "/") }
+        })
+    }
 
     func lookupMergedPullRequest(repoPath: String, head: String, ghPathOverride: String?) async -> GitMergedPullRequestLookupResult {
         lookupCalls.append(head)

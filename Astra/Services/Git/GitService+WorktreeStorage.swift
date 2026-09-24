@@ -35,6 +35,9 @@ protocol WorktreeStorageGitReading: AnyObject {
     /// True when `git status` lists tracked or untracked changes; nil when git
     /// can't tell (for example, the worktree is gone).
     func hasUncommittedChanges(at worktreePath: String) async -> Bool?
+    /// The worktree-relative directories among `relativePaths` that hold at
+    /// least one file in git's index; nil when git can't tell.
+    func trackedDirectories(among relativePaths: [String], at worktreePath: String) async -> Set<String>?
     func lookupMergedPullRequest(repoPath: String, head: String, ghPathOverride: String?) async -> GitMergedPullRequestLookupResult
 }
 
@@ -75,6 +78,24 @@ extension GitService: WorktreeStorageGitReading {
             failureLogLevel: .debug
         ) else { return nil }
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func trackedDirectories(among relativePaths: [String], at worktreePath: String) async -> Set<String>? {
+        guard !relativePaths.isEmpty else { return [] }
+        // The index, not HEAD: a file staged under `.build` is tracked too.
+        // Literal pathspecs, so a folder name is never read as a glob.
+        guard let output = try? await runGit(
+            at: worktreePath,
+            arguments: ["--literal-pathspecs", "ls-files", "-z", "--"] + relativePaths,
+            failureLogLevel: .debug
+        ) else { return nil }
+        var tracked: Set<String> = []
+        for file in output.split(separator: "\0") where tracked.count < relativePaths.count {
+            if let directory = relativePaths.first(where: { file == $0 || file.hasPrefix($0 + "/") }) {
+                tracked.insert(directory)
+            }
+        }
+        return tracked
     }
 
     /// The most recent MERGED pull request whose head branch has this name.

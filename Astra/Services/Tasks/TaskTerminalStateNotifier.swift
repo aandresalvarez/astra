@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
@@ -9,6 +8,11 @@ extension Notification.Name {
     /// the caller saves, while a worker may still hold the task, so observers
     /// should treat it as a cue to look again, not as settled state.
     static let taskDidReachTerminalState = Notification.Name("astra.taskDidReachTerminalState")
+
+    /// Posted on the main actor when a turn request becomes completed, failed
+    /// or cancelled (`TaskTurnRequestStateMachine`). A retracted follow-up
+    /// releases what it held without any task status change.
+    static let taskTurnRequestDidReachTerminalState = Notification.Name("astra.taskTurnRequestDidReachTerminalState")
 }
 
 /// What finished, and the checkout it was working in.
@@ -18,10 +22,20 @@ struct TaskTerminalStateChange: Equatable, Sendable {
     /// The task's pinned checkout, or its workspace's active worktree when the
     /// task wasn't pinned. Nil when it ran in the workspace's primary path.
     let workingPath: String?
-    /// Folders the runtime let the task write (the same set it grants), plus
-    /// what its most recent turn requests captured: a turn runs where its
-    /// request's snapshot says, even if the task was re-pinned since.
+    /// Folders the runtime let the task write (the same set it grants).
     var writablePaths: [String] = []
+}
+
+/// A turn request that stopped holding what it captured.
+struct TaskTurnRequestTerminalChange: Equatable, Sendable {
+    let requestID: UUID
+    let taskID: UUID
+    let state: TaskTurnRequestState
+    /// The execution root and workspace claims captured at submission. A turn
+    /// runs there even if its task was re-pinned since.
+    let capturedPaths: [String]
+    /// True when the turn started, so it worked in those paths.
+    let ran: Bool
 }
 
 @MainActor
@@ -36,30 +50,28 @@ enum TaskTerminalStateNotifier {
                 status: task.status,
                 workingPath: pinned ?? workspaceWorktree,
                 writablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
-                    + recentRequestPaths(for: task)
             )
         )
     }
 
-    /// Execution roots and workspace claims captured by the task's latest
-    /// turn requests. A failed read only means fewer rechecks get scheduled.
-    private static func recentRequestPaths(for task: AgentTask) -> [String] {
-        guard let modelContext = task.modelContext else { return [] }
-        let taskID = task.id
-        var descriptor = FetchDescriptor<TaskTurnRequest>(
-            predicate: #Predicate { $0.taskID == taskID },
-            sortBy: [SortDescriptor(\.sequence, order: .reverse)]
-        )
-        descriptor.fetchLimit = 3
-        let requests = (try? modelContext.fetch(descriptor)) ?? []
+    /// Each request reports its own snapshot when it ends, so the turn that
+    /// actually ran is covered however many follow-ups are queued behind it.
+    static func post(for request: TaskTurnRequest) {
         var paths: [String] = []
-        for request in requests {
-            let captured = [request.executionPolicySnapshot?.executionRootPath].compactMap { $0 }
-                + request.resourceClaims.filter { $0.kind == .workspace }.map(\.key)
-            for path in captured where !path.isEmpty && !paths.contains(path) {
-                paths.append(path)
-            }
+        let captured = [request.executionPolicySnapshot?.executionRootPath].compactMap { $0 }
+            + request.resourceClaims.filter { $0.kind == .workspace }.map(\.key)
+        for path in captured where !path.isEmpty && !paths.contains(path) {
+            paths.append(path)
         }
-        return paths
+        NotificationCenter.default.post(
+            name: .taskTurnRequestDidReachTerminalState,
+            object: TaskTurnRequestTerminalChange(
+                requestID: request.id,
+                taskID: request.taskID,
+                state: request.state,
+                capturedPaths: paths,
+                ran: request.startedAt != nil
+            )
+        )
     }
 }

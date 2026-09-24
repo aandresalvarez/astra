@@ -24,6 +24,22 @@ struct WorktreeStorageReport: Equatable, Sendable {
     let exists: Bool
     let measuredAt: Date
 
+    /// The report without the artifacts at these worktree-relative paths.
+    /// Totals keep counting them; they just aren't reclaimable.
+    func excludingArtifacts(at relativePaths: Set<String>) -> WorktreeStorageReport {
+        guard !relativePaths.isEmpty else { return self }
+        let kept = artifacts.filter { !relativePaths.contains($0.relativePath) }
+        return WorktreeStorageReport(
+            worktreePath: worktreePath,
+            artifacts: kept,
+            interruptedReclaims: interruptedReclaims,
+            artifactBytes: kept.reduce(Int64(0)) { $0 + $1.bytes },
+            totalBytes: totalBytes,
+            exists: exists,
+            measuredAt: measuredAt
+        )
+    }
+
     static func missing(worktreePath: String, at date: Date) -> WorktreeStorageReport {
         WorktreeStorageReport(
             worktreePath: worktreePath,

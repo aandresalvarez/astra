@@ -132,6 +132,7 @@ final class WorktreeReclaimService: ObservableObject {
     private var rechecks: [String: Task<Void, Never>] = [:]
     private var launchPass: Task<Void, Never>?
     private var terminalObserver: NSObjectProtocol?
+    private var requestObserver: NSObjectProtocol?
 
     init(
         git: WorktreeStorageGitReading = GitService.shared,
@@ -283,11 +284,23 @@ final class WorktreeReclaimService: ObservableObject {
                 self?.handleTaskReachedTerminalState(change)
             }
         }
+        requestObserver = NotificationCenter.default.addObserver(
+            forName: .taskTurnRequestDidReachTerminalState,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let change = notification.object as? TaskTurnRequestTerminalChange else { return }
+            Task { @MainActor [weak self] in
+                self?.handleTurnRequestReachedTerminalState(change)
+            }
+        }
     }
 
     func stopObservingTaskCompletion() {
         if let terminalObserver { NotificationCenter.default.removeObserver(terminalObserver) }
+        if let requestObserver { NotificationCenter.default.removeObserver(requestObserver) }
         terminalObserver = nil
+        requestObserver = nil
     }
 
     func handleTaskReachedTerminalState(_ change: TaskTerminalStateChange) {
@@ -312,6 +325,31 @@ final class WorktreeReclaimService: ObservableObject {
             _ = preservedActivity(root, observed: finishedAt)
             guard enabled else { continue }
             scheduleRecheck(repoPath: root, worktreePath: root, at: finishedAt.addingTimeInterval(reclaimAfter))
+        }
+    }
+
+    /// A turn request stopped holding what it captured. A pass that kept a
+    /// worktree only for that hold scheduled nothing, and a follow-up
+    /// retracted from a finished task changes no task status, so this is the
+    /// only cue to look again.
+    func handleTurnRequestReachedTerminalState(_ change: TaskTurnRequestTerminalChange) {
+        let enabled = WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
+        let reclaimAfter = WorktreeStorageSettings.thresholds(in: defaults).reclaimAfter
+        var roots: [String] = []
+        for path in change.capturedPaths {
+            let root = WorktreePath.containingCheckoutRoot(of: path) ?? path
+            if !roots.contains(root) { roots.append(root) }
+        }
+        let endedAt = clock()
+        for root in roots {
+            // A turn that ran worked there just now; one retracted while
+            // queued never touched it, and the pass reads real activity.
+            if change.ran { _ = preservedActivity(root, observed: endedAt) }
+            guard enabled else { continue }
+            let at = endedAt.addingTimeInterval(change.ran ? reclaimAfter : WorktreeActivityProbe.recentWriteWindow)
+            // An earlier recheck re-derives any later one, so keep it.
+            if let pending = pendingRecheckDates[root], pending <= at { continue }
+            scheduleRecheck(repoPath: root, worktreePath: root, at: at)
         }
     }
 
@@ -528,7 +566,7 @@ final class WorktreeReclaimService: ObservableObject {
     }
 
     private struct FileFacts: Sendable {
-        let report: WorktreeStorageReport
+        var report: WorktreeStorageReport
         let buildSignal: WorktreeBuildSignal?
         let newestArtifactWrite: Date?
         let indexModified: Date?
@@ -556,8 +594,26 @@ final class WorktreeReclaimService: ObservableObject {
 
         let inspector = self.inspector
         let probe = reclaimer.probe
-        let facts = await WorktreeStorageWork.run {
+        var facts = await WorktreeStorageWork.run {
             paths.map { Self.fileFacts(worktreePath: $0, inspector: inspector, probe: probe, now: now) }
+        }
+
+        // A folder's name and manifest make it look like build output; a file
+        // git tracks inside it is source all the same. Those artifacts are
+        // never reclaimable, and a worktree git can't answer for is kept.
+        var trackedArtifacts: [String: Set<String>] = [:]
+        var trackingUnknown: Set<String> = []
+        for index in facts.indices where !facts[index].report.artifacts.isEmpty {
+            let report = facts[index].report
+            guard let tracked = await git.trackedDirectories(
+                among: report.artifacts.map(\.relativePath),
+                at: report.worktreePath
+            ) else {
+                trackingUnknown.insert(report.worktreePath)
+                continue
+            }
+            trackedArtifacts[report.worktreePath] = tracked
+            facts[index].report = report.excludingArtifacts(at: tracked)
         }
 
         // Fail closed: if task state can't be read, every worktree counts as
@@ -583,6 +639,7 @@ final class WorktreeReclaimService: ObservableObject {
                 ),
                 buildSignal: fact.buildSignal,
                 inUse: inUseReason(worktree.path, holds: holds, otherWorktreePaths: allPaths)
+                    ?? (trackingUnknown.contains(worktree.path) ? Self.unreadableTrackingReason : nil)
                     ?? (roots == nil && mode == .automatic ? Self.unreadableWorkspaceStateReason : nil),
                 mode: mode,
                 thresholds: thresholds,
@@ -710,8 +767,9 @@ final class WorktreeReclaimService: ObservableObject {
             let fresh = await WorktreeStorageWork.run {
                 changed.map { Self.fileFacts(worktreePath: $0, inspector: inspector, probe: probe, now: later) }
             }
-            for fact in fresh {
+            for var fact in fresh {
                 let path = fact.report.worktreePath
+                fact.report = fact.report.excludingArtifacts(at: trackedArtifacts[path] ?? [])
                 guard var input = inputs[path], let status = statuses[path] else { continue }
                 input.artifactBytes = fact.report.artifactBytes
                 input.buildSignal = fact.buildSignal
@@ -779,6 +837,7 @@ final class WorktreeReclaimService: ObservableObject {
     }
 
     nonisolated static let unreadableWorkspaceStateReason = "Workspace state couldn't be read"
+    nonisolated static let unreadableTrackingReason = "Tracked files couldn't be checked"
 
     /// Canonical protected paths, or nil when workspace state can't be read.
     private func currentWorkspaceRoots() -> Set<String>? {

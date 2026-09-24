@@ -86,6 +86,9 @@ enum TaskTurnRequestStateMachine {
             request.startedAt = nil
         }
         TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(next.rawValue)")
+        if next.isTerminal {
+            TaskTerminalStateNotifier.post(for: request)
+        }
         return TransitionResult(from: current, to: next, changed: true, rejection: nil)
     }
 

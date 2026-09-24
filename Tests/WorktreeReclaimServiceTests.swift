@@ -295,8 +295,8 @@ struct WorktreeReclaimServiceTests {
         _ = container
     }
 
-    @Test("A terminal change includes the checkouts the task's turn requests captured")
-    func terminalChangeIncludesRequestSnapshots() throws {
+    @Test("A turn request that ends reports the checkouts it captured, even after a re-pin")
+    func requestTerminalChangeReportsSnapshot() throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -308,31 +308,109 @@ struct WorktreeReclaimServiceTests {
         let task = AgentTask(title: "Fix login", goal: "Fix it", workspace: workspace)
         task.executionRootPath = "/worktrees/app/captured"
         context.insert(task)
-        context.insert(TaskTurnRequest(
+        let request = TaskTurnRequest(
             task: task,
             messageEventID: UUID(),
             sequence: 1,
             resourceClaims: [TaskExecutionResourceClaim(kind: .workspace, key: "/worktrees/app/claimed", access: .exclusive)]
-        ))
+        )
+        context.insert(request)
         // Re-pinned after the turn was captured: the turn still ran where it said.
         task.executionRootPath = "/worktrees/app/repinned"
         try context.save()
 
-        let recorder = TerminalChangeRecorder(taskID: task.id)
+        let recorder = RequestChangeRecorder(requestID: request.id)
         let observer = NotificationCenter.default.addObserver(
-            forName: .taskDidReachTerminalState, object: nil, queue: nil
+            forName: .taskTurnRequestDidReachTerminalState, object: nil, queue: nil
         ) { notification in
-            recorder.record(notification.object as? TaskTerminalStateChange)
+            recorder.record(notification.object as? TaskTurnRequestTerminalChange)
         }
         defer { NotificationCenter.default.removeObserver(observer) }
 
-        _ = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
+        TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        TaskTurnRequestStateMachine.transition(request, to: .running)
+        #expect(recorder.changes.isEmpty, "only a terminal state releases the hold")
+        TaskTurnRequestStateMachine.transition(request, to: .completed)
 
         let change = try #require(recorder.changes.first)
-        #expect(change.workingPath == "/worktrees/app/repinned")
-        #expect(change.writablePaths.contains("/worktrees/app/captured"))
-        #expect(change.writablePaths.contains("/worktrees/app/claimed"))
+        #expect(recorder.changes.count == 1)
+        #expect(change.state == .completed)
+        #expect(change.ran)
+        #expect(change.capturedPaths == ["/worktrees/app/captured", "/worktrees/app/claimed"])
         _ = container
+    }
+
+    @Test("A queued follow-up retracted from a finished task schedules a prompt recheck")
+    func retractedFollowUpSchedulesRecheck() throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+
+        setup.service.handleTurnRequestReachedTerminalState(TaskTurnRequestTerminalChange(
+            requestID: UUID(), taskID: UUID(), state: .cancelled,
+            capturedPaths: [setup.linked.path], ran: false
+        ))
+
+        let recheck = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(abs(recheck.timeIntervalSinceNow - WorktreeActivityProbe.recentWriteWindow) < 60)
+        let recorded = setup.defaults.dictionary(forKey: AppStorageKeys.worktreeObservedActivity) as? [String: Double]
+        #expect(recorded?[WorktreePath.canonical(setup.linked.path)] == nil, "a turn that never ran isn't activity")
+    }
+
+    @Test("A turn that ran records activity and rechecks at the threshold; an earlier recheck is kept")
+    func ranTurnRecordsActivity() async throws {
+        let setup = try makeSetup(idle: 3 * Self.day)
+        defer { finish(setup) }
+        let ended = TaskTurnRequestTerminalChange(
+            requestID: UUID(), taskID: UUID(), state: .completed,
+            capturedPaths: [setup.linked.path], ran: true
+        )
+
+        setup.service.handleTurnRequestReachedTerminalState(ended)
+        let recheck = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(abs(recheck.timeIntervalSinceNow - 48 * Self.hour) < 60)
+
+        setup.service.handleTurnRequestReachedTerminalState(TaskTurnRequestTerminalChange(
+            requestID: UUID(), taskID: UUID(), state: .cancelled,
+            capturedPaths: [setup.linked.path], ran: false
+        ))
+        let sooner = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(sooner < recheck)
+        setup.service.handleTurnRequestReachedTerminalState(ended)
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] == sooner)
+
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild), "the turn just worked there")
+    }
+
+    @Test("An artifact directory holding tracked files is never reclaimed")
+    func trackedArtifactsAreKept() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try setup.fixture.file("worktrees/feature/node_modules/pkg/index.js", bytes: 50_000)
+        try setup.fixture.file("worktrees/feature/package.json", bytes: 10)
+        WorktreeStorageFixture.backdate(setup.linked.path, by: 3 * Self.day)
+        setup.git.trackedFiles[setup.linked.path] = ["node_modules/pkg/index.js"]
+
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        let report = try #require(setup.service.statuses[setup.linked.path]?.report)
+        #expect(report.artifacts.map(\.relativePath) == [".build"], "tracked files aren't reclaimable")
+
+        _ = await setup.service.reclaimNow(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(FileManager.default.fileExists(atPath: setup.linked.path + "/node_modules/pkg/index.js"))
+    }
+
+    @Test("A worktree whose tracked files can't be checked is kept, even by the Reclaim button")
+    func unknownTrackingFailsClosed() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.git.trackingFailures = [setup.linked.path]
+
+        let summary = await setup.service.reclaimNow(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(!FileManager.default.fileExists(atPath: setup.primaryBuild), "other worktrees still reclaim")
+        #expect(summary.kept.contains { $0.reason == WorktreeReclaimService.unreadableTrackingReason })
     }
 
     @Test("Reconcile measures new worktrees, forgets removed ones, and never evicts on an empty list")
@@ -882,6 +960,28 @@ private final class TerminalChangeRecorder: @unchecked Sendable {
 
     func record(_ change: TaskTerminalStateChange?) {
         guard let change, change.taskID == taskID else { return }
+        lock.lock(); defer { lock.unlock() }
+        recorded.append(change)
+    }
+}
+
+/// Collects terminal changes for one turn request.
+private final class RequestChangeRecorder: @unchecked Sendable {
+    private let requestID: UUID
+    private let lock = NSLock()
+    private var recorded: [TaskTurnRequestTerminalChange] = []
+
+    init(requestID: UUID) {
+        self.requestID = requestID
+    }
+
+    var changes: [TaskTurnRequestTerminalChange] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
+
+    func record(_ change: TaskTurnRequestTerminalChange?) {
+        guard let change, change.requestID == requestID else { return }
         lock.lock(); defer { lock.unlock() }
         recorded.append(change)
     }

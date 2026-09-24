@@ -181,6 +181,29 @@ struct GitServiceWorktreeStorageTests {
         #expect(await GitService.shared.hasUncommittedChanges(at: fixture.path("missing")) == nil)
     }
 
+    @Test("Tracked directories come from the index, whatever the folder is called")
+    func trackedDirectories() async throws {
+        let fixture = try WorktreeStorageFixture("tracked")
+        defer { fixture.cleanUp() }
+        let repo = try WorktreeStorageGit.makeRepository(in: fixture)
+        try fixture.file("repo/.build/debug/App", bytes: 10)
+        try fixture.file("repo/Tools/[x]/node_modules/pkg/index.js", bytes: 10)
+        try fixture.file("repo/Tools/[x]/package.json", bytes: 10)
+
+        #expect(await GitService.shared.trackedDirectories(among: [".build"], at: repo) == [])
+
+        // Staged, not committed: the index is what counts.
+        try fixture.file("repo/.build/vendored.txt", bytes: 10)
+        WorktreeStorageGit.run(["add", "-f", ".build/vendored.txt"], in: repo)
+        WorktreeStorageGit.run(["add", "Tools/[x]/node_modules/pkg/index.js"], in: repo)
+        let tracked = await GitService.shared.trackedDirectories(
+            among: [".build", "Tools/[x]/node_modules", "Tools/node_modules"],
+            at: repo
+        )
+        #expect(tracked == [".build", "Tools/[x]/node_modules"], "brackets are literal, not a glob")
+        #expect(await GitService.shared.trackedDirectories(among: [".build"], at: fixture.path("missing")) == nil)
+    }
+
     @Test("The merged lookup asks gh for merged PRs and decodes the head commit")
     func mergedLookup() async throws {
         let fixture = try WorktreeStorageFixture("gh")
