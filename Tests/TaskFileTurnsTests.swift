@@ -1,0 +1,303 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@Suite("Task file turns")
+struct TaskFileTurnsTests {
+    private static let workspace = "/ws"
+    private static let folder = "/ws/.astra/tasks/T1"
+    private static let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+
+    @Test("Turns count the goal as 1, list newest first, and skip turns that changed nothing")
+    func numbersAndOrdersTurns() {
+        let input = makeInput(
+            requests: [request("Second ask", at: 100), request("Third ask", at: 200)],
+            runs: [
+                run(at: 10, changes: [change("plan.md", .discovered, at: 11)]),
+                run(at: 110, changes: []),
+                run(at: 210, changes: [change("plan.md", .modified, at: 211)])
+            ]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [3, 1])
+        #expect(turns.map(\.request) == ["Third ask", "Write the plan"])
+        #expect(turns.first?.entries.map(\.change) == [.edited])
+    }
+
+    @Test("A run belongs to the message that launched it; an unlinked retry to the latest earlier request")
+    func assignsRunsToTheirRequests() {
+        let linkedRunID = UUID()
+        let input = makeInput(
+            // The message is stamped after its run started; the link still wins.
+            requests: [request("Follow-up", at: 105, runID: linkedRunID)],
+            runs: [
+                run(id: linkedRunID, at: 100, changes: [change("a.md", .discovered, at: 101)]),
+                run(at: 120, changes: [change("b.md", .discovered, at: 121)])
+            ]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [2])
+        #expect(turns.first?.entries.map(\.displayPath) == ["a.md", "b.md"])
+    }
+
+    @Test("A tool write is new the first time the task sees a path and an edit after that")
+    func classifiesChangesAcrossTurns() {
+        let input = makeInput(
+            requests: [request("Revise", at: 100)],
+            runs: [
+                run(at: 10, changes: [change("report.md", .write, at: 11), change("notes.md", .write, at: 12)]),
+                run(at: 110, changes: [
+                    change("report.md", .write, at: 111),
+                    change("fresh.md", .write, at: 112),
+                    change("notes.md", .removed, at: 113),
+                    change("scratch.md", .discovered, at: 114),
+                    change("scratch.md", .removed, at: 115)
+                ])
+            ]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+        let latest = turns.first
+
+        #expect(latest?.entries.map(\.displayPath) == ["fresh.md", "report.md", "notes.md"])
+        #expect(latest?.entries.map(\.change) == [.new, .edited, .removed])
+        #expect(latest?.entries.last?.exists == false)
+        #expect(turns.last?.entries.map(\.change) == [.new, .new])
+    }
+
+    @Test("Bookkeeping and other tasks' files stay out; workspace files show relative to the workspace")
+    func keepsOnlyFilesAUserWouldBrowse() {
+        let input = makeInput(runs: [run(at: 10, changes: [
+            change("outputs/turn_001.md", .write, at: 11),
+            change("current_state.json", .write, at: 11),
+            TaskFileTurnsInput.Change(path: "/ws/.astra/tasks/OTHER/x.md", kind: .write, timestamp: at(11)),
+            TaskFileTurnsInput.Change(path: "/ws/src/App.swift", kind: .edit, timestamp: at(12)),
+            change("answer.md", .write, at: 13)
+        ])])
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.displayPath) == ["answer.md", "src/App.swift"])
+        #expect(entries?.map(\.path) == [Self.folder + "/answer.md", "/ws/src/App.swift"])
+    }
+
+    @Test("A path a provider recorded relative to the workspace opens from the task folder")
+    func resolvesWorkspaceRelativePaths() {
+        let input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: ".astra/tasks/T1/index.html", kind: .write, timestamp: at(11)),
+            change("index.html", .edit, at: 12)
+        ])])
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.path) == [Self.folder + "/index.html"])
+        #expect(entries?.map(\.change) == [.new])
+    }
+
+    @Test("Files only the artifact index saw go to the run they appeared in, as new files only")
+    func recoversOlderTurnsFromTheArtifactIndex() {
+        let input = makeInput(
+            requests: [request("Build it", at: 100)],
+            runs: [
+                run(at: 10, endsAt: 20, changes: [change("tool.md", .write, at: 11)]),
+                run(at: 110, endsAt: 120, changes: [])
+            ],
+            indexedFiles: [
+                indexed("tool.md", at: 11),
+                indexed("shell-output.csv", at: 123),
+                indexed("shell-output.csv", at: 300),
+                indexed("unmatched.md", at: 500)
+            ]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [2, 1])
+        #expect(turns.first?.entries.map(\.displayPath) == ["shell-output.csv"])
+        #expect(turns.first?.listsNewFilesOnly == true)
+        #expect(turns.last?.listsNewFilesOnly == false)
+    }
+
+    @Test("A running turn shows before it has changed anything")
+    func runningTurnIsListed() {
+        let input = makeInput(
+            requests: [request("Keep going", at: 100)],
+            runs: [run(at: 110, isRunning: true, changes: [])]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [2])
+        #expect(turns.first?.isRunning == true)
+    }
+
+    @Test("A file a later turn removed cannot be opened from the turn that made it")
+    func marksFilesNoLongerOnDisk() {
+        let input = makeInput(runs: [run(at: 10, changes: [change("gone.md", .discovered, at: 11)])])
+
+        let entry = TaskFileTurns.build(input, fileExists: { _ in false }).first?.entries.first
+
+        #expect(entry?.change == .new)
+        #expect(entry?.exists == false)
+    }
+
+    // MARK: - Fixtures
+
+    private func makeInput(
+        requests: [TaskFileTurnsInput.Request] = [],
+        runs: [TaskFileTurnsInput.Run],
+        indexedFiles: [TaskFileTurnsInput.IndexedFile] = []
+    ) -> TaskFileTurnsInput {
+        TaskFileTurnsInput(
+            goal: "Write the plan",
+            createdAt: Self.start,
+            requests: requests,
+            runs: runs,
+            indexedFiles: indexedFiles,
+            taskFolder: Self.folder,
+            workspacePath: Self.workspace
+        )
+    }
+
+    private func at(_ seconds: TimeInterval) -> Date { Self.start.addingTimeInterval(seconds) }
+
+    private func request(_ text: String, at seconds: TimeInterval, runID: UUID? = nil) -> TaskFileTurnsInput.Request {
+        TaskFileTurnsInput.Request(text: text, requestedAt: at(seconds), runID: runID)
+    }
+
+    private func run(
+        id: UUID = UUID(),
+        at seconds: TimeInterval,
+        endsAt end: TimeInterval? = nil,
+        isRunning: Bool = false,
+        changes: [TaskFileTurnsInput.Change]
+    ) -> TaskFileTurnsInput.Run {
+        TaskFileTurnsInput.Run(
+            id: id,
+            startedAt: at(seconds),
+            completedAt: isRunning ? nil : at(end ?? seconds + 5),
+            isRunning: isRunning,
+            changes: changes
+        )
+    }
+
+    private func change(_ name: String, _ kind: StoredFileChangeKind, at seconds: TimeInterval) -> TaskFileTurnsInput.Change {
+        TaskFileTurnsInput.Change(path: Self.folder + "/" + name, kind: kind, timestamp: at(seconds))
+    }
+
+    private func indexed(_ name: String, at seconds: TimeInterval) -> TaskFileTurnsInput.IndexedFile {
+        TaskFileTurnsInput.IndexedFile(path: Self.folder + "/" + name, indexedAt: at(seconds))
+    }
+}
+
+@Suite("Task file turns presentation")
+struct ShelfFileTurnsPresentationTests {
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "MMM d, h:mm a"
+        return formatter
+    }()
+
+    @Test("The subtitle leads with the turn number, then when, then counts by kind")
+    func subtitleCarriesNumberTimeAndCounts() {
+        let turn = makeTurn(entries: [entry("a.md", .new), entry("b.md", .edited), entry("c.md", .edited)])
+        #expect(ShelfFileTurnsPresentation.subtitle(for: turn, formatter: Self.formatter) == "Turn 4 · Jan 1, 12:00 AM · 1 new, 2 edited")
+
+        let running = makeTurn(isRunning: true, entries: [entry("gone.md", .removed)])
+        #expect(ShelfFileTurnsPresentation.subtitle(for: running, formatter: Self.formatter) == "Turn 4 · Running · 1 removed")
+    }
+
+    @Test("The title is the first line the user wrote")
+    func titleIsTheFirstLine() {
+        #expect(ShelfFileTurnsPresentation.title(for: makeTurn(request: "\n  Fix the README\nand more")) == "Fix the README")
+        #expect(ShelfFileTurnsPresentation.title(for: makeTurn(request: "Attached files:\n- /tmp/a.png")) == "Attached files")
+    }
+
+    @Test("Search keeps matching files, or every file of a request whose text matches")
+    func searchFiltersByPathOrRequest() {
+        let turns = [
+            makeTurn(number: 2, request: "Refresh the report", entries: [entry("report.csv", .edited), entry("notes.md", .new)]),
+            makeTurn(number: 1, request: "Start", entries: [entry("reports/q3.md", .new), entry("plan.md", .new)])
+        ]
+
+        let byPath = ShelfFileTurnsPresentation.visibleTurns(turns, matching: "q3")
+        #expect(byPath.map(\.number) == [1])
+        #expect(byPath.first?.entries.map(\.displayPath) == ["reports/q3.md"])
+
+        let byRequest = ShelfFileTurnsPresentation.visibleTurns(turns, matching: "refresh")
+        #expect(byRequest.first?.entries.count == 2)
+    }
+
+    private func makeTurn(
+        number: Int = 4,
+        request: String = "Ask",
+        isRunning: Bool = false,
+        entries: [TaskFileTurn.Entry] = []
+    ) -> TaskFileTurn {
+        TaskFileTurn(
+            number: number,
+            request: request,
+            requestedAt: Date(timeIntervalSince1970: 0),
+            isRunning: isRunning,
+            entries: entries,
+            listsNewFilesOnly: false
+        )
+    }
+
+    private func entry(_ path: String, _ change: TaskFileTurn.Change) -> TaskFileTurn.Entry {
+        TaskFileTurn.Entry(path: "/t/" + path, displayPath: path, change: change, changedAt: Date(), exists: true)
+    }
+}
+
+@Suite("Task file turns store read")
+@MainActor
+struct TaskFileTurnsStoreTests {
+    @Test("The store reads every run, message link, and indexed file into turns")
+    func storeReadsTheWholeHistory() async throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Turns", primaryPath: "/ws")
+        let task = AgentTask(title: "Report", goal: "Write the report", workspace: workspace)
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let first = TaskRun(task: task)
+        first.appendHostFileChanges([StoredFileChange(path: folder + "/report.csv", changeType: "discovered")])
+        first.status = .completed
+        first.completedAt = first.startedAt
+        let second = TaskRun(task: task)
+        second.startedAt = first.startedAt.addingTimeInterval(60)
+        second.appendHostFileChanges([StoredFileChange(path: folder + "/report.csv", changeType: "modified")])
+        second.status = .completed
+        second.completedAt = second.startedAt
+        let message = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Add a row", run: second)
+        message.timestamp = second.startedAt
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(first)
+        context.insert(second)
+        context.insert(message)
+        try context.save()
+
+        let turns = try await TaskThreadHistoryStore(container: container).fileTurns(
+            taskID: task.id,
+            taskFolder: folder,
+            workspacePath: "/ws"
+        )
+
+        #expect(turns.map(\.number) == [2, 1])
+        #expect(turns.map(\.request) == ["Add a row", "Write the report"])
+        #expect(turns.map { $0.entries.map(\.change) } == [[.edited], [.new]])
+    }
+}
