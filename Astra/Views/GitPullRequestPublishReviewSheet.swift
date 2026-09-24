@@ -118,7 +118,7 @@ struct GitPullRequestPublishReviewSheet: View {
                         .fill(Color.primary.opacity(0.025))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+                                .stroke(Stanford.borderRest, lineWidth: 1)
                         )
                 )
             }

@@ -293,7 +293,7 @@ struct SidebarThreadRow: View {
         case .keyboardFocus:
             return Stanford.focusRing.opacity(0.82)
         case .selection:
-            return Color.primary.opacity(0.10)
+            return Stanford.borderRest
         }
     }
 

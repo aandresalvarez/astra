@@ -94,7 +94,6 @@ struct ShelfFileNavigatorHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Stanford.cardBackground.opacity(0.45))
     }
 
     private var scopeMenu: some View {
@@ -178,7 +177,7 @@ struct ShelfOpenDocumentsSection: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .contentShape(Rectangle())
-                    .background(isSelected ? Stanford.lagunita.opacity(0.10) : Color.clear)
+                    .background(isSelected ? Stanford.lagunita.opacity(Stanford.fillTint) : Color.clear)
                 }
                 .buttonStyle(.plain)
                 .help(document.fileURL.path)
@@ -200,20 +199,20 @@ struct BrowseFilesToolbarButtonStyle: ButtonStyle {
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
                     .fill(backgroundColor(isPressed: configuration.isPressed))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(isActive ? 0.28 : 0.18), lineWidth: 1)
+                RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(isActive ? Stanford.strokeActive : Stanford.strokeRest), lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: ShelfChrome.controlRadius, style: .continuous))
     }
 
     private func backgroundColor(isPressed: Bool) -> Color {
         if isPressed {
-            return Stanford.lagunita.opacity(0.16)
+            return Stanford.lagunita.opacity(Stanford.fillTintPressed)
         }
-        return Stanford.lagunita.opacity(isActive ? 0.12 : 0.07)
+        return Stanford.lagunita.opacity(isActive ? Stanford.fillTint : Stanford.fillSoft)
     }
 }

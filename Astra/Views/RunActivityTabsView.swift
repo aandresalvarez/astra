@@ -242,7 +242,7 @@ struct RunActivityProgressTimelineView: View {
                             .frame(width: 14, height: 16)
                         if index < messages.count - 1 {
                             Rectangle()
-                                .fill(Stanford.sandstone.opacity(0.45))
+                                .fill(Stanford.separator)
                                 .frame(width: 1)
                                 .frame(minHeight: 28)
                         }

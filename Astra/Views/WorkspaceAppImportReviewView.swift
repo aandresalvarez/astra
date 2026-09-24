@@ -70,7 +70,7 @@ struct WorkspaceAppImportReviewView: View {
         }
         .padding(.horizontal, 24).padding(.vertical, 16)
         .background(Color.primary.opacity(0.025))
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Stanford.separator).frame(height: 1) }
     }
 
     private var emptyState: some View {
@@ -183,7 +183,7 @@ struct WorkspaceAppImportReviewView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.025))
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous).stroke(Stanford.borderRest, lineWidth: 1))
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

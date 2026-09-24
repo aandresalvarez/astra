@@ -122,7 +122,7 @@ struct SidebarWorkspaceAppRow: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
                     .stroke(
-                        isSelected ? Color.primary.opacity(0.10) : (isHovered ? Color.primary.opacity(0.055) : .clear),
+                        isSelected ? Stanford.borderRest : (isHovered ? Stanford.borderSubtle : .clear),
                         lineWidth: 1
                     )
             )

@@ -50,7 +50,7 @@ struct MCPInstallTargetPasteSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            .stroke(Stanford.borderRest, lineWidth: 1)
                     )
                     .frame(minHeight: CGFloat(CapabilityCreationPresentation.mcpPasteTextEditorMinimumHeight))
 

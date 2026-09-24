@@ -22,9 +22,9 @@ enum ChatTranscriptUserBubbleStyle {
     var stroke: Color {
         switch self {
         case .workspace:
-            Stanford.sky.opacity(0.11)
+            Stanford.sky.opacity(Stanford.strokeRest)
         case .task:
-            Color.primary.opacity(0.07)
+            Stanford.borderSubtle
         }
     }
 }
