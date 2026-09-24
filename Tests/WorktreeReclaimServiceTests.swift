@@ -200,6 +200,46 @@ struct WorktreeReclaimServiceTests {
         #expect(setup.service.pendingRecheckDates.isEmpty)
     }
 
+    @Test("A task that finishes while automatic reclaim is off still counts as recent activity")
+    func terminalActivityIsRecordedWhenOff() async throws {
+        let setup = try makeSetup(idle: 3 * Self.day)
+        defer { finish(setup) }
+        WorktreeStorageSettings.setAutomaticReclaimEnabled(false, in: setup.defaults)
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: setup.linked.path)
+        )
+
+        WorktreeStorageSettings.setAutomaticReclaimEnabled(true, in: setup.defaults)
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect((setup.service.statuses[setup.linked.path]?.idle ?? .infinity) < 60 * 60)
+    }
+
+    @Test("A recheck whose worktree listing fails is retried a bounded number of times")
+    func failedRecheckListingIsRetried() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        setup.git.worktrees = []
+
+        await setup.service.performRecheck(repoPath: setup.primary.path, worktreePath: setup.linked.path)
+        let retry = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(abs(retry.timeIntervalSinceNow - WorktreeActivityProbe.recentWriteWindow) < 60)
+
+        setup.service.cancelScheduledWork()
+        await setup.service.performRecheck(
+            repoPath: setup.primary.path,
+            worktreePath: setup.linked.path,
+            attempt: WorktreeReclaimService.maxRecheckListingAttempts
+        )
+        #expect(setup.service.pendingRecheckDates.isEmpty, "the last attempt gives up")
+
+        setup.git.worktrees = setup.worktrees
+        await setup.service.performRecheck(repoPath: setup.primary.path, worktreePath: setup.linked.path, attempt: 2)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild), "a listing that answers evaluates")
+        #expect(FileManager.default.fileExists(atPath: setup.primaryBuild), "only the rechecked worktree")
+    }
+
     @Test("The service hears terminal transitions through the notification")
     func terminalNotificationReachesService() async throws {
         let setup = try makeSetup()
@@ -252,6 +292,46 @@ struct WorktreeReclaimServiceTests {
         // A repeated terminal write is not a new event.
         _ = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
         #expect(recorder.changes.count == 1)
+        _ = container
+    }
+
+    @Test("A terminal change includes the checkouts the task's turn requests captured")
+    func terminalChangeIncludesRequestSnapshots() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Repo", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let task = AgentTask(title: "Fix login", goal: "Fix it", workspace: workspace)
+        task.executionRootPath = "/worktrees/app/captured"
+        context.insert(task)
+        context.insert(TaskTurnRequest(
+            task: task,
+            messageEventID: UUID(),
+            sequence: 1,
+            resourceClaims: [TaskExecutionResourceClaim(kind: .workspace, key: "/worktrees/app/claimed", access: .exclusive)]
+        ))
+        // Re-pinned after the turn was captured: the turn still ran where it said.
+        task.executionRootPath = "/worktrees/app/repinned"
+        try context.save()
+
+        let recorder = TerminalChangeRecorder(taskID: task.id)
+        let observer = NotificationCenter.default.addObserver(
+            forName: .taskDidReachTerminalState, object: nil, queue: nil
+        ) { notification in
+            recorder.record(notification.object as? TaskTerminalStateChange)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        _ = TaskStateMachine.cancelFromLifecycle(task, modelContext: context)
+
+        let change = try #require(recorder.changes.first)
+        #expect(change.workingPath == "/worktrees/app/repinned")
+        #expect(change.writablePaths.contains("/worktrees/app/captured"))
+        #expect(change.writablePaths.contains("/worktrees/app/claimed"))
         _ = container
     }
 

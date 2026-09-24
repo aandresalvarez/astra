@@ -121,6 +121,8 @@ final class WorktreeReclaimService: ObservableObject {
     private var automaticallyEvaluatedRepositories: Set<String> = []
     private var repositoryPasses: [String: Task<Void, Never>] = [:]
     private var suggestionCheckedAt: [String: Date] = [:]
+    /// Tries a recheck makes at listing the worktree before giving up.
+    static let maxRecheckListingAttempts = 3
     private var revalidatingSuggestions: Set<String> = []
     private static let suggestionRecheckInterval: TimeInterval = 60
     /// Worktrees measured so far; lets tests prove work isn't repeated.
@@ -289,7 +291,7 @@ final class WorktreeReclaimService: ObservableObject {
     }
 
     func handleTaskReachedTerminalState(_ change: TaskTerminalStateChange) {
-        guard WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) else { return }
+        let enabled = WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
         let reclaimAfter = WorktreeStorageSettings.thresholds(in: defaults).reclaimAfter
         // A task can run in a subfolder and write elsewhere; each recheck needs
         // the checkout git lists. `git worktree list` works from any checkout.
@@ -304,9 +306,11 @@ final class WorktreeReclaimService: ObservableObject {
         }
         let finishedAt = clock()
         for root in roots {
-            // Recorded durably: once finished, an unpinned task no longer
-            // claims the checkout, and no other signal need show it was busy.
+            // Recorded durably, whatever the setting: once finished, the task
+            // no longer claims the checkout, and turning automatic reclaim on
+            // later must still see it was just in use.
             _ = preservedActivity(root, observed: finishedAt)
+            guard enabled else { continue }
             scheduleRecheck(repoPath: root, worktreePath: root, at: finishedAt.addingTimeInterval(reclaimAfter))
         }
     }
@@ -476,7 +480,7 @@ final class WorktreeReclaimService: ObservableObject {
         return summary
     }
 
-    private func scheduleRecheck(repoPath: String, worktreePath: String, at date: Date) {
+    private func scheduleRecheck(repoPath: String, worktreePath: String, at date: Date, attempt: Int = 1) {
         rechecks[worktreePath]?.cancel()
         pendingRecheckDates[worktreePath] = date
         let delay = min(max(0, date.timeIntervalSince(clock())) + Self.recheckSlack, 8 * 24 * 60 * 60)
@@ -486,11 +490,30 @@ final class WorktreeReclaimService: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.rechecks[worktreePath] = nil
             self.pendingRecheckDates[worktreePath] = nil
-            let all = await self.git.listWorktrees(at: repoPath)
-            let worktrees = all.filter { WorktreePath.same($0.path, worktreePath) }
-            guard !worktrees.isEmpty else { return }
-            _ = await self.evaluate(repoPath: repoPath, worktrees: worktrees, mode: .automatic, context: all)
+            await self.performRecheck(repoPath: repoPath, worktreePath: worktreePath, attempt: attempt)
         }
+    }
+
+    /// Evaluates one worktree when its recheck fires. Rechecks are one-shot and
+    /// nothing polls, so a failed `git worktree list` (an empty list) is
+    /// retried a few times rather than dropping the worktree for the session.
+    /// A worktree git no longer lists is simply gone.
+    func performRecheck(repoPath: String, worktreePath: String, attempt: Int = 1) async {
+        let all = await git.listWorktrees(at: repoPath)
+        guard !all.isEmpty else {
+            if attempt < Self.maxRecheckListingAttempts, pendingRecheckDates[worktreePath] == nil {
+                scheduleRecheck(
+                    repoPath: repoPath,
+                    worktreePath: worktreePath,
+                    at: clock().addingTimeInterval(WorktreeActivityProbe.recentWriteWindow),
+                    attempt: attempt + 1
+                )
+            }
+            return
+        }
+        let worktrees = all.filter { WorktreePath.same($0.path, worktreePath) }
+        guard !worktrees.isEmpty else { return }
+        _ = await evaluate(repoPath: repoPath, worktrees: worktrees, mode: .automatic, context: all)
     }
 
     /// Chains passes so two never touch the same tree at once.

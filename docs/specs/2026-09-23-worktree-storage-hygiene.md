@@ -293,7 +293,12 @@ A "Merged · Remove" suggestion is re-validated at most once a minute while the
 panel refreshes (cleanliness plus a local ancestry check; merges GitHub
 confirmed stay cached), so a moved base branch withdraws it. A finished task
 records its finish time as durable activity for its checkouts, so a recheck
-that runs early can't reclaim a checkout that was just in use.
+that runs early can't reclaim a checkout that was just in use. It records that
+even while automatic reclaim is off; only the recheck depends on the setting.
+Its checkouts include the roots and workspace claims its latest turn requests
+captured, since a turn runs where its snapshot says even after a re-pin.
+A recheck whose `git worktree list` fails (an empty list) tries again after
+15 minutes, up to 3 attempts; a worktree git no longer lists is gone.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,
