@@ -160,6 +160,18 @@ struct WorktreeActivityProbeTests {
         try fixture.directory("relative")
         try "gitdir: ../primary/.git/worktrees/relative\n".write(toFile: fixture.path("relative/.git"), atomically: true, encoding: .utf8)
         #expect(WorktreeActivityProbe.gitDirectory(forWorktree: fixture.path("relative")) == fixture.path("primary/.git/worktrees/relative"))
+
+        // A `.git` symlinked to the real directory: its index must be found,
+        // or the rename guard would compare nil with nil.
+        try fixture.file("elsewhere/repo.git/index", bytes: 32)
+        try fixture.directory("symlinked")
+        try FileManager.default.createSymbolicLink(
+            atPath: fixture.path("symlinked/.git"),
+            withDestinationPath: fixture.path("elsewhere/repo.git")
+        )
+        let resolved = try #require(WorktreeActivityProbe.gitDirectory(forWorktree: fixture.path("symlinked")))
+        #expect(WorktreePath.same(resolved, fixture.path("elsewhere/repo.git")))
+        #expect(WorktreeActivityProbe().gitIndexModificationDate(worktreePath: fixture.path("symlinked")) != nil)
     }
 
     @Test("The live process name comes from the kernel")

@@ -487,6 +487,82 @@ struct WorktreeReclaimServiceTests {
         #expect(start.lowerBound < requests.lowerBound)
     }
 
+    @Test("A task that starts and finishes while the pass awaits git still counts as activity")
+    func taskFinishedMidPassKeepsArtifacts() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let reads = CallCounter()
+        let linkedPath = setup.linked.path
+        setup.service.attach(
+            taskHolds: {
+                // No hold when the pass starts; by the gate the task is done.
+                guard reads.increment() > 1 else { return [] }
+                return [WorktreeTaskHold(taskTitle: "Quick fix", rootPath: linkedPath, isTerminal: true,
+                                         hasActiveTurnRequest: false, updatedAt: Date())]
+            },
+            workspaceRoots: { [] }
+        )
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains { $0.worktreeName == "feature" && $0.reason.hasPrefix("Active") })
+    }
+
+    @Test("A task that ran between two panel refreshes withdraws a removal suggestion")
+    func recordedActivityInvalidatesCachedDecision() async throws {
+        let setup = try makeSetup(idle: 9 * Self.day)
+        defer { finish(setup) }
+        setup.git.ancestry["f1>origin/main"] = .ancestor
+        await setup.service.refresh(repoPath: setup.primary.path, worktrees: setup.worktrees, maxAge: nil)
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == true)
+
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: setup.linked.path)
+        )
+        setup.service.reconcile(repoPath: setup.primary.path, worktrees: setup.worktrees)
+
+        #expect(setup.service.statuses[setup.linked.path]?.decision.suggestRemoval == false)
+    }
+
+    @Test("Recorded activity outlives an unreachable checkout and expires by age")
+    func recordedActivityPrunesByAge() throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let offline = "/Volumes/ASTRA-Offline-Test/repo"
+        let ancient = "/Volumes/ASTRA-Offline-Test/ancient"
+        setup.defaults.set(
+            [ancient: Date().addingTimeInterval(-WorktreeReclaimService.activityRetention - 60).timeIntervalSince1970],
+            forKey: AppStorageKeys.worktreeObservedActivity
+        )
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: offline)
+        )
+        setup.service.handleTaskReachedTerminalState(
+            TaskTerminalStateChange(taskID: UUID(), status: .completed, workingPath: setup.linked.path)
+        )
+
+        let recorded = try #require(setup.defaults.dictionary(forKey: AppStorageKeys.worktreeObservedActivity) as? [String: Double])
+        #expect(recorded[offline] != nil, "an unmounted volume keeps its record")
+        #expect(recorded[WorktreePath.canonical(setup.linked.path)] != nil)
+        #expect(recorded[ancient] == nil, "past the retention it can't change a decision")
+    }
+
+    @Test("A checkout whose git index can't be found is kept and retried")
+    func unreadableIndexFailsClosed() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try setup.fixture.directory("worktrees/feature/.git")
+        WorktreeStorageFixture.backdate(setup.linked.path, by: 3 * Self.day)
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains { $0.reason == WorktreeReclaimService.unreadableIndexReason })
+        #expect(setup.service.pendingRecheckDates[setup.linked.path] != nil)
+    }
+
     @Test("A worktree whose tracked files can't be checked is kept, even by the Reclaim button")
     func unknownTrackingFailsClosed() async throws {
         let setup = try makeSetup()

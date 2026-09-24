@@ -210,11 +210,16 @@ struct WorktreeActivityProbe: Sendable {
         return pid
     }
 
-    /// The worktree's git directory: `.git` itself for a primary checkout, or
-    /// the `gitdir:` target of a linked worktree's `.git` file.
+    /// The worktree's git directory: `.git` itself for a primary checkout
+    /// (resolved when it's a symlink to the real one), or the `gitdir:`
+    /// target of a linked worktree's `.git` file.
     static func gitDirectory(forWorktree worktreePath: String) -> String? {
         let dotGit = (worktreePath as NSString).appendingPathComponent(".git")
         if WorktreeFileSystem.isRealDirectory(dotGit) { return dotGit }
+        if WorktreeFileSystem.isSymbolicLink(dotGit), let resolved = WorktreePath.realPath(dotGit),
+           WorktreeFileSystem.isRealDirectory(resolved) {
+            return resolved
+        }
         guard let contents = try? String(contentsOfFile: dotGit, encoding: .utf8) else { return nil }
         for line in contents.split(whereSeparator: \.isNewline) where line.hasPrefix("gitdir:") {
             let target = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)

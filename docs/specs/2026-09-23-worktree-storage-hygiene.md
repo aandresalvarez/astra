@@ -312,9 +312,14 @@ it fires, two minutes later.
 A launch pass returns the workspaces git couldn't answer for (a configured
 path with a `.git` that discovery didn't return, or a failed worktree listing)
 and retries only those after the launch delay, up to 3 passes.
-The panel's cached decision also depends on task claims: when a task starts or
-stops using a worktree, `reconcile` re-evaluates it, and a new claim withdraws
-the reclaimable bytes and any removal suggestion at once.
+The panel's cached decision also depends on task claims and on the durable
+activity record: when a task starts or stops using a worktree, or a task that
+ran there recorded newer activity, `reconcile` re-evaluates it, and a new claim
+withdraws the reclaimable bytes and any removal suggestion at once.
+The final gate re-reads activity too (the durable record and the tasks'
+`updatedAt`), so a task that started and finished while the pass awaited git
+leaves the worktree kept. Recorded activity is pruned by age (30 days), never
+by whether the checkout is reachable right now.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,
@@ -373,7 +378,10 @@ threshold, schedules a fresh pass. Tests must use `InMemoryDefaults`
    worktree whose index changed since (`git add -N` touches nothing else).
    The index timestamp is compared again right before and right after each
    artifact's rename: a change before skips that artifact, a change after
-   renames it back.
+   renames it back. If the original name was taken meanwhile, the artifact is
+   moved to `<name>.astra-kept-<uuid>`, which no sweep ever deletes. A `.git`
+   symlink resolves to its directory, and a checkout whose index can't be
+   found is kept (and retried) rather than compared nil to nil.
 3. Symlinks are never followed, whether measuring or deleting. An artifact
    symlink pointing outside the worktree is refused.
 4. Nothing is reclaimed from a worktree with a non-terminal pinned task or a

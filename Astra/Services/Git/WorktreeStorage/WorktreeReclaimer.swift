@@ -195,7 +195,14 @@ struct WorktreeReclaimer: Sendable {
         // A file git started tracking in between moved with the rename.
         if let indexUnchanged, !indexUnchanged() {
             guard rename(aside, canonical) == 0 else {
-                let message = "git index changed; couldn't put it back: \(String(cString: strerror(errno)))"
+                // Something recreated the original name. Move it off the
+                // leftover name, which the next pass would sweep, to one
+                // nothing ever deletes.
+                let kept = (parent as NSString).appendingPathComponent(
+                    rule.directoryName + Self.keptMarker + UUID().uuidString
+                )
+                let keptName = rename(aside, kept) == 0 ? (kept as NSString).lastPathComponent : asideName
+                let message = "git index changed and the original name was taken; kept as \(keptName)"
                 log("failed", path: path, worktreePath: worktreePath, fields: ["reason": message], level: .error)
                 return (nil, WorktreeReclaimOutcome(failures: [.init(path: path, message: message)]))
             }
@@ -223,6 +230,8 @@ struct WorktreeReclaimer: Sendable {
     }
 
     static let indexChangedSummary = "git index changed"
+    /// Marks an artifact a rollback couldn't restore. Never swept.
+    static let keptMarker = ".astra-kept-"
 
     private func skip(_ path: String, worktreePath: String, _ reason: String) -> WorktreeReclaimOutcome {
         log("skipped", path: path, worktreePath: worktreePath, fields: ["reason": reason], level: .debug)

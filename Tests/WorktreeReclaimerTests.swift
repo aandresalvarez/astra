@@ -300,6 +300,35 @@ struct WorktreeReclaimerTests {
         #expect(leftovers.isEmpty)
     }
 
+    @Test("A rollback that can't restore keeps the artifact where no sweep deletes it")
+    func failedRollbackIsQuarantined() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        let binary = "/out/Products/Debug/App"
+        let before = try Data(contentsOf: URL(fileURLWithPath: setup.build + binary))
+        var checks = 0
+        let step = setup.reclaimer.prepare(
+            artifactPaths: [setup.build],
+            inWorktree: setup.worktree,
+            indexUnchanged: {
+                checks += 1
+                guard checks > 1 else { return true }
+                // A build recreated `.build` right after the rename.
+                try? FileManager.default.createDirectory(atPath: setup.build + "/fresh", withIntermediateDirectories: true)
+                return false
+            }
+        )
+
+        #expect(step.prepared.isEmpty)
+        #expect(step.outcome.failures.count == 1)
+        let names = try FileManager.default.contentsOfDirectory(atPath: setup.worktree)
+        #expect(!names.contains { $0.contains(WorktreeFileSystem.reclaimingMarker) }, "nothing a sweep would delete")
+        let kept = try #require(names.first { $0.hasPrefix(".build" + WorktreeReclaimer.keptMarker) })
+        #expect(try Data(contentsOf: URL(fileURLWithPath: "\(setup.worktree)/\(kept)\(binary)")) == before)
+        let report = WorktreeStorageInspector().inspect(worktreePath: setup.worktree)
+        #expect(report.interruptedReclaims.isEmpty)
+    }
+
     @Test("An artifact whose manifest disappeared is refused")
     func manifestGoneRefused() throws {
         let setup = try makeSetup()

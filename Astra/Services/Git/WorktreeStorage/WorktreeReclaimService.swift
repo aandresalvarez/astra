@@ -56,6 +56,9 @@ struct WorktreeStorageStatus: Equatable, Sendable {
     /// Why a task held the worktree when this was decided, if one did. When
     /// tasks start or stop using it, the decision no longer applies.
     var taskClaim: String?
+    /// The last activity the decision saw. A newer durable record (a task
+    /// that started and finished in between) makes it stale.
+    var lastActivity: Date?
 
     var reclaimableBytes: Int64 { decision.reclaimArtifacts ? report.artifactBytes : 0 }
 }
@@ -404,8 +407,9 @@ final class WorktreeReclaimService: ObservableObject {
     // MARK: - Panel
 
     /// Called on every panel refresh: measures worktrees the cache hasn't
-    /// seen, re-evaluates any whose HEAD, branch, lock, prune state or task
-    /// claims moved, and forgets removed ones. Cheap when nothing changed.
+    /// seen, re-evaluates any whose HEAD, branch, lock, prune state, task
+    /// claims or recorded activity moved, and forgets removed ones. Cheap
+    /// when nothing changed.
     func reconcile(repoPath: String, worktrees: [GitWorktreeInfo]) {
         guard !worktrees.isEmpty else { return }
         let paths = Set(worktrees.map(\.path))
@@ -424,8 +428,9 @@ final class WorktreeReclaimService: ObservableObject {
             }
             let isWorkspaceRoot = Self.isProtected(worktree.path, roots: roots, otherWorktreePaths: Array(paths))
             let taskClaim = inUseReason(worktree.path, holds: holds, otherWorktreePaths: Array(paths))
+            let usedSince = recordedActivity(worktree.path).map { $0 > (status.lastActivity ?? .distantPast) } ?? false
             guard status.worktree != worktree || status.isWorkspaceRoot != isWorkspaceRoot
-                || status.taskClaim != taskClaim else { continue }
+                || status.taskClaim != taskClaim || usedSince else { continue }
             if status.isWorkspaceRoot, !isWorkspaceRoot, pendingRecheckDates[worktree.path] == nil,
                WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults) {
                 // No longer a workspace's checkout: the pass that kept it for
@@ -448,7 +453,8 @@ final class WorktreeReclaimService: ObservableObject {
                 report: status.report,
                 decision: decision,
                 idle: status.idle,
-                taskClaim: taskClaim
+                taskClaim: taskClaim,
+                lastActivity: status.lastActivity
             )
             stale.append(worktree)
         }
@@ -490,7 +496,8 @@ final class WorktreeReclaimService: ObservableObject {
                     report: status.report,
                     decision: decision,
                     idle: status.idle,
-                    taskClaim: status.taskClaim
+                    taskClaim: status.taskClaim,
+                    lastActivity: status.lastActivity
                 )
             }
         }
@@ -784,6 +791,16 @@ final class WorktreeReclaimService: ObservableObject {
                 if let reason = inUseReason(job.worktree, holds: current, otherWorktreePaths: allPaths) {
                     input.inUse = reason
                 }
+                // A task can start and finish while the pass awaited git or
+                // GitHub, leaving no hold behind. Its finish moved its
+                // `updatedAt` and the durable record forward; honor both.
+                let taskActivity = current.flatMap {
+                    WorktreeTaskUsage.latestActivity(forWorktreePath: job.worktree, holds: $0, otherWorktreePaths: allPaths)
+                }
+                input.lastActivity = preservedActivity(
+                    job.worktree,
+                    observed: [input.lastActivity, taskActivity].compactMap { $0 }.max()
+                )
                 if let signal = busy[job.worktree] {
                     input.buildSignal = signal
                 }
@@ -795,8 +812,14 @@ final class WorktreeReclaimService: ObservableObject {
                     }
                 }
                 let gate = gateTracking[job.worktree]
+                let dotGit = (job.worktree as NSString).appendingPathComponent(".git")
+                let hasGitEntry = FileManager.default.fileExists(atPath: dotGit) || WorktreeFileSystem.isSymbolicLink(dotGit)
                 if let tracked = gate?.tracked {
-                    if probe.gitIndexModificationDate(worktreePath: job.worktree) != gate?.index {
+                    if hasGitEntry, gate?.index == nil {
+                        // Without the index's timestamp nothing below could
+                        // see a file become tracked.
+                        input.inUse = input.inUse ?? Self.unreadableIndexReason
+                    } else if probe.gitIndexModificationDate(worktreePath: job.worktree) != gate?.index {
                         input.inUse = input.inUse ?? Self.indexChangedReason
                     } else if !tracked.isEmpty {
                         job.artifacts.removeAll { tracked.contains($0.relativePath) }
@@ -922,18 +945,33 @@ final class WorktreeReclaimService: ObservableObject {
         let previous = recorded[key].map { Date(timeIntervalSince1970: $0) }
         guard let observed, observed > (previous ?? .distantPast) else { return previous ?? observed }
         recorded[key] = observed.timeIntervalSince1970
-        recorded = recorded.filter { WorktreeFileSystem.isRealDirectory($0.key) }
+        // By age, not reachability: a checkout on an unmounted volume keeps
+        // its record. Past the retention, every threshold is long exceeded.
+        let cutoff = clock().addingTimeInterval(-Self.activityRetention).timeIntervalSince1970
+        recorded = recorded.filter { $0.value >= cutoff }
         defaults.set(recorded, forKey: AppStorageKeys.worktreeObservedActivity)
         return observed
     }
 
+    /// The durable record alone, without updating it.
+    private func recordedActivity(_ path: String) -> Date? {
+        let recorded = defaults.dictionary(forKey: AppStorageKeys.worktreeObservedActivity) as? [String: Double]
+        return recorded?[WorktreePath.canonical(path)].map { Date(timeIntervalSince1970: $0) }
+    }
+
+    /// How long a recorded activity is kept: well past the longest idle and
+    /// removal thresholds, after which it can't change a decision.
+    nonisolated static let activityRetention: TimeInterval = 30 * 24 * 60 * 60
+
     nonisolated static let unreadableWorkspaceStateReason = "Workspace state couldn't be read"
     nonisolated static let unreadableTrackingReason = "Tracked files couldn't be checked"
     nonisolated static let indexChangedReason = "Git index changed during the check"
+    nonisolated static let unreadableIndexReason = "Git index couldn't be read"
     nonisolated static let nonTaskKeepReasons: Set<String> = [
         unreadableWorkspaceStateReason,
         unreadableTrackingReason,
-        indexChangedReason
+        indexChangedReason,
+        unreadableIndexReason
     ]
 
     /// Keeps caused by state that couldn't be read (or moved mid-check), not
@@ -942,7 +980,8 @@ final class WorktreeReclaimService: ObservableObject {
         WorktreeTaskUsage.unreadableTaskStateReason,
         unreadableWorkspaceStateReason,
         unreadableTrackingReason,
-        indexChangedReason
+        indexChangedReason,
+        unreadableIndexReason
     ]
     static let maxReadFailureRetries = 3
 
@@ -1009,7 +1048,8 @@ final class WorktreeReclaimService: ObservableObject {
             decision: WorktreeReclaimPolicy.decide(display),
             idle: input.lastActivity.map { input.now.timeIntervalSince($0) },
             // `inUse` also carries keeps that aren't about tasks.
-            taskClaim: input.inUse.flatMap { Self.nonTaskKeepReasons.contains($0) ? nil : $0 }
+            taskClaim: input.inUse.flatMap { Self.nonTaskKeepReasons.contains($0) ? nil : $0 },
+            lastActivity: input.lastActivity
         )
     }
 
