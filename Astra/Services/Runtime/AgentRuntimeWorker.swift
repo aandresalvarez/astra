@@ -1045,6 +1045,7 @@ final class AgentRuntimeWorker {
                 workspacePath: executionPath
             )
         }
+        let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
@@ -1180,6 +1181,7 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
+        await TaskFolderRunSnapshot.recordChanges(since: taskFolderBeforeRun, task: task, run: run, runStartedAt: startTime)
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion

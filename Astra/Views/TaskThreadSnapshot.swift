@@ -119,7 +119,8 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
               let changes = try? JSONDecoder().decode([StoredFileChange].self, from: data) else {
             return []
         }
-        return changes
+        // The same evidence `TaskRun.fileChanges` reads; see there.
+        return changes.filter { !$0.kind.isObserved }
     }
 
     private static func outputContainsVPNWarning(
