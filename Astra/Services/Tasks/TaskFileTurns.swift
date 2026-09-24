@@ -248,11 +248,15 @@ enum TaskFileTurns {
     /// Keeps the files a user would browse — the Files shelf's rules — and
     /// names each relative to the folder that holds it.
     private final class PathClassifier {
+        private let taskFolderPath: String
+        private let workspacePath: String
         private let taskFolder: TaskOutputArtifactPathPolicy.ResolvedRoot
         private let workspace: TaskOutputArtifactPathPolicy.ResolvedRoot
         private var cache: [String: ClassifiedPath?] = [:]
 
         init(taskFolder: String, workspacePath: String) {
+            self.taskFolderPath = taskFolder
+            self.workspacePath = workspacePath
             self.taskFolder = .init(taskFolder)
             self.workspace = .init(workspacePath)
         }
@@ -265,8 +269,16 @@ enum TaskFileTurns {
         }
 
         private func uncachedClassify(_ path: String) -> ClassifiedPath? {
-            guard !path.isEmpty else { return nil }
-            let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+            // Older Claude runs recorded paths relative to the workspace, and
+            // `URL(fileURLWithPath:)` would resolve those against the app's own
+            // working directory instead.
+            let absolute = TaskArtifactPathNormalizer.normalizedPath(
+                path,
+                workspacePath: workspacePath,
+                taskFolder: taskFolderPath
+            )
+            guard absolute.hasPrefix("/") else { return nil }
+            let standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
             // The task folder sits inside the workspace, so it is tried first.
             for (root, context, prefix) in [
                 (taskFolder, TaskOutputArtifactPathPolicy.RelativePathContext.taskFolder, "task"),

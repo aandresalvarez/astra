@@ -13,6 +13,8 @@ struct ShelfFileTurnsView: View {
     let searchText: String
     let selectedPath: String?
     let onOpen: (String) -> Void
+    /// Routes HTML and SQL to the Browser and Query shelves, as Folders does.
+    var onOpenGeneratedFile: ((String) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @State private var turns: [TaskFileTurn] = []
@@ -119,15 +121,16 @@ struct ShelfFileTurnsView: View {
         let isSelected = selectedPath == entry.path
         let name = (entry.displayPath as NSString).lastPathComponent
         let folder = (entry.displayPath as NSString).deletingLastPathComponent
+        let destination = TaskGeneratedFileQuerySeam.required.shelfDestination(for: entry.path)
         return Button {
             onOpen(entry.path)
         } label: {
             HStack(spacing: 7) {
                 Color.clear.frame(width: 12, height: 12)
 
-                Image(systemName: Formatters.fileIcon(for: entry.path))
+                Image(systemName: destination?.systemImage ?? Formatters.fileIcon(for: entry.path))
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ShelfFileTurnsPresentation.iconColor(for: destination))
                     .frame(width: 16)
 
                 Text(name)
@@ -163,6 +166,21 @@ struct ShelfFileTurnsView: View {
         .disabled(!entry.exists)
         .help(ShelfFileTurnsPresentation.entryTooltip(for: entry))
         .contextMenu {
+            // The same menu as a file row in Folders.
+            if entry.exists {
+                Button {
+                    onOpen(entry.path)
+                } label: {
+                    Label("Open in Files", systemImage: "doc.text")
+                }
+                if let destination, destination != .files, let onOpenGeneratedFile {
+                    Button {
+                        onOpenGeneratedFile(entry.path)
+                    } label: {
+                        Label(destination.title, systemImage: destination.systemImage)
+                    }
+                }
+            }
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.path, forType: .string)
@@ -174,6 +192,11 @@ struct ShelfFileTurnsView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.path)])
                 } label: {
                     Label("Reveal in Finder", systemImage: "folder")
+                }
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: entry.path))
+                } label: {
+                    Label("Open in Default App", systemImage: "arrow.up.right.square")
                 }
             }
         }
@@ -263,6 +286,16 @@ enum ShelfFileTurnsPresentation {
             parts.append(counts.joined(separator: ", "))
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Matches the Folders row's tint for the shelf a file opens in.
+    static func iconColor(for destination: TaskGeneratedFileShelfDestination?) -> Color {
+        switch destination {
+        case .browser?: Stanford.sky
+        case .query?: Stanford.paloAltoGreen
+        case .files?: Stanford.lagunita
+        case nil: .secondary
+        }
     }
 
     static func label(for change: TaskFileTurn.Change) -> String {

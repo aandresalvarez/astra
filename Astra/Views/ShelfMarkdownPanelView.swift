@@ -430,7 +430,8 @@ struct ShelfMarkdownPanelView: View {
                         task: task,
                         searchText: fileSearchText,
                         selectedPath: session.fileURL?.path,
-                        onOpen: openTurnFile
+                        onOpen: openTurnFile,
+                        onOpenGeneratedFile: onOpenGeneratedFile
                     )
                     .id(task.id)
                 }

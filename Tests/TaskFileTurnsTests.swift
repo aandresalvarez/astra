@@ -88,6 +88,19 @@ struct TaskFileTurnsTests {
         #expect(entries?.map(\.path) == [Self.folder + "/answer.md", "/ws/src/App.swift"])
     }
 
+    @Test("A path a provider recorded relative to the workspace opens from the task folder")
+    func resolvesWorkspaceRelativePaths() {
+        let input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: ".astra/tasks/T1/index.html", kind: .write, timestamp: at(11)),
+            change("index.html", .edit, at: 12)
+        ])])
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.path) == [Self.folder + "/index.html"])
+        #expect(entries?.map(\.change) == [.new])
+    }
+
     @Test("Files only the artifact index saw go to the run they appeared in, as new files only")
     func recoversOlderTurnsFromTheArtifactIndex() {
         let input = makeInput(
