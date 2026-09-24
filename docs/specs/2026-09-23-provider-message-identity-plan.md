@@ -232,9 +232,12 @@ Status: landed with this plan, except the OpenCode capture.
   outside its workspace (`env`, `ls /tmp`, a `grep` through `/tmp`). That
   fixture was never committed.
   - The CLI runs under `env -i` with an allowlist, so no session tokens.
-  - Tool results are replaced with a placeholder in every fixture.
+  - Tool results are replaced with a placeholder in every fixture, including
+    failure details, partial output and progress messages.
   - `redact_provider_stream.py --audit` refuses a capture whose tool calls
-    reach outside the workspace or dump the environment.
+    reach outside the workspace or dump the environment, in every tool-call
+    shape the parsers accept.
+  - A capture that stops before its audit passes deletes the staged fixture.
 - Captured scenarios:
   - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
     It covers planned scenarios 1–4: narration, a tool read, a multi-line
@@ -268,7 +271,9 @@ Status: landed with this plan, except the OpenCode capture.
   - tool results are recorded with their success or failure outcome;
   - the run's token totals equal what the provider reported;
   - every distinct `ASTRA_EVENT` complete marker leaves its `astra.complete`
-    event (identical markers are idempotent and recorded once).
+    event (identical markers are idempotent and recorded once);
+  - the session the provider announced reaches `task.sessionId` and
+    `run.providerSessionId`, which native continuation resumes.
 - A fixture that cannot exercise a check says so in `notExercised`, and the
   suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
   a response without tool calls, so the answer-first scenario never reaches its
@@ -277,10 +282,11 @@ Status: landed with this plan, except the OpenCode capture.
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
   failure.
-- The suite landed with 14 known issues across 4 fixtures, all matching
+- The suite landed with 15 known issues across 4 fixtures, all matching
   production symptoms or the captures:
   - Claude: short closing message doubled, hollow echo lines, answer not shown.
-  - Copilot: answer not shown; `apply_patch` write not recorded.
+  - Copilot: answer not shown; `apply_patch` write not recorded; session id
+    not recorded.
   - Codex: run failed by warning items, earlier messages lost, spurious errors,
     write not recorded, answer not shown.
   - Cursor: the re-sent previous message recorded as a hollow echo, the
@@ -312,6 +318,10 @@ Status: landed with this plan, except the OpenCode capture.
 - Copilot keyed by `messageId`. Codex keeps every `agent_message`. Antigravity
   keyed by `step_index`. OpenCode keyed by `part.id`. Cursor keyed by
   `model_call_id`, with the exact-prefix continuation for its last frame.
+- Copilot names its session only in the `result` frame's `sessionId`, which
+  the parser does not read, so `task.sessionId` and `run.providerSessionId`
+  stay empty. Copilot has no native continuation today, so follow-ups are not
+  affected yet; record it with the rest of Copilot's identity.
 - Codex `item.completed` items of `type: error` become a warning or diagnostic
   event, not `.failed`. Only `turn.failed` fails the turn.
 - Codex's `input_tokens` already include `cached_input_tokens`; Codex's own

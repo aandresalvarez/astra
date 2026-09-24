@@ -80,6 +80,8 @@ workspace="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture.XXXXXX")"
 # list, read and write.
 capture_dir="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture-logs.XXXXXX")"
 pid=""
+# The fixture being redacted and audited, until it is moved into place.
+staged=""
 # TERM the provider's whole group, give it a bounded grace period, then KILL
 # whatever ignored TERM.
 stop_provider_group() {
@@ -92,10 +94,12 @@ stop_provider_group() {
   kill -KILL -- "-$pid" 2>/dev/null || true
 }
 # Stop the provider before its workspace disappears, however the script ends.
-# --keep-raw copies what it keeps first, so no unredacted original outlives it.
+# --keep-raw copies what it keeps first, so no unredacted original outlives it,
+# and a fixture that has not passed the audit never stays in the repository.
 cleanup() {
   stop_provider_group
   rm -rf "$workspace" "$capture_dir"
+  [[ -z "$staged" ]] || rm -f "$staged"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -179,6 +183,7 @@ fi
 out_dir="$ROOT_DIR/Tests/Fixtures/ProviderStreams/$provider"
 mkdir -p "$out_dir"
 out="$out_dir/$scenario.jsonl"
+staged="$out.tmp"
 if ! python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"; then
   echo "==> redaction refused the capture; fixture not written" >&2
   rm -f "$out.tmp"
@@ -194,6 +199,7 @@ if ! findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$
   exit 3
 fi
 mv "$out.tmp" "$out"
+staged=""
 echo "==> wrote ${out#"$ROOT_DIR/"} ($(wc -l <"$out" | tr -d ' ') lines)" >&2
 if [[ -s "$stderr_file" ]]; then
   echo "==> stderr (not saved):" >&2

@@ -242,6 +242,21 @@ struct ProviderTranscriptConformanceTests {
             .filter { $0.type == TaskEventTypes.System.error.rawValue }
             .map { ($0.payload, "a successful turn recorded an error: \($0.payload.prefix(80))") })
 
+        // Follow-ups resume the provider's own session, so the identity the
+        // stream announced must reach both durable owners.
+        if let sessionID = truth.sessionID {
+            #expect(fixture.notExercised[.sessionRecorded] == nil, "fixture now announces a session; drop sessionRecorded from notExercised")
+            report(.sessionRecorded, of: fixture, failures: [
+                ("task.sessionId", task.sessionId),
+                ("run.providerSessionId", run.providerSessionId)
+            ].compactMap { field, recorded in
+                recorded == sessionID ? nil : (field, "\(field): provider session \(sessionID), recorded \(recorded ?? "nil")")
+            })
+        } else {
+            #expect(fixture.notExercised[.sessionRecorded] != nil,
+                    "fixture announces no session; list sessionRecorded in notExercised")
+        }
+
         let snapshot = TaskThreadSnapshot(task: task)
         let displayed = collapsed(
             snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
@@ -347,6 +362,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case toolCallsRecorded
         case fileChangesRecorded
         case noSpuriousErrors
+        case sessionRecorded
         case answerVisible
     }
 
@@ -411,6 +427,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
                     $0 == "answer.md"
                 },
+                .sessionRecorded: .whole("Copilot names its session only in the result frame, which is not read (plan phase 2)"),
                 .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
             ],
             notExercised: [.usageRecorded: "Copilot's stream reports premium requests, not tokens"]
@@ -502,6 +519,8 @@ struct ProviderStreamTruth {
         case tool(String)
     }
     private(set) var writtenPaths: [String] = []
+    /// The session the provider announced, which a follow-up resumes.
+    private(set) var sessionID: String?
     /// Collapsed "last line of a message + first line of a later message":
     /// the only lines, besides the provider's own, that appending messages
     /// without a separator can produce.
@@ -528,6 +547,9 @@ struct ProviderStreamTruth {
             let type = frame["type"] as? String
             switch fixture.runtime {
             case .claudeCode:
+                if type == "system", frame["subtype"] as? String == "init" {
+                    sessionID = frame["session_id"] as? String
+                }
                 if type == "result", let modelUsage = frame["modelUsage"] as? [String: [String: Any]] {
                     // Anthropic reports cache reads and writes apart from input.
                     let entries = Array(modelUsage.values)
@@ -565,6 +587,9 @@ struct ProviderStreamTruth {
                 let data = frame["data"] as? [String: Any]
                 if type == "assistant.message", let text = data?["content"] as? String {
                     appendMessage(text)
+                } else if type == "result" {
+                    // Copilot's stdout names its session only in the result.
+                    sessionID = frame["sessionId"] as? String
                 } else if type == "tool.execution_complete" {
                     toolResultOutcomes.append(data?["success"] as? Bool == false ? "failure" : "success")
                 } else if type == "tool.execution_start" {
@@ -578,6 +603,8 @@ struct ProviderStreamTruth {
                 if type == "item.completed", item?["type"] as? String == "agent_message",
                    let text = item?["text"] as? String {
                     appendMessage(text)
+                } else if type == "thread.started" {
+                    sessionID = frame["thread_id"] as? String
                 } else if type == "item.started", item?["type"] as? String == "command_execution" {
                     appendTool("command_execution")
                 } else if type == "item.completed", item?["type"] as? String == "command_execution" {
@@ -595,7 +622,9 @@ struct ProviderStreamTruth {
                 // Cursor's last assistant frame repeats the previous message
                 // and appends to it, so a frame that extends the previous
                 // message's text continues that message.
-                if type == "assistant",
+                if type == "system", frame["subtype"] as? String == "init" {
+                    sessionID = frame["session_id"] as? String
+                } else if type == "assistant",
                    let message = frame["message"] as? [String: Any],
                    let blocks = message["content"] as? [[String: Any]] {
                     let text = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
@@ -625,6 +654,9 @@ struct ProviderStreamTruth {
                     }
                 }
             case .antigravityCLI:
+                if frame["event"] as? String == "init" {
+                    sessionID = frame["conversation_id"] as? String
+                }
                 if frame["event"] as? String == "result",
                    let reported = (frame["result"] as? [String: Any])?["usage"] as? [String: Any] {
                     // input_tokens already count cached reads (total_tokens = input + output).

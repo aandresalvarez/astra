@@ -170,10 +170,32 @@ CODEX_ITEM_NON_ARGUMENT_KEYS = {
     "id", "type", "status", "exit_code", "aggregated_output", "output", "stdout", "stderr", "result", "text", "message",
 }
 # Copilot also emits result frames other than tool.execution_complete (the
-# parser accepts any tool *result/output/complete* type or a toolResult key).
+# parser accepts any tool *result/output/complete* type or a toolResult key),
+# and streams partial output and progress while a tool runs.
 COPILOT_RESULT_PAYLOAD_KEYS = {
     "output", "result", "content", "text", "message", "toolResult", "detailedContent", "stdout", "stderr",
+    "partialOutput", "progressMessage",
 }
+
+
+def without_copilot_result_payload(fields):
+    """Blank what a Copilot result carried; keep ids, flags and the outcome."""
+    return {
+        key: (
+            copilot_error_placeholder(value) if key == "error"
+            else TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value
+            else value
+        )
+        for key, value in fields.items()
+    }
+
+
+def copilot_error_placeholder(error):
+    # A failed tool's `error` is a flag, or an object whose `message` the
+    # parser reads as the result text: stderr, file contents, a credential.
+    if error is None or isinstance(error, bool):
+        return error
+    return {"message": TOOL_OUTPUT} if isinstance(error, dict) else TOOL_OUTPUT
 
 
 def is_copilot_tool_result(frame):
@@ -182,7 +204,7 @@ def is_copilot_tool_result(frame):
     # for tool results, so those keep their text.
     if kind.startswith(("assistant.", "session.", "user.")):
         return False
-    looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete"))
+    looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete", "progress"))
     return (looks_like_result and kind != "tool_call") or "toolResult" in frame or (
         isinstance(frame.get("data"), dict) and "toolResult" in frame["data"]
     )
@@ -209,7 +231,7 @@ def without_tool_output(frame):
             ]
             frame["message"] = message
     elif kind == "tool.execution_complete" and isinstance(frame.get("data"), dict):  # Copilot
-        frame = dict(frame, data=dict(frame["data"], result={"content": TOOL_OUTPUT}))
+        frame = dict(frame, data=dict(without_copilot_result_payload(frame["data"]), result={"content": TOOL_OUTPUT}))
     elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
         item = frame["item"]
         # Only tool items: agent messages, reasoning and warning items keep
@@ -229,12 +251,9 @@ def without_tool_output(frame):
             for name, call in frame["tool_call"].items()
         })
     elif is_copilot_tool_result(frame):  # Copilot's other result shapes
-        frame = {key: (TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value else value) for key, value in frame.items()}
+        frame = without_copilot_result_payload(frame)
         if isinstance(frame.get("data"), dict):
-            frame["data"] = {
-                key: (TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value else value)
-                for key, value in frame["data"].items()
-            }
+            frame["data"] = without_copilot_result_payload(frame["data"])
     elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
         step = frame["step_update"]
         info = step.get("tool_info")
@@ -267,6 +286,58 @@ def tool_call_arguments(frame):
         step = frame.get("step_update") or {}
         if step.get("step_type") == "tool" and step.get("state") == "ACTIVE":
             yield step.get("tool_name", "tool"), json.dumps((step.get("tool_info") or {}).get("parameters"))
+    else:
+        call = copilot_tool_call(frame)
+        if call:
+            yield call
+
+
+COPILOT_TYPE_KEYS = ("type", "event", "kind", "sessionUpdate", "name")
+COPILOT_TOOL_ID_KEYS = ("tool", "toolName", "tool_call_id", "toolUseId", "callId")
+# Where CopilotStreamEventParser reads a tool call's input: on the frame or on
+# its `data` / `payload` object.
+COPILOT_ARGUMENT_KEYS = ("input", "arguments", "args", "command", "cmd")
+
+
+def copilot_payload(frame):
+    for key in ("data", "payload"):
+        if isinstance(frame.get(key), dict):
+            return frame[key]
+    return {}
+
+
+def copilot_tool_call(frame):
+    """A Copilot tool call in any shape but tool.execution_start, as a
+    (name, arguments JSON) pair, or None.
+
+    Mirrors CopilotStreamEventParser.isToolUse: a type naming a tool use, call
+    or start, or a tool identity on a frame that is not a result. A call whose
+    input sits under no known key is audited whole.
+    """
+    payload = copilot_payload(frame)
+    containers = (frame, payload)
+    kind = next(
+        (container[key] for container in containers for key in COPILOT_TYPE_KEYS if isinstance(container.get(key), str)),
+        "",
+    ).lower()
+    if kind in ("event", "message", "data", "payload") and any(isinstance(payload.get(key), str) for key in COPILOT_TYPE_KEYS):
+        return copilot_tool_call(payload)
+    # Argument fragments; the execution_start that follows carries them whole.
+    if kind == "assistant.tool_call_delta":
+        return None
+    is_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete")) or any(
+        "toolResult" in container for container in containers
+    )
+    uses_tool = "tool" in kind and any(word in kind for word in ("use", "call", "start"))
+    identified = any(key in container for container in containers for key in COPILOT_TOOL_ID_KEYS)
+    if not (uses_tool or (identified and not is_result)):
+        return None
+    arguments = {key: container[key] for container in reversed(containers) for key in COPILOT_ARGUMENT_KEYS if key in container}
+    name = next(
+        (container[key] for container in containers for key in ("toolName", "tool", "name") if isinstance(container.get(key), str)),
+        kind or "tool",
+    )
+    return name, json.dumps(arguments or frame)
 
 
 # After redaction the scratch workspace is /workspace. An executable named by
