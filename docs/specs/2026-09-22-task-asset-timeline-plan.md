@@ -236,7 +236,12 @@ lost for good, so this ships before the UI.
 changes (tool events and the Git-based detector still cover those), and a
 user editing a task file by hand while a run is in progress, which is
 attributed to that run. ASTRA's `connector-mutations/` and `mission-audit/`
-folders are not hidden by the path policy, on the shelf or here.
+folders are not hidden by the path policy, on the shelf or here. A file a tool
+created and a command deleted within one run keeps only the tool's write: the
+recorder stores a tool's file change when the tool is called, before its
+result says whether it succeeded, so the write is no proof the file existed
+and no deletion is inferred from it. A run whose change record cannot be
+decoded is skipped rather than rewritten.
 
 **Tests.**
 

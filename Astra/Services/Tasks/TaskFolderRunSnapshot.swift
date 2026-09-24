@@ -187,8 +187,14 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
             let size = values.fileSize ?? 0
             var fingerprint: Int?
             if size <= fingerprintFileLimit, size <= fingerprintBytesLeft {
-                fingerprint = contentFingerprint(of: url, hostFileAccess: hostFileAccess, intent: intent)
-                fingerprintBytesLeft -= size
+                let read = contentFingerprint(
+                    of: url,
+                    maxBytes: min(fingerprintFileLimit, fingerprintBytesLeft),
+                    hostFileAccess: hostFileAccess,
+                    intent: intent
+                )
+                fingerprint = read.fingerprint
+                fingerprintBytesLeft -= read.bytesRead
             }
             entries[relativePath] = Entry(
                 size: size,
@@ -208,17 +214,26 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
         var occurred = false
     }
 
-    /// Nil when the file cannot be read: the fingerprint only adds evidence,
-    /// so its absence falls back to metadata.
-    private static func contentFingerprint(
+    /// Reads at most `maxBytes + 1`: a file that grew or was replaced after
+    /// its size was read cannot pull more than that into memory. Nil when the
+    /// file cannot be read or no longer fits; the fingerprint only adds
+    /// evidence, so its absence falls back to metadata.
+    static func contentFingerprint(
         of url: URL,
-        hostFileAccess: HostFileAccessBroker,
+        maxBytes: Int,
+        hostFileAccess: HostFileAccessBroker = HostFileAccessBroker(),
         intent: HostFileAccessIntent
-    ) -> Int? {
-        guard let data = try? hostFileAccess.readData(at: url, intent: intent) else { return nil }
+    ) -> (fingerprint: Int?, bytesRead: Int) {
+        guard let data = try? hostFileAccess.readData(
+            at: url,
+            maxBytes: maxBytes + 1,
+            keeping: .prefix,
+            intent: intent
+        ) else { return (nil, 0) }
+        guard data.count <= maxBytes else { return (nil, data.count) }
         var hasher = Hasher()
         data.withUnsafeBytes { hasher.combine(bytes: $0) }
-        return hasher.finalize()
+        return (hasher.finalize(), data.count)
     }
 
     /// `scan` off the main actor.
@@ -268,7 +283,7 @@ extension TaskFolderRunSnapshot {
         let recordedJSON = run.fileChangesJSON
         // A bulk run can leave tens of thousands of entries to compare and
         // sort, so only the bounded result comes back to the main actor.
-        guard let observation = await Task.detached(priority: .userInitiated, operation: {
+        let outcome = await Task.detached(priority: .userInitiated, operation: {
             observe(
                 since: before,
                 recordedJSON: recordedJSON,
@@ -276,8 +291,13 @@ extension TaskFolderRunSnapshot {
                 runStartedAt: runStartedAt,
                 runEndedAt: started
             )
-        }).value else {
-            logSkipped(task: task, run: run, reason: "unreadable_or_over_limit")
+        }).value
+        let observation: Observation
+        switch outcome {
+        case .success(let observed):
+            observation = observed
+        case .failure(let skip):
+            logSkipped(task: task, run: run, reason: skip.rawValue)
             return []
         }
         run.appendHostFileChanges(observation.records)
@@ -299,6 +319,11 @@ extension TaskFolderRunSnapshot {
         let records: [StoredFileChange]
     }
 
+    enum ObservationSkip: String, Error {
+        case unreadableOrOverLimit = "unreadable_or_over_limit"
+        case undecodableRecord = "undecodable_file_changes"
+    }
+
     /// The after-run walk and the records it yields, on the calling thread.
     /// `recordedJSON` is the run's `fileChangesJSON` as the process left it.
     static func observe(
@@ -307,12 +332,15 @@ extension TaskFolderRunSnapshot {
         executionPath: String,
         runStartedAt: Date,
         runEndedAt: Date
-    ) -> Observation? {
-        guard let after = scan(taskFolder: before.root.standardized) else { return nil }
-        let recorded = (try? TaskRun.decodedFileChanges(from: recordedJSON).get()) ?? []
+    ) -> Result<Observation, ObservationSkip> {
+        // Appending to a record that cannot be read would replace it, tool
+        // changes and all, with only the observations.
+        guard case .success(let recorded) = TaskRun.decodedFileChanges(from: recordedJSON) else {
+            return .failure(.undecodableRecord)
+        }
+        guard let after = scan(taskFolder: before.root.standardized) else { return .failure(.unreadableOrOverLimit) }
         let changes = after.changes(since: before)
-            + toolFilesGone(recorded: recorded, executionPath: executionPath, before: before, after: after)
-        return Observation(
+        return .success(Observation(
             fileCount: after.entries.count,
             changeCount: changes.count,
             records: records(
@@ -324,38 +352,7 @@ extension TaskFolderRunSnapshot {
                 runStartedAt: runStartedAt,
                 runEndedAt: runEndedAt
             )
-        )
-    }
-
-    /// Files a tool wrote during the run that were gone again by its end.
-    /// Neither walk saw them, so the comparison alone would leave the run
-    /// with the creation and no deletion.
-    static func toolFilesGone(
-        recorded: [StoredFileChange],
-        executionPath: String,
-        before: TaskFolderRunSnapshot,
-        after: TaskFolderRunSnapshot
-    ) -> [Change] {
-        let hostFileAccess = HostFileAccessBroker()
-        let intent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: after.root.standardized))
-        var gone = Set<String>()
-        for change in recorded where change.kind == .write || change.kind == .edit {
-            for form in spellings(of: change.path, relativeTo: executionPath) {
-                guard let relative = relativePath(of: URL(fileURLWithPath: form), under: after.root),
-                      // Hidden files are outside both walks, not deleted.
-                      !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
-                      let visible = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
-                        relative,
-                        context: .taskFolder
-                      ),
-                      before.entries[visible] == nil, after.entries[visible] == nil,
-                      // The walk skips what is not a regular file; only a
-                      // path with nothing at it is a deletion.
-                      !hostFileAccess.fileExists(at: URL(fileURLWithPath: form), intent: intent) else { continue }
-                gone.insert(visible)
-            }
-        }
-        return gone.sorted().map { Change(relativePath: $0, kind: .removed, modifiedAt: nil) }
+        ))
     }
 
     @MainActor
