@@ -25,8 +25,12 @@ INIT_KEEP_KEYS = {
 }
 OPAQUE_VALUE_KEYS = {
     "signature", "encrypted_content", "encryptedContent", "reasoningId", "reasoningOpaque",
-    "model_call_id", "encryptedReasoning",
+    "encryptedReasoning",
 }
+# Opaque only when long: Copilot's model_call_id is an encrypted blob, while
+# Cursor's is a short per-call id that identifies its messages.
+OPAQUE_WHEN_LONG_KEYS = {"model_call_id"}
+OPAQUE_MIN_LENGTH = 80
 TOKEN_PATTERNS = [
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
@@ -104,7 +108,9 @@ def redact(value, pairs):
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if key in OPAQUE_VALUE_KEYS:
+            if key in OPAQUE_VALUE_KEYS or (
+                key in OPAQUE_WHEN_LONG_KEYS and isinstance(item, str) and len(item) >= OPAQUE_MIN_LENGTH
+            ):
                 redacted[key] = "[redacted]"
             elif key in TOOL_ARGUMENT_FRAGMENT_KEYS and isinstance(item, str) and item:
                 redacted[key] = "…"

@@ -217,6 +217,18 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             ]
         ),
         ProviderStreamFixture(
+            provider: "cursor",
+            scenario: "answer-write-signoff",
+            runtime: .cursorCLI,
+            executableName: "cursor-agent",
+            model: "composer-2.5-fast",
+            knownIssues: [
+                .eachMessageOnce: "the last frame re-sends the previous message, and only its long lines are dropped (plan phase 2)",
+                .noExtraLines: "re-sent short lines of the previous message are appended again (plan phase 2)",
+                .toolCallsRecorded: "tool_call frames are not parsed (plan phase 4)"
+            ]
+        ),
+        ProviderStreamFixture(
             provider: "antigravity",
             scenario: "answer-write-signoff",
             runtime: .antigravityCLI,
@@ -268,6 +280,23 @@ struct ProviderStreamTruth {
                    let text = item?["text"] as? String {
                     rawMessages.append(text)
                 } else if frame["type"] as? String == "item.started", item?["type"] as? String == "command_execution" {
+                    toolCallCount += 1
+                }
+            case .cursorCLI:
+                // Cursor's last assistant frame repeats the previous message
+                // and appends to it, so a frame that extends the previous
+                // message's text continues that message.
+                if frame["type"] as? String == "assistant",
+                   let message = frame["message"] as? [String: Any],
+                   let blocks = message["content"] as? [[String: Any]] {
+                    let text = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
+                        .joined()
+                    if let previous = rawMessages.last, !previous.isEmpty, text.hasPrefix(previous) {
+                        rawMessages[rawMessages.count - 1] = text
+                    } else if !text.isEmpty {
+                        rawMessages.append(text)
+                    }
+                } else if frame["type"] as? String == "tool_call", frame["subtype"] as? String == "started" {
                     toolCallCount += 1
                 }
             case .antigravityCLI:

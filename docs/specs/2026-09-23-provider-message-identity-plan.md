@@ -26,7 +26,7 @@ compared the store against each CLI's own session logs.
 | Copilot | When a message carries `toolRequests`, the full `assistant.message` is re-sent as `.text` after its deltas, so short narration is recorded twice. | 33 of 120 September runs (28%) | [CopilotStreamEventParser.swift:187](../../ASTRACore/CopilotStreamEventParser.swift#L187) |
 | Copilot | A JSON line that fails to parse is recorded as answer text. Copilot's own `******` masking breaks its JSON escaping. | 23 of 324 runs, all on CLI 1.0.83 or later (September: 1.0.77 0/17, 1.0.83 17/72, 1.0.86 6/31) | [CopilotStreamEventParser.swift:112](../../ASTRACore/CopilotStreamEventParser.swift#L112) |
 | Codex | Each `agent_message` becomes `.completed`, and last-completed-wins overwrites `run.output`. No `agent.response` rows are written, so earlier messages are lost and nothing shows while the run is in progress. | All 15 runs with two or more messages lost the earlier ones. Codex's own rollouts still have them. | [CodexStreamEventParser.swift:120](../../ASTRACore/CodexStreamEventParser.swift#L120), [AgentEventRecorder.swift:880](../../Astra/Services/Tasks/AgentEventRecorder.swift#L880) |
-| Cursor | `tool_call` frames are not parsed, so no tool, command or file-change events are recorded, and narration and answer render as one block. | 2 of 2 runs | [CursorStreamEventParser.swift](../../ASTRACore/CursorStreamEventParser.swift) |
+| Cursor | `tool_call` frames are not parsed, so no tool, command or file-change events are recorded, and narration and answer render as one block. The Phase 0 capture also showed that the last `assistant` frame re-sends the previous message before appending, which produces the same hollow echo as Claude. | 2 of 2 runs (tools); echo seen in the capture | [CursorStreamEventParser.swift](../../ASTRACore/CursorStreamEventParser.swift) |
 | Antigravity | No double delivery (0 of 55 runs). Affected only by the shared display rules below. | — | — |
 | OpenCode | Not measured: no runs in the store. | — | — |
 
@@ -60,7 +60,7 @@ Four display rules are shared by every provider:
 | Codex | none (`item.updated`, if it ever streams) | `item.completed` with `agent_message` | `item.id` (`item_N`) | No | Yes, CLI 0.153.4 |
 | Antigravity | `step_update` `agent_response` (ACTIVE) | the same step at `state: DONE` | `step_index` | No | Yes, agy 1.2.9 |
 | OpenCode | `text` part updates | `text` part | `part.id` (+ `messageID`) | No | Not installed |
-| Cursor | none (no partial output flag) | `assistant` | none known; synthesize one per frame | n/a | Not signed in |
+| Cursor | none (no partial output flag) | `assistant`, one per model call; the last frame, which has no `model_call_id`, repeats the previous message and appends to it | `model_call_id` (`<uuid>-<n>-<suffix>`). The id-less last frame continues the previous key when that message's text is its exact prefix. | No | Yes, cursor-agent 2026.09.02 |
 
 Phase 0 captured real streams from 2026-09-23 into
 `Tests/Fixtures/ProviderStreams`. They also showed the following:
@@ -73,6 +73,11 @@ Phase 0 captured real streams from 2026-09-23 into
   `assistant.message_start`, but in the capture the real 1,048-character answer
   was `commentary`, and only the one-line closing marker message was
   `final_answer`. Provider phase labels must not pick the answer.
+- **Cursor's last frame is cumulative.** After the final tool call, Cursor's
+  last `assistant` frame has no `model_call_id` and holds the previous
+  message's full text plus the new text. Its `result.result` is every message
+  concatenated. The exact-prefix continuation rule above keys it without
+  comparing text heuristically.
 - **Result frames repeat text.** Claude's `result.result`, Copilot's `result`
   and Antigravity's `result.response` repeat text that already streamed. They
   may only seed output when the ledger is empty, which the plan already requires.
@@ -158,7 +163,9 @@ doesn't carry.
   frame closes the message; its trailing delta still appends before the commit.
 - **OpenCode:** `text` becomes a final keyed by `part.id`. Upsert makes a
   cumulative re-send harmless.
-- **Cursor:** a synthesized key per `assistant` frame, as a final.
+- **Cursor:** each `assistant` frame becomes a final keyed by `model_call_id`.
+  The id-less last frame is a final for the previous key when that message's
+  text is its exact prefix, and otherwise gets a new synthesized key.
 
 ### 3. Protocol markers per message (pipeline)
 
@@ -212,7 +219,7 @@ Each phase is one PR, merged in order. Phases 1 and 2 are the ID-based tracking.
 
 ### Phase 0: capture real streams and write failing conformance tests
 
-Status: landed with this plan, except the Cursor and OpenCode captures.
+Status: landed with this plan, except the OpenCode capture.
 
 - `script/capture_provider_stream.sh` runs one installed CLI with ASTRA's
   stream-format flags, in the provider's most restrictive mode that still allows
@@ -222,16 +229,15 @@ Status: landed with this plan, except the Cursor and OpenCode captures.
   the owner, never in CI; set `ASTRA_CAPTURE_MODEL` to keep captures cheap. A
   Claude capture on Sonnet 5 cost $0.10.
 - Captured scenarios:
-  - `answer-write-signoff` for Claude, Copilot, Codex and Antigravity. It covers
+  - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor. It covers
     planned scenarios 1–4: narration, a tool read, a multi-line answer with
     short lines, a quote block and a table, a file write, and a final message
     that opens with an `ASTRA_EVENT complete` marker. Antigravity's model
     answered after its tools rather than before the write, so its capture
     exercises the shape but not the trailing sign-off.
   - `subagent` for Claude.
-  - Still to capture: Cursor (`cursor-agent login` first), OpenCode (not
-    installed). A long answer over 4,096 characters stays a synthetic Phase 1
-    test.
+  - Still to capture: OpenCode (not installed). A long answer over 4,096
+    characters stays a synthetic Phase 1 test.
 - Store the captures under `Tests/Fixtures/ProviderStreams/<provider>/<scenario>.jsonl`
   and add them to the test target's `resources`.
 - Add a `ProviderTranscriptConformanceTests` suite that replays every fixture
@@ -244,11 +250,15 @@ Status: landed with this plan, except the Cursor and OpenCode captures.
   - tool calls are recorded;
   - once Phase 3 lands, the answer bubble contains the final answer;
   - a successful turn completes and records no error events.
-- The suite landed with 21 known issues, all matching production symptoms:
+- The suite landed with 11 failing checks across 4 fixtures (32 recorded
+  known issues, since each duplicated line counts separately), all matching
+  production symptoms or the captures:
   - Claude: short closing message doubled, hollow echo lines, answer not shown.
   - Copilot: answer not shown.
   - Codex: run failed by warning items, earlier messages lost, spurious errors,
     answer not shown.
+  - Cursor: the re-sent previous message recorded as a hollow echo, the
+    message not stored once, tool calls not recorded.
   - Antigravity and the Claude subagent capture: fully green.
 - Copilot's narration doubling is not exercised: the capture's only narration
   with `toolRequests` is the run's first message, which today's whole-output
@@ -274,8 +284,8 @@ Status: landed with this plan, except the Cursor and OpenCode captures.
 ### Phase 2: Copilot, Codex, Antigravity, OpenCode, Cursor identity
 
 - Copilot keyed by `messageId`. Codex keeps every `agent_message`. Antigravity
-  keyed by `step_index`. OpenCode keyed by `part.id`. Cursor gets synthesized
-  keys.
+  keyed by `step_index`. OpenCode keyed by `part.id`. Cursor keyed by
+  `model_call_id`, with the exact-prefix continuation for its last frame.
 - Codex `item.completed` items of `type: error` become a warning or diagnostic
   event, not `.failed`. Only `turn.failed` fails the turn.
 - **Behavior change:** Codex `run.output` becomes every message in order, like
