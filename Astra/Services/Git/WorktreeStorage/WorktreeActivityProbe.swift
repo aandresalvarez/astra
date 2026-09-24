@@ -131,6 +131,16 @@ struct WorktreeActivityProbe: Sendable {
     /// Depth of the shallow modification-time scan, counted from the artifact.
     static let shallowScanDepth = 3
 
+    /// Depth of the quick scan that runs right before a rename, on the main
+    /// actor. Deep enough to see a live build of each kind, shallow enough to
+    /// be cheap: Cargo writes `target/<profile>/deps`, so two levels (a
+    /// handful of entries); an npm install adds and removes top-level
+    /// packages, and two levels of `node_modules` can be tens of thousands of
+    /// entries; SwiftPM's lock is taken as well.
+    static func quickScanDepth(for rule: WorktreeArtifactRule) -> Int {
+        rule.ecosystem == .cargo ? 2 : 1
+    }
+
     /// Where SwiftPM keeps its locks. ASTRA isn't sandboxed and passes `TMPDIR`
     /// through to agents, so this is the directory agents lock in by default.
     var temporaryDirectory: URL
@@ -146,8 +156,14 @@ struct WorktreeActivityProbe: Sendable {
     }
 
     /// The first reason the artifact is in use, checked cheapest-first except
-    /// that the authoritative lock comes before the heuristics.
-    func buildSignal(forArtifactAt artifactPath: String, rule: WorktreeArtifactRule, now: Date) -> WorktreeBuildSignal? {
+    /// that the authoritative lock comes before the heuristics. `scanDepth`
+    /// bounds the modification-time scan.
+    func buildSignal(
+        forArtifactAt artifactPath: String,
+        rule: WorktreeArtifactRule,
+        now: Date,
+        scanDepth: Int = WorktreeActivityProbe.shallowScanDepth
+    ) -> WorktreeBuildSignal? {
         if rule.ecosystem == .swiftPM {
             for scratch in SwiftPMWorkspaceLock.guardedScratchPaths(forArtifactAt: artifactPath) {
                 let lockFile = SwiftPMWorkspaceLock.lockFileURL(
@@ -164,7 +180,7 @@ struct WorktreeActivityProbe: Sendable {
         }
         if let modified = WorktreeFileSystem.newestModificationDate(
             under: artifactPath,
-            maxDepth: Self.shallowScanDepth
+            maxDepth: scanDepth
         ), now.timeIntervalSince(modified) < Self.recentWriteWindow {
             return .recentlyModified(modified)
         }

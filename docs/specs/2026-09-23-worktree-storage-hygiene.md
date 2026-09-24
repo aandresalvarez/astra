@@ -250,8 +250,11 @@ For each artifact:
    half-deleted one.
    The service runs the shallow build-activity scan on the file-system
    queue first. Then, in one main-actor turn, it re-reads task claims,
-   workspace protection, the setting and the threshold, and renames. That
-   turn does only cheap syscalls. Every task status change also happens on
+   workspace protection, the setting and the threshold, re-checks build
+   activity at a cheap depth (one level, two for Cargo's
+   `target/<profile>/deps`), and renames. The re-check is what catches an
+   external Cargo or npm build started after the background scan; neither
+   has a lock to hold. Every task status change also happens on
    the main actor, so no task can start between the check and the rename,
    for Cargo and npm too, which have no lock to hold.
 4. Delete the renamed directory off the main actor. Delete permanently; don't

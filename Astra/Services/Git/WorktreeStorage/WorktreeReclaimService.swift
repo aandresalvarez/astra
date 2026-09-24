@@ -550,9 +550,10 @@ final class WorktreeReclaimService: ObservableObject {
         var prepared: [WorktreeReclaimer.Prepared] = []
         var outcome = WorktreeReclaimOutcome()
         if !candidates.isEmpty {
-            // The shallow build-activity scan walks thousands of entries, so
-            // it runs on the file-system queue first; the turn below only
-            // re-validates, takes SwiftPM's lock and renames.
+            // The full build-activity scan walks thousands of entries, so it
+            // runs on the file-system queue first. The turn below re-validates,
+            // takes SwiftPM's lock, re-checks activity at a cheap depth (for
+            // Cargo and npm, which have no lock) and renames.
             let scanAt = clock()
             let scanned = candidates
             let busy = await WorktreeStorageWork.run { () -> [String: WorktreeBuildSignal] in
@@ -606,7 +607,7 @@ final class WorktreeReclaimService: ObservableObject {
                     artifactPaths: job.artifacts.map(\.path),
                     inWorktree: job.worktree,
                     now: checkedAt,
-                    probeBuildActivity: false
+                    quickActivityCheck: true
                 )
                 prepared += step.prepared
                 outcome.merge(step.outcome)

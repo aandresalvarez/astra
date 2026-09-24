@@ -162,17 +162,45 @@ struct WorktreeReclaimerTests {
         #expect(FileManager.default.fileExists(atPath: setup.build))
     }
 
-    @Test("Prepare can skip its own activity scan when the caller already ran it")
-    func prepareWithoutScan() throws {
+    @Test("The quick check before a rename scans shallowly; the full scan goes deeper")
+    func quickCheckDepth() throws {
         let setup = try makeSetup()
         defer { setup.fixture.cleanUp() }
-        try setup.fixture.file("wt-feature/.build/out/fresh.o", bytes: 100)
+        // Depth 4 from `.build`: it touches `Debug` (depth 3), which only the
+        // full scan reads.
+        try setup.fixture.file("wt-feature/.build/out/Products/Debug/fresh.o", bytes: 100)
+        WorktreeStorageFixture.backdate(setup.fixture.path("wt-feature/.build/out/Products"), by: Self.old)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: setup.fixture.path("wt-feature/.build/out/Products/Debug"))
 
         #expect(setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree).prepared.isEmpty)
-        let step = setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree, probeBuildActivity: false)
+        let step = setup.reclaimer.prepare(artifactPaths: [setup.build], inWorktree: setup.worktree, quickActivityCheck: true)
         #expect(step.prepared.count == 1)
         _ = setup.reclaimer.finish(step.prepared)
         #expect(!FileManager.default.fileExists(atPath: setup.build))
+    }
+
+    @Test("The quick check still catches a live npm install or Cargo build")
+    func quickCheckCatchesUnlockedBuilds() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        try setup.fixture.file("wt-feature/package.json")
+        try setup.fixture.file("wt-feature/node_modules/left-pad/index.js")
+        try setup.fixture.file("wt-feature/Cargo.toml")
+        try setup.fixture.file("wt-feature/target/debug/deps/old.rlib")
+        WorktreeStorageFixture.backdate(setup.fixture.path("wt-feature/node_modules"), by: Self.old)
+        WorktreeStorageFixture.backdate(setup.fixture.path("wt-feature/target"), by: Self.old)
+        // A build that started after the background scan.
+        try setup.fixture.file("wt-feature/node_modules/new-package/index.js")
+        try setup.fixture.file("wt-feature/target/debug/deps/fresh.rlib")
+
+        let outcome = setup.reclaimer.prepare(
+            artifactPaths: [setup.fixture.path("wt-feature/node_modules"), setup.fixture.path("wt-feature/target")],
+            inWorktree: setup.worktree,
+            quickActivityCheck: true
+        ).outcome
+
+        #expect(outcome.skipped.count == 2)
+        #expect(outcome.skipped.allSatisfy { $0.reason.hasPrefix("build in progress") })
     }
 
     @Test("A held SwiftPM lock skips the artifact and leaves it intact")

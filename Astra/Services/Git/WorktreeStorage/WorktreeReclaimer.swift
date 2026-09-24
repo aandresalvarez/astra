@@ -59,13 +59,16 @@ struct WorktreeReclaimer: Sendable {
     /// The fast half: validates each artifact, then renames it aside under
     /// SwiftPM's lock. Nothing is deleted yet, so a caller can prepare every
     /// artifact right after its last in-use check and delete afterwards.
-    /// A caller that already ran the shallow build-activity scan off the main
-    /// actor passes `probeBuildActivity: false`, leaving only cheap syscalls.
+    /// A caller that already ran the full build-activity scan off the main
+    /// actor passes `quickActivityCheck: true`: the check right before the
+    /// rename then scans only as deep as `quickScanDepth(for:)`, so it stays
+    /// cheap on the main actor while still catching a build that started
+    /// since, including Cargo and npm, which have no lock to take.
     func prepare(
         artifactPaths: [String],
         inWorktree worktreePath: String,
         now: Date = Date(),
-        probeBuildActivity: Bool = true
+        quickActivityCheck: Bool = false
     ) -> (prepared: [Prepared], outcome: WorktreeReclaimOutcome) {
         var outcome = WorktreeReclaimOutcome()
         guard let root = WorktreePath.realPath(worktreePath) else {
@@ -81,7 +84,7 @@ struct WorktreeReclaimer: Sendable {
                 canonicalRoot: root,
                 worktreePath: worktreePath,
                 now: now,
-                probeBuildActivity: probeBuildActivity
+                quickActivityCheck: quickActivityCheck
             )
             if let aside { prepared.append(aside) }
             outcome.merge(result)
@@ -128,7 +131,7 @@ struct WorktreeReclaimer: Sendable {
         canonicalRoot: String,
         worktreePath: String,
         now: Date,
-        probeBuildActivity: Bool
+        quickActivityCheck: Bool
     ) -> (Prepared?, WorktreeReclaimOutcome) {
         func skip(_ reason: String) -> (Prepared?, WorktreeReclaimOutcome) {
             (nil, self.skip(path, worktreePath: worktreePath, reason))
@@ -149,7 +152,10 @@ struct WorktreeReclaimer: Sendable {
         // 2. TOCTOU guard: re-probe right before acting, then hold SwiftPM's
         //    lock(s) across the rename so a build that starts meanwhile waits
         //    and then sees a clean tree.
-        if probeBuildActivity, let signal = probe.buildSignal(forArtifactAt: canonical, rule: rule, now: now) {
+        let scanDepth = quickActivityCheck
+            ? WorktreeActivityProbe.quickScanDepth(for: rule)
+            : WorktreeActivityProbe.shallowScanDepth
+        if let signal = probe.buildSignal(forArtifactAt: canonical, rule: rule, now: now, scanDepth: scanDepth) {
             return skip(signal.summary)
         }
         var heldLocks: [SwiftPMWorkspaceLock.HeldLock] = []
