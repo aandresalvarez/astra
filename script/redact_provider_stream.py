@@ -149,7 +149,7 @@ def minimized_copilot_session(frame):
     # The parser reads either wrapper object, so both are minimized.
     for wrapper in ("data", "payload"):
         if isinstance(frame.get(wrapper), dict):
-            frame[wrapper] = minimized_copilot_session_fields(frame.get("type"), frame[wrapper])
+            frame[wrapper] = minimized_copilot_session_fields(str(frame.get("type") or "").lower(), frame[wrapper])
     return frame
 
 
@@ -241,11 +241,24 @@ def error_placeholder(error):
     return {"message": TOOL_OUTPUT} if isinstance(error, dict) else TOOL_OUTPUT
 
 
+COPILOT_CONVERSATION_TYPES = {
+    "user.message", "assistant.turn_start", "assistant.turn_end", "assistant.message_start", "assistant.idle",
+    "assistant.reasoning", "assistant.reasoning_delta", "assistant.tool_call_delta", "assistant.message_delta",
+    "assistant.message",
+}
+
+
+def codex_kind(frame):
+    """The frame's type as CodexStreamEventParser reads it, lowercased."""
+    return next((frame[key].lower() for key in ("type", "event", "kind") if isinstance(frame.get(key), str)), "")
+
+
 def is_copilot_tool_result(frame):
     kind = copilot_kind(frame)
-    # The parser handles assistant, session and user frames before it looks
-    # for tool results, so those keep their text.
-    if kind.startswith(("assistant.", "session.", "user.")):
+    # The parser handles session frames and these conversation frames before
+    # it looks for tool results, so they keep their text. Any other type, even
+    # one prefixed `assistant.`, can be read as a tool result.
+    if kind.startswith("session.") or kind in COPILOT_CONVERSATION_TYPES:
         return False
     looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete", "progress"))
     return (looks_like_result and kind != "tool_call") or any(
@@ -281,11 +294,12 @@ def copilot_envelope(frame):
 
 def without_tool_output(frame):
     """Replace every provider's tool-result payload with a placeholder."""
-    kind = frame.get("type")
+    # Parsers lowercase the type before matching, so casing is no way around.
+    kind = str(frame.get("type") or "").lower()
     wrapper = copilot_envelope(frame)
     if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
         return dict(frame, **{wrapper: without_tool_output(frame[wrapper])})
-    if kind == "system" and frame.get("subtype") in ("task_notification", "task_completed"):  # Claude subagents
+    if kind == "system" and str(frame.get("subtype") or "").lower() in ("task_notification", "task_completed"):  # Claude subagents
         # The summary repeats the subagent's answer; its identity and status stay.
         return {key: (TOOL_OUTPUT if key == "summary" and value else value) for key, value in frame.items()}
     if kind == "user":  # Claude Code and Cursor tool results
@@ -311,7 +325,7 @@ def without_tool_output(frame):
         if isinstance(frame.get("payload"), dict):
             frame["payload"] = without_copilot_result_payload(frame["payload"])
         frame["data"] = dict(without_copilot_result_payload(frame["data"]), result={"content": TOOL_OUTPUT})
-    elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
+    elif codex_kind(frame) in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
         item = frame["item"]
         # Only tool items: agent messages, reasoning and warning items keep
         # their text, which is what the conformance suite reads.
@@ -353,7 +367,7 @@ def without_tool_output(frame):
 
 def tool_call_arguments(frame):
     """The arguments of every tool call a frame starts, as JSON text."""
-    kind = frame.get("type")
+    kind = str(frame.get("type") or "").lower()
     if kind == "assistant":  # Claude Code
         for block in (frame.get("message") or {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -362,7 +376,7 @@ def tool_call_arguments(frame):
         # Arguments may sit under `arguments` or `input`; audit whatever the
         # parser could read, or the whole frame.
         yield copilot_payload(frame).get("toolName", "tool"), json.dumps(copilot_arguments(frame) or frame)
-    elif kind in ("item.started", "item.completed"):  # Codex
+    elif codex_kind(frame) in ("item.started", "item.updated", "item.completed"):  # Codex
         item = frame.get("item") or {}
         # The parser records a tool call from a completed item too, so both
         # are audited.
@@ -374,7 +388,7 @@ def tool_call_arguments(frame):
             entries = [item] + [change for change in item.get("changes") or [] if isinstance(change, dict)]
             paths = [entry[key] for entry in entries for key in CODEX_FILE_CHANGE_PATH_KEYS if key in entry]
             yield "file_change", json.dumps(paths)
-    elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
+    elif kind == "tool_call" and str(frame.get("subtype") or "").lower() == "started":  # Cursor
         yield "tool_call", json.dumps(frame.get("tool_call"))
     elif is_antigravity_step(frame):  # Antigravity
         step = frame.get("step_update") if isinstance(frame.get("step_update"), dict) else {}
@@ -473,7 +487,7 @@ DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?
 
 # Words that run the next word as a command: `command cd`, `builtin cd`,
 # `eval cd`, `time cd`, each with or without options.
-COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+-[A-Za-z]+)*\s+)+$")
+COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+(?:-[A-Za-z]+|--))*\s+)+$")
 
 
 def jumps_directory(command):
@@ -609,17 +623,19 @@ def minimized(frame):
     wrapper = copilot_envelope(frame)
     if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
         return dict(frame, **{wrapper: minimized(frame[wrapper])})
-    if isinstance(frame.get("type"), str) and frame["type"].startswith("session."):
+    # Parsers lowercase the type before matching, so casing is no way around.
+    kind = str(frame.get("type") or "").lower()
+    if kind.startswith("session."):
         return minimized_copilot_session(frame)
-    if frame.get("type") == "result" and "sessionId" in frame:  # Copilot's terminal frame
+    if kind == "result" and "sessionId" in frame:  # Copilot's terminal frame
         # It ends the turn and names the session; its usage block is premium
         # requests, timings and change counts the parser does not read.
         return {key: value for key, value in frame.items() if key in COPILOT_RESULT_KEEP_KEYS}
-    if frame.get("type") == "system" and frame.get("subtype") == "init":
+    if kind == "system" and str(frame.get("subtype") or "").lower() == "init":
         return {key: value for key, value in frame.items() if key in INIT_KEEP_KEYS}
-    if frame.get("type") == "rate_limit_event" and isinstance(frame.get("rate_limit_info"), dict):
+    if kind == "rate_limit_event" and isinstance(frame.get("rate_limit_info"), dict):
         return {"type": "rate_limit_event", "rate_limit_info": {"status": frame["rate_limit_info"].get("status")}}
-    if frame.get("event") == "init" and isinstance(frame.get("init"), dict):
+    if str(frame.get("event") or "").lower() == "init" and isinstance(frame.get("init"), dict):
         frame = dict(frame)
         frame["init"] = {key: value for key, value in frame["init"].items() if key == "cwd"}
     return frame
