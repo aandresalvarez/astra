@@ -170,6 +170,14 @@ struct ProviderTranscriptConformanceTests {
             ("", "provider order \(expectedSteps), recorded \(actualSteps)")
         ])
 
+        // The durable transcript is the response rows, not run.output: every
+        // message, each copy the provider sent, must reach them.
+        report(.messagesInResponseRows, of: fixture, failures: truth.messages.indices.compactMap { index in
+            seenMessages.contains(index)
+                ? nil
+                : (truth.messages[index], "message missing from agent.response rows: \(truth.messages[index].prefix(80))")
+        })
+
         let recordedOutcomes = multiset(events.compactMap { event -> String? in
             switch event.type {
             case TaskEventTypes.Tool.result.rawValue: "success"
@@ -222,8 +230,9 @@ struct ProviderTranscriptConformanceTests {
             return expected == recorded ? nil : (summary, "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
         })
 
-        let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
-        report(.noRawProviderJSON, of: fixture, failures: rawFrameInOutput ? [("", "raw provider frame in run output")] : [])
+        report(.noRawProviderJSON, of: fixture, failures: output.components(separatedBy: "\n").filter(isRawProviderFrame).map {
+            ("", "raw provider frame in run output: \($0.prefix(80))")
+        })
 
         // Tool calls are compared by name as a multiset, so a dropped call
         // cannot hide behind an extra or duplicated one.
@@ -402,6 +411,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case noUnsentLines
         case paragraphStructure
         case toolsInterleaved
+        case messagesInResponseRows
         case toolResultsRecorded
         case usageRecorded
         case completionRecorded
@@ -492,6 +502,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .eachMessageOnce: .items("last-completed-wins keeps only the final agent_message (plan phase 2)") {
                     !$0.hasPrefix("The draft is saved")
                 },
+                .messagesInResponseRows: .whole("agent_message items become completions, which write no agent.response rows (plan phase 2)"),
                 .fileChangesRecorded: .items("file_change paths nest under changes[] and are dropped (plan phase 2)") {
                     $0 == "answer.md"
                 },
@@ -515,6 +526,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "composer-2.5-fast",
             knownIssues: [
                 .eachMessageOnce: .items("the last frame re-sends the previous message and echo residue splits it (plan phase 2)") {
+                    $0.hasSuffix("The same draft is saved in `answer.md`.")
+                },
+                .messagesInResponseRows: .items("the same echo residue splits that message across rows (plan phase 2)") {
                     $0.hasSuffix("The same draft is saved in `answer.md`.")
                 },
                 .noExtraLines: .shortLines("re-sent short lines of the previous message are appended again (plan phase 2)"),
@@ -834,6 +848,18 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
         remaining[step] = count - 1
         return true
     }
+}
+
+/// A provider frame leaked into the text, whatever its key order: a line that
+/// is a JSON object with a frame discriminator, or that holds one glued to
+/// text. Protocol marker lines are the recorder's, not a provider's.
+private func isRawProviderFrame(_ line: String) -> Bool {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard !trimmed.hasPrefix(AstraRunProtocolParser.markerToken) else { return false }
+    if let object = (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) as? [String: Any] {
+        return object["type"] != nil || object["event"] != nil
+    }
+    return trimmed.range(of: #"\{"[A-Za-z_]+"\s*:.*"(?:type|event)"\s*:\s*""#, options: .regularExpression) != nil
 }
 
 private let extraLineSeparator = "\u{1F}"

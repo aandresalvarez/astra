@@ -337,7 +337,7 @@ def without_tool_output(frame):
         for wrapper in ("data", "payload"):
             if isinstance(frame.get(wrapper), dict):
                 frame[wrapper] = without_copilot_result_payload(frame[wrapper])
-    elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
+    elif is_antigravity_step(frame) and isinstance(frame.get("step_update"), dict):  # Antigravity
         step = frame["step_update"]
         info = step.get("tool_info")
         if isinstance(info, dict) and ("output" in info or "error" in info):
@@ -376,9 +376,10 @@ def tool_call_arguments(frame):
             yield "file_change", json.dumps(paths)
     elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
         yield "tool_call", json.dumps(frame.get("tool_call"))
-    elif frame.get("event") == "step_update":  # Antigravity
-        step = frame.get("step_update") or {}
-        if step.get("step_type") == "tool" and step.get("state") == "ACTIVE":
+    elif is_antigravity_step(frame):  # Antigravity
+        step = frame.get("step_update") if isinstance(frame.get("step_update"), dict) else {}
+        # The parser lowercases step_type and uppercases state before matching.
+        if str(step.get("step_type") or "").lower() == "tool" and str(step.get("state") or "").upper() == "ACTIVE":
             yield step.get("tool_name", "tool"), json.dumps((step.get("tool_info") or {}).get("parameters"))
     else:
         call = copilot_tool_call(frame)
@@ -470,12 +471,22 @@ ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|
 DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?\s*(?=$|[;&|)`}\"'\n])")
 
 
+# Words that run the next word as a command: `command cd`, `builtin cd`,
+# `eval cd`, `time cd`, each with or without options.
+COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+-[A-Za-z]+)*\s+)+$")
+
+
 def jumps_directory(command):
-    return any(
-        COMMAND_POSITION_PREFIX.search(command[:match.start()])
-        or command[:match.start()].rstrip().endswith("builtin")
-        for match in DIRECTORY_JUMP_PATTERN.finditer(command)
-    )
+    for match in DIRECTORY_JUMP_PATTERN.finditer(command):
+        before = command[:match.start()]
+        wrapper = COMMAND_WRAPPERS.search(before)
+        if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
+            return True
+    return False
+
+
+def is_antigravity_step(frame):
+    return isinstance(frame.get("event"), str) and frame["event"].lower() == "step_update"
 
 
 ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -590,6 +601,9 @@ def audit(fixture_path):
     return 3 if findings else 0
 
 
+COPILOT_RESULT_KEEP_KEYS = {"type", "id", "timestamp", "sessionId", "exitCode"}
+
+
 def minimized(frame):
     """Drop the local inventory that init and session frames advertise."""
     wrapper = copilot_envelope(frame)
@@ -597,6 +611,10 @@ def minimized(frame):
         return dict(frame, **{wrapper: minimized(frame[wrapper])})
     if isinstance(frame.get("type"), str) and frame["type"].startswith("session."):
         return minimized_copilot_session(frame)
+    if frame.get("type") == "result" and "sessionId" in frame:  # Copilot's terminal frame
+        # It ends the turn and names the session; its usage block is premium
+        # requests, timings and change counts the parser does not read.
+        return {key: value for key, value in frame.items() if key in COPILOT_RESULT_KEEP_KEYS}
     if frame.get("type") == "system" and frame.get("subtype") == "init":
         return {key: value for key, value in frame.items() if key in INIT_KEEP_KEYS}
     if frame.get("type") == "rate_limit_event" and isinstance(frame.get("rate_limit_info"), dict):
