@@ -244,8 +244,12 @@ Status: landed with this plan, except the OpenCode capture.
     and a signal stops the timeout watchdog too, so it cannot later signal a
     reused process group.
   - The audit is a tripwire, not isolation: it also refuses inherited path
-    variables, parameter expansions that can build a path, and a bare `cd` or
-    `cd -`. The owner still reviews every fixture diff.
+    variables, parameter expansions that can build a path, escape sequences
+    that `printf` / `echo` turn into one, and a `cd` whose only arguments are
+    options or `-`. It checks every path key of a Codex file change. It fails
+    closed, so a legitimate command (a `sed` expression with `)/`) can need
+    `ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1`, and the owner still reviews every
+    fixture diff.
 - Captured scenarios:
   - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
     It covers planned scenarios 1–4: narration, a tool read, a multi-line
