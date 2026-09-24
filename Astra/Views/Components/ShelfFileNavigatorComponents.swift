@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 enum ShelfFileNavigatorScope: String, CaseIterable, Identifiable {
     case task
@@ -13,6 +14,34 @@ enum ShelfFileNavigatorScope: String, CaseIterable, Identifiable {
         case .workspace: "Workspace"
         case .all: "All"
         }
+    }
+}
+
+/// How Browse files lists a task's files: as folders on disk, or by the turn
+/// that created, edited, or removed them. Turns ignore the scope, since one
+/// turn can touch task and workspace files alike.
+enum ShelfFileNavigatorOrganization: String, CaseIterable, Identifiable {
+    case folders
+    case turns
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .folders: "Folders"
+        case .turns: "Turns"
+        }
+    }
+
+    /// The last choice, read from `UserDefaults` directly, as
+    /// `RailDisclosureStore` does, to keep off the AppStorage ratchet.
+    static var stored: ShelfFileNavigatorOrganization {
+        UserDefaults.standard.string(forKey: AppStorageKeys.markdownShelfFileNavigatorOrganization)
+            .flatMap(Self.init(rawValue:)) ?? .folders
+    }
+
+    func store() {
+        UserDefaults.standard.set(rawValue, forKey: AppStorageKeys.markdownShelfFileNavigatorOrganization)
     }
 }
 
@@ -37,6 +66,7 @@ enum ShelfFileNavigatorRootAvailability {
 struct ShelfFileNavigatorHeader: View {
     @Binding var searchText: String
     @Binding var scope: ShelfFileNavigatorScope
+    @Binding var organization: ShelfFileNavigatorOrganization
     @Binding var isPinned: Bool
     let effectiveScope: ShelfFileNavigatorScope
     let showsScopePicker: Bool
@@ -89,12 +119,33 @@ struct ShelfFileNavigatorHeader: View {
             if showsScopePicker {
                 Divider()
 
-                scopeMenu
+                HStack(spacing: 8) {
+                    organizationPicker
+
+                    if organization == .folders {
+                        scopeMenu
+                    }
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Stanford.cardBackground.opacity(0.45))
+    }
+
+    private var organizationPicker: some View {
+        Picker("Organize files", selection: $organization) {
+            ForEach(ShelfFileNavigatorOrganization.allCases) { candidate in
+                Text(candidate.label).tag(candidate)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .onChange(of: organization) { _, choice in choice.store() }
+        .help("List files by folder, or by the turn that changed them")
+        .accessibilityIdentifier("FilesShelfOrganizationPicker")
     }
 
     private var scopeMenu: some View {
