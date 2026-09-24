@@ -266,6 +266,27 @@ struct ProviderTranscriptConformanceTests {
                     "fixture announces no session; list sessionRecorded in notExercised")
         }
 
+        // A subagent's start and finish must each leave a durable team event
+        // carrying the provider's task id.
+        if fixture.scenario == "subagent" {
+            #expect(!truth.subagentStarts.isEmpty, "the subagent fixture starts no subagent")
+        }
+        let recordedLifecycle = multiset(events.compactMap { event -> String? in
+            switch event.type {
+            case TaskEventTypes.Team.agentStarted.rawValue: "started \(event.agentId ?? "")"
+            case TaskEventTypes.Team.agentCompleted.rawValue: "completed \(event.agentId ?? "")"
+            default: nil
+            }
+        })
+        let expectedLifecycle = multiset(
+            truth.subagentStarts.map { "started \($0)" } + truth.subagentCompletions.map { "completed \($0)" }
+        )
+        report(.subagentLifecycle, of: fixture, failures: Set(recordedLifecycle.keys).union(expectedLifecycle.keys).sorted().compactMap { step in
+            let expected = expectedLifecycle[step] ?? 0
+            let recorded = recordedLifecycle[step] ?? 0
+            return expected == recorded ? nil : (step, "subagent \(step): provider reported \(expected)x, recorded \(recorded)x")
+        })
+
         let snapshot = TaskThreadSnapshot(task: task)
         let displayed = collapsed(
             snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
@@ -372,6 +393,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case fileChangesRecorded
         case noSpuriousErrors
         case sessionRecorded
+        case subagentLifecycle
         case answerVisible
     }
 
@@ -536,6 +558,9 @@ struct ProviderStreamTruth {
     private(set) var writtenPaths: [String] = []
     /// The session the provider announced, which a follow-up resumes.
     private(set) var sessionID: String?
+    /// Task ids of the subagents the provider started and finished.
+    private(set) var subagentStarts: [String] = []
+    private(set) var subagentCompletions: [String] = []
     /// Collapsed "last line of a message + first line of a later message":
     /// the only lines, besides the provider's own, that appending messages
     /// without a separator can produce.
@@ -564,6 +589,17 @@ struct ProviderStreamTruth {
             case .claudeCode:
                 if type == "system", frame["subtype"] as? String == "init" {
                     sessionID = frame["session_id"] as? String
+                }
+                // `local_agent` and `in_process_teammate` tasks are subagents;
+                // other task types are background shells.
+                if type == "system", frame["subtype"] as? String == "task_started",
+                   ["local_agent", "in_process_teammate"].contains(frame["task_type"] as? String ?? ""),
+                   let taskID = frame["task_id"] as? String {
+                    subagentStarts.append(taskID)
+                }
+                if type == "system", ["task_notification", "task_completed"].contains(frame["subtype"] as? String ?? ""),
+                   let taskID = frame["task_id"] as? String {
+                    subagentCompletions.append(taskID)
                 }
                 if type == "result", let modelUsage = frame["modelUsage"] as? [String: [String: Any]] {
                     // Anthropic reports cache reads and writes apart from input.

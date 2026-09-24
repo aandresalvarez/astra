@@ -190,6 +190,25 @@ def without_copilot_result_payload(fields):
     }
 
 
+# What a Codex file change keeps: the parser reads its text (a diff, file
+# contents) from many keys, so everything but identity, paths and kinds goes.
+CODEX_FILE_CHANGE_KEEP_KEYS = {
+    "id", "type", "status", "path", "file_path", "filePath", "filename", "name", "kind", "change_type", "changeType",
+}
+
+
+def without_file_change_payload(fields):
+    kept = {}
+    for key, value in fields.items():
+        if key == "changes" and isinstance(value, list):
+            kept[key] = [without_file_change_payload(change) if isinstance(change, dict) else TOOL_OUTPUT for change in value]
+        elif key in CODEX_FILE_CHANGE_KEEP_KEYS or not value:
+            kept[key] = value
+        else:
+            kept[key] = TOOL_OUTPUT
+    return kept
+
+
 def error_placeholder(error):
     # A failed tool's `error` is a flag, or an object whose `message` the
     # parsers read as the result text: stderr, file contents, a credential.
@@ -199,20 +218,52 @@ def error_placeholder(error):
 
 
 def is_copilot_tool_result(frame):
-    kind = str(frame.get("type") or "").lower()
+    kind = copilot_kind(frame)
     # The parser handles assistant, session and user frames before it looks
     # for tool results, so those keep their text.
     if kind.startswith(("assistant.", "session.", "user.")):
         return False
     looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete", "progress"))
-    return (looks_like_result and kind != "tool_call") or "toolResult" in frame or (
-        isinstance(frame.get("data"), dict) and "toolResult" in frame["data"]
+    return (looks_like_result and kind != "tool_call") or any(
+        "toolResult" in container for container in (frame, copilot_payload(frame))
     )
+
+
+def copilot_kind(frame):
+    """The frame's type as CopilotStreamEventParser reads it: its own type
+    keys first, then its `data` / `payload` object's."""
+    return next(
+        (
+            container[key]
+            for container in (frame, copilot_payload(frame))
+            for key in COPILOT_TYPE_KEYS
+            if isinstance(container.get(key), str)
+        ),
+        "",
+    ).lower()
+
+
+def copilot_envelope(frame):
+    """The wrapper key of a Copilot envelope the parser unwraps (a frame typed
+    event/message/data/payload around a typed object), or None."""
+    if copilot_kind(frame) not in ("event", "message", "data", "payload"):
+        return None
+    for wrapper in ("data", "payload"):
+        inner = frame.get(wrapper)
+        if isinstance(inner, dict):
+            return wrapper if any(isinstance(inner.get(key), str) for key in COPILOT_TYPE_KEYS) else None
+    return None
 
 
 def without_tool_output(frame):
     """Replace every provider's tool-result payload with a placeholder."""
     kind = frame.get("type")
+    wrapper = copilot_envelope(frame)
+    if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
+        return dict(frame, **{wrapper: without_tool_output(frame[wrapper])})
+    if kind == "system" and frame.get("subtype") in ("task_notification", "task_completed"):  # Claude subagents
+        # The summary repeats the subagent's answer; its identity and status stay.
+        return {key: (TOOL_OUTPUT if key == "summary" and value else value) for key, value in frame.items()}
     if kind == "user":  # Claude Code and Cursor tool results
         frame = dict(frame)
         frame.pop("tool_use_result", None)
@@ -242,6 +293,8 @@ def without_tool_output(frame):
         ]
         if payload_keys and item.get("type") in CODEX_TOOL_ITEM_TYPES:
             frame = dict(frame, item=dict(item, **{key: TOOL_OUTPUT if item[key] else item[key] for key in payload_keys}))
+        elif item.get("type") == "file_change":
+            frame = dict(frame, item=without_file_change_payload(item))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
         # Keep the outcome key (`success` / `error`), drop what it carried.
         def blank(result):
@@ -330,10 +383,7 @@ def copilot_tool_call(frame):
     """
     payload = copilot_payload(frame)
     containers = (frame, payload)
-    kind = next(
-        (container[key] for container in containers for key in COPILOT_TYPE_KEYS if isinstance(container.get(key), str)),
-        "",
-    ).lower()
+    kind = copilot_kind(frame)
     if kind in ("event", "message", "data", "payload") and any(isinstance(payload.get(key), str) for key in COPILOT_TYPE_KEYS):
         return copilot_tool_call(payload)
     # Argument fragments; the execution_start that follows carries them whole.
@@ -382,6 +432,17 @@ OUTSIDE_PATH_PATTERN = re.compile(
     r"|(?i:\bfile:(?=/))"
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
+# `cd` with no directory, or `-`, moves to $HOME or the previous directory: a
+# path that never appears in the arguments.
+DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+--?)?\s*(?=$|[;&|)`}\"'\n])")
+
+
+def jumps_directory(command):
+    return any(
+        COMMAND_POSITION_PREFIX.search(command[:match.start()])
+        or command[:match.start()].rstrip().endswith("builtin")
+        for match in DIRECTORY_JUMP_PATTERN.finditer(command)
+    )
 
 
 ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -458,6 +519,7 @@ def audit(fixture_path):
                     OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach)
                     for reach in map(command_executables_as_basenames, forms)
                 )
+                reached = reached or any(jumps_directory(leaf) for leaf in decoded)
                 if reached or any(ESCAPED_BYTES.search(leaf) for leaf in decoded):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:

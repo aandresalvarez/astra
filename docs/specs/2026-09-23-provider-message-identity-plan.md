@@ -233,7 +233,8 @@ Status: landed with this plan, except the OpenCode capture.
   fixture was never committed.
   - The CLI runs under `env -i` with an allowlist, so no session tokens.
   - Tool results are replaced with a placeholder in every fixture, including
-    failure details, partial output and progress messages.
+    failure details, partial output, progress messages, wrapped Copilot
+    envelopes, Codex file-change text and Claude subagent summaries.
   - `redact_provider_stream.py --audit` refuses a capture whose tool calls
     reach outside the workspace or dump the environment, in every tool-call
     shape the parsers accept.
@@ -241,8 +242,8 @@ Status: landed with this plan, except the OpenCode capture.
     and a signal stops the timeout watchdog too, so it cannot later signal a
     reused process group.
   - The audit is a tripwire, not isolation: it also refuses inherited path
-    variables and parameter expansions that can build a path. The owner still
-    reviews every fixture diff.
+    variables, parameter expansions that can build a path, and a bare `cd` or
+    `cd -`. The owner still reviews every fixture diff.
 - Captured scenarios:
   - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
     It covers planned scenarios 1–4: narration, a tool read, a multi-line
@@ -278,7 +279,9 @@ Status: landed with this plan, except the OpenCode capture.
   - every distinct `ASTRA_EVENT` complete marker leaves its `astra.complete`
     event (identical markers are idempotent and recorded once);
   - the session the provider announced reaches `task.sessionId` and
-    `run.providerSessionId`, which native continuation resumes.
+    `run.providerSessionId`, which native continuation resumes;
+  - each subagent the provider starts and finishes leaves a durable
+    `team.agent.started` / `team.agent.completed` event with its task id.
 - A fixture that cannot exercise a check says so in `notExercised`, and the
   suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
   a response without tool calls, so the answer-first scenario never reaches its
