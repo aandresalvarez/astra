@@ -121,6 +121,9 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
                     object: sidebarSubview,
                     queue: .main
                 ) { [weak self] _ in
+                    // Show/hide transitions can rebuild the divider while only
+                    // the sidebar pane's frame changes.
+                    self?.fadeSystemDivider()
                     self?.enforceReadableSidebarWidth()
                 }
             ]

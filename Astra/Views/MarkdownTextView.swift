@@ -441,8 +441,15 @@ struct MarkdownTextView: View, Equatable {
                                     .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 8)
-
-                                if colIdx < table.columnCount - 1 {
+                            }
+                        }
+                        // Column separators ride on the whole row, so they span
+                        // its tallest cell; a sibling in this top-aligned,
+                        // vertically unbounded HStack would size to a stub.
+                        .overlay(alignment: .leading) {
+                            HStack(spacing: 0) {
+                                ForEach(0..<max(table.columnCount - 1, 0), id: \.self) { colIdx in
+                                    Color.clear.frame(width: columnWidths[colIdx] + 24)
                                     SubtleDivider(axis: .vertical)
                                 }
                             }

@@ -485,7 +485,9 @@ struct StanfordButtonStyle: ButtonStyle {
 }
 
 /// The Subtle stroke step as a divider, for rows and columns inside a card,
-/// table, or menu. Breaks between regions use the system `Divider()`.
+/// table, or menu. Breaks between regions use the system `Divider()`. The
+/// vertical axis fills the height it is proposed, so place it where that
+/// height is known (a row overlay), not in a vertically unbounded stack.
 struct SubtleDivider: View {
     var axis: Axis = .horizontal
 
