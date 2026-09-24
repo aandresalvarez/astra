@@ -492,24 +492,41 @@ def has_escaped_bytes(command):
     )
 
 
-def string_leaves(arguments_json):
+# Argument keys whose strings a tool runs as a shell command. Only these get
+# the executable-path exemption: a path given to a file tool is always a path.
+COMMAND_ARGUMENT_KEYS = {"command", "cmd", "commandline", "script", "shell_command", "shellcommand"}
+
+
+def argument_leaves(arguments_json):
+    """(is_command, text) for every string in a tool call's arguments, dict
+    keys included. A string that holds JSON (Copilot sends arguments that way)
+    is read as JSON."""
     try:
         value = json.loads(arguments_json)
     except ValueError:
-        return [arguments_json]
+        return [(False, arguments_json)]
     leaves = []
 
-    def collect(node):
+    def collect(node, key):
         if isinstance(node, str):
-            leaves.append(node)
+            if node.lstrip()[:1] in ("{", "["):
+                try:
+                    nested = json.loads(node)
+                except ValueError:
+                    nested = None
+                if isinstance(nested, (dict, list)):
+                    collect(nested, key)
+                    return
+            leaves.append((str(key).lower() in COMMAND_ARGUMENT_KEYS, node))
         elif isinstance(node, list):
             for item in node:
-                collect(item)
+                collect(item, key)
         elif isinstance(node, dict):
-            for item in node.values():
-                collect(item)
+            for child_key, item in node.items():
+                leaves.append((False, str(child_key)))
+                collect(item, child_key)
 
-    collect(value)
+    collect(value, None)
     return leaves
 
 
@@ -552,16 +569,19 @@ def audit(fixture_path):
                 findings.append(f"line {number}: JSON that is not an object, cannot be audited")
                 continue
             for name, arguments in tool_call_arguments(frame):
-                # An executable path becomes its basename, so `/usr/bin/env` is
-                # judged like `env` while `/bin/zsh` stops counting as a path.
-                # Shell-escaped strings are judged decoded, and escapes left
-                # over (printf, echo -e) are refused as obfuscation.
-                decoded = [shell_decoded(leaf) for leaf in string_leaves(arguments)]
-                forms = [arguments] + [json.dumps(leaf) for leaf in decoded]
-                reached = any(
-                    OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach)
-                    for reach in map(command_executables_as_basenames, forms)
-                )
+                # In a command, an executable path becomes its basename, so
+                # `/usr/bin/env` is judged like `env` while `/bin/zsh` stops
+                # counting as a path; anywhere else a path stays a path.
+                # Shell-escaped strings are judged raw and decoded, and escapes
+                # left over (printf, echo -e) are refused as obfuscation.
+                leaves = argument_leaves(arguments)
+                decoded = [shell_decoded(leaf) for _, leaf in leaves]
+                forms = [
+                    command_executables_as_basenames(json.dumps(text)) if is_command else json.dumps(text)
+                    for (is_command, leaf), shell_text in zip(leaves, decoded)
+                    for text in (leaf, shell_text)
+                ]
+                reached = any(OUTSIDE_PATH_PATTERN.search(form) or ENV_DUMP_PATTERN.search(form) for form in forms)
                 reached = reached or any(jumps_directory(leaf) for leaf in decoded)
                 if reached or any(has_escaped_bytes(leaf) for leaf in decoded):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
@@ -572,6 +592,9 @@ def audit(fixture_path):
 
 def minimized(frame):
     """Drop the local inventory that init and session frames advertise."""
+    wrapper = copilot_envelope(frame)
+    if wrapper:  # Copilot unwraps envelopes, however deep, before reading them
+        return dict(frame, **{wrapper: minimized(frame[wrapper])})
     if isinstance(frame.get("type"), str) and frame["type"].startswith("session."):
         return minimized_copilot_session(frame)
     if frame.get("type") == "system" and frame.get("subtype") == "init":

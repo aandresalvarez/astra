@@ -247,7 +247,9 @@ Status: landed with this plan, except the OpenCode capture.
     variables, parameter expansions that can build a path, escape sequences
     that `printf` / `echo` turn into one, and a `cd` whose only arguments are
     options or `-`. It checks every path key of a Codex file change. It fails
-    closed, so a legitimate command (a `sed` expression with `)/`) can need
+    closed, and only a shell command's own executable is exempt from the path
+    rule (a file tool's path is always a path), so a legitimate command (a
+    `sed` expression with `)/`) can need
     `ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1`, and the owner still reviews every
     fixture diff.
 - Captured scenarios:
@@ -276,8 +278,8 @@ Status: landed with this plan, except the OpenCode capture.
   - a successful turn completes and records no error events;
   - messages are recorded in provider order;
   - every file the provider wrote is recorded as a file change;
-  - no output line is text the provider never sent, apart from joins at
-    message boundaries;
+  - no output line is text the provider never sent, apart from at most one
+    join per boundary between consecutive messages;
   - identical messages are counted by how many times the provider sent them;
   - messages and tool calls interleave in provider order;
   - each message keeps its line and paragraph breaks;
