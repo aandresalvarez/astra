@@ -267,7 +267,8 @@ Status: landed with this plan, except the OpenCode capture.
   - each message keeps its line and paragraph breaks;
   - tool results are recorded with their success or failure outcome;
   - the run's token totals equal what the provider reported;
-  - every `ASTRA_EVENT` complete marker leaves its `astra.complete` event.
+  - every distinct `ASTRA_EVENT` complete marker leaves its `astra.complete`
+    event (identical markers are idempotent and recorded once).
 - A fixture that cannot exercise a check says so in `notExercised`, and the
   suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
   a response without tool calls, so the answer-first scenario never reaches its

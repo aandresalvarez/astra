@@ -102,9 +102,11 @@ struct ProviderTranscriptConformanceTests {
         // Lines two messages glued together are not the provider's lines, so
         // only lines the provider actually sent are counted.
         let sent = lineCounts(truth.messages.joined(separator: "\n"))
+        // The item carries the overage, so a known issue can cover "one extra
+        // copy of a short line" without also excusing a worse duplication.
         report(.noExtraLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
             guard let expected = sent[line], count > expected else { return nil }
-            return (line, "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
+            return (extraLineItem(line, overage: count - expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
         })
 
         // Every other line must be a join of one message's last line with a
@@ -117,11 +119,17 @@ struct ProviderTranscriptConformanceTests {
 
         // Collapsed comparisons ignore line breaks, so each message present in
         // the output must also keep its lines and blank-line paragraph breaks.
+        // Counted per occurrence: every recorded copy of a text, up to how
+        // many the provider sent, must keep its structure.
         let structuredOutput = lineStructure(output)
-        report(.paragraphStructure, of: fixture, failures: truth.messages.compactMap { message in
-            guard collapsedOutput.contains(collapsed(message)),
-                  !structuredOutput.contains(lineStructure(message)) else { return nil }
-            return (message, "line or paragraph breaks lost: \(message.prefix(80))")
+        report(.paragraphStructure, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
+            let text = collapsed(message)
+            guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
+            let present = min(expectedMultiplicity[text] ?? 1, collapsedOutput.components(separatedBy: text).count - 1)
+            let structured = structuredOutput.components(separatedBy: lineStructure(message)).count - 1
+            return structured >= present
+                ? nil
+                : (message, "line or paragraph breaks lost in \(present - structured) of \(present) copies: \(message.prefix(80))")
         })
 
         // Messages and tool calls must interleave as the provider produced
@@ -181,7 +189,10 @@ struct ProviderTranscriptConformanceTests {
                     "fixture reports no token usage; list usageRecorded in notExercised")
         }
 
-        // Each complete marker must leave its durable astra.complete event.
+        // Each distinct complete marker must leave its durable astra.complete
+        // event. Identical markers are recorded once per run by design
+        // (AgentRuntimeEventPipeline.shouldEmit: markers are idempotent), so
+        // expected summaries are unique.
         let recordedSummaries = multiset(events
             .filter { $0.type == "astra.complete" }
             .compactMap { event in
@@ -310,10 +321,13 @@ struct ProviderStreamKnownIssue: Sendable {
         Self(reason: reason, covers: covers)
     }
 
-    /// The per-line echo check re-appends only lines under its 80-character
-    /// floor; a duplicated longer line is a new defect.
+    /// The per-line echo check re-appends each line under its 80-character
+    /// floor once; a longer line, or more than one extra copy, is a new defect.
     static func shortLines(_ reason: String) -> Self {
-        items(reason) { $0.count < 80 }
+        items(reason) { item in
+            let parts = item.components(separatedBy: extraLineSeparator)
+            return parts.count == 2 && parts[1] == "+1" && parts[0].count < 80
+        }
     }
 }
 
@@ -479,7 +493,8 @@ struct ProviderStreamTruth {
     private(set) var toolResultOutcomes: [String] = []
     /// The run's token totals as the provider reports them, when it does.
     private(set) var usage: (input: Int, output: Int)?
-    /// Summaries of the `ASTRA_EVENT` complete markers in the main messages.
+    /// Distinct summaries of the `ASTRA_EVENT` complete markers in the main
+    /// messages; identical markers are one event by protocol design.
     private(set) var completionSummaries: [String] = []
 
     private enum RawStep {
@@ -739,6 +754,13 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
         remaining[step] = count - 1
         return true
     }
+}
+
+private let extraLineSeparator = "\u{1F}"
+
+/// A `noExtraLines` failure item: the line and how many copies too many.
+private func extraLineItem(_ line: String, overage: Int) -> String {
+    "\(line)\(extraLineSeparator)+\(overage)"
 }
 
 private func int(_ value: Any?) -> Int {

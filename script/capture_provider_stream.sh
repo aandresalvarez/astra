@@ -19,7 +19,9 @@
 # an allowlisted environment (no session tokens), tool results never reach the
 # fixture, and a capture whose tool calls reach outside the workspace or dump
 # the environment is refused (set ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1 only after
-# reviewing why).
+# reviewing why). That audit is a best-effort filter over tool-call arguments,
+# not a sandbox: the allowlisted environment and a human review of the fixture
+# are the boundary.
 #
 # Output: Tests/Fixtures/ProviderStreams/<provider>/<scenario>.jsonl
 # Set ASTRA_CAPTURE_REDACT_EMAIL to your account email so it is redacted too.
@@ -74,10 +76,31 @@ then a blank line, then one sentence under 60 characters saying the draft is sav
 esac
 
 workspace="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture.XXXXXX")"
-# --keep-raw copies what it keeps first, so the unredacted original never
-# outlives the script.
-cleanup() { rm -rf "$workspace"; }
+# The raw stream and CLI diagnostics live outside the workspace the agent can
+# list, read and write.
+capture_dir="$(mktemp -d "${TMPDIR:-/tmp}/astra-capture-logs.XXXXXX")"
+pid=""
+# TERM the provider's whole group, give it a bounded grace period, then KILL
+# whatever ignored TERM.
+stop_provider_group() {
+  [[ -n "$pid" ]] || return 0
+  kill -TERM -- "-$pid" 2>/dev/null || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 -- "-$pid" 2>/dev/null || return 0
+    sleep 0.3
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+}
+# Stop the provider before its workspace disappears, however the script ends.
+# --keep-raw copies what it keeps first, so no unredacted original outlives it.
+cleanup() {
+  stop_provider_group
+  rm -rf "$workspace" "$capture_dir"
+}
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cat > "$workspace/question.txt" <<'EOF'
 Dana asks: for the 32,872-day top-coding, did we cap each day offset with
 LEAST(offset, 32872), or first work out whether the patient reached age 90?
@@ -111,8 +134,8 @@ case "$provider" in
   *) usage ;;
 esac
 
-raw="$workspace/stdout.jsonl"
-stderr_file="$workspace/stderr.txt"
+raw="$capture_dir/stdout.jsonl"
+stderr_file="$capture_dir/stderr.txt"
 echo "==> $provider/$scenario in $workspace" >&2
 # Only what the CLIs need to find themselves and their logins; everything else
 # in this shell (API keys, session tokens) stays out of the agent's reach.
@@ -127,16 +150,6 @@ set -m
 (cd "$workspace" && exec env -i "${capture_env[@]}" "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
 pid=$!
 set +m
-# TERM the provider's whole group, give it a bounded grace period, then KILL
-# whatever ignored TERM.
-stop_provider_group() {
-  kill -TERM -- "-$pid" 2>/dev/null || return 0
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 -- "-$pid" 2>/dev/null || return 0
-    sleep 0.3
-  done
-  kill -KILL -- "-$pid" 2>/dev/null || true
-}
 ( sleep "$TIMEOUT_SECONDS"; kill -TERM -- "-$pid"; sleep 3; kill -KILL -- "-$pid" ) 2>/dev/null &
 watchdog=$!
 status=0

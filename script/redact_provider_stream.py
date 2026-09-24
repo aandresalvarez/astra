@@ -166,6 +166,26 @@ def minimized_copilot_session(frame):
 
 TOOL_OUTPUT = "[tool output redacted]"
 CODEX_TOOL_ITEM_TYPES = {"command_execution", "mcp_tool_call", "local_shell_call", "function_call", "web_search"}
+CODEX_ITEM_NON_ARGUMENT_KEYS = {
+    "id", "type", "status", "exit_code", "aggregated_output", "output", "stdout", "stderr", "result", "text", "message",
+}
+# Copilot also emits result frames other than tool.execution_complete (the
+# parser accepts any tool *result/output/complete* type or a toolResult key).
+COPILOT_RESULT_PAYLOAD_KEYS = {
+    "output", "result", "content", "text", "message", "toolResult", "detailedContent", "stdout", "stderr",
+}
+
+
+def is_copilot_tool_result(frame):
+    kind = str(frame.get("type") or "").lower()
+    # The parser handles assistant, session and user frames before it looks
+    # for tool results, so those keep their text.
+    if kind.startswith(("assistant.", "session.", "user.")):
+        return False
+    looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete"))
+    return (looks_like_result and kind != "tool_call") or "toolResult" in frame or (
+        isinstance(frame.get("data"), dict) and "toolResult" in frame["data"]
+    )
 
 
 def without_tool_output(frame):
@@ -208,6 +228,13 @@ def without_tool_output(frame):
             name: (dict(call, result=blank(call["result"])) if isinstance(call, dict) and "result" in call else call)
             for name, call in frame["tool_call"].items()
         })
+    elif is_copilot_tool_result(frame):  # Copilot's other result shapes
+        frame = {key: (TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value else value) for key, value in frame.items()}
+        if isinstance(frame.get("data"), dict):
+            frame["data"] = {
+                key: (TOOL_OUTPUT if key in COPILOT_RESULT_PAYLOAD_KEYS and value else value)
+                for key, value in frame["data"].items()
+            }
     elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
         step = frame["step_update"]
         info = step.get("tool_info")
@@ -226,10 +253,14 @@ def tool_call_arguments(frame):
     elif kind == "tool.execution_start":  # Copilot
         data = frame.get("data") or {}
         yield data.get("toolName", "tool"), json.dumps(data.get("arguments"))
-    elif kind == "item.started":  # Codex
+    elif kind in ("item.started", "item.completed"):  # Codex
         item = frame.get("item") or {}
-        if item.get("type") == "command_execution":
-            yield "command_execution", json.dumps(item.get("command"))
+        if kind == "item.started" and item.get("type") in CODEX_TOOL_ITEM_TYPES:
+            arguments = {key: value for key, value in item.items() if key not in CODEX_ITEM_NON_ARGUMENT_KEYS}
+            yield item.get("type"), json.dumps(arguments)
+        elif item.get("type") == "file_change":
+            paths = [change.get("path") for change in item.get("changes") or [] if isinstance(change, dict)]
+            yield "file_change", json.dumps(paths)
     elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
         yield "tool_call", json.dumps(frame.get("tool_call"))
     elif frame.get("event") == "step_update":  # Antigravity
@@ -255,6 +286,8 @@ OUTSIDE_PATH_PATTERN = re.compile(
     r"|(?<![\w.\-])\.\.(?=/|[\s\"'\\]|$)"
     r"|(?<![\w])~[A-Za-z0-9._\-]*(?=/|[\s\"'\\]|$)"
     r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
+    # A local file URL reads the disk however its slashes look.
+    r"|(?i:\bfile:(?=/))"
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
 
@@ -320,6 +353,7 @@ def audit(fixture_path):
                 findings.append(f"line {number}: not JSON, cannot be audited")
                 continue
             if not isinstance(frame, dict):
+                findings.append(f"line {number}: JSON that is not an object, cannot be audited")
                 continue
             for name, arguments in tool_call_arguments(frame):
                 # An executable path becomes its basename, so `/usr/bin/env` is
@@ -371,8 +405,10 @@ def main():
                 # A malformed frame cannot have its tool output removed or its
                 # tool calls audited, so it is never published.
                 sys.exit(f"line {number} of the capture is not JSON; refusing to write a fixture")
-            if isinstance(frame, dict):
-                frame = without_tool_output(minimized(frame))
+            if not isinstance(frame, dict):
+                # A scalar or array frame can be neither minimized nor audited.
+                sys.exit(f"line {number} of the capture is JSON but not an object; refusing to write a fixture")
+            frame = without_tool_output(minimized(frame))
             print(json.dumps(redact(frame, pairs), ensure_ascii=False, separators=(",", ":")))
 
 
