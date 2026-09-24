@@ -124,16 +124,25 @@ def redact(value, pairs):
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
+            # Keys are strings a provider can fill with paths, hosts or tokens
+            # too (a map keyed by file path). Two keys that redact alike keep
+            # both entries: the later one gets a numbered suffix.
+            published = redact_string(key, pairs) if isinstance(key, str) else key
+            if published in redacted:
+                suffix = 2
+                while f"{published} ({suffix})" in redacted:
+                    suffix += 1
+                published = f"{published} ({suffix})"
             if key in OPAQUE_VALUE_KEYS or (
                 key in OPAQUE_WHEN_LONG_KEYS and isinstance(item, str) and len(item) >= OPAQUE_MIN_LENGTH
             ):
-                redacted[key] = "[redacted]"
+                redacted[published] = "[redacted]"
             elif key in TOOL_ARGUMENT_FRAGMENT_KEYS and isinstance(item, str) and item:
-                redacted[key] = "…"
+                redacted[published] = "…"
             elif key in HOST_VALUE_KEYS and isinstance(item, str) and item.split(".")[0] == SHORT_HOST:
-                redacted[key] = "host"
+                redacted[published] = "host"
             else:
-                redacted[key] = redact(item, pairs)
+                redacted[published] = redact(item, pairs)
         return redacted
     return value
 
@@ -238,7 +247,9 @@ COPILOT_RESULT_PAYLOAD_KEYS = {
 
 
 def without_copilot_result_payload(fields):
-    """Blank what a Copilot result carried; keep ids, flags and the outcome."""
+    """Blank what a Copilot result carried; keep ids, flags and the outcome.
+    Its tool telemetry (resolved file paths, command metadata) is not read by
+    the parser and is dropped."""
     return {
         key: (
             error_placeholder(value) if key == "error"
@@ -246,6 +257,7 @@ def without_copilot_result_payload(fields):
             else value
         )
         for key, value in fields.items()
+        if key != "toolTelemetry"
     }
 
 
@@ -433,7 +445,7 @@ def tool_call_arguments(frame):
             # Every path key the parser reads, on the item and on each change.
             entries = [item] + [change for change in item.get("changes") or [] if isinstance(change, dict)]
             paths = [entry[key] for entry in entries for key in CODEX_FILE_CHANGE_PATH_KEYS if key in entry]
-            yield "file_change", json.dumps(paths)
+            yield "file_change", json.dumps({"paths": paths})
     elif kind == "tool_call" and str(frame.get("subtype") or "").lower() == "started":  # Cursor
         yield "tool_call", json.dumps(frame.get("tool_call"))
     elif is_antigravity_step(frame):  # Antigravity
@@ -506,9 +518,12 @@ def copilot_tool_call(frame):
 EXECUTABLE_PATTERN = re.compile(
     r"(?<![\w.\-])/(?:usr/(?:local/)?|opt/homebrew/)?s?bin/[A-Za-z0-9._+\-]+(?![\w/.\-])"
 )
-# What may precede a command: the start of the arguments, a shell separator
-# or subshell opener, or the quote that opens a JSON string or `-c` script.
-COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|\\?\")\s*$")
+# What may precede a command in a shell command string: its start, a
+# separator or subshell opener, or the quote (single, double or `$'`) that
+# opens a script `eval` or `sh -c` runs. A quote anywhere else opens an
+# ordinary argument, such as the text `echo "cd"` prints.
+SHELL_SCRIPT_OPENER = r"(?:\beval|\b(?:ba|z|da|k|fi)?sh(?:\s+-[A-Za-z]+)*\s+-[A-Za-z]*c[A-Za-z]*)\s+\$?[\"']"
+COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|" + SHELL_SCRIPT_OPENER + r")\s*$")
 # Where an executable path is exempt from the path rule: the start of the
 # command string (the opening quote of its JSON form) or after a separator. A
 # quote inside the command opens an argument, so `cat "/usr/bin/private"` is a
@@ -517,7 +532,9 @@ EXECUTABLE_POSITION_PREFIX = re.compile(r"(?:^\"|[;&|(`\n{]|\$\()\s*$")
 # Any rooted token is outside unless it is exactly /workspace, something below
 # it, or /dev/null. A token rooted at a URL's `://` is not a path.
 OUTSIDE_PATH_PATTERN = re.compile(
-    r"(?<![\w.\-~/:])/(?!workspace(?:/|$|[\s\"'\\])|dev/null(?:$|[\s\"'\\]))"
+    # After an allowed prefix, a backslash only ends the path as a JSON escape
+    # of a quote or of whitespace: `/workspace\-private` is another directory.
+    r"(?<![\w.\-~/:])/(?!workspace(?:/|$|[\s\"']|\\[\"'ntr])|dev/null(?:$|[\s\"']|\\[\"'ntr]))"
     r"|(?<![\w.\-])\.\.(?=/|[\s\"'\\]|$)"
     r"|(?<![\w])~[A-Za-z0-9._\-]*(?=/|[\s\"'\\]|$)"
     # An inherited variable that holds a path outside the workspace. `$PWD`
@@ -536,7 +553,7 @@ ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|
 # path that never appears in the arguments. Options (`-L`, `-P`, `-e`, `-@`,
 # zsh's `-q` / `-s`) may come before the missing directory.
 # A redirection (`2>&1`, `>/dev/null`, `&>log`) is not a directory either.
-REDIRECTION = r"(?:\s*\d*(?:&>>?|>>?&?|<&?|<<<?)\s*(?:&?\d+-?|[^\s;&|)`}\"']+))"
+REDIRECTION = r"(?:\s*\d*(?:&>>?|>>?&?|<&?|<<<?)\s*(?:&?\d+-?|\"[^\"]*\"|'[^']*'|[^\s;&|)`}\"']+))"
 DIRECTORY_JUMP_PATTERN = re.compile(
     r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*\s*(?=$|[;&|)`}\"'\n])"
 )
@@ -602,7 +619,9 @@ def argument_leaves(arguments_json):
                 if isinstance(nested, (dict, list)):
                     collect(nested, key)
                     return
-            leaves.append((str(key).lower() in COMMAND_ARGUMENT_KEYS, node))
+            # A tool's whole input as one string (Antigravity's string
+            # parameters) is a command line; in an object, the key decides.
+            leaves.append((key is None or str(key).lower() in COMMAND_ARGUMENT_KEYS, node))
         elif isinstance(node, list):
             for item in node:
                 collect(item, key)

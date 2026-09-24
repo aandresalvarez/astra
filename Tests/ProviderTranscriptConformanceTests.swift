@@ -147,6 +147,7 @@ struct ProviderTranscriptConformanceTests {
         // blank-line paragraph breaks. Counted per occurrence: every recorded
         // copy of a text, up to how many the provider sent, must keep its
         // structure.
+        let structuredMessages = truth.messages.map(lineStructure)
         report(.paragraphStructure, of: fixture, failures: sources.flatMap { source, recorded in
             let collapsedRecorded = collapsed(recorded)
             let structuredRecorded = lineStructure(recorded)
@@ -154,7 +155,9 @@ struct ProviderTranscriptConformanceTests {
                 let text = collapsed(message)
                 guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
                 let present = min(expectedMultiplicity[text] ?? 1, messageCount(text, in: collapsedRecorded, among: collapsedMessages))
-                let structured = structuredRecorded.components(separatedBy: lineStructure(message)).count - 1
+                // A copy inside a longer message that contains it is that
+                // message's, as in messageCount.
+                let structured = messageCount(lineStructure(message), in: structuredRecorded, among: structuredMessages)
                 return structured >= present
                     ? nil
                     : (message, "line or paragraph breaks lost in \(present - structured) of \(present) copies in \(source): \(message.prefix(80))")
@@ -359,6 +362,18 @@ struct ProviderTranscriptConformanceTests {
     func reversedMessagesAreOutOfOrder() {
         #expect(outOfOrderMessages(in: "Second. First.", messages: ["First.", "Second."]) == ["Second."])
         #expect(outOfOrderMessages(in: "First. Second.", messages: ["First.", "Second."]).isEmpty)
+    }
+
+    @Test("Copilot frame types are read from every discriminator and envelope, as the runtime reads them")
+    func copilotFrameTypesMatchTheRuntime() {
+        let shutdown: [String: Any] = ["event": "SESSION.SHUTDOWN", "payload": ["modelMetrics": [:]]]
+        #expect(ProviderStreamTruth.copilotFrame(shutdown).type == "session.shutdown")
+        let wrapped: [String: Any] = ["type": "event", "data": ["type": "result", "sessionId": "s"]]
+        let resolved = ProviderStreamTruth.copilotFrame(wrapped)
+        #expect(resolved.type == "result")
+        #expect(resolved.object["sessionId"] as? String == "s")
+        let payloadTyped: [String: Any] = ["data": ["type": "assistant.message", "content": "Hi"]]
+        #expect(ProviderStreamTruth.copilotFrame(payloadTyped).type == "assistant.message")
     }
 
     /// Records each failure of `check`. Failures the fixture's known issue
@@ -717,11 +732,13 @@ struct ProviderStreamTruth {
                     }
                 }
             case .copilotCLI:
-                let data = frame["data"] as? [String: Any]
+                // Copilot's type can sit under several keys and inside
+                // envelopes; read it the way the runtime does.
+                let (type, object) = Self.copilotFrame(frame)
+                let data = Self.copilotPayload(object)
                 if type == "assistant.message", let text = data?["content"] as? String {
                     appendMessage(text)
-                } else if type == "session.shutdown",
-                          let metrics = (data ?? frame["payload"] as? [String: Any])?["modelMetrics"] as? [String: Any] {
+                } else if type == "session.shutdown", let metrics = data?["modelMetrics"] as? [String: Any] {
                     // Per-model totals; Copilot counts cache reads and writes
                     // next to inputTokens rather than inside them.
                     let entries = metrics.values.compactMap { $0 as? [String: Any] }.map { $0["usage"] as? [String: Any] ?? $0 }
@@ -731,7 +748,7 @@ struct ProviderStreamTruth {
                     )
                 } else if type == "result" {
                     // Copilot's stdout names its session only in the result.
-                    sessionID = frame["sessionId"] as? String
+                    sessionID = (object["sessionId"] ?? data?["sessionId"]) as? String
                 } else if type == "tool.execution_complete" {
                     toolResultOutcomes.append(data?["success"] as? Bool == false ? "failure" : "success")
                 } else if type == "tool.execution_start" {
@@ -867,6 +884,28 @@ struct ProviderStreamTruth {
             message.components(separatedBy: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "## Suggested reply" }
         }
         answer = fixture.scenario == "answer-write-signoff" ? draftedReply : messages.last
+    }
+
+    private static let copilotTypeKeys = ["type", "event", "kind", "sessionUpdate", "name"]
+
+    /// A Copilot frame's type, lowercased, and the object it describes, as
+    /// CopilotStreamEventParser reads them: the first discriminator on the
+    /// frame, else on its data/payload object, with envelopes typed
+    /// event/message/data/payload unwrapped however deep.
+    static func copilotFrame(_ frame: [String: Any]) -> (type: String, object: [String: Any]) {
+        let payload = copilotPayload(frame)
+        let type = (copilotTypeKeys.lazy.compactMap { frame[$0] as? String }.first
+            ?? payload.flatMap { inner in copilotTypeKeys.lazy.compactMap { inner[$0] as? String }.first }
+            ?? "").lowercased()
+        if ["event", "message", "data", "payload"].contains(type), let payload,
+           copilotTypeKeys.contains(where: { payload[$0] is String }) {
+            return copilotFrame(payload)
+        }
+        return (type, frame)
+    }
+
+    static func copilotPayload(_ object: [String: Any]) -> [String: Any]? {
+        object["data"] as? [String: Any] ?? object["payload"] as? [String: Any]
     }
 
     /// The recorder strips ASTRA protocol marker lines from visible text.
